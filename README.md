@@ -8,6 +8,19 @@ Community charts for [SwarmCLI](https://github.com/eldara/swarmcli) — a k9s-in
 |-------|---------|-------------|-------------|
 | [whoami](charts/whoami) | 0.1.0 | 1.10.3 | HTTP echo service for testing |
 
+## Adding the Repository
+
+```bash
+swarmcli chart repo add swarmcli-charts https://eldara.github.io/swarmcli-charts
+swarmcli chart repo update
+```
+
+You can add multiple repos and reference charts by repo prefix:
+
+```bash
+swarmcli chart install swarmcli-charts/whoami
+```
+
 ## Usage
 
 ```bash
