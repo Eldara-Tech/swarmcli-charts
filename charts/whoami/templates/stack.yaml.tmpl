@@ -1,0 +1,33 @@
+version: "3.9"
+
+services:
+  whoami:
+    image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
+    networks:
+      - traefik-public
+    deploy:
+      replicas: {{ .Values.replicas }}
+      restart_policy:
+        condition: on-failure
+      labels:
+        - "traefik.enable=true"
+        - "traefik.docker.network={{ .Values.traefik.network }}"
+        # HTTP → HTTPS redirect
+        - "traefik.http.routers.{{ .Release.Name }}-http.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ .Release.Name }}-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
+        - "traefik.http.routers.{{ .Release.Name }}-http.middlewares=redirect-to-https@file"
+        # HTTPS
+        - "traefik.http.routers.{{ .Release.Name }}-https.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ .Release.Name }}-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
+{{- if .Values.ingress.tls }}
+        - "traefik.http.routers.{{ .Release.Name }}-https.tls=true"
+        - "traefik.http.routers.{{ .Release.Name }}-https.tls.certresolver={{ .Values.ingress.certResolver }}"
+{{- end }}
+        - "traefik.http.services.{{ .Release.Name }}.loadbalancer.server.port={{ .Values.service.port }}"
+{{- range $key, $val := .Values.labels }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+
+networks:
+  traefik-public:
+    external: true

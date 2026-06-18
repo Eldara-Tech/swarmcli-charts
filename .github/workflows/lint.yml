@@ -1,0 +1,56 @@
+name: Lint Charts
+
+on:
+  pull_request:
+    paths:
+      - 'charts/**'
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect changed charts
+        id: changed
+        run: |
+          CHARTS=$(git diff --name-only origin/${{ github.base_ref }}...HEAD \
+            | grep '^charts/' \
+            | cut -d/ -f2 \
+            | sort -u \
+            | tr '\n' ' ')
+          echo "charts=$CHARTS" >> "$GITHUB_OUTPUT"
+          echo "Detected changed charts: $CHARTS"
+
+      - name: Validate Chart.yaml exists and has required fields
+        run: |
+          for chart in ${{ steps.changed.outputs.charts }}; do
+            echo "Checking charts/$chart/Chart.yaml"
+            for field in name version appVersion description; do
+              if ! grep -q "^$field:" "charts/$chart/Chart.yaml"; then
+                echo "ERROR: charts/$chart/Chart.yaml is missing field: $field"
+                exit 1
+              fi
+            done
+            echo "  OK: $chart"
+          done
+
+      - name: Validate values.yaml exists
+        run: |
+          for chart in ${{ steps.changed.outputs.charts }}; do
+            if [ ! -f "charts/$chart/values.yaml" ]; then
+              echo "ERROR: charts/$chart/values.yaml missing"
+              exit 1
+            fi
+            echo "  OK: $chart values.yaml"
+          done
+
+      - name: Validate stack template exists
+        run: |
+          for chart in ${{ steps.changed.outputs.charts }}; do
+            if [ ! -f "charts/$chart/templates/stack.yaml.tmpl" ]; then
+              echo "ERROR: charts/$chart/templates/stack.yaml.tmpl missing"
+              exit 1
+            fi
+            echo "  OK: $chart stack template"
+          done

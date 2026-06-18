@@ -1,0 +1,11 @@
+name: whoami
+description: A simple HTTP echo service for testing SwarmCLI chart delivery
+version: 0.1.0
+appVersion: "1.10.3"
+maintainers:
+  - name: Eldara
+    url: https://github.com/eldara
+keywords:
+  - whoami
+  - test
+  - traefik
