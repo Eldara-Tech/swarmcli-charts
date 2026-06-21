@@ -50,3 +50,29 @@ swarmcli chart search
 - Each chart lives under `charts/<name>/`
 - Required files: `Chart.yaml`, `values.yaml`, `templates/stack.yaml.tmpl`, `README.md`
 - Templates use Go `text/template` syntax with `.Values`, `.Chart`, and `.Release` context
+
+## One-Time Repo Setup (for maintainers)
+
+The release workflow publishes `index.yaml` to GitHub Pages, so Pages needs to be enabled once:
+
+1. Repo **Settings → Pages → Source** → set to **"GitHub Actions"**
+2. Repo **Settings → Actions → General → Workflow permissions** → set to **"Read and write permissions"**
+   (needed so the workflow can commit the `index.yaml` backup and push)
+3. After the first successful release, the index will be live at:
+   ```
+   https://<org>.github.io/swarmcli-charts/index.yaml
+   ```
+
+### How the index is built
+
+`scripts/generate-index.sh` rebuilds `index.yaml` from scratch on every chart release:
+- Lists all GitHub Releases tagged `<chart>/v<version>`
+- Reads each chart's `Chart.yaml` as it existed at that tag (via `git show <tag>:path`) for metadata
+- Downloads each release's `.sha256` file to embed the digest
+- Outputs a Helm-style `index.yaml` with download URLs pointing at the release assets
+
+Run it locally to debug:
+```bash
+gh auth login
+./scripts/generate-index.sh eldara-tech/swarmcli-charts > index.yaml
+```

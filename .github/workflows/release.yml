@@ -66,3 +66,46 @@ jobs:
           files: |
             ${{ steps.package.outputs.filename }}
             ${{ steps.package.outputs.filename }}.sha256
+
+  update-index:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need full history/tags so `git show <tag>:path` works
+
+      - name: Generate index.yaml
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          chmod +x scripts/generate-index.sh
+          ./scripts/generate-index.sh "${{ github.repository }}" > index.yaml
+          cat index.yaml
+
+      - name: Prepare Pages artifact
+        run: |
+          mkdir -p public
+          cp index.yaml public/index.yaml
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Commit index.yaml to repo (backup/diffable copy)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add index.yaml
+          git diff --cached --quiet || git commit -m "chore: update index.yaml [skip ci]"
+          git push origin HEAD:main
+
