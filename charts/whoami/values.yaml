@@ -1,0 +1,24 @@
+# whoami chart default values
+
+image:
+  repository: traefik/whoami
+  tag: ""  # defaults to appVersion from Chart.yaml
+
+replicas: 2
+
+service:
+  port: 80
+
+ingress:
+  enabled: true
+  host: whoami.example.com
+  tls: true
+  certResolver: letsencrypt
+
+traefik:
+  network: traefik-public
+  entrypoints:
+    http: web
+    https: websecure
+
+labels: {}

@@ -1,0 +1,111 @@
+name: Release Chart
+
+on:
+  push:
+    tags:
+      - '*/v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse chart name and version from tag
+        id: parse
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          CHART=$(echo "$TAG" | cut -d/ -f1)
+          VERSION=$(echo "$TAG" | cut -d/ -f2)
+          echo "chart=$CHART"   >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG"       >> "$GITHUB_OUTPUT"
+
+      - name: Verify chart directory exists
+        run: |
+          if [ ! -d "charts/${{ steps.parse.outputs.chart }}" ]; then
+            echo "ERROR: charts/${{ steps.parse.outputs.chart }} does not exist"
+            exit 1
+          fi
+
+      - name: Verify Chart.yaml version matches tag
+        run: |
+          DECLARED=$(grep '^version:' charts/${{ steps.parse.outputs.chart }}/Chart.yaml | awk '{print $2}')
+          if [ "v$DECLARED" != "${{ steps.parse.outputs.version }}" ]; then
+            echo "ERROR: Chart.yaml version (v$DECLARED) does not match tag (${{ steps.parse.outputs.version }})"
+            exit 1
+          fi
+
+      - name: Package chart
+        run: |
+          FILENAME="${{ steps.parse.outputs.chart }}-${{ steps.parse.outputs.version }}.tgz"
+          tar -czf "$FILENAME" -C charts ${{ steps.parse.outputs.chart }}
+          echo "filename=$FILENAME" >> "$GITHUB_OUTPUT"
+        id: package
+
+      - name: Generate checksum
+        run: |
+          sha256sum ${{ steps.package.outputs.filename }} > ${{ steps.package.outputs.filename }}.sha256
+          cat ${{ steps.package.outputs.filename }}.sha256
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.parse.outputs.tag }}
+          name: "${{ steps.parse.outputs.chart }} ${{ steps.parse.outputs.version }}"
+          body: |
+            ## ${{ steps.parse.outputs.chart }} ${{ steps.parse.outputs.version }}
+
+            Install with SwarmCLI:
+            ```bash
+            swarmcli chart install ${{ steps.parse.outputs.chart }} --version ${{ steps.parse.outputs.version }}
+            ```
+          files: |
+            ${{ steps.package.outputs.filename }}
+            ${{ steps.package.outputs.filename }}.sha256
+
+  update-index:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need full history/tags so `git show <tag>:path` works
+
+      - name: Generate index.yaml
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          chmod +x scripts/generate-index.sh
+          ./scripts/generate-index.sh "${{ github.repository }}" > index.yaml
+          cat index.yaml
+
+      - name: Prepare Pages artifact
+        run: |
+          mkdir -p public
+          cp index.yaml public/index.yaml
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Commit index.yaml to repo (backup/diffable copy)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add index.yaml
+          git diff --cached --quiet || git commit -m "chore: update index.yaml [skip ci]"
+          git push origin HEAD:main
+
