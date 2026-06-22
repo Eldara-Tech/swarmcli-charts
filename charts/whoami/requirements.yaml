@@ -1,0 +1,10 @@
+networks:
+  - name: traefik-public
+    driver: overlay
+    attachable: true
+    autoCreate: true
+    description: "Overlay network shared with Traefik"
+
+secrets: []
+
+configs: []
