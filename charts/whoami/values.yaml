@@ -1,7 +1,7 @@
 # whoami chart default values
 
 image:
-  repository: traefik/whoami
+  repository: ghcr.io/traefik/whoami
   tag: ""  # defaults to appVersion from Chart.yaml
 
 replicas: 2
