@@ -57,7 +57,7 @@ If the same version is already tagged (e.g. you merged an unrelated change), the
 
 The release workflow publishes `index.yaml` to GitHub Pages, so Pages needs to be enabled once:
 
-1. Repo **Settings → Pages → Source** → set to **"GitHub Actions"**
+1. Repo **Settings → Pages → Source** → set to **"Deploy from a branch"**, branch: `gh-pages`, folder: `/ (root)`
 
 That's it — `contents: write` is scoped only to the job that creates the GitHub Release (required by `softprops/action-gh-release`), and the index-publishing job only needs `pages: write` + `id-token: write`, which are job-level permissions the workflow requests itself and don't depend on the repo/org-wide "Workflow permissions" toggle. If that toggle is greyed out or locked by an org policy, this setup still works.
 

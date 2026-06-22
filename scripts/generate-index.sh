@@ -3,7 +3,10 @@
 # Generates index.yaml by listing all GitHub Releases tagged <chart>/v<version>
 # and reading each chart's Chart.yaml for metadata.
 #
-# Requires: gh CLI (authenticated), yq, sha256sum
+# Version is always taken from the tag (source of truth).
+# If Chart.yaml version differs from the tag, a warning is emitted to stderr.
+#
+# Requires: gh CLI (authenticated)
 #
 # Usage: ./scripts/generate-index.sh <owner/repo> > index.yaml
 
@@ -20,11 +23,10 @@ echo "entries:"
 TAGS=$(gh release list --repo "$REPO" --limit 1000 --json tagName -q '.[].tagName' | grep '/v' || true)
 
 if [ -z "$TAGS" ]; then
-  echo "  {}" # empty entries map if no releases yet
+  echo "  {}"
   exit 0
 fi
 
-# Group tags by chart name
 CHARTS=$(echo "$TAGS" | cut -d/ -f1 | sort -u)
 
 for CHART in $CHARTS; do
@@ -32,21 +34,28 @@ for CHART in $CHARTS; do
   CHART_TAGS=$(echo "$TAGS" | grep "^${CHART}/v" | sort -rV)
 
   for TAG in $CHART_TAGS; do
+    # Version comes from the tag — always the source of truth
     VERSION=${TAG#${CHART}/v}
     ASSET="${CHART}-v${VERSION}.tgz"
     CHECKSUM_ASSET="${ASSET}.sha256"
 
-    # Pull Chart.yaml metadata as it existed at this tag
+    # Read Chart.yaml at this tag for metadata (appVersion, description)
     CHART_YAML=$(git show "${TAG}:charts/${CHART}/Chart.yaml" 2>/dev/null || echo "")
     if [ -z "$CHART_YAML" ]; then
-      echo "    WARNING: could not read charts/${CHART}/Chart.yaml at tag ${TAG}, skipping" >&2
+      echo "  # WARNING: could not read charts/${CHART}/Chart.yaml at tag ${TAG}, skipping" >&2
       continue
     fi
 
     APP_VERSION=$(echo "$CHART_YAML" | grep '^appVersion:' | sed 's/appVersion: *//; s/"//g')
     DESCRIPTION=$(echo "$CHART_YAML" | grep '^description:' | sed 's/description: *//')
 
-    # Download checksum file from the release to embed in the index
+    # Warn if Chart.yaml version doesn't match the tag (e.g. tag was pushed manually)
+    CHART_VERSION=$(echo "$CHART_YAML" | grep '^version:' | awk '{print $2}')
+    if [ "$CHART_VERSION" != "$VERSION" ]; then
+      echo "  WARNING: tag ${TAG} has version ${VERSION} but Chart.yaml says ${CHART_VERSION} — using tag version" >&2
+    fi
+
+    # Fetch checksum from the release asset
     DIGEST=""
     CHECKSUM_CONTENT=$(gh release download "$TAG" --repo "$REPO" --pattern "$CHECKSUM_ASSET" --output - 2>/dev/null || echo "")
     if [ -n "$CHECKSUM_CONTENT" ]; then
