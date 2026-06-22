@@ -68,11 +68,17 @@ jobs:
             ${{ steps.package.outputs.filename }}
             ${{ steps.package.outputs.filename }}.sha256
 
+  # Publish the regenerated index to the live GitHub Pages site. Pages on this
+  # repo is configured with build_type=workflow, so it serves the artifact
+  # uploaded here — NOT the gh-pages branch. A prior revision pushed to the
+  # gh-pages branch instead, which is inert under this Pages config and silently
+  # froze the served index. Keep using deploy-pages so releases actually go live.
   update-index:
     needs: release
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      pages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v5
         with:
@@ -83,37 +89,16 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           chmod +x scripts/generate-index.sh
-          ./scripts/generate-index.sh "${{ github.repository }}" > index.yaml
+          mkdir -p public
+          ./scripts/generate-index.sh "${{ github.repository }}" > public/index.yaml
           echo "=== Generated index.yaml ==="
-          cat index.yaml
+          cat public/index.yaml
 
-      - name: Deploy index.yaml to gh-pages
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
 
-          cp index.yaml /tmp/index.yaml
-
-          # Fetch all remote branches so we can check gh-pages
-          git fetch origin
-
-          if git ls-remote --exit-code --heads origin gh-pages > /dev/null 2>&1; then
-            echo "gh-pages branch exists, checking out"
-            git checkout gh-pages
-            git pull origin gh-pages
-          else
-            echo "gh-pages branch does not exist, creating orphan"
-            git checkout --orphan gh-pages
-            git rm -rf . || true
-          fi
-
-          cp /tmp/index.yaml index.yaml
-          git add index.yaml
-
-          if git diff --cached --quiet; then
-            echo "index.yaml unchanged, nothing to commit"
-          else
-            git commit -m "chore: update index.yaml [skip ci]"
-            git push origin gh-pages
-            echo "✓ index.yaml published to gh-pages"
-          fi
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
