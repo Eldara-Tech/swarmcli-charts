@@ -1,6 +1,6 @@
 # SwarmCLI Charts
 
-Community charts for [SwarmCLI](https://github.com/eldara/swarmcli) — a k9s-inspired TUI for Docker Swarm.
+Community charts for [SwarmCLI](https://github.com/Eldara-Tech/swarmcli) — a k9s-inspired TUI for Docker Swarm.
 
 ## Available Charts
 
@@ -11,27 +11,27 @@ Community charts for [SwarmCLI](https://github.com/eldara/swarmcli) — a k9s-in
 ## Adding the Repository
 
 ```bash
-swarmcli chart repo add swarmcli-charts https://eldara.github.io/swarmcli-charts
-swarmcli chart repo update
+swarmcli charts repo add swarmcli-charts https://eldara-tech.github.io/swarmcli-charts
+swarmcli charts repo update
 ```
 
 You can add multiple repos and reference charts by repo prefix:
 
 ```bash
-swarmcli chart install swarmcli-charts/whoami
+swarmcli charts install swarmcli-charts/whoami
 ```
 
 ## Usage
 
 ```bash
 # Install a chart
-swarmcli chart install whoami --set ingress.host=whoami.yourdomain.com
+swarmcli charts install whoami --set ingress.host=whoami.yourdomain.com
 
 # Install with custom values
-swarmcli chart install whoami -f my-values.yaml
+swarmcli charts install whoami -f my-values.yaml
 
 # List available charts
-swarmcli chart search
+swarmcli charts search
 ```
 
 ## Releasing a New Chart Version

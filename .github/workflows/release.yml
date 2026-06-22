@@ -52,7 +52,7 @@ jobs:
 
             Install with SwarmCLI:
             ```bash
-            swarmcli chart install ${{ steps.parse.outputs.chart }} --version ${{ steps.parse.outputs.version }}
+            swarmcli charts install ${{ steps.parse.outputs.chart }} --version ${{ steps.parse.outputs.version }}
             ```
           files: |
             ${{ steps.package.outputs.filename }}
