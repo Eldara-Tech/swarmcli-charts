@@ -1,0 +1,25 @@
+version: "3.9"
+
+services:
+  swarm-cronjob:
+    image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
+    environment:
+      LOG_LEVEL: {{ .Values.log.level }}
+      LOG_JSON: "{{ .Values.log.json }}"
+      TZ: {{ .Values.timezone }}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - default
+    deploy:
+      replicas: {{ .Values.deploy.replicas }}
+      placement:
+        constraints:
+{{- range .Values.deploy.placement.constraints }}
+          - {{ . }}
+{{- end }}
+      restart_policy:
+        condition: {{ .Values.deploy.restartPolicy.condition }}
+
+networks:
+  default: {}
