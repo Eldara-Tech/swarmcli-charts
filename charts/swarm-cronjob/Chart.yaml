@@ -1,0 +1,15 @@
+name: swarm-cronjob
+description: Create jobs on a time-based schedule on Docker Swarm using service labels
+version: 0.1.0
+appVersion: "1.16.0"
+maintainers:
+  - name: Eldara
+    url: https://github.com/Eldara-Tech
+keywords:
+  - cronjob
+  - cron
+  - scheduler
+  - swarm
+home: https://crazymax.dev/swarm-cronjob/
+sources:
+  - https://github.com/crazy-max/swarm-cronjob

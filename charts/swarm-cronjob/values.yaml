@@ -1,0 +1,23 @@
+# swarm-cronjob chart default values
+
+image:
+  repository: crazymax/swarm-cronjob
+  tag: ""  # defaults to appVersion from Chart.yaml
+
+# Timezone for the scheduler
+timezone: Europe/Zurich
+
+log:
+  # Log level: trace, debug, info, warn, error, fatal, panic
+  level: info
+  # Output logs as JSON
+  json: false
+
+deploy:
+  # Must run on a manager node — do not change unless you know what you're doing
+  placement:
+    constraints:
+      - node.role == manager
+  replicas: 1
+  restartPolicy:
+    condition: any
