@@ -6,7 +6,11 @@ Community charts for [SwarmCLI](https://github.com/Eldara-Tech/swarmcli) — a k
 
 | Chart | Version | App Version | Description |
 |-------|---------|-------------|-------------|
-| [whoami](charts/whoami) | 0.1.5 | 1.10.3 | HTTP echo service for testing |
+| [whoami](charts/whoami) | [![Version](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Feldara-tech.github.io%2Fswarmcli-charts%2Findex.yaml&query=%24.entries.whoami%5B0%5D.version&label=&color=blue)](https://github.com/Eldara-Tech/swarmcli-charts/releases) | ![App Version](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Feldara-tech.github.io%2Fswarmcli-charts%2Findex.yaml&query=%24.entries.whoami%5B0%5D.appVersion&label=&color=informational) | HTTP echo service for testing |
+
+> The Version/App Version badges read the live published
+> [`index.yaml`](https://eldara-tech.github.io/swarmcli-charts/index.yaml), so they
+> track the latest release automatically — there is no number to bump by hand.
 
 ## Adding the Repository
 
