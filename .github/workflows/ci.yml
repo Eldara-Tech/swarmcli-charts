@@ -1,0 +1,39 @@
+name: CI
+
+# Lints the release machinery itself — the GitHub Actions workflows and the
+# shell scripts that package charts and build the index. The release pipeline is
+# shell- and YAML-heavy, and a broken workflow or script silently fails releases,
+# so this guards the parts chart-structure linting (lint.yml) doesn't cover.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+      - 'scripts/**'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/**'
+      - 'scripts/**'
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # actionlint validates workflow syntax and ${{ }} expressions. Its embedded
+      # shellcheck pass is disabled here (-shellcheck=) so run-block style nits
+      # don't fail the job; shell scripts are checked separately below.
+      - name: Lint workflows (actionlint)
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color -shellcheck=
+
+      # shellcheck is preinstalled on ubuntu runners. --severity=error fails only
+      # on genuine bugs, not style warnings, so it won't block on existing scripts.
+      - name: Lint shell scripts (shellcheck)
+        run: shellcheck --severity=error scripts/*.sh
