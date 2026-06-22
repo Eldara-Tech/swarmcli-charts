@@ -19,8 +19,10 @@ jobs:
           TAG=${GITHUB_REF#refs/tags/}
           CHART=$(echo "$TAG" | cut -d/ -f1)
           VERSION=$(echo "$TAG" | cut -d/ -f2)
+          SEMVER=${VERSION#v}                       # Helm/SemVer form, no leading "v"
           echo "chart=$CHART"   >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "semver=$SEMVER" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG"       >> "$GITHUB_OUTPUT"
 
       - name: Verify chart directory exists
@@ -29,6 +31,14 @@ jobs:
             echo "ERROR: charts/${{ steps.parse.outputs.chart }} does not exist"
             exit 1
           fi
+
+      - name: Set chart version from tag
+        run: |
+          # The git tag is the source of truth: stamp its SemVer into Chart.yaml
+          # so the packaged metadata matches the tag and the published index entry.
+          sed -i -E "s/^version:.*/version: ${{ steps.parse.outputs.semver }}/" \
+            charts/${{ steps.parse.outputs.chart }}/Chart.yaml
+          grep '^version:' charts/${{ steps.parse.outputs.chart }}/Chart.yaml
 
       - name: Package chart
         id: package
@@ -52,7 +62,7 @@ jobs:
 
             Install with SwarmCLI:
             ```bash
-            swarmcli charts install ${{ steps.parse.outputs.chart }} --version ${{ steps.parse.outputs.version }}
+            swarmcli charts install ${{ steps.parse.outputs.chart }} swarmcli-charts/${{ steps.parse.outputs.chart }} --version ${{ steps.parse.outputs.semver }}
             ```
           files: |
             ${{ steps.package.outputs.filename }}

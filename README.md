@@ -36,16 +36,21 @@ swarmcli charts search
 
 ## Releasing a New Chart Version
 
-Bump the `version:` field in the chart's `Chart.yaml` and merge to `main` — that's it.
+The **git tag is the source of truth** for the version. To release, push a tag of
+the form `<chart>/v<version>`:
 
-```yaml
-# charts/whoami/Chart.yaml
-version: 0.2.0  # ← bump this
+```bash
+git tag whoami/v0.2.0
+git push origin whoami/v0.2.0
 ```
 
-On merge, `auto-tag.yml` detects the change, creates the `whoami/v0.2.0` tag automatically, which triggers `release.yml` to package the chart and publish a GitHub Release. The `index.yaml` on GitHub Pages is updated as the final step.
+`release.yml` stamps that version into the chart's `Chart.yaml` at package time,
+publishes a GitHub Release with the `.tgz`, and rebuilds the `index.yaml` on
+GitHub Pages as the final step. The `version:` field committed in `Chart.yaml` is
+only a placeholder — the tag wins.
 
-If the same version is already tagged (e.g. you merged an unrelated change), the auto-tag step skips silently — no duplicate releases.
+The published chart version is plain SemVer (`0.2.0`); install it with
+`--version 0.2.0` (the leading `v` belongs to the git tag, not the chart version).
 
 ## Contributing
 
