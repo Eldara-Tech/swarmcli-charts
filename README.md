@@ -6,7 +6,7 @@ Community charts for [SwarmCLI](https://github.com/Eldara-Tech/swarmcli) — a k
 
 | Chart | Version | App Version | Description |
 |-------|---------|-------------|-------------|
-| [whoami](charts/whoami) | 0.1.0 | 1.10.3 | HTTP echo service for testing |
+| [whoami](charts/whoami) | 0.1.5 | 1.10.3 | HTTP echo service for testing |
 
 ## Adding the Repository
 
@@ -15,20 +15,21 @@ swarmcli charts repo add swarmcli-charts https://eldara-tech.github.io/swarmcli-
 swarmcli charts repo update
 ```
 
-You can add multiple repos and reference charts by repo prefix:
+You can add multiple repos and reference charts by repo prefix. `install` takes a
+release name and a `<repo>/<chart>` reference:
 
 ```bash
-swarmcli charts install swarmcli-charts/whoami
+swarmcli charts install whoami swarmcli-charts/whoami
 ```
 
 ## Usage
 
 ```bash
 # Install a chart
-swarmcli charts install whoami --set ingress.host=whoami.yourdomain.com
+swarmcli charts install whoami swarmcli-charts/whoami --set ingress.host=whoami.yourdomain.com
 
 # Install with custom values
-swarmcli charts install whoami -f my-values.yaml
+swarmcli charts install whoami swarmcli-charts/whoami -f my-values.yaml
 
 # List available charts
 swarmcli charts search
@@ -62,7 +63,7 @@ The published chart version is plain SemVer (`0.2.0`); install it with
 
 The release workflow publishes `index.yaml` to GitHub Pages, so Pages needs to be enabled once:
 
-1. Repo **Settings → Pages → Source** → set to **"Deploy from a branch"**, branch: `gh-pages`, folder: `/ (root)`
+1. Repo **Settings → Pages → Source** → set to **"GitHub Actions"** — the release workflow publishes the generated index via `actions/upload-pages-artifact` + `actions/deploy-pages`
 
 That's it — `contents: write` is scoped only to the job that creates the GitHub Release (required by `softprops/action-gh-release`), and the index-publishing job only needs `pages: write` + `id-token: write`, which are job-level permissions the workflow requests itself and don't depend on the repo/org-wide "Workflow permissions" toggle. If that toggle is greyed out or locked by an org policy, this setup still works.
 
