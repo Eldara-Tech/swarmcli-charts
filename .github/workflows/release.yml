@@ -5,14 +5,13 @@ on:
     tags:
       - '*/v*'
 
-permissions:
-  contents: write
-
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Parse chart name and version from tag
         id: parse
@@ -31,14 +30,6 @@ jobs:
             exit 1
           fi
 
-      - name: Verify Chart.yaml version matches tag
-        run: |
-          DECLARED=$(grep '^version:' charts/${{ steps.parse.outputs.chart }}/Chart.yaml | awk '{print $2}')
-          if [ "v$DECLARED" != "${{ steps.parse.outputs.version }}" ]; then
-            echo "ERROR: Chart.yaml version (v$DECLARED) does not match tag (${{ steps.parse.outputs.version }})"
-            exit 1
-          fi
-
       - name: Package chart
         run: |
           FILENAME="${{ steps.parse.outputs.chart }}-${{ steps.parse.outputs.version }}.tgz"
@@ -52,7 +43,7 @@ jobs:
           cat ${{ steps.package.outputs.filename }}.sha256
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.parse.outputs.tag }}
           name: "${{ steps.parse.outputs.chart }} ${{ steps.parse.outputs.version }}"
@@ -71,11 +62,10 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     permissions:
-      contents: write
       pages: write
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0 # need full history/tags so `git show <tag>:path` works
 
@@ -100,12 +90,4 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
-
-      - name: Commit index.yaml to repo (backup/diffable copy)
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add index.yaml
-          git diff --cached --quiet || git commit -m "chore: update index.yaml [skip ci]"
-          git push origin HEAD:main
 

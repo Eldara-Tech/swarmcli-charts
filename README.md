@@ -36,14 +36,16 @@ swarmcli chart search
 
 ## Releasing a New Chart Version
 
-1. Update `version:` in the chart's `Chart.yaml`
-2. Commit and push to `main`
-3. Tag the release:
-   ```bash
-   git tag whoami/v0.2.0
-   git push origin whoami/v0.2.0
-   ```
-4. GitHub Actions packages the chart and creates a release automatically.
+Bump the `version:` field in the chart's `Chart.yaml` and merge to `main` — that's it.
+
+```yaml
+# charts/whoami/Chart.yaml
+version: 0.2.0  # ← bump this
+```
+
+On merge, `auto-tag.yml` detects the change, creates the `whoami/v0.2.0` tag automatically, which triggers `release.yml` to package the chart and publish a GitHub Release. The `index.yaml` on GitHub Pages is updated as the final step.
+
+If the same version is already tagged (e.g. you merged an unrelated change), the auto-tag step skips silently — no duplicate releases.
 
 ## Contributing
 
@@ -56,9 +58,10 @@ swarmcli chart search
 The release workflow publishes `index.yaml` to GitHub Pages, so Pages needs to be enabled once:
 
 1. Repo **Settings → Pages → Source** → set to **"GitHub Actions"**
-2. Repo **Settings → Actions → General → Workflow permissions** → set to **"Read and write permissions"**
-   (needed so the workflow can commit the `index.yaml` backup and push)
-3. After the first successful release, the index will be live at:
+
+That's it — `contents: write` is scoped only to the job that creates the GitHub Release (required by `softprops/action-gh-release`), and the index-publishing job only needs `pages: write` + `id-token: write`, which are job-level permissions the workflow requests itself and don't depend on the repo/org-wide "Workflow permissions" toggle. If that toggle is greyed out or locked by an org policy, this setup still works.
+
+After the first successful release, the index will be live at:
    ```
    https://<org>.github.io/swarmcli-charts/index.yaml
    ```
@@ -70,6 +73,8 @@ The release workflow publishes `index.yaml` to GitHub Pages, so Pages needs to b
 - Reads each chart's `Chart.yaml` as it existed at that tag (via `git show <tag>:path`) for metadata
 - Downloads each release's `.sha256` file to embed the digest
 - Outputs a Helm-style `index.yaml` with download URLs pointing at the release assets
+
+The generated `index.yaml` is published straight to GitHub Pages (not committed back to `main`), so no repo-write permission is needed beyond what release creation already requires.
 
 Run it locally to debug:
 ```bash
