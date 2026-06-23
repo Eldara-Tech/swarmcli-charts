@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Eldara-Tech/swarmcli-charts/blob/main/SECURITY.md
+    about: Please report security issues privately per our Security Policy — not as a public issue.
+  - name: SwarmCLI (renderer / CLI)
+    url: https://github.com/Eldara-Tech/swarmcli/issues
+    about: Bugs in swarmcli itself (rendering, install, deploy) belong in the swarmcli repo.
