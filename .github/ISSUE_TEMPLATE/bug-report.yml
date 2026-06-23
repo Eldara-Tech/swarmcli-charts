@@ -1,0 +1,58 @@
+name: Chart bug report
+description: A chart renders wrong, fails to deploy, or behaves unexpectedly
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For bugs in **swarmcli itself** (the renderer/CLI — install, deploy, the
+        `charts template` command), please file in the
+        [swarmcli](https://github.com/Eldara-Tech/swarmcli/issues) repo instead.
+  - type: input
+    id: chart
+    attributes:
+      label: Chart
+      placeholder: e.g. whoami
+    validations:
+      required: true
+  - type: input
+    id: chart-version
+    attributes:
+      label: Chart version
+      description: The chart version (from index.yaml or the release tag).
+      placeholder: e.g. 0.1.0
+    validations:
+      required: false
+  - type: input
+    id: swarmcli-version
+    attributes:
+      label: swarmcli version
+      placeholder: output of swarmcli --version
+    validations:
+      required: false
+  - type: textarea
+    id: values
+    attributes:
+      label: Values used
+      description: The -f files and/or --set overrides you installed with.
+      render: shell
+    validations:
+      required: false
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect, and what happened?
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Rendered output or error
+      description: >
+        Paste the output of
+        `swarmcli charts template <release> <repo/chart> [-f values.yaml]`
+        (or the deploy error). This is automatically formatted, no backticks needed.
+      render: yaml
+    validations:
+      required: false

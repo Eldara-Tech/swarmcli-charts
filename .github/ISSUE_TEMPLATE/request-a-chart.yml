@@ -1,0 +1,61 @@
+name: Request a chart
+description: Suggest a new chart to be added to swarmcli-charts
+title: "[chart request]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion! Charts here render a **Docker Swarm stack** via
+        SwarmCLI (not Helm/Kubernetes). The more detail below, the faster it can move.
+  - type: input
+    id: app
+    attributes:
+      label: Application
+      description: The software you want a chart for.
+      placeholder: e.g. Traefik whoami
+    validations:
+      required: true
+  - type: input
+    id: image
+    attributes:
+      label: Container image
+      description: The image reference (with registry) the chart should deploy.
+      placeholder: e.g. ghcr.io/traefik/whoami
+    validations:
+      required: true
+  - type: input
+    id: upstream
+    attributes:
+      label: Upstream / docs link
+      placeholder: https://github.com/traefik/whoami
+    validations:
+      required: false
+  - type: textarea
+    id: usecase
+    attributes:
+      label: Use case
+      description: What would you deploy this for on Docker Swarm?
+    validations:
+      required: true
+  - type: textarea
+    id: infra
+    attributes:
+      label: Infrastructure needs
+      description: >
+        What does the stack require? e.g. overlay networks, the Docker socket,
+        secrets/configs, manager-node placement, ingress (Traefik), volumes.
+      placeholder: |
+        - networks: traefik-public (overlay)
+        - docker socket: no
+        - secrets/configs: none
+        - placement: any node
+    validations:
+      required: false
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contribution
+      options:
+        - label: I'm willing to open a PR for this chart (see CONTRIBUTING.md)
+          required: false
