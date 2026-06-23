@@ -2,6 +2,11 @@ name: swarm-cronjob
 description: Create jobs on a time-based schedule on Docker Swarm using service labels
 version: 0.1.0
 appVersion: "1.16.0"
+annotations:
+  # swarm-cronjob watches the Docker API to schedule services, so it must mount
+  # the Docker socket on a manager node. This is core to the workload, not an
+  # accident — acknowledged so the security scan (scripts/security-scan.sh) passes.
+  swarmcli-charts/allow: "docker-socket"
 maintainers:
   - name: Eldara
     url: https://github.com/Eldara-Tech

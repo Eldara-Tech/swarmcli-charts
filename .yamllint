@@ -1,0 +1,17 @@
+# Relaxed YAML style for chart sources. Charts are hand-edited config, not code,
+# so cosmetic rules (line length, document start) are off; structural rules stay.
+extends: default
+
+rules:
+  line-length: disable
+  document-start: disable
+  truthy:
+    check-keys: false
+  comments:
+    min-spaces-from-content: 1
+  comments-indentation: disable
+  indentation:
+    spaces: 2
+    indent-sequences: consistent
+  empty-lines:
+    max: 2

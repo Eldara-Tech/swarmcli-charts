@@ -1,0 +1,3 @@
+# Exercises the {{ if .Values.ingress.tls }} branch being false.
+ingress:
+  tls: false

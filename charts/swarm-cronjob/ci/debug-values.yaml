@@ -1,0 +1,5 @@
+# Exercises non-default log settings and timezone.
+timezone: Europe/Budapest
+log:
+  level: debug
+  json: true

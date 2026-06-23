@@ -27,17 +27,30 @@ the `swarmcli` repo, not from memory.
 charts/<name>/
   Chart.yaml                 # name, version, appVersion, description (all required by CI)
   values.yaml                # default values
+  values.schema.json         # optional JSON Schema — swarmcli validates values against it
   templates/stack.yaml.tmpl  # Go text/template → Swarm stack
-  requirements.yaml          # swarmcli-specific: networks/secrets/configs (NOT Helm deps)
+  requirements.yaml          # advisory only — see note; swarmcli does NOT read it
+  ci/<case>-values.yaml      # render fixtures (≥1 required; CI renders each)
   README.md
-scripts/generate-index.sh    # rebuilds the published index.yaml
-.github/workflows/           # release.yml, ci.yml, lint.yml
+Makefile                     # make new-chart / lint / test / render / package
+scripts/install-swarmcli.sh  # builds the swarmcli renderer from source
+scripts/test-charts.sh       # render + compose-validate + no-value + security (== CI)
+scripts/security-scan.sh     # flags risky primitives unless Chart.yaml acknowledges them
+scripts/new-chart.sh         # scaffolds a passing chart skeleton
+scripts/lint.sh              # chart structure + yamllint
+scripts/generate-index.sh    # rebuilds the published index.yaml (release path)
+.github/workflows/           # charts.yml (validate), ci.yml (machinery), release.yml
 ```
 
-Templates use Go `text/template` with `.Values`, `.Chart`, and `.Release`
-context (e.g. `.Chart.AppVersion`, `.Release.Name`). `requirements.yaml`
-declares overlay networks / secrets / configs the stack expects — it is
-SwarmCLI's own format, unrelated to Helm chart dependencies.
+Templates use Go `text/template` with sprig (minus `env`/`expandenv`/
+`getHostByName`) plus `toYaml`, and `.Values`, `.Chart`, `.Release` context
+(e.g. `.Chart.AppVersion`, `.Release.Name`). No `.Capabilities`. swarmcli does
+**not** set `missingkey=error`, so a typo renders the literal `<no value>` — the
+`make test` guard greps for it.
+
+> **`requirements.yaml` is advisory only.** The current swarmcli has zero
+> references to it; network auto-create is parsed from the rendered manifest, not
+> this file. Keep it for documentation, but do not rely on it gating behaviour.
 
 ## Releasing
 
@@ -48,13 +61,36 @@ and rebuilds `index.yaml` on GitHub Pages. The `version:` in `Chart.yaml` is a
 placeholder — the tag wins. Published chart version is plain SemVer; the leading
 `v` belongs only to the git tag.
 
-## CI
+## CI & testing
 
-- `lint.yml` — runs on `charts/**` PRs; checks changed charts have the required
-  `Chart.yaml` fields, `values.yaml`, and `templates/stack.yaml.tmpl`.
+- `charts.yml` — runs on `charts/**`/`scripts/**`/`Makefile`/`.yamllint` PRs and
+  pushes to main. Builds the swarmcli renderer from source, then for every chart
+  × `ci/*-values.yaml` fixture: renders (`swarmcli charts template`),
+  no-`<no value>` guard, `docker compose config`, and `scripts/security-scan.sh`.
+  All steps are data-only (no secrets, read-only token, render-never-deploy) so
+  they are safe on fork PRs. Mirrors `make test` exactly. Uploads rendered output
+  as the `rendered-stacks` artifact.
 - `ci.yml` — runs on `.github/workflows/**` and `scripts/**` changes; actionlint
   + shellcheck (`--severity=error`).
 - Doc-only changes outside those paths trigger no CI.
+
+**Renderer source.** swarmcli is the renderer; its `charts` CLI is only on
+swarmcli `main` today and its module path is `swarmcli` (so `go install` of the
+GitHub path fails). `scripts/install-swarmcli.sh` clones+builds `main`
+(`SWARMCLI_REF` overrides). Switch to release-asset download once a swarmcli
+release ships the charts CLI.
+
+**Security acknowledgments.** Risky primitives in a rendered stack (docker.sock,
+host mounts, `privileged`, host network/PID, `cap_add`) fail CI unless the chart
+declares `annotations: { swarmcli-charts/allow: "<keys>" }` in `Chart.yaml`. See
+`charts/swarm-cronjob` (docker-socket).
+
+**Local = CI.** `make test` runs the identical pipeline; `make new-chart NAME=x`
+scaffolds a passing skeleton. GitHub action versions are SHA-pinned across all
+workflows.
+
+Actions for new contributors are gated by the "Require approval for outside
+collaborators" repo setting so CI auto-runs and reports before review.
 
 ## Git / pushing (within /claude-go)
 

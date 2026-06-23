@@ -4,3 +4,7 @@
 /public/
 *.tgz
 *.tgz.sha256
+
+# Local toolchain + render output (scripts/install-swarmcli.sh, scripts/test-charts.sh)
+/.swarmcli-bin/
+/.rendered/
