@@ -23,7 +23,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # actionlint validates workflow syntax and ${{ }} expressions. Its embedded
       # shellcheck pass is disabled here (-shellcheck=) so run-block style nits
