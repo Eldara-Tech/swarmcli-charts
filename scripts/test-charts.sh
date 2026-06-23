@@ -10,6 +10,8 @@
 #                                    does not render in strict mode)
 #   3. docker compose config      -> structural validity beyond swarmcli's check
 #   4. scripts/security-scan.sh   -> flag unacknowledged risky primitives
+#   5. scripts/requirements-check -> every external resource the manifest uses is
+#                                    declared in requirements.yaml (swarmcli's contract)
 #
 # Usage: SWARMCLI=/path/to/swarmcli scripts/test-charts.sh [chart ...]
 #   Defaults to all charts under charts/*. Rendered output is written to
@@ -72,6 +74,10 @@ for chart in "${charts[@]}"; do
       continue
     fi
     if ! scripts/security-scan.sh "$out" "$dir"; then
+      fail=1
+      continue
+    fi
+    if ! scripts/requirements-check.sh "$out" "$dir"; then
       fail=1
       continue
     fi
