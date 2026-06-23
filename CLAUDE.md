@@ -29,7 +29,7 @@ charts/<name>/
   values.yaml                # default values
   values.schema.json         # optional JSON Schema — swarmcli validates values against it
   templates/stack.yaml.tmpl  # Go text/template → Swarm stack
-  requirements.yaml          # advisory only — see note; swarmcli does NOT read it
+  requirements.yaml          # optional — external networks/secrets/configs; swarmcli pre-flights it
   ci/<case>-values.yaml      # render fixtures (≥1 required; CI renders each)
   README.md
 Makefile                     # make new-chart / lint / test / render / package
@@ -48,9 +48,32 @@ Templates use Go `text/template` with sprig (minus `env`/`expandenv`/
 **not** set `missingkey=error`, so a typo renders the literal `<no value>` — the
 `make test` guard greps for it.
 
-> **`requirements.yaml` is advisory only.** The current swarmcli has zero
-> references to it; network auto-create is parsed from the rendered manifest, not
-> this file. Keep it for documentation, but do not rely on it gating behaviour.
+> **`requirements.yaml` drives swarmcli's pre-flight.** It is optional, but when
+> present it is **authoritative**: every external network/secret/config the
+> rendered manifest references must be declared in it, or install fails the
+> pre-flight (CI enforces the same contract — see `scripts/test-charts.sh`).
+> Schema:
+>
+> ```yaml
+> networks:
+>   - name: traefik-public   # required; the external network's real name
+>     driver: overlay        # optional, default "overlay"
+>     attachable: true       # optional, default true
+>     autoCreate: true       # optional, default true. true => swarmcli creates it
+>                            #   if missing; false => validate-only (a missing one
+>                            #   is a hard error, never auto-created)
+>     description: "…"        # optional; shown in remediation when validation fails
+> secrets:                   # entries: { name, description } — validated, never
+>   - name: db-password      #   auto-created (their content is not chart-supplied)
+>     description: "…"
+> configs: []                # entries: { name, description }
+> ```
+>
+> Without a `requirements.yaml` a chart falls back to the historical behaviour:
+> external networks are detected from the rendered manifest and auto-created as
+> attachable overlays. Use `autoCreate: false` for a network a chart depends on
+> but must not create (e.g. a shared ingress an operator pre-provisions); document
+> such human prerequisites in the chart README too.
 
 ## Releasing
 
