@@ -34,6 +34,9 @@ swarmcli charts install whoami swarmcli-charts/whoami -f my-values.yaml
 
 ## Requirements
 
-- Docker Swarm with an overlay network named `traefik-public`
+- Docker Swarm with an overlay network named `traefik-public` — swarmcli
+  auto-creates it as an attachable overlay on install if it does not yet exist
+  (declared in this chart's `requirements.yaml`), and reports it on uninstall
+  rather than removing it (it is typically shared with Traefik and other stacks)
 - Traefik v2/v3 running on the same network
 - A cert resolver named `letsencrypt` configured in Traefik (or override via `ingress.certResolver`)

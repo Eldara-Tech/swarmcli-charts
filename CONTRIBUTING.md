@@ -34,6 +34,7 @@ charts/<name>/
   values.yaml                # default values
   values.schema.json         # optional JSON Schema — swarmcli validates values against it
   templates/stack.yaml.tmpl  # Go text/template → Docker Swarm stack
+  requirements.yaml          # optional — external networks/secrets/configs (see below)
   README.md                  # what it deploys + a values table
   ci/<case>-values.yaml      # render fixtures (at least ci/default-values.yaml)
 ```
@@ -52,6 +53,36 @@ There is **no** `.Capabilities` or other Helm context.
 > `{{ .Values.replcas }}` silently becomes the literal `<no value>` instead of
 > erroring. `make test` greps for `<no value>` and fails — fix the reference.
 
+## External resources (`requirements.yaml`)
+
+If a stack attaches to an external network or mounts an external secret/config
+(anything marked `external: true` in the rendered stack), declare it in an
+optional `requirements.yaml`. swarmcli reads this file as a **pre-flight** before
+it deploys:
+
+```yaml
+networks:
+  - name: traefik-public   # the external network's real name (required)
+    driver: overlay        # optional, default "overlay"
+    attachable: true       # optional, default true
+    autoCreate: true       # optional, default true:
+                           #   true  => swarmcli creates it if missing
+                           #   false => validate-only; a missing one is a hard
+                           #            error and is never auto-created
+    description: "Shared ingress overlay"   # optional; shown when validation fails
+secrets:                   # entries: { name, description } — validated, never
+  - name: db-password      #   auto-created (their content is not chart-supplied)
+    description: "Postgres password"
+configs: []                # entries: { name, description }
+```
+
+The file is **optional but authoritative when present**: every external resource
+the rendered stack references must be declared, or install (and `make test`)
+fails. Without it, swarmcli falls back to auto-creating external networks as
+attachable overlays. Use `autoCreate: false` for a network the operator
+pre-provisions (e.g. a shared ingress) — and document such prerequisites in the
+chart `README.md` too.
+
 ## Testing locally (== CI)
 
 `make test` does, per chart × per `ci/*-values.yaml` fixture:
@@ -60,6 +91,8 @@ There is **no** `.Capabilities` or other Helm context.
 2. **no-value guard** — fails on any `<no value>` (missing-key typo)
 3. **compose-validate** — `docker compose config` must accept the output
 4. **security scan** — flags risky primitives unless acknowledged (see below)
+5. **requirements check** — every external resource the rendered stack uses must
+   be declared in `requirements.yaml` (skipped if the chart has none)
 
 Rendered output lands in `.rendered/` for inspection; CI uploads it as an
 artifact named `rendered-stacks` so reviewers can read the produced stack.

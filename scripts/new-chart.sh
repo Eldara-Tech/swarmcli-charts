@@ -2,7 +2,8 @@
 #
 # Scaffold a new chart that passes `make lint` and `make test` out of the box.
 # Generates charts/<name>/ with Chart.yaml, values.yaml, values.schema.json,
-# templates/stack.yaml.tmpl, README.md and a ci/default-values.yaml fixture.
+# templates/stack.yaml.tmpl, requirements.yaml, README.md and a
+# ci/default-values.yaml fixture.
 #
 # Usage: scripts/new-chart.sh <name>
 set -euo pipefail
@@ -94,6 +95,26 @@ services:
 
 networks:
   default: {}
+EOF
+
+cat >"$DIR/requirements.yaml" <<'EOF'
+# External resources this chart needs (optional but authoritative when present:
+# every external network/secret/config the rendered stack references must be
+# listed here). Delete this file if the chart uses no external resources.
+#
+# networks:
+#   - name: traefik-public   # the external network's real name (required)
+#     driver: overlay        # optional, default "overlay"
+#     attachable: true       # optional, default true
+#     autoCreate: true       # optional, default true (false => validate-only)
+#     description: "Shared ingress overlay"
+# secrets:                   # validated, never auto-created
+#   - name: db-password
+#     description: "Postgres password"
+# configs: []
+networks: []
+secrets: []
+configs: []
 EOF
 
 cat >"$DIR/README.md" <<EOF
