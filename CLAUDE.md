@@ -29,7 +29,6 @@ charts/<name>/
   values.yaml                # default values
   values.schema.json         # optional JSON Schema — swarmcli validates values against it
   templates/stack.yaml.tmpl  # Go text/template → Swarm stack
-  requirements.yaml          # advisory only — see note; swarmcli does NOT read it
   ci/<case>-values.yaml      # render fixtures (≥1 required; CI renders each)
   README.md
 Makefile                     # make new-chart / lint / test / render / package
@@ -48,9 +47,13 @@ Templates use Go `text/template` with sprig (minus `env`/`expandenv`/
 **not** set `missingkey=error`, so a typo renders the literal `<no value>` — the
 `make test` guard greps for it.
 
-> **`requirements.yaml` is advisory only.** The current swarmcli has zero
-> references to it; network auto-create is parsed from the rendered manifest, not
-> this file. Keep it for documentation, but do not rely on it gating behaviour.
+> **External networks** a stack needs (declared in the manifest as
+> `networks: <name>: { external: true }`) are auto-created by swarmcli at install
+> time as `overlay --attachable` (`charts/release.go` `ensureExternalNetworks`),
+> with clear remediation if a name clashes with a non-swarm network. There is no
+> separate requirements file — document any human prerequisites (e.g. "Traefik
+> must already run on `traefik-public`") in the chart README. External
+> secrets/configs are not pre-flighted today; a missing one fails at deploy.
 
 ## Releasing
 
