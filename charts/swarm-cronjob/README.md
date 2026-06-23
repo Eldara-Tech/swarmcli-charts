@@ -9,13 +9,13 @@ It must run on a **manager node** and needs access to the Docker socket.
 ## Installing
 
 ```bash
-swarmcli chart install swarm-cronjob eldara/swarm-cronjob
+swarmcli charts install swarm-cronjob swarmcli-charts/swarm-cronjob
 ```
 
 Custom timezone or log level:
 
 ```bash
-swarmcli chart install swarm-cronjob eldara/swarm-cronjob \
+swarmcli charts install swarm-cronjob swarmcli-charts/swarm-cronjob \
   --set timezone=Europe/Budapest \
   --set log.level=debug
 ```

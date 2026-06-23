@@ -6,13 +6,13 @@ Responds to every request with the container's hostname, IP, and request headers
 ## Installing
 
 ```bash
-swarmcli charts install whoami --set ingress.host=whoami.yourdomain.com
+swarmcli charts install whoami swarmcli-charts/whoami --set ingress.host=whoami.yourdomain.com
 ```
 
 Or with a custom values file:
 
 ```bash
-swarmcli charts install whoami -f my-values.yaml
+swarmcli charts install whoami swarmcli-charts/whoami -f my-values.yaml
 ```
 
 ## Values
