@@ -4,8 +4,11 @@ version: 0.1.0
 appVersion: "v1.11.0"
 maintainers:
   - name: Eldara
-    url: https://github.com/eldara
+    url: https://github.com/Eldara-Tech
 keywords:
   - whoami
   - test
   - traefik
+home: https://github.com/traefik/whoami
+sources:
+  - https://github.com/traefik/whoami
