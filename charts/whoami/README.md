@@ -19,7 +19,7 @@ swarmcli charts install whoami swarmcli-charts/whoami -f my-values.yaml
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `image.repository` | `traefik/whoami` | Container image |
+| `image.repository` | `ghcr.io/traefik/whoami` | Container image |
 | `image.tag` | `""` | Image tag — defaults to `appVersion` in Chart.yaml |
 | `replicas` | `2` | Number of replicas |
 | `service.port` | `80` | Container port |

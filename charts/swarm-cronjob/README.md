@@ -56,7 +56,7 @@ Full docs: https://crazymax.dev/swarm-cronjob/usage/docker-labels/
 | `image.repository` | `crazymax/swarm-cronjob` | Container image |
 | `image.tag` | `""` | Image tag — defaults to `appVersion` in Chart.yaml |
 | `timezone` | `Europe/Zurich` | Scheduler timezone |
-| `log.level` | `info` | Log level: trace, debug, info, warn, error |
+| `log.level` | `info` | Log level: trace, debug, info, warn, error, fatal, panic |
 | `log.json` | `false` | Output logs as JSON |
 | `deploy.placement.constraints` | `[node.role == manager]` | Placement constraints — must include a manager constraint |
 | `deploy.replicas` | `1` | Number of replicas (keep at 1) |
