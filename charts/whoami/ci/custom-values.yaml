@@ -1,0 +1,6 @@
+# Exercises overridden host, replica count and extra deploy labels.
+replicas: 3
+ingress:
+  host: whoami.example.org
+labels:
+  com.example.team: platform

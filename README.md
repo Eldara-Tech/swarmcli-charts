@@ -1,5 +1,8 @@
 # SwarmCLI Charts
 
+[![Charts](https://github.com/Eldara-Tech/swarmcli-charts/actions/workflows/charts.yml/badge.svg)](https://github.com/Eldara-Tech/swarmcli-charts/actions/workflows/charts.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
 Community charts for [SwarmCLI](https://github.com/Eldara-Tech/swarmcli) — a k9s-inspired TUI for Docker Swarm.
 
 ## Available Charts
@@ -61,9 +64,17 @@ The published chart version is plain SemVer (`0.2.0`); install it with
 
 ## Contributing
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide. In short:
+
+```bash
+make new-chart NAME=mychart   # scaffold a passing skeleton
+make test CHART=mychart       # render + validate (exactly what CI runs)
+```
+
 - Each chart lives under `charts/<name>/`
-- Required files: `Chart.yaml`, `values.yaml`, `templates/stack.yaml.tmpl`, `README.md`
+- Required files: `Chart.yaml`, `values.yaml`, `templates/stack.yaml.tmpl`, `README.md`, and a `ci/*-values.yaml` fixture
 - Templates use Go `text/template` syntax with `.Values`, `.Chart`, and `.Release` context
+- CI renders every chart against its fixtures and validates the output — see CONTRIBUTING.md
 
 ## One-Time Repo Setup (for maintainers)
 

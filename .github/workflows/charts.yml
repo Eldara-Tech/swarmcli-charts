@@ -1,0 +1,65 @@
+name: Charts
+
+# Validates chart correctness end to end. Unlike a structural grep, this builds
+# the real swarmcli renderer and renders every chart against its ci/ fixtures,
+# then checks the output. Every step is data-only (no secrets, read-only token,
+# render-never-deploy), so it is safe to run automatically on fork PRs — enable
+# "Require approval for all outside collaborators" so it gates contributions
+# before human review. Mirrors `make test`, so local == CI.
+on:
+  pull_request:
+    paths:
+      - 'charts/**'
+      - 'scripts/**'
+      - 'Makefile'
+      - '.yamllint'
+      - '.github/workflows/charts.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'charts/**'
+      - 'scripts/**'
+      - 'Makefile'
+      - '.yamllint'
+      - '.github/workflows/charts.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: charts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Install yamllint
+        run: pipx install yamllint
+
+      - name: Lint charts (structure + YAML)
+        run: scripts/lint.sh
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version: stable
+          cache: false
+
+      # swarmcli is the renderer. The charts CLI is only on swarmcli's main
+      # branch today, so we build from source (see scripts/install-swarmcli.sh).
+      - name: Build swarmcli renderer
+        run: scripts/install-swarmcli.sh "$PWD/.swarmcli-bin"
+
+      - name: Render + validate all charts
+        run: SWARMCLI="$PWD/.swarmcli-bin/swarmcli" scripts/test-charts.sh
+
+      - name: Upload rendered stacks
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rendered-stacks
+          path: .rendered/
+          if-no-files-found: ignore
