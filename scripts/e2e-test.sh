@@ -10,14 +10,20 @@
 # docs/e2e-testing.md.
 #
 # Per chart, per fixture:
-#   1. install   -> swarmcli charts install <release> <chart> --wait (must converge)
-#   2. converge  -> every desired `docker stack ps` task must be Running
+#   1. install   -> swarmcli charts install <release> <chart> (deploy the stack)
+#   2. converge  -> poll until every desired task ACTUALLY reaches Running
 #   3. smoke     -> run charts/<chart>/ci/e2e-check.sh if present (optional)
 #   4. teardown  -> swarmcli charts uninstall <release> --purge-volumes (always)
 #
+# We intentionally do NOT use swarmcli's `--wait`: its convergence check counts
+# tasks whose *desired* state is Running, which Swarm satisfies the instant a
+# service is created — so `--wait` returns while tasks are still Pending/pulling.
+# Step 2 polls the *actual* task state (`docker stack ps`) instead.
+#
 # Usage: SWARMCLI=/path/to/swarmcli scripts/e2e-test.sh [chart ...]
 #   Defaults to all charts under charts/*.
-#   Env: E2E_TIMEOUT     convergence wait per release (default 3m)
+#   Env: E2E_TIMEOUT     convergence budget per release, simple duration like
+#                        3m / 90s / 1h (default 3m)
 #        E2E_SWARM_INIT  set to 1 to `docker swarm init` if no swarm is active
 #
 # Note: swarmcli auto-creates external attachable overlays (e.g. traefik-public)
@@ -29,6 +35,16 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 SWARMCLI="${SWARMCLI:-swarmcli}"
 TIMEOUT="${E2E_TIMEOUT:-3m}"
+
+# Convert a simple Go-style duration (3m / 90s / 1h / bare seconds) to seconds.
+dur_to_secs() {
+  case "$1" in
+    *h) printf '%s' "$(( ${1%h} * 3600 ))" ;;
+    *m) printf '%s' "$(( ${1%m} * 60 ))" ;;
+    *s) printf '%s' "$(( ${1%s} ))" ;;
+    *)  printf '%s' "$(( $1 ))" ;;
+  esac
+}
 
 # --- preflight: a live swarm manager is required -----------------------------
 state="$(docker info --format '{{.Swarm.LocalNodeState}}' 2>/dev/null || true)"
@@ -77,25 +93,36 @@ for chart in "${charts[@]}"; do
     # Pre-clean any leftover from a previous crashed run.
     "$SWARMCLI" charts uninstall "$release" --purge-volumes >/dev/null 2>&1 || true
 
-    if ! "$SWARMCLI" charts install "$release" "./$dir" -f "$vf" \
-        --wait --timeout "$TIMEOUT"; then
-      echo "   FAIL: install did not converge within $TIMEOUT"
-      "$SWARMCLI" charts status "$release" 2>/dev/null | sed 's/^/      /' || true
+    # Deploy (no --wait — see header). A non-zero exit means docker stack deploy
+    # itself was rejected (bad manifest, failed pre-flight, …).
+    if ! out="$("$SWARMCLI" charts install "$release" "./$dir" -f "$vf" 2>&1)"; then
+      echo "   FAIL: install was rejected"
+      printf '%s\n' "$out" | sed 's/^/      /'
       "$SWARMCLI" charts uninstall "$release" --purge-volumes >/dev/null 2>&1 || true
       fail=1
       continue
     fi
 
-    ok=1
+    ok=0
 
-    # Belt-and-braces convergence assertion beyond --wait: every task whose
-    # desired state is running must actually be Running right now.
-    states="$(docker stack ps "$release" --filter desired-state=running \
-      --format '{{.CurrentState}}' 2>/dev/null || true)"
-    if [ -z "$states" ] || printf '%s\n' "$states" | grep -vq '^Running'; then
-      echo "   FAIL: services did not all reach Running"
-      printf '%s\n' "$states" | sed 's/^/      /'
-      ok=0
+    # Poll until every task whose desired state is Running ACTUALLY reads
+    # Running (image pulls take time), or the budget runs out.
+    deadline=$(( $(date +%s) + $(dur_to_secs "$TIMEOUT") ))
+    while :; do
+      states="$(docker stack ps "$release" --filter desired-state=running \
+        --format '{{.CurrentState}}' 2>/dev/null || true)"
+      if [ -n "$states" ] && ! printf '%s\n' "$states" | grep -vq '^Running'; then
+        ok=1
+        break
+      fi
+      if [ "$(date +%s)" -ge "$deadline" ]; then
+        break
+      fi
+      sleep 3
+    done
+    if [ "$ok" -ne 1 ]; then
+      echo "   FAIL: services did not all reach Running within $TIMEOUT"
+      docker stack ps "$release" --no-trunc 2>/dev/null | sed 's/^/      /' || true
     fi
 
     # Optional per-chart smoke check.

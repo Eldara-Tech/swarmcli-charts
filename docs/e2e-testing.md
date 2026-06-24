@@ -76,13 +76,17 @@ For every chart × `ci/*-values.yaml` fixture, `scripts/e2e-test.sh`:
 
 1. **pre-cleans** — uninstalls any leftover `e2e-<chart>-<case>` release from a
    prior crashed run.
-2. **installs** — `swarmcli charts install <release> ./charts/<chart> -f <fixture>
-   --wait --timeout $E2E_TIMEOUT`, straight from your local working-tree directory
-   (no packaging or publishing). `--wait` blocks until the services converge;
-   a non-zero exit fails the case. swarmcli auto-creates any external attachable
-   overlay the chart declares in `requirements.yaml` (e.g. `traefik-public`).
-3. **asserts convergence** — every task with desired-state `running` must show
-   `Running` in `docker stack ps` (a second check beyond `--wait`).
+2. **installs** — `swarmcli charts install <release> ./charts/<chart> -f <fixture>`,
+   straight from your local working-tree directory (no packaging or publishing). A
+   non-zero exit (rejected manifest, failed pre-flight) fails the case. swarmcli
+   auto-creates any external attachable overlay the chart declares in
+   `requirements.yaml` (e.g. `traefik-public`).
+3. **waits for convergence** — polls `docker stack ps` until every task whose
+   desired state is `running` actually reads `Running`, up to `$E2E_TIMEOUT`
+   (default `3m`; raise it for slow image pulls). It deliberately does **not** use
+   swarmcli's `--wait`, which reports a service converged as soon as its tasks are
+   *scheduled* (desired-state Running) — not when they are actually running — so on
+   a cold image pull `--wait` returns while tasks are still `Pending`.
 4. **smoke-tests (optional)** — if `charts/<chart>/ci/e2e-check.sh` is
    executable, runs it; a non-zero exit fails the case.
 5. **tears down** — `swarmcli charts uninstall <release> --purge-volumes`, always,
@@ -100,25 +104,33 @@ or `swarmcli` if it is on your `PATH`):
 ```bash
 BIN=.swarmcli-bin/swarmcli
 
-# Deploy from the local chart directory and wait for convergence.
+# Deploy from the local chart directory.
 $BIN charts install demo ./charts/whoami \
-  -f charts/whoami/ci/default-values.yaml --wait --timeout 3m
+  -f charts/whoami/ci/default-values.yaml
+
+# Watch the tasks actually come up (Pending -> Preparing -> Running).
+docker stack ps demo               # task-level state (start here when stuck)
 
 # Inspect it.
 $BIN charts status demo            # release + services overview
 $BIN charts list                   # all releases
-docker stack ps demo               # task-level state (start here when stuck)
 docker service logs demo_whoami    # service logs (note the <release>_<service> name)
 
 # Change values and preview / apply an upgrade.
 $BIN charts diff upgrade demo ./charts/whoami --set replicas=3
-$BIN charts upgrade   demo ./charts/whoami --set replicas=3 --wait
+$BIN charts upgrade   demo ./charts/whoami --set replicas=3
 
 # Roll back to a previous revision, then remove it.
 $BIN charts history  demo
 $BIN charts rollback demo 1
 $BIN charts uninstall demo --purge-volumes
 ```
+
+> **On `--wait`.** `swarmcli charts install/upgrade` accept `--wait`, but it
+> reports convergence as soon as the tasks are *scheduled* (their desired state is
+> Running), which on a cold image pull happens while they are still `Pending`. To
+> confirm a release is really up, watch `docker stack ps <release>` until every
+> task reads `Running` — which is what `make e2e` does for you.
 
 > Installing from a published repo instead of a local path uses a
 > `<repo>/<chart>` reference, e.g.
