@@ -29,8 +29,19 @@ command -v docker >/dev/null 2>&1 \
 
 # First value of a top-level Chart.yaml scalar key, surrounding quotes stripped.
 field() {
-  sed -n "s/^$1:[[:space:]]*//p" "$2" | head -1 | sed 's/^"//; s/"$//'
+  sed -n "s/^$1:[[:space:]]*//p" "$2" | head -1 | sed 's/^"//; s/"$//' | tr -d '\r'
 }
+
+# sha256 of a file's contents — GNU coreutils, BSD/macOS, or openssl, whichever exists.
+sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
+  else openssl dgst -sha256 "$1" | awk '{print $NF}'
+  fi
+}
+
+# Escape a value for safe interpolation inside a double-quoted YAML scalar.
+yaml_dq() { local v="$1"; v="${v//\\/\\\\}"; printf '%s' "${v//\"/\\\"}"; }
 
 charts=("$@")
 if [ "${#charts[@]}" -eq 0 ]; then
@@ -59,14 +70,14 @@ for chart in "${charts[@]}"; do
   tgz="${chart}-v${version}.tgz"
 
   tar -czf "$DIR/$tgz" -C charts "$chart"
-  digest="$(sha256sum "$DIR/$tgz" | awk '{print $1}')"
+  digest="$(sha256 "$DIR/$tgz")"
 
   {
     echo "  ${name}:"
     echo "    - name: ${name}"
-    echo "      version: \"${version}\""
-    echo "      appVersion: \"${appVersion}\""
-    echo "      description: \"${description}\""
+    echo "      version: \"$(yaml_dq "$version")\""
+    echo "      appVersion: \"$(yaml_dq "$appVersion")\""
+    echo "      description: \"$(yaml_dq "$description")\""
     echo "      urls:"
     echo "        - ${tgz}"
     echo "      digest: sha256:${digest}"
@@ -74,8 +85,13 @@ for chart in "${charts[@]}"; do
   echo "packaged $chart -> $tgz"
 done
 
-# Clean any leftover server from a previous run.
-docker rm -f swarmcli-localrepo >/dev/null 2>&1 || true
+# Always remove the server container on exit. Set the trap BEFORE `docker run` so a
+# crash in the start-up window cannot orphan it; the leading cleanup clears any
+# leftover from a previous run.
+cleanup() { docker rm -f swarmcli-localrepo >/dev/null 2>&1 || true; }
+trap cleanup EXIT
+trap 'exit 130' INT TERM HUP
+cleanup
 
 # Serve the repo over nginx. We copy the files INTO the container with `docker cp`
 # rather than bind-mounting the host directory: a bind mount surfaces as an empty
@@ -84,23 +100,28 @@ docker rm -f swarmcli-localrepo >/dev/null 2>&1 || true
 # and "404 on /index.yaml". `docker cp` streams over the Docker API, so it serves
 # the same wherever the daemon runs.
 docker run -d --name swarmcli-localrepo -p "${PORT}:80" nginx:alpine >/dev/null
-cleanup() { docker rm -f swarmcli-localrepo >/dev/null 2>&1 || true; }
-trap cleanup EXIT
-trap 'exit 130' INT TERM
 docker cp "$DIR/." swarmcli-localrepo:/usr/share/nginx/html/
 
-# Confirm nginx actually serves the index before handing off, so a broken docroot
-# fails loudly here instead of silently at `repo add`.
+# Confirm the repo is reachable at the host URL swarmcli will use, so a broken
+# docroot or an unpublished port fails loudly here instead of silently at
+# `repo add`. Probe the host endpoint (curl/wget); fall back to an in-container check.
+probe() {
+  local url="http://localhost:${PORT}/index.yaml"
+  if command -v curl >/dev/null 2>&1; then curl -fsS -o /dev/null "$url"
+  elif command -v wget >/dev/null 2>&1; then wget -q -O /dev/null "$url"
+  else docker exec swarmcli-localrepo wget -q -O /dev/null http://localhost/index.yaml
+  fi
+}
 ready=
 for _ in 1 2 3 4 5; do
-  if docker exec swarmcli-localrepo wget -q -O /dev/null http://localhost/index.yaml 2>/dev/null; then
+  if probe 2>/dev/null; then
     ready=1
     break
   fi
   sleep 1
 done
 if [ -z "$ready" ]; then
-  echo "ERROR: nginx is not serving index.yaml — the local repo would not load" >&2
+  echo "ERROR: http://localhost:${PORT}/index.yaml is not reachable — the local repo would not load" >&2
   exit 1
 fi
 
