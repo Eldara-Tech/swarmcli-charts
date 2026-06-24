@@ -21,6 +21,14 @@ tears the release back down. It needs a running Swarm and pulls real images, so
 it is **local-only and deliberately not run by CI** — keeping CI safe to run on
 fork PRs.
 
+> **It tests your working tree, not a published chart.** `make e2e` installs the
+> chart straight from its local directory (`./charts/<name>`), so you can validate
+> a chart you are *still editing* — **before you commit, open a PR, or release
+> anything**. Nothing has to be packaged, tagged, or pushed first. (Mechanically,
+> swarmcli resolves any chart reference that exists as a local path directly; only
+> a `repo/chart` reference falls back to a published `index.yaml`. See
+> [Manual lifecycle walkthrough](#manual-lifecycle-walkthrough).)
+
 ## Prerequisites
 
 - Everything `make test` needs (`make install-tools` builds the swarmcli
@@ -69,7 +77,8 @@ For every chart × `ci/*-values.yaml` fixture, `scripts/e2e-test.sh`:
 1. **pre-cleans** — uninstalls any leftover `e2e-<chart>-<case>` release from a
    prior crashed run.
 2. **installs** — `swarmcli charts install <release> ./charts/<chart> -f <fixture>
-   --wait --timeout $E2E_TIMEOUT`. `--wait` blocks until the services converge;
+   --wait --timeout $E2E_TIMEOUT`, straight from your local working-tree directory
+   (no packaging or publishing). `--wait` blocks until the services converge;
    a non-zero exit fails the case. swarmcli auto-creates any external attachable
    overlay the chart declares in `requirements.yaml` (e.g. `traefik-public`).
 3. **asserts convergence** — every task with desired-state `running` must show

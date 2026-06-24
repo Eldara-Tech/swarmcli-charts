@@ -101,8 +101,9 @@ artifact named `rendered-stacks` so reviewers can read the produced stack.
 
 `make test` proves a chart *renders*; `make e2e` proves it *runs*. Against a
 local single-node swarm (`docker swarm init`), `make e2e` deploys each chart ×
-fixture, waits for the services to converge, runs an optional per-chart smoke
-check, and tears the release down:
+fixture **straight from your working tree** — so you can test a chart *before*
+you commit, open a PR, or publish anything — waits for the services to converge,
+runs an optional per-chart smoke check, and tears the release down:
 
 ```bash
 make e2e                 # all charts
