@@ -77,6 +77,33 @@ done
 # Clean any leftover server from a previous run.
 docker rm -f swarmcli-localrepo >/dev/null 2>&1 || true
 
+# Serve the repo over nginx. We copy the files INTO the container with `docker cp`
+# rather than bind-mounting the host directory: a bind mount surfaces as an empty
+# docroot whenever the Docker daemon does not share this host's filesystem — Docker
+# Desktop, WSL2, rootless, or a remote DOCKER_HOST — which shows up as "403 on /"
+# and "404 on /index.yaml". `docker cp` streams over the Docker API, so it serves
+# the same wherever the daemon runs.
+docker run -d --name swarmcli-localrepo -p "${PORT}:80" nginx:alpine >/dev/null
+cleanup() { docker rm -f swarmcli-localrepo >/dev/null 2>&1 || true; }
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+docker cp "$DIR/." swarmcli-localrepo:/usr/share/nginx/html/
+
+# Confirm nginx actually serves the index before handing off, so a broken docroot
+# fails loudly here instead of silently at `repo add`.
+ready=
+for _ in 1 2 3 4 5; do
+  if docker exec swarmcli-localrepo wget -q -O /dev/null http://localhost/index.yaml 2>/dev/null; then
+    ready=1
+    break
+  fi
+  sleep 1
+done
+if [ -z "$ready" ]; then
+  echo "ERROR: nginx is not serving index.yaml — the local repo would not load" >&2
+  exit 1
+fi
+
 cat <<EOF
 
 Local chart repo ready at http://localhost:${PORT}
@@ -95,5 +122,6 @@ Cleanup when done:
 
 EOF
 
-exec docker run --rm --name swarmcli-localrepo -p "${PORT}:80" \
-  -v "$DIR:/usr/share/nginx/html:ro" nginx:alpine
+# Block until interrupted, following nginx's access log (the trap removes the
+# container on exit).
+docker logs -f swarmcli-localrepo
