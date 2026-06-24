@@ -69,6 +69,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide. In short:
 ```bash
 make new-chart NAME=mychart   # scaffold a passing skeleton
 make test CHART=mychart       # render + validate (exactly what CI runs)
+make e2e  CHART=mychart       # deploy to a local swarm + verify (see docs/e2e-testing.md)
 ```
 
 - Each chart lives under `charts/<name>/`

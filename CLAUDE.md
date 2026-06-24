@@ -31,10 +31,12 @@ charts/<name>/
   templates/stack.yaml.tmpl  # Go text/template → Swarm stack
   requirements.yaml          # optional — external networks/secrets/configs; swarmcli pre-flights it
   ci/<case>-values.yaml      # render fixtures (≥1 required; CI renders each)
+  ci/e2e-check.sh            # optional executable smoke check for `make e2e`
   README.md
-Makefile                     # make new-chart / lint / test / render / package
+Makefile                     # make new-chart / lint / test / render / e2e / package
 scripts/install-swarmcli.sh  # builds the swarmcli renderer from source
 scripts/test-charts.sh       # render + compose-validate + no-value + security (== CI)
+scripts/e2e-test.sh          # deploy to a live swarm + converge + smoke (local-only; NOT in CI)
 scripts/security-scan.sh     # flags risky primitives unless Chart.yaml acknowledges them
 scripts/new-chart.sh         # scaffolds a passing chart skeleton
 scripts/lint.sh              # chart structure + yamllint
@@ -96,6 +98,13 @@ placeholder — the tag wins. Published chart version is plain SemVer; the leadi
 - `ci.yml` — runs on `.github/workflows/**` and `scripts/**` changes; actionlint
   + shellcheck (`--severity=error`).
 - Doc-only changes outside those paths trigger no CI.
+
+**E2E is local-only.** `make e2e` / `scripts/e2e-test.sh` deploys each chart ×
+fixture to a real Swarm (`swarmcli charts install --wait`), asserts convergence,
+runs an optional `charts/<name>/ci/e2e-check.sh` smoke check, and tears the
+release down. It needs a live swarm and pulls real images, so it is deliberately
+**not** wired into CI — CI stays data-only and fork-safe. Contributor guide:
+`docs/e2e-testing.md`.
 
 **Renderer source.** swarmcli is the renderer; its `charts` CLI is only on
 swarmcli `main` today and its module path is `swarmcli` (so `go install` of the
