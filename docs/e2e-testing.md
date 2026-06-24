@@ -161,6 +161,43 @@ docker run --rm --network traefik-public curlimages/curl:latest \
 
 Charts without a hook (e.g. `swarm-cronjob`) are verified by convergence alone.
 
+## Trying a chart through the repo flow (local repo)
+
+`make e2e` and `install ./charts/<name>` both load a chart from its **local
+directory**. They do not exercise the path a real user takes — `repo add` →
+`search` → `install <repo>/<chart>` — which also depends on the chart **packaging
+and its index entry** resolving correctly. To dogfood that consumer flow against a
+chart you have **not published yet**, stand up a throwaway local repo:
+
+```bash
+make local-repo                 # all charts
+make local-repo CHART=whoami    # just one
+```
+
+That packages the working-tree chart(s), writes an `index.yaml` with relative
+tarball URLs, and serves `./.localrepo/` over HTTP (a throwaway `nginx` container)
+on `http://localhost:8879`. It **blocks** — leave it running and, in another
+terminal:
+
+```bash
+swarmcli charts repo add localrepo http://localhost:8879
+swarmcli charts repo update
+swarmcli charts search                                   # lists localrepo/<chart>
+swarmcli charts install demo localrepo/whoami --wait
+docker stack ps demo                                     # confirm it is Running
+
+# cleanup
+swarmcli charts uninstall demo --purge-volumes
+swarmcli charts repo remove localrepo
+# then Ctrl-C the `make local-repo` terminal (the container is auto-removed)
+```
+
+> **Why HTTP and not a path?** swarmcli requires repository URLs to be **http(s)**
+> — `file://` and bare filesystem paths are rejected by design — so the charts are
+> served over `http://localhost`. Override the port with `LOCALREPO_PORT`. This is
+> only for trying the repo UX locally; real distribution goes through a tagged
+> release (see the [README](../README.md#releasing-a-new-chart-version)).
+
 ## Troubleshooting
 
 - **`not a Docker Swarm manager` / exit 2** — run `docker swarm init` (or

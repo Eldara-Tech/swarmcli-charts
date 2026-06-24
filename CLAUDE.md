@@ -37,6 +37,7 @@ Makefile                     # make new-chart / lint / test / render / e2e / pac
 scripts/install-swarmcli.sh  # builds the swarmcli renderer from source
 scripts/test-charts.sh       # render + compose-validate + no-value + security (== CI)
 scripts/e2e-test.sh          # deploy to a live swarm + converge + smoke (local-only; NOT in CI)
+scripts/local-repo.sh        # serve working-tree charts as a local HTTP repo for `repo add` (local-only)
 scripts/security-scan.sh     # flags risky primitives unless Chart.yaml acknowledges them
 scripts/new-chart.sh         # scaffolds a passing chart skeleton
 scripts/lint.sh              # chart structure + yamllint
