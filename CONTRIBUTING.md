@@ -97,6 +97,23 @@ chart `README.md` too.
 Rendered output lands in `.rendered/` for inspection; CI uploads it as an
 artifact named `rendered-stacks` so reviewers can read the produced stack.
 
+## Testing end-to-end (real deploy)
+
+`make test` proves a chart *renders*; `make e2e` proves it *runs*. Against a
+local single-node swarm (`docker swarm init`), `make e2e` deploys each chart ×
+fixture, waits for the services to converge, runs an optional per-chart smoke
+check, and tears the release down:
+
+```bash
+make e2e                 # all charts
+make e2e CHART=mychart   # just yours
+```
+
+This is **local-only** (it needs a live Swarm and pulls real images) and is
+deliberately not run by CI, which stays fork-safe. See
+[docs/e2e-testing.md](docs/e2e-testing.md) for prerequisites, a manual lifecycle
+walkthrough, writing a `ci/e2e-check.sh` smoke check, and troubleshooting.
+
 ## Security acknowledgments
 
 Charts that need a dangerous primitive (Docker socket, host bind-mount,

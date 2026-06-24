@@ -40,6 +40,10 @@ render: $(SWARMCLI_BIN)
 test: $(SWARMCLI_BIN)
 	@SWARMCLI="$(SWARMCLI_BIN)" RELEASE="$(RELEASE)" scripts/test-charts.sh $(CHART)
 
+## e2e: deploy charts to a live local swarm, assert convergence, tear down (CHART= limits to one)
+e2e: $(SWARMCLI_BIN)
+	@SWARMCLI="$(SWARMCLI_BIN)" RELEASE="$(RELEASE)" scripts/e2e-test.sh $(CHART)
+
 ## new-chart: scaffold a new chart (NAME=foo)
 new-chart:
 	@test -n "$(NAME)" || { echo "usage: make new-chart NAME=<name>"; exit 2; }
@@ -52,4 +56,4 @@ package:
 		tar -czf $(CHART)-v$$ver.tgz -C charts $(CHART); \
 		echo "wrote $(CHART)-v$$ver.tgz"
 
-.PHONY: help install-tools lint render test new-chart package
+.PHONY: help install-tools lint render test e2e new-chart package
