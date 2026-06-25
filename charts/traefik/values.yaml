@@ -1,0 +1,90 @@
+image:
+  repository: traefik
+  tag: "v3.7.1"
+
+# Docker logging driver config (used via x-log-options anchor)
+logging:
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# Host-mode port bindings
+ports:
+  - target: 80
+    published: 80
+    protocol: tcp
+    mode: host
+  - target: 443
+    published: 443
+    protocol: tcp
+    mode: host
+
+# ports:
+#   - 80:80
+#   - 443:443
+
+# Swarm configs mounted into the container
+configs:
+  - source: traefik-middlewares
+    target: /config/middlewares.yaml
+    external: false
+
+deploy:
+  placement:
+    constraints:
+      - "node.labels.traefik-public.traefik-public-certificates == true"
+
+traefik:
+  # Swarm overlay network name
+  network: traefik-public
+  constraintLabel: traefik-public
+
+  # Certificate resolver name (referenced throughout)
+  certResolver: le
+
+  # Trusted upstream IP ranges (proxy / load balancer CIDRs)
+  trustedIPs:
+    - "127.0.0.1/32,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+
+  # ACME / Let's Encrypt
+  acme:
+    email: ""
+
+  # HSTS settings
+  hsts:
+    stsSeconds: 31536000
+    includeSubdomains: true
+    preload: true
+    forceSTSHeader: false
+
+  # Dashboard
+  dashboard:
+    host: ""
+    enabled: true
+    insecure: true
+    # bcrypt-hashed credentials — escape $ as $$ in compose labels
+    # export PASSWORD=changethis
+    # echo $(openssl passwd -apr1 $PASSWORD) | sed 's/\$/\$\$/g'
+    basicAuthUsers: "admin:$$apr1$$otIz5Cnl$$/y77Sc88rr1SfA6k0Ospw/"
+    middlewares:
+      - admin-auth
+      - hsts-header
+
+  # Internal API port
+  apiPort: 8080
+
+  # Request buffering (0 = disabled)
+  bufferingMaxRequestBodyBytes: 2000000
+
+  # Logging
+  log:
+    enabled: true
+    access: true
+    level: INFO
+
+# Extra deploy labels appended verbatim (map of key: value)
+extraLabels: {}
+
+# Extra CLI flags appended to the command block
+extraCommands: []

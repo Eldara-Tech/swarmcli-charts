@@ -1,0 +1,140 @@
+version: "3.9"
+
+
+services:
+
+  traefik:
+    image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
+
+{{- if .Values.configs }}
+    configs:
+{{- range .Values.configs }}
+      - source: {{ .source }}
+        target: {{ .target }}
+{{- end }}
+{{- end }}
+
+    ports:
+{{- range .Values.ports }}
+      - target: {{ .target }}
+        published: {{ .published }}
+        protocol: {{ .protocol | default "tcp" }}
+        mode: {{ .mode | default "host" }}
+{{- end }}
+
+    deploy:
+      placement:
+        constraints:
+{{- range .Values.deploy.placement.constraints }}
+          - {{ . }}
+{{- end }}
+
+      labels:
+        - "traefik.enable=true"
+        - "traefik.swarm.network={{ .Values.traefik.network }}"
+        - "traefik.constraint-label={{ .Values.traefik.constraintLabel }}"
+
+        # AUTH middleware
+        - "traefik.http.middlewares.admin-auth.basicauth.users={{ .Values.traefik.dashboard.basicAuthUsers }}"
+
+        # HTTPS redirect middleware
+        - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https-redirect.redirectscheme.permanent=true"
+
+        # HSTS middleware
+        - "traefik.http.middlewares.hsts-header.headers.stsSeconds={{ .Values.traefik.hsts.stsSeconds | default 31536000 }}"
+        - "traefik.http.middlewares.hsts-header.headers.stsIncludeSubdomains={{ .Values.traefik.hsts.includeSubdomains | default true }}"
+        - "traefik.http.middlewares.hsts-header.headers.stsPreload={{ .Values.traefik.hsts.preload | default true }}"
+        - "traefik.http.middlewares.hsts-header.headers.forceSTSHeader={{ .Values.traefik.hsts.forceSTSHeader | default false }}"
+
+        # Dashboard HTTP → HTTPS redirect
+        - "traefik.http.routers.traefik-public-http.rule=Host(`{{ .Values.traefik.dashboard.host }}`)"
+        - "traefik.http.routers.traefik-public-http.entrypoints=http"
+        - "traefik.http.routers.traefik-public-http.middlewares=https-redirect"
+
+        # Dashboard HTTPS
+        - "traefik.http.routers.traefik-public-https.rule=Host(`{{ .Values.traefik.dashboard.host }}`)"
+        - "traefik.http.routers.traefik-public-https.entrypoints=https"
+        - "traefik.http.routers.traefik-public-https.tls=true"
+        - "traefik.http.routers.traefik-public-https.tls.certresolver={{ .Values.traefik.certResolver }}"
+        - "traefik.http.routers.traefik-public-https.service=api@internal"
+        - "traefik.http.routers.traefik-public-https.middlewares={{ join "," .Values.traefik.dashboard.middlewares }}"
+
+        # Service port
+        - "traefik.http.services.traefik-public.loadbalancer.server.port={{ .Values.traefik.apiPort | default 8080 }}"
+
+{{- if .Values.traefik.bufferingMaxRequestBodyBytes }}
+        # Request buffering
+        - "traefik.http.middlewares.limit.buffering.maxRequestBodyBytes={{ .Values.traefik.bufferingMaxRequestBodyBytes }}"
+{{- end }}
+
+{{- if .Values.extraLabels }}
+{{- range $key, $val := .Values.extraLabels }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+{{- end }}
+
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-public-certificates:/certificates
+
+    command:
+      # Provider
+      - --providers.swarm=true
+      - --providers.swarm.constraints=Label(`traefik.constraint-label`, `{{ .Values.traefik.constraintLabel }}`)
+      - --providers.swarm.exposedByDefault=false
+      - --providers.file.directory=/config
+      - --providers.file.watch=false
+
+      # Entrypoints
+      - --entrypoints.http.address=:80
+      - --entrypoints.https.address=:443
+      - --entrypoints.https.http.middlewares=hsts-header@file
+
+      # Trusted IPs
+{{- range .Values.traefik.trustedIPs }}
+      - --entrypoints.http.forwardedHeaders.trustedIPs={{ join "," . }}
+      - --entrypoints.https.forwardedHeaders.trustedIPs={{ join "," . }}
+      - --entrypoints.http.proxyProtocol.trustedIPs={{ join "," . }}
+      - --entrypoints.https.proxyProtocol.trustedIPs={{ join "," . }}
+{{- end }}
+
+      # ACME / Let's Encrypt
+      - --certificatesresolvers.{{ .Values.traefik.certResolver }}.acme.email={{ .Values.traefik.acme.email }}
+      - --certificatesresolvers.{{ .Values.traefik.certResolver }}.acme.storage=/certificates/acme.json
+      - --certificatesresolvers.{{ .Values.traefik.certResolver }}.acme.tlschallenge=true
+
+      # Logging
+      - --accesslog={{ .Values.traefik.log.access | default true }}
+      - --log={{ .Values.traefik.log.enabled | default true }}
+      - --log.level={{ .Values.traefik.log.level | default "INFO" }}
+
+      # API / Dashboard
+      - --api=true
+      - --api.dashboard={{ .Values.traefik.dashboard.enabled | default true }}
+      - --api.insecure={{ .Values.traefik.dashboard.insecure | default true }}
+
+{{- if .Values.extraCommands }}
+{{- range .Values.extraCommands }}
+      - {{ . }}
+{{- end }}
+{{- end }}
+
+    networks:
+      - {{ .Values.traefik.network }}
+
+{{- if .Values.configs }}
+
+configs:
+{{- range .Values.configs }}
+  {{ .source }}:
+    external: {{ .external | default false }}
+{{- end }}
+{{- end }}
+
+volumes:
+  traefik-public-certificates:
+
+networks:
+  {{ .Values.traefik.network }}:
+    external: true

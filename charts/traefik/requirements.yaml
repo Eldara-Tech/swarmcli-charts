@@ -1,0 +1,17 @@
+# External resources this chart needs (optional but authoritative when present:
+# every external network/secret/config the rendered stack references must be
+# listed here). Delete this file if the chart uses no external resources.
+#
+# networks:
+#   - name: traefik-public   # the external network's real name (required)
+#     driver: overlay        # optional, default "overlay"
+#     attachable: true       # optional, default true
+#     autoCreate: true       # optional, default true (false => validate-only)
+#     description: "Shared ingress overlay"
+# secrets:                   # validated, never auto-created
+#   - name: db-password
+#     description: "Postgres password"
+# configs: []
+networks: []
+secrets: []
+configs: []

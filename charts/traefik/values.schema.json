@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": { "type": "string" },
+        "tag": { "type": "string" }
+      },
+      "required": ["repository"]
+    },
+    "replicas": { "type": "integer", "minimum": 1 },
+    "labels": { "type": "object" }
+  }
+}

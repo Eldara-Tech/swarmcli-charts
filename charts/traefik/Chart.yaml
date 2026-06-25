@@ -1,0 +1,12 @@
+name: traefik
+description: TODO one-line description of traefik
+version: 0.1.0
+appVersion: "latest"
+maintainers:
+  - name: Eldara
+    url: https://github.com/Eldara-Tech
+keywords:
+  - traefik
+home: https://github.com/Eldara-Tech/swarmcli-charts
+sources:
+  - https://github.com/Eldara-Tech/swarmcli-charts

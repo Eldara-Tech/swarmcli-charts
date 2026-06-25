@@ -1,0 +1,2 @@
+# Default render case for CI. Add more ci/<case>-values.yaml files to exercise
+# meaningful value permutations (e.g. ci/scaled-values.yaml).
