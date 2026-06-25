@@ -8,3 +8,6 @@
 # Local toolchain + render output (scripts/install-swarmcli.sh, scripts/test-charts.sh)
 /.swarmcli-bin/
 /.rendered/
+
+# Local chart repo packaged + served by scripts/local-repo.sh
+/.localrepo/

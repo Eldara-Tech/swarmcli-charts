@@ -115,6 +115,10 @@ deliberately not run by CI, which stays fork-safe. See
 [docs/e2e-testing.md](docs/e2e-testing.md) for prerequisites, a manual lifecycle
 walkthrough, writing a `ci/e2e-check.sh` smoke check, and troubleshooting.
 
+To exercise the consumer flow (`repo add` → `search` → `install repo/chart`)
+against your unpublished chart, `make local-repo` serves the working tree as a
+local HTTP repo — see [docs/e2e-testing.md](docs/e2e-testing.md#trying-a-chart-through-the-repo-flow-local-repo).
+
 ## Security acknowledgments
 
 Charts that need a dangerous primitive (Docker socket, host bind-mount,

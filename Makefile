@@ -44,6 +44,10 @@ test: $(SWARMCLI_BIN)
 e2e: $(SWARMCLI_BIN)
 	@SWARMCLI="$(SWARMCLI_BIN)" RELEASE="$(RELEASE)" scripts/e2e-test.sh $(CHART)
 
+## local-repo: serve working-tree charts as a local HTTP repo for `repo add` (CHART= limits to one)
+local-repo:
+	@scripts/local-repo.sh $(CHART)
+
 ## new-chart: scaffold a new chart (NAME=foo)
 new-chart:
 	@test -n "$(NAME)" || { echo "usage: make new-chart NAME=<name>"; exit 2; }
@@ -56,4 +60,4 @@ package:
 		tar -czf $(CHART)-v$$ver.tgz -C charts $(CHART); \
 		echo "wrote $(CHART)-v$$ver.tgz"
 
-.PHONY: help install-tools lint render test e2e new-chart package
+.PHONY: help install-tools lint render test e2e local-repo new-chart package

@@ -1,0 +1,84 @@
+name: Integration
+
+# Exercises the LOCAL chart-repo consumer flow end to end: builds the swarmcli
+# binary, stands up the throwaway HTTP repo (scripts/local-repo.sh — a nginx
+# container), then drives `repo add` -> `update` -> `search` against it and
+# asserts every chart is listed (scripts/local-repo-test.sh). This guards the
+# packaging + index generation + serving that the data-only Charts workflow does
+# not, and that `make e2e` (local chart-directory install) never touches.
+#
+# It runs a throwaway nginx container but NO Swarm and deploys NO chart, so it
+# stays fork-safe (public image, read-only token, no secrets). A Linux runner
+# shares the daemon filesystem and forwards ports instantly, so it cannot
+# reproduce the Docker-Desktop/WSL2/rootless serving quirks the script guards
+# against — it verifies the flow's logic; the macOS path is confirmed by a
+# maintainer running `make local-repo`.
+#
+# Like the other workflows it triggers on every PR, but a change-detection job
+# skips the heavy run when no chart/script files changed (a skipped required
+# check counts as passing, so this can be a required check without hanging
+# unrelated PRs).
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.detect.outputs.run }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+      - id: detect
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          # Pushes always run; PRs run only when a chart source or the packaging
+          # machinery changed, so the required check is enforced iff relevant
+          # files changed (and reports skipped = pass otherwise).
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch --no-tags origin "$BASE_REF" >/dev/null 2>&1 || true
+          changed=$(git diff --name-only "origin/$BASE_REF...HEAD" 2>/dev/null || git diff --name-only HEAD)
+          if printf '%s\n' "$changed" | grep -qE '^(charts/|scripts/|Makefile|\.github/workflows/integration\.yml)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No chart/script changes; skipping integration test."
+          fi
+
+  local-repo:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version: stable
+          cache: false
+
+      # swarmcli is the chart client; its charts CLI is only on main today, so
+      # build it from source (same as the Charts workflow).
+      - name: Build swarmcli
+        run: scripts/install-swarmcli.sh "$PWD/.swarmcli-bin"
+
+      - name: Local-repo consumer flow (repo add -> update -> search)
+        run: SWARMCLI="$PWD/.swarmcli-bin/swarmcli" scripts/local-repo-test.sh

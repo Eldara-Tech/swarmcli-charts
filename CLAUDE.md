@@ -37,11 +37,13 @@ Makefile                     # make new-chart / lint / test / render / e2e / pac
 scripts/install-swarmcli.sh  # builds the swarmcli renderer from source
 scripts/test-charts.sh       # render + compose-validate + no-value + security (== CI)
 scripts/e2e-test.sh          # deploy to a live swarm + converge + smoke (local-only; NOT in CI)
+scripts/local-repo.sh        # serve working-tree charts as a local HTTP repo for `repo add` (local-only)
+scripts/local-repo-test.sh   # integration test: repo add/update/search against local-repo.sh (CI, no swarm)
 scripts/security-scan.sh     # flags risky primitives unless Chart.yaml acknowledges them
 scripts/new-chart.sh         # scaffolds a passing chart skeleton
 scripts/lint.sh              # chart structure + yamllint
 scripts/generate-index.sh    # rebuilds the published index.yaml (release path)
-.github/workflows/           # charts.yml (validate), ci.yml (machinery), release.yml
+.github/workflows/           # charts.yml (validate), ci.yml (machinery), integration.yml (repo-flow), release.yml
 ```
 
 Templates use Go `text/template` with sprig (minus `env`/`expandenv`/
