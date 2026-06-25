@@ -104,6 +104,9 @@ services:
 {{- if .Values.traefik.hsts.enabled }}
       - --entrypoints.https.http.middlewares=hsts-header@swarm
 {{- end }}
+{{- range .Values.traefik.extraEntrypoints }}
+      - --entrypoints.{{ .name }}.address={{ .address }}
+{{- end }}
 
       # Trusted IPs
 {{- range .Values.traefik.trustedIPs }}

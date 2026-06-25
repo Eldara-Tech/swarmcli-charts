@@ -45,6 +45,14 @@ traefik:
   network: traefik-public
   constraintLabel: traefik-public
 
+  # Extra entrypoints beyond the built-in http (:80) and https (:443). Each entry
+  # adds `--entrypoints.<name>.address=<address>`; pair it with a matching `ports`
+  # entry above to publish the port. The routed service supplies its own router
+  # labels (e.g. a TCP router for GitLab SSH: entrypoints=gitlab-ssh, HostSNI(`*`)).
+  extraEntrypoints: []
+  #  - name: gitlab-ssh
+  #    address: ":2222"
+
   # Let's Encrypt cert resolver name (referenced throughout).
   certResolver: le
 

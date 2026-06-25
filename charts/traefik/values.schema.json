@@ -40,6 +40,17 @@
       "properties": {
         "network": { "type": "string" },
         "constraintLabel": { "type": "string" },
+        "extraEntrypoints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "address": { "type": "string" }
+            },
+            "required": ["name", "address"]
+          }
+        },
         "certResolver": { "type": "string" },
         "trustedIPs": { "type": "array", "items": { "type": "string" } },
         "acme": {

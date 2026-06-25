@@ -42,6 +42,7 @@ echo $(openssl passwd -apr1 $PASSWORD) | sed 's/\$/\$\$/g'
 | `deploy.placement.constraints` | cert-volume label | Pins Traefik to the node holding the ACME cert volume (see Requirements) |
 | `traefik.network` | `traefik-public` | External overlay network Traefik publishes routes on |
 | `traefik.constraintLabel` | `traefik-public` | Swarm provider constraint label |
+| `traefik.extraEntrypoints` | `[]` | Extra entrypoints (`{name, address}`) beyond http/https; pair each with a `ports` entry |
 | `traefik.certResolver` | `le` | Let's Encrypt (ACME) cert resolver name |
 | `traefik.trustedIPs` | RFC1918 + loopback | Trusted proxy / LB CIDRs for forwarded-headers and proxy-protocol |
 | `traefik.acme.email` | `""` | **Required** — Let's Encrypt account email |
@@ -61,6 +62,40 @@ echo $(openssl passwd -apr1 $PASSWORD) | sed 's/\$/\$\$/g'
 | `traefik.log.level` | `INFO` | Log level |
 | `extraLabels` | `{}` | Extra deploy labels appended verbatim |
 | `extraCommands` | `[]` | Extra Traefik CLI flags appended to the command block |
+
+## Custom entrypoints
+
+To route a non-HTTP service (e.g. GitLab SSH on a custom port), add an entrypoint
+and publish its port — both are needed:
+
+```yaml
+ports:
+  - target: 80
+    published: 80
+    protocol: tcp
+    mode: host
+  - target: 443
+    published: 443
+    protocol: tcp
+    mode: host
+  - target: 2222          # publish the custom port
+    published: 2222
+    protocol: tcp
+    mode: host
+traefik:
+  extraEntrypoints:
+    - name: gitlab-ssh    # --entrypoints.gitlab-ssh.address=:2222
+      address: ":2222"
+```
+
+The routed service itself supplies the matching router. For raw SSH that's a TCP
+router on its own deploy labels, e.g.:
+
+```
+traefik.tcp.routers.gitlab-ssh.entrypoints=gitlab-ssh
+traefik.tcp.routers.gitlab-ssh.rule=HostSNI(`*`)
+traefik.tcp.services.gitlab-ssh.loadbalancer.server.port=22
+```
 
 ## Requirements
 
