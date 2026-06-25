@@ -102,26 +102,22 @@ cleanup
 docker run -d --name swarmcli-localrepo -p "${PORT}:80" nginx:alpine >/dev/null
 docker cp "$DIR/." swarmcli-localrepo:/usr/share/nginx/html/
 
-# Confirm the repo is reachable at the host URL swarmcli will use, so a broken
-# docroot or an unpublished port fails loudly here instead of silently at
-# `repo add`. Probe the host endpoint (curl/wget); fall back to an in-container check.
-probe() {
-  local url="http://localhost:${PORT}/index.yaml"
-  if command -v curl >/dev/null 2>&1; then curl -fsS -o /dev/null "$url"
-  elif command -v wget >/dev/null 2>&1; then wget -q -O /dev/null "$url"
-  else docker exec swarmcli-localrepo wget -q -O /dev/null http://localhost/index.yaml
-  fi
-}
-ready=
+# Hard gate: confirm nginx actually serves index.yaml from its docroot before
+# handing off — this is what catches a broken docroot (the empty bind-mount bug).
+# Probed INSIDE the container so host-networking quirks (an http_proxy that should
+# bypass localhost, localhost resolving to IPv6 while Docker publishes IPv4, or a
+# slow Docker Desktop port-forward) cannot turn a working server into a false
+# failure — swarmcli connects to the published port directly.
+served=
 for _ in 1 2 3 4 5; do
-  if probe 2>/dev/null; then
-    ready=1
+  if docker exec swarmcli-localrepo wget -q -O /dev/null http://localhost/index.yaml 2>/dev/null; then
+    served=1
     break
   fi
   sleep 1
 done
-if [ -z "$ready" ]; then
-  echo "ERROR: http://localhost:${PORT}/index.yaml is not reachable — the local repo would not load" >&2
+if [ -z "$served" ]; then
+  echo "ERROR: nginx is not serving index.yaml from its docroot — the local repo would not load" >&2
   exit 1
 fi
 
