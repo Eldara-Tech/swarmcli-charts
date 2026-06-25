@@ -1,0 +1,10 @@
+# External resources this chart needs. Authoritative: every external
+# network/secret/config the rendered stack references must be listed here.
+networks:
+  - name: traefik-public
+    driver: overlay
+    attachable: true
+    autoCreate: true
+    description: "Shared ingress overlay Traefik publishes routes on; other stacks attach to it"
+secrets: []
+configs: []

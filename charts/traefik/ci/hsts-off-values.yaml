@@ -1,0 +1,10 @@
+# Exercises the hsts.enabled=false branch: no hsts-header middleware is defined
+# and the https entrypoint carries no default HSTS middleware.
+traefik:
+  hsts:
+    enabled: false
+  acme:
+    email: admin@example.com
+  dashboard:
+    host: traefik.example.com
+    basicAuthUsers: "admin:$$apr1$$otIz5Cnl$$/y77Sc88rr1SfA6k0Ospw/"

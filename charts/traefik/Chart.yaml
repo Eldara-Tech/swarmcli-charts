@@ -1,0 +1,21 @@
+name: traefik
+description: Traefik v3 edge proxy / ingress for Docker Swarm with Let's Encrypt TLS and a secured dashboard
+version: 0.1.0
+appVersion: "v3.7.1"
+annotations:
+  # Traefik is a Docker-provider proxy: it watches the swarm API for routing
+  # labels, so it must mount the Docker socket (read-only) on a manager node.
+  # This is core to the workload — acknowledged so scripts/security-scan.sh passes.
+  swarmcli-charts/allow: "docker-socket"
+maintainers:
+  - name: Eldara
+    url: https://github.com/Eldara-Tech
+keywords:
+  - traefik
+  - ingress
+  - reverse-proxy
+  - swarm
+home: https://github.com/Eldara-Tech/swarmcli-charts
+sources:
+  - https://github.com/Eldara-Tech/swarmcli-charts
+  - https://github.com/traefik/traefik

@@ -1,0 +1,120 @@
+# traefik chart default values.
+#
+# Deploys Traefik v3 as the Swarm edge proxy: it watches the Docker (swarm) API
+# for service labels and terminates TLS via Let's Encrypt (ACME). A secured,
+# basic-auth-protected dashboard is served over HTTPS.
+
+image:
+  repository: traefik
+  tag: ""  # defaults to appVersion from Chart.yaml
+
+# Docker logging driver for the Traefik service. Defaults to json-file with
+# rotation so logs don't grow unbounded. Override driver/options to ship logs
+# elsewhere, e.g. Loki:
+#   logging:
+#     driver: loki:latest
+#     options:
+#       loki-url: http://loki:3100/loki/api/v1/push
+#       loki-external-labels: "app=traefik"
+# Set to an empty value to omit the block and use the daemon's default driver.
+logging:
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# Published ports. Each entry is a long-form Swarm port binding; set `mode` per
+# port (item 1 of the review):
+#   host    -> binds the port directly on the node running Traefik and preserves
+#              the real client source IP (the usual choice for an edge proxy).
+#              Pairs with the placement constraint below.
+#   ingress -> publishes through the Swarm routing mesh (reachable on every node)
+#              but the client IP is hidden behind the mesh load balancer.
+ports:
+  - target: 80
+    published: 80
+    protocol: tcp
+    mode: host
+  - target: 443
+    published: 443
+    protocol: tcp
+    mode: host
+
+# Optional Swarm configs mounted into the container and exposed to Traefik's file
+# provider at /config. Empty (the default) disables the file provider. Each
+# entry: { source, target, external }. External configs must be pre-created and
+# declared in requirements.yaml.
+configs: []
+
+# Pin Traefik (and its ACME cert volume) to a single node. The ACME account and
+# issued certificates live in one node-local volume, so exactly ONE manager node
+# must carry this label, e.g.:
+#   docker node update --label-add traefik-certs=true <node>
+deploy:
+  placement:
+    constraints:
+      - "node.labels.traefik-certs == true"
+
+traefik:
+  # External overlay network Traefik publishes routes on (see requirements.yaml).
+  network: traefik-public
+  constraintLabel: traefik-public
+
+  # Extra entrypoints beyond the built-in http (:80) and https (:443). Each entry
+  # adds `--entrypoints.<name>.address=<address>`; pair it with a matching `ports`
+  # entry above to publish the port. The routed service supplies its own router
+  # labels (e.g. a TCP router for GitLab SSH: entrypoints=gitlab-ssh, HostSNI(`*`)).
+  extraEntrypoints: []
+  #  - name: gitlab-ssh
+  #    address: ":2222"
+
+  # Let's Encrypt cert resolver name (referenced throughout).
+  certResolver: le
+
+  # Trusted upstream proxy / load-balancer CIDRs for forwarded-headers and
+  # proxy-protocol (one comma-separated string per entry).
+  trustedIPs:
+    - "127.0.0.1/32,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+
+  acme:
+    # REQUIRED for Let's Encrypt — a real address you control.
+    email: ""
+
+  # HTTP Strict Transport Security. When enabled the hsts-header middleware is
+  # defined and applied globally on the https entrypoint.
+  hsts:
+    enabled: true
+    stsSeconds: 31536000
+    includeSubdomains: true
+    preload: true
+    forceSTSHeader: false
+
+  dashboard:
+    enabled: true
+    # REQUIRED when enabled — FQDN the secured dashboard is served on.
+    host: ""
+    # Expose the insecure :8080 API. Keep false in production: the dashboard is
+    # already served over TLS with basic-auth via the router.
+    insecure: false
+    # htpasswd users protecting the dashboard. Empty => no basic-auth middleware
+    # is attached (do not leave empty while the dashboard is reachable). Generate:
+    #   export PASSWORD=changethis
+    #   echo $(openssl passwd -apr1 $PASSWORD) | sed 's/\$/\$\$/g'
+    basicAuthUsers: ""
+
+  # Internal Traefik API port the dashboard service load-balances to.
+  apiPort: 8080
+
+  # Max buffered request body in bytes (0 / empty disables the buffering middleware).
+  bufferingMaxRequestBodyBytes: 2000000
+
+  log:
+    enabled: true
+    access: true
+    level: INFO
+
+# Extra deploy labels appended verbatim (map of key: value).
+extraLabels: {}
+
+# Extra Traefik CLI flags appended to the command block.
+extraCommands: []

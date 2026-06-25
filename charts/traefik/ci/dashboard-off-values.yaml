@@ -1,0 +1,8 @@
+# Exercises the dashboard.enabled=false branch: no dashboard routers, no
+# basic-auth/redirect middlewares, and --api=false. Traefik still proxies other
+# services' routes; it just exposes no dashboard of its own.
+traefik:
+  dashboard:
+    enabled: false
+  acme:
+    email: admin@example.com

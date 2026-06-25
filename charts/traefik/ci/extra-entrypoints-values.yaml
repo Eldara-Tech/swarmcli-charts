@@ -1,0 +1,24 @@
+# Exercises a custom entrypoint (GitLab SSH on :2222) paired with its published
+# port. Lists replace the defaults, so the standard 80/443 ports are repeated.
+ports:
+  - target: 80
+    published: 80
+    protocol: tcp
+    mode: host
+  - target: 443
+    published: 443
+    protocol: tcp
+    mode: host
+  - target: 2222
+    published: 2222
+    protocol: tcp
+    mode: host
+traefik:
+  extraEntrypoints:
+    - name: gitlab-ssh
+      address: ":2222"
+  acme:
+    email: admin@example.com
+  dashboard:
+    host: traefik.example.com
+    basicAuthUsers: "admin:$$apr1$$otIz5Cnl$$/y77Sc88rr1SfA6k0Ospw/"
