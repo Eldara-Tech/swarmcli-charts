@@ -198,6 +198,14 @@ swarmcli charts repo remove localrepo
 > only for trying the repo UX locally; real distribution goes through a tagged
 > release (see the [README](../README.md#releasing-a-new-chart-version)).
 
+> **Regression-tested in CI.** The `Integration` workflow runs
+> `scripts/local-repo-test.sh`, which stands this server up and asserts
+> `repo add` → `update` → `search` lists every chart — so the packaging + index +
+> serving path stays green on every PR (no swarm needed). You can run it locally
+> too: `SWARMCLI=.swarmcli-bin/swarmcli scripts/local-repo-test.sh`. A Linux runner
+> can't reproduce Docker-Desktop/WSL2 serving quirks, so still smoke `make
+> local-repo` by hand once on macOS/Windows when you touch the serving path.
+
 ## Troubleshooting
 
 - **`not a Docker Swarm manager` / exit 2** — run `docker swarm init` (or
