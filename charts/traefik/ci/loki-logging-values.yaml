@@ -1,0 +1,13 @@
+# Exercises a custom Docker logging driver + options (Loki) instead of the
+# default json-file.
+logging:
+  driver: loki:latest
+  options:
+    loki-url: http://loki:3100/loki/api/v1/push
+    loki-external-labels: "app=traefik"
+traefik:
+  acme:
+    email: admin@example.com
+  dashboard:
+    host: traefik.example.com
+    basicAuthUsers: "admin:$$apr1$$otIz5Cnl$$/y77Sc88rr1SfA6k0Ospw/"

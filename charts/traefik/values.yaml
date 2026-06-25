@@ -8,6 +8,21 @@ image:
   repository: traefik
   tag: ""  # defaults to appVersion from Chart.yaml
 
+# Docker logging driver for the Traefik service. Defaults to json-file with
+# rotation so logs don't grow unbounded. Override driver/options to ship logs
+# elsewhere, e.g. Loki:
+#   logging:
+#     driver: loki:latest
+#     options:
+#       loki-url: http://loki:3100/loki/api/v1/push
+#       loki-external-labels: "app=traefik"
+# Set to an empty value to omit the block and use the daemon's default driver.
+logging:
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 # Published ports. Each entry is a long-form Swarm port binding; set `mode` per
 # port (item 1 of the review):
 #   host    -> binds the port directly on the node running Traefik and preserves

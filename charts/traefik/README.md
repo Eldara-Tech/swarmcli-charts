@@ -36,6 +36,8 @@ echo $(openssl passwd -apr1 $PASSWORD) | sed 's/\$/\$\$/g'
 |-----|---------|-------------|
 | `image.repository` | `traefik` | Container image |
 | `image.tag` | `""` | Image tag — defaults to `appVersion` in Chart.yaml |
+| `logging.driver` | `json-file` | Docker logging driver for the Traefik service (empty ⇒ daemon default) |
+| `logging.options` | `{max-size: 10m, max-file: 3}` | Logging driver options (e.g. Loki URL/labels) |
 | `ports` | `[80, 443]` (host mode) | Published ports (long-form Swarm bindings) |
 | `ports[].mode` | `host` | `host` preserves the client source IP; `ingress` uses the routing mesh |
 | `configs` | `[]` | Optional Swarm configs exposed to Traefik's file provider at `/config` |
@@ -62,6 +64,23 @@ echo $(openssl passwd -apr1 $PASSWORD) | sed 's/\$/\$\$/g'
 | `traefik.log.level` | `INFO` | Log level |
 | `extraLabels` | `{}` | Extra deploy labels appended verbatim |
 | `extraCommands` | `[]` | Extra Traefik CLI flags appended to the command block |
+
+## Logging
+
+The Traefik service logs via Docker's logging driver. It defaults to `json-file`
+with rotation; point it at another driver (e.g. Loki) by overriding `logging`:
+
+```yaml
+logging:
+  driver: loki:latest
+  options:
+    loki-url: http://loki:3100/loki/api/v1/push
+    loki-external-labels: "app=traefik"
+```
+
+Set `logging:` empty to drop the block and inherit the daemon's default driver.
+(This is the Docker *container* log driver — separate from Traefik's own access
+and application logs under `traefik.log.*`.)
 
 ## Custom entrypoints
 

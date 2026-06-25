@@ -5,6 +5,17 @@ services:
   traefik:
     image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
 
+{{- with .Values.logging }}
+    logging:
+      driver: {{ .driver | quote }}
+{{- with .options }}
+      options:
+{{- range $k, $v := . }}
+        {{ $k }}: {{ $v | quote }}
+{{- end }}
+{{- end }}
+{{- end }}
+
 {{- if .Values.configs }}
     configs:
 {{- range .Values.configs }}

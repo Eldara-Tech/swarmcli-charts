@@ -10,6 +10,13 @@
       },
       "required": ["repository"]
     },
+    "logging": {
+      "type": "object",
+      "properties": {
+        "driver": { "type": "string" },
+        "options": { "type": "object" }
+      }
+    },
     "ports": {
       "type": "array",
       "items": {
