@@ -1,2 +1,8 @@
-# Default render case for CI. Add more ci/<case>-values.yaml files to exercise
-# meaningful value permutations (e.g. ci/scaled-values.yaml).
+# Default render case: a realistic production install — host-mode ports, HSTS on,
+# secured dashboard with basic-auth. Mirrors the values an operator must supply.
+traefik:
+  acme:
+    email: admin@example.com
+  dashboard:
+    host: traefik.example.com
+    basicAuthUsers: "admin:$$apr1$$otIz5Cnl$$/y77Sc88rr1SfA6k0Ospw/"

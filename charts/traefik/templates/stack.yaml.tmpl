@@ -1,6 +1,5 @@
 version: "3.9"
 
-
 services:
 
   traefik:
@@ -34,18 +33,23 @@ services:
         - "traefik.swarm.network={{ .Values.traefik.network }}"
         - "traefik.constraint-label={{ .Values.traefik.constraintLabel }}"
 
-        # AUTH middleware
-        - "traefik.http.middlewares.admin-auth.basicauth.users={{ .Values.traefik.dashboard.basicAuthUsers }}"
+{{- if .Values.traefik.hsts.enabled }}
+        # HSTS middleware (applied globally on the https entrypoint below)
+        - "traefik.http.middlewares.hsts-header.headers.stsSeconds={{ .Values.traefik.hsts.stsSeconds }}"
+        - "traefik.http.middlewares.hsts-header.headers.stsIncludeSubdomains={{ .Values.traefik.hsts.includeSubdomains }}"
+        - "traefik.http.middlewares.hsts-header.headers.stsPreload={{ .Values.traefik.hsts.preload }}"
+        - "traefik.http.middlewares.hsts-header.headers.forceSTSHeader={{ .Values.traefik.hsts.forceSTSHeader }}"
+{{- end }}
 
-        # HTTPS redirect middleware
+{{- if .Values.traefik.dashboard.enabled }}
+{{- if .Values.traefik.dashboard.basicAuthUsers }}
+        # Dashboard basic-auth middleware
+        - "traefik.http.middlewares.admin-auth.basicauth.users={{ .Values.traefik.dashboard.basicAuthUsers }}"
+{{- end }}
+
+        # HTTP → HTTPS redirect middleware
         - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"
         - "traefik.http.middlewares.https-redirect.redirectscheme.permanent=true"
-
-        # HSTS middleware
-        - "traefik.http.middlewares.hsts-header.headers.stsSeconds={{ .Values.traefik.hsts.stsSeconds | default 31536000 }}"
-        - "traefik.http.middlewares.hsts-header.headers.stsIncludeSubdomains={{ .Values.traefik.hsts.includeSubdomains | default true }}"
-        - "traefik.http.middlewares.hsts-header.headers.stsPreload={{ .Values.traefik.hsts.preload | default true }}"
-        - "traefik.http.middlewares.hsts-header.headers.forceSTSHeader={{ .Values.traefik.hsts.forceSTSHeader | default false }}"
 
         # Dashboard HTTP → HTTPS redirect
         - "traefik.http.routers.traefik-public-http.rule=Host(`{{ .Values.traefik.dashboard.host }}`)"
@@ -58,10 +62,16 @@ services:
         - "traefik.http.routers.traefik-public-https.tls=true"
         - "traefik.http.routers.traefik-public-https.tls.certresolver={{ .Values.traefik.certResolver }}"
         - "traefik.http.routers.traefik-public-https.service=api@internal"
-        - "traefik.http.routers.traefik-public-https.middlewares={{ join "," .Values.traefik.dashboard.middlewares }}"
+{{- $mw := list }}
+{{- if .Values.traefik.dashboard.basicAuthUsers }}{{ $mw = append $mw "admin-auth" }}{{- end }}
+{{- if .Values.traefik.hsts.enabled }}{{ $mw = append $mw "hsts-header" }}{{- end }}
+{{- if $mw }}
+        - "traefik.http.routers.traefik-public-https.middlewares={{ join "," $mw }}"
+{{- end }}
 
-        # Service port
-        - "traefik.http.services.traefik-public.loadbalancer.server.port={{ .Values.traefik.apiPort | default 8080 }}"
+        # Service port (Traefik's internal API the dashboard load-balances to)
+        - "traefik.http.services.traefik-public.loadbalancer.server.port={{ .Values.traefik.apiPort }}"
+{{- end }}
 
 {{- if .Values.traefik.bufferingMaxRequestBodyBytes }}
         # Request buffering
@@ -83,20 +93,24 @@ services:
       - --providers.swarm=true
       - --providers.swarm.constraints=Label(`traefik.constraint-label`, `{{ .Values.traefik.constraintLabel }}`)
       - --providers.swarm.exposedByDefault=false
+{{- if .Values.configs }}
       - --providers.file.directory=/config
       - --providers.file.watch=false
+{{- end }}
 
       # Entrypoints
       - --entrypoints.http.address=:80
       - --entrypoints.https.address=:443
-      - --entrypoints.https.http.middlewares=hsts-header@file
+{{- if .Values.traefik.hsts.enabled }}
+      - --entrypoints.https.http.middlewares=hsts-header@swarm
+{{- end }}
 
       # Trusted IPs
 {{- range .Values.traefik.trustedIPs }}
-      - --entrypoints.http.forwardedHeaders.trustedIPs={{ join "," . }}
-      - --entrypoints.https.forwardedHeaders.trustedIPs={{ join "," . }}
-      - --entrypoints.http.proxyProtocol.trustedIPs={{ join "," . }}
-      - --entrypoints.https.proxyProtocol.trustedIPs={{ join "," . }}
+      - --entrypoints.http.forwardedHeaders.trustedIPs={{ . }}
+      - --entrypoints.https.forwardedHeaders.trustedIPs={{ . }}
+      - --entrypoints.http.proxyProtocol.trustedIPs={{ . }}
+      - --entrypoints.https.proxyProtocol.trustedIPs={{ . }}
 {{- end }}
 
       # ACME / Let's Encrypt
@@ -105,14 +119,16 @@ services:
       - --certificatesresolvers.{{ .Values.traefik.certResolver }}.acme.tlschallenge=true
 
       # Logging
-      - --accesslog={{ .Values.traefik.log.access | default true }}
-      - --log={{ .Values.traefik.log.enabled | default true }}
-      - --log.level={{ .Values.traefik.log.level | default "INFO" }}
+      - --accesslog={{ .Values.traefik.log.access }}
+      - --log={{ .Values.traefik.log.enabled }}
+      - --log.level={{ .Values.traefik.log.level }}
 
       # API / Dashboard
-      - --api=true
-      - --api.dashboard={{ .Values.traefik.dashboard.enabled | default true }}
-      - --api.insecure={{ .Values.traefik.dashboard.insecure | default true }}
+      - --api={{ .Values.traefik.dashboard.enabled }}
+{{- if .Values.traefik.dashboard.enabled }}
+      - --api.dashboard=true
+      - --api.insecure={{ .Values.traefik.dashboard.insecure }}
+{{- end }}
 
 {{- if .Values.extraCommands }}
 {{- range .Values.extraCommands }}
