@@ -11,9 +11,9 @@
 # stack deploy names the service "<release>_traefik".
 #
 # PREREQUISITE: the chart pins Traefik to the node holding the cert volume via
-#   node.labels.traefik-public.traefik-public-certificates == true
+#   node.labels.traefik-certs == true
 # so that label must be set on the test node or the task never schedules:
-#   docker node update --label-add traefik-public.traefik-public-certificates=true <node>
+#   docker node update --label-add traefik-certs=true <node>
 set -euo pipefail
 
 release="$1"
@@ -31,5 +31,5 @@ for _ in $(seq 1 30); do
 done
 
 echo "  $service did not reach Running (last: ${state:-<none>})"
-echo "  hint: is the traefik-public.traefik-public-certificates=true node label set?"
+echo "  hint: is the traefik-certs=true node label set?"
 exit 1

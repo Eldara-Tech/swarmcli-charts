@@ -34,11 +34,11 @@ configs: []
 # Pin Traefik (and its ACME cert volume) to a single node. The ACME account and
 # issued certificates live in one node-local volume, so exactly ONE manager node
 # must carry this label, e.g.:
-#   docker node update --label-add traefik-public.traefik-public-certificates=true <node>
+#   docker node update --label-add traefik-certs=true <node>
 deploy:
   placement:
     constraints:
-      - "node.labels.traefik-public.traefik-public-certificates == true"
+      - "node.labels.traefik-certs == true"
 
 traefik:
   # External overlay network Traefik publishes routes on (see requirements.yaml).

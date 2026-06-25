@@ -71,11 +71,11 @@ echo $(openssl passwd -apr1 $PASSWORD) | sed 's/\$/\$\$/g'
 - **One labelled manager node for certificates.** Traefik's ACME account and
   issued certificates live in a single node-local volume
   (`traefik-public-certificates`). By default the chart pins Traefik with
-  `node.labels.traefik-public.traefik-public-certificates == true`, so that label
-  must be set on **exactly one manager node**:
+  `node.labels.traefik-certs == true`, so that label must be set on **exactly one
+  manager node**:
 
   ```bash
-  docker node update --label-add traefik-public.traefik-public-certificates=true <node>
+  docker node update --label-add traefik-certs=true <node>
   ```
 
 - **Public DNS + reachable `:80`/`:443`.** ACME `tlschallenge` needs the
