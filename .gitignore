@@ -6,8 +6,26 @@
 *.tgz.sha256
 
 # Local toolchain + render output (scripts/install-swarmcli.sh, scripts/test-charts.sh)
-/.swarmcli-bin/
+/swarmcli-bin/
+.swarmcli-bin/
 /.rendered/
 
 # Local chart repo packaged + served by scripts/local-repo.sh
 /.localrepo/
+.cache/
+.go
+
+.vscode/
+# Build output
+dist/
+
+# Security audit reports (contain vulnerability findings — never commit)
+.security-reports/
+
+# Devcontainer metadata
+.devcontainer/*.log
+.devcontainer/devcontainer.local.json
+.devcontainer/certs/*.pem
+.devcontainer/certs/*.crt
+.devcontainer/certs/corporate-proxy.crt
+.devcontainer/shared/*
