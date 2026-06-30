@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": { "type": "string" },
+        "tag": { "type": "string" }
+      },
+      "required": ["repository"]
+    },
+    "replicas": { "type": "integer", "minimum": 1 },
+    "mode": { "type": "string", "enum": ["start", "start-dev"] },
+    "database": {
+      "type": "object",
+      "properties": {
+        "vendor": { "type": "string", "enum": ["mariadb", "mysql", "postgres", "mssql", "oracle", "tidb"] },
+        "host": { "type": "string" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "database": { "type": "string" },
+        "url": { "type": "string" },
+        "username": { "type": "string" },
+        "passwordSecretName": { "type": "string" },
+        "network": { "type": "string" }
+      },
+      "required": ["vendor", "username", "passwordSecretName", "network"]
+    },
+    "admin": {
+      "type": "object",
+      "properties": {
+        "username": { "type": "string" },
+        "passwordSecretName": { "type": "string" }
+      },
+      "required": ["username", "passwordSecretName"]
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "host": { "type": "string" },
+        "tls": { "type": "boolean" },
+        "certResolver": { "type": "string" }
+      },
+      "required": ["host"]
+    },
+    "traefik": {
+      "type": "object",
+      "properties": {
+        "network": { "type": "string" },
+        "entrypoints": {
+          "type": "object",
+          "properties": {
+            "http": { "type": "string" },
+            "https": { "type": "string" }
+          }
+        }
+      },
+      "required": ["network"]
+    },
+    "service": {
+      "type": "object",
+      "properties": {
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "healthcheck": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "interval": { "type": "string" },
+        "timeout": { "type": "string" },
+        "retries": { "type": "integer", "minimum": 1 },
+        "startPeriod": { "type": "string" }
+      }
+    },
+    "placement": {
+      "type": "object",
+      "properties": {
+        "constraints": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "limits": {
+          "type": "object",
+          "properties": { "memory": { "type": "string" } }
+        }
+      }
+    },
+    "labels": { "type": "object" }
+  }
+}

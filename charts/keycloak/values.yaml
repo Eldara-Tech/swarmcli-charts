@@ -1,0 +1,112 @@
+# keycloak chart default values.
+#
+# Keycloak (Quarkus distribution) on Docker Swarm, routed through Traefik. Keycloak
+# is STATELESS — all state lives in an EXTERNAL database — so this chart has no
+# volume and no node pin. The chart is DB-AGNOSTIC: it renders KC_DB and the JDBC
+# connection from the `database` block below and works against any backend Keycloak
+# supports (mariadb, mysql, postgres, mssql, oracle, ...). The MariaDB chart (#44)
+# is one valid provider, not a dependency.
+#
+# Two passwords (database + admin bootstrap) ALWAYS come from EXTERNAL Swarm secrets
+# the operator pre-creates (never created by the chart). Keycloak's kc.sh has no
+# native *_FILE env support (keycloak#10816), so the chart reads each secret from
+# its mounted file at start and exports it — the plaintext never lands in the
+# compose file or `docker inspect`, only the file path / in-container env does.
+
+image:
+  repository: quay.io/keycloak/keycloak
+  tag: ""  # defaults to appVersion from Chart.yaml (26.6.3)
+
+# Keycloak is stateless, so it can scale horizontally — BUT more than one replica
+# needs Infinispan cache clustering (JGroups discovery) configured for shared
+# sessions, which is out of scope here. Leave at 1 unless you have set that up.
+replicas: 1
+
+# Startup mode passed to kc.sh:
+#   start      production mode (default). Requires the external database + hostname
+#              wired below; runs behind Traefik with HTTP enabled. First boot does
+#              an implicit build and logs a hint to use --optimized (harmless).
+#   start-dev  development mode. Relaxes hostname/HTTPS checks; intended for local
+#              experimentation, NOT production.
+mode: start
+
+# External database. ALL fields are operator-supplied; the chart creates nothing.
+#   vendor    -> KC_DB (mariadb|mysql|postgres|mssql|oracle|tidb).
+#   host/port/database -> KC_DB_URL_HOST / _PORT / _DATABASE (the convenience path).
+#   url       -> KC_DB_URL. Optional full JDBC URL; when set it OVERRIDES
+#                host/port/database (escape hatch for extra JDBC params, e.g.
+#                "jdbc:postgresql://pg:5432/keycloak?ssl=require").
+#   username  -> KC_DB_USERNAME.
+#   passwordSecretName -> EXTERNAL Swarm secret holding the DB password. Pre-create:
+#                printf 'S3cr3t' | docker secret create keycloak_db_password -
+#   network   -> name of the EXTERNAL overlay the database is reachable on; Keycloak
+#                attaches to it to reach the DB by service name. Provisioned by the
+#                DB chart/operator (declared in requirements.yaml, autoCreate:false).
+#                The default works with the MariaDB chart (#44) deployed as service
+#                "mariadb" on a shared "keycloak-db-net" overlay; point it at your
+#                backend's actual overlay otherwise.
+database:
+  vendor: mariadb
+  host: mariadb
+  port: 3306
+  database: keycloak
+  url: ""
+  username: keycloak
+  passwordSecretName: keycloak_db_password
+  network: keycloak-db-net
+
+# Bootstrap admin. KC_BOOTSTRAP_ADMIN_USERNAME/PASSWORD create the temporary master
+# realm admin on FIRST start only (ignored afterwards). The password ALWAYS comes
+# from an EXTERNAL Swarm secret. Pre-create:
+#   printf 'S3cr3t' | docker secret create keycloak_admin_password -
+admin:
+  username: admin
+  passwordSecretName: keycloak_admin_password
+
+# Traefik HTTP ingress. Keycloak is exposed through Traefik on the traefik-public
+# overlay via deploy labels (no published port of its own). host is the public
+# hostname Traefik routes; it also drives KC_HOSTNAME (scheme follows tls below).
+#   tls:true  -> HTTPS router with the cert resolver + an HTTP->HTTPS redirect.
+#   tls:false -> HTTP-only router (no redirect, no certresolver) — dev/internal.
+ingress:
+  enabled: true
+  host: keycloak.example.com
+  tls: true
+  certResolver: le
+
+# Traefik wiring. network is the EXTERNAL ingress overlay Traefik watches (declared
+# in requirements.yaml, autoCreate:false — provisioned by the traefik chart/operator).
+# entrypoints map to the Traefik entrypoint names for plain HTTP and HTTPS.
+traefik:
+  network: traefik-public
+  entrypoints:
+    http: web
+    https: websecure
+
+# Container HTTP port Traefik load-balances to. Keycloak's default HTTP listener.
+service:
+  port: 8080
+
+# Container healthcheck. Keycloak's health endpoints live on the management port
+# (9000) and are enabled via KC_HEALTH_ENABLED (set by the chart). The image ships
+# no curl, so the check uses a bash /dev/tcp request to /health/ready and asserts a
+# 200 status line. start_period is generous to cover the first-boot build + DB migration.
+healthcheck:
+  enabled: true
+  interval: 15s
+  timeout: 5s
+  retries: 5
+  startPeriod: 90s
+
+# Optional placement constraints. Keycloak is stateless (no node-local volume), so
+# it is unpinned by default; add constraints to steer scheduling if you want.
+placement:
+  constraints: []
+
+# Swarm deploy resource limits (optional). Rendered only when limits.memory is set.
+resources:
+  limits:
+    memory: ""           # e.g. "1024M"
+
+# Extra deploy labels (key: value), merged after the Traefik router labels.
+labels: {}

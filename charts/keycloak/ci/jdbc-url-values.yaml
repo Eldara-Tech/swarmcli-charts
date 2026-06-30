@@ -1,0 +1,14 @@
+# JDBC url-override branch: database.url is set, so KC_DB_URL is rendered and
+# host/port/database are omitted. Also exercises the optional deploy paths together
+# — a memory limit, a placement constraint, and an extra deploy label.
+database:
+  vendor: postgres
+  url: "jdbc:postgresql://postgres:5432/keycloak?ssl=require"
+resources:
+  limits:
+    memory: "1024M"
+placement:
+  constraints:
+    - "node.labels.keycloak == true"
+labels:
+  com.example.team: identity

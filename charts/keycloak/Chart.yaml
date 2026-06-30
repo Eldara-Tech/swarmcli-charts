@@ -1,0 +1,24 @@
+name: keycloak
+description: Keycloak identity & access management for Docker Swarm — DB-agnostic, secret-authenticated, Traefik-routed
+version: 0.1.0
+appVersion: "26.6.3"
+# No swarmcli-charts/allow annotation: no docker.sock, no host bind mount (state
+# lives in an external database, no volume), unprivileged. security-scan.sh finds
+# nothing to acknowledge.
+maintainers:
+  - name: Eldara
+    url: https://github.com/Eldara-Tech
+keywords:
+  - keycloak
+  - sso
+  - oidc
+  - oauth2
+  - saml
+  - iam
+  - identity
+  - auth
+  - swarm
+home: https://github.com/Eldara-Tech/swarmcli-charts
+sources:
+  - https://github.com/Eldara-Tech/swarmcli-charts
+  - https://github.com/keycloak/keycloak

@@ -1,0 +1,4 @@
+# Default render: production `start` mode, MariaDB backend via host/port/database,
+# TLS-terminating Traefik router (HTTP->HTTPS redirect + certresolver), healthcheck
+# on. Exercises the two-external-secret + two-external-network path and the
+# host/port/database (non-url) DB branch — the canonical case.

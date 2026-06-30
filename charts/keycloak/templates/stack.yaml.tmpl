@@ -1,0 +1,115 @@
+version: "3.9"
+
+services:
+
+  keycloak:
+    image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
+
+    networks:
+      - {{ .Values.traefik.network }}
+      - {{ .Values.database.network }}
+
+    secrets:
+      - {{ .Values.database.passwordSecretName }}
+      - {{ .Values.admin.passwordSecretName }}
+
+    # All non-secret config is passed via env. Passwords are NOT here: kc.sh has no
+    # *_FILE support (keycloak#10816), so they are read from the mounted secret files
+    # by the entrypoint wrapper below and never appear in the compose file or env.
+    environment:
+      KC_DB: {{ .Values.database.vendor | quote }}
+{{- if .Values.database.url }}
+      KC_DB_URL: {{ .Values.database.url | quote }}
+{{- else }}
+      KC_DB_URL_HOST: {{ .Values.database.host | quote }}
+      KC_DB_URL_PORT: {{ .Values.database.port | quote }}
+      KC_DB_URL_DATABASE: {{ .Values.database.database | quote }}
+{{- end }}
+      KC_DB_USERNAME: {{ .Values.database.username | quote }}
+      KC_BOOTSTRAP_ADMIN_USERNAME: {{ .Values.admin.username | quote }}
+      # Behind Traefik (TLS terminated at the edge): advertise the public URL, trust
+      # the proxy's X-Forwarded-* headers, and serve plain HTTP on the backend.
+      KC_HOSTNAME: {{ printf "%s://%s" (ternary "https" "http" .Values.ingress.tls) .Values.ingress.host | quote }}
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_HEALTH_ENABLED: "true"
+
+    # kc.sh is the image ENTRYPOINT, so override it with a bash wrapper that loads the
+    # two passwords from their mounted secret files via bash's `$(< file)` builtin
+    # (no `cat`), exports them, then exec's kc.sh. `$$` is the compose escape for a
+    # literal `$`, so deploy-time interpolation yields a real `$(< ...)` for the shell.
+    entrypoint:
+      - /bin/bash
+      - -c
+    command:
+      - |-
+        export KC_DB_PASSWORD="$$(< /run/secrets/{{ .Values.database.passwordSecretName }})"
+        export KC_BOOTSTRAP_ADMIN_PASSWORD="$$(< /run/secrets/{{ .Values.admin.passwordSecretName }})"
+        exec /opt/keycloak/bin/kc.sh {{ .Values.mode }}
+
+{{- if .Values.healthcheck.enabled }}
+    # Health lives on the management port (9000). The image has no curl, so probe
+    # /health/ready over bash /dev/tcp and assert a 200 status line. `$$status`
+    # escapes the compose `$` so the shell sees `$status` at runtime.
+    healthcheck:
+      test:
+        - CMD
+        - /bin/bash
+        - -c
+        - |-
+          exec 3<>/dev/tcp/127.0.0.1/9000 || exit 1
+          printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3
+          read -r status <&3
+          [[ "$$status" == *" 200 "* ]]
+      interval: {{ .Values.healthcheck.interval }}
+      timeout: {{ .Values.healthcheck.timeout }}
+      retries: {{ .Values.healthcheck.retries }}
+      start_period: {{ .Values.healthcheck.startPeriod }}
+{{- end }}
+
+    deploy:
+      replicas: {{ .Values.replicas }}
+{{- if .Values.placement.constraints }}
+      placement:
+        constraints:
+{{- range .Values.placement.constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- with .Values.resources.limits.memory }}
+      resources:
+        limits:
+          memory: {{ . | quote }}
+{{- end }}
+      restart_policy:
+        condition: any
+      labels:
+        - "traefik.enable=true"
+        - "traefik.docker.network={{ .Values.traefik.network }}"
+        # HTTP router
+        - "traefik.http.routers.{{ .Release.Name }}-http.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ .Release.Name }}-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
+{{- if .Values.ingress.tls }}
+        # Redirect plain HTTP to HTTPS, then terminate TLS on the HTTPS router.
+        - "traefik.http.routers.{{ .Release.Name }}-http.middlewares=redirect-to-https@file"
+        - "traefik.http.routers.{{ .Release.Name }}-https.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ .Release.Name }}-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
+        - "traefik.http.routers.{{ .Release.Name }}-https.tls=true"
+        - "traefik.http.routers.{{ .Release.Name }}-https.tls.certresolver={{ .Values.ingress.certResolver }}"
+{{- end }}
+        - "traefik.http.services.{{ .Release.Name }}.loadbalancer.server.port={{ .Values.service.port }}"
+{{- range $key, $val := .Values.labels }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+
+secrets:
+  {{ .Values.database.passwordSecretName }}:
+    external: true
+  {{ .Values.admin.passwordSecretName }}:
+    external: true
+
+networks:
+  {{ .Values.traefik.network }}:
+    external: true
+  {{ .Values.database.network }}:
+    external: true

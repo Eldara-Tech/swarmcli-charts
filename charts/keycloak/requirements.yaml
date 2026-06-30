@@ -1,0 +1,26 @@
+# External resources this chart needs. Authoritative: every external
+# network/secret/config the rendered stack references must be listed here
+# (swarmcli pre-flights it; scripts/requirements-check.sh enforces it at PR time).
+#
+# Keycloak is a CONSUMER of both overlays — it owns neither — so both are
+# autoCreate:false (validate-only; a missing one is a hard error, never created):
+#   traefik-public  is provisioned by the traefik chart / operator.
+#   keycloak-db-net is provisioned by the database chart / operator (its name is
+#                   the `database.network` value; keep them in sync if you change it).
+networks:
+  - name: traefik-public
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "Shared ingress overlay Traefik publishes routes on; provisioned by the traefik chart/operator (never created here)"
+  - name: keycloak-db-net
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "External overlay the database backend is reachable on; provisioned by the DB chart/operator. Must match database.network"
+secrets:
+  - name: keycloak_db_password
+    description: "Database password for KC_DB_USERNAME. Pre-create: printf 'S3cr3t' | docker secret create keycloak_db_password -"
+  - name: keycloak_admin_password
+    description: "Bootstrap admin password (KC_BOOTSTRAP_ADMIN_PASSWORD). Pre-create: printf 'S3cr3t' | docker secret create keycloak_admin_password -"
+configs: []
