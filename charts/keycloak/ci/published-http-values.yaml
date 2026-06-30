@@ -1,0 +1,9 @@
+# Published mode, plain HTTP: publish 8080 on the Swarm with no proxy. Exercises the
+# exposure.mode=published branch (ports block, no Traefik labels, no exposure.network
+# attachment), KC_HTTP_ENABLED without proxy headers, and KC_HOSTNAME carrying the
+# published port (http://host:8080).
+exposure:
+  mode: published
+publish:
+  port: 8080
+  mode: ingress

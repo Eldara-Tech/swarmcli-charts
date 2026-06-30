@@ -23,4 +23,11 @@ secrets:
     description: "Database password for KC_DB_USERNAME. Pre-create: printf 'S3cr3t' | docker secret create keycloak_db_password -"
   - name: keycloak_admin_password
     description: "Bootstrap admin password (KC_BOOTSTRAP_ADMIN_PASSWORD). Pre-create: printf 'S3cr3t' | docker secret create keycloak_admin_password -"
+  # Only referenced when exposure.mode=published and publish.tls.enabled (Keycloak
+  # terminates TLS). swarmcli's pre-flight is manifest-driven, so these are inert in
+  # every other mode — declared here so the published-TLS path satisfies the contract.
+  - name: keycloak_tls_cert
+    description: "PEM TLS certificate (publish.tls). Pre-create: docker secret create keycloak_tls_cert fullchain.pem"
+  - name: keycloak_tls_key
+    description: "PEM TLS private key (publish.tls). Pre-create: docker secret create keycloak_tls_key privkey.pem"
 configs: []

@@ -1,11 +1,15 @@
 # keycloak chart default values.
 #
-# Keycloak (Quarkus distribution) on Docker Swarm, routed through Traefik. Keycloak
-# is STATELESS — all state lives in an EXTERNAL database — so this chart has no
-# volume and no node pin. The chart is DB-AGNOSTIC: it renders KC_DB and the JDBC
-# connection from the `database` block below and works against any backend Keycloak
-# supports (mariadb, mysql, postgres, mssql, oracle, ...). The MariaDB chart (#44)
-# is one valid provider, not a dependency.
+# Keycloak (Quarkus distribution) on Docker Swarm. Keycloak is STATELESS — all
+# state lives in an EXTERNAL database — so this chart has no volume and no node pin.
+# The chart is DB-AGNOSTIC: it renders KC_DB and the JDBC connection from the
+# `database` block and works against any backend Keycloak supports (mariadb, mysql,
+# postgres, mssql, oracle, tidb). The MariaDB chart (#44) is one valid provider, not
+# a dependency.
+#
+# Exposure is pluggable (see `exposure.mode`): front Keycloak with Traefik (default),
+# publish a port directly (optionally with Keycloak-terminated TLS), or expose
+# nothing and attach your own reverse proxy.
 #
 # Two passwords (database + admin bootstrap) ALWAYS come from EXTERNAL Swarm secrets
 # the operator pre-creates (never created by the chart). Keycloak's kc.sh has no
@@ -24,8 +28,8 @@ replicas: 1
 
 # Startup mode passed to kc.sh:
 #   start      production mode (default). Requires the external database + hostname
-#              wired below; runs behind Traefik with HTTP enabled. First boot does
-#              an implicit build and logs a hint to use --optimized (harmless).
+#              wired below. First boot does an implicit build and logs a hint to use
+#              --optimized (harmless).
 #   start-dev  development mode. Relaxes hostname/HTTPS checks; intended for local
 #              experimentation, NOT production.
 mode: start
@@ -42,9 +46,6 @@ mode: start
 #   network   -> name of the EXTERNAL overlay the database is reachable on; Keycloak
 #                attaches to it to reach the DB by service name. Provisioned by the
 #                DB chart/operator (declared in requirements.yaml, autoCreate:false).
-#                The default works with the MariaDB chart (#44) deployed as service
-#                "mariadb" on a shared "keycloak-db-net" overlay; point it at your
-#                backend's actual overlay otherwise.
 database:
   vendor: mariadb
   host: mariadb
@@ -63,27 +64,56 @@ admin:
   username: admin
   passwordSecretName: keycloak_admin_password
 
-# Traefik HTTP ingress. Keycloak is exposed through Traefik on the traefik-public
-# overlay via deploy labels (no published port of its own). host is the public
-# hostname Traefik routes; it also drives KC_HOSTNAME (scheme follows tls below).
-#   tls:true  -> HTTPS router with the cert resolver + an HTTP->HTTPS redirect.
-#   tls:false -> HTTP-only router (no redirect, no certresolver) — dev/internal.
+# How Keycloak is exposed:
+#   traefik   - Traefik deploy labels on exposure.network (default). TLS at the edge;
+#               Keycloak trusts X-Forwarded-* and serves HTTP on the backend.
+#   published - publish a port on the Swarm directly (no proxy). Optionally let
+#               Keycloak terminate TLS from a mounted cert (see publish.tls).
+#   none      - no published port and no Traefik labels. Keycloak sits on
+#               exposure.network so your OWN reverse proxy (joined to that overlay)
+#               can reach it; Keycloak trusts X-Forwarded-* like the traefik case.
+exposure:
+  mode: traefik
+  # Shared EXTERNAL overlay the edge proxy lives on (traefik & none modes); the
+  # proxy attaches here to reach Keycloak by service name. Unused in published mode.
+  # Provisioned by the proxy chart/operator (requirements.yaml, autoCreate:false).
+  network: traefik-public
+
+# Public-facing address (all modes). host drives KC_HOSTNAME and, in traefik mode,
+# the Traefik Host() router rule. tls says whether the PUBLIC endpoint is HTTPS and
+# selects the KC_HOSTNAME scheme for traefik & none modes (in published mode the
+# scheme follows publish.tls.enabled instead).
 ingress:
-  enabled: true
   host: keycloak.example.com
   tls: true
-  certResolver: le
 
-# Traefik wiring. network is the EXTERNAL ingress overlay Traefik watches (declared
-# in requirements.yaml, autoCreate:false — provisioned by the traefik chart/operator).
-# entrypoints map to the Traefik entrypoint names for plain HTTP and HTTPS.
+# traefik-mode routing. Match certResolver + entrypoints to your Traefik install.
 traefik:
-  network: traefik-public
+  certResolver: le
   entrypoints:
     http: web
     https: websecure
 
-# Container HTTP port Traefik load-balances to. Keycloak's default HTTP listener.
+# published-mode direct port publish.
+#   port -> the published port (and, for plain HTTP, the listener). For tls.enabled
+#           Keycloak serves HTTPS on 8443; set port to the public HTTPS port (8443).
+#   mode -> ingress (cluster-wide routing mesh) or host (only on the running node).
+#   tls  -> Keycloak-terminated TLS. When enabled, mount a PEM cert + key from
+#           EXTERNAL Swarm secrets (KC_HTTPS_CERTIFICATE_FILE/_KEY_FILE); Keycloak
+#           serves HTTPS and KC_HOSTNAME uses https. The operator supplies AND renews
+#           the certificate (no ACME). Pre-create the secrets, e.g.:
+#             docker secret create keycloak_tls_cert fullchain.pem
+#             docker secret create keycloak_tls_key  privkey.pem
+publish:
+  port: 8080
+  mode: ingress
+  tls:
+    enabled: false
+    certSecretName: keycloak_tls_cert
+    keySecretName: keycloak_tls_key
+
+# Container HTTP port Keycloak listens on for proxied modes (traefik LB target /
+# your own proxy's upstream target). Keycloak's default HTTP listener.
 service:
   port: 8080
 

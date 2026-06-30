@@ -1,21 +1,44 @@
 version: "3.9"
 
+{{- /* Exposure mode drives networks, ports, labels and the public scheme. */}}
+{{- $mode := .Values.exposure.mode }}
+{{- $proxied := or (eq $mode "traefik") (eq $mode "none") }}
+{{- $selfTLS := and (eq $mode "published") .Values.publish.tls.enabled }}
+{{- $publicTLS := ternary .Values.publish.tls.enabled .Values.ingress.tls (eq $mode "published") }}
+{{- $scheme := ternary "https" "http" $publicTLS }}
+
 services:
 
   keycloak:
     image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
 
     networks:
-      - {{ .Values.traefik.network }}
+{{- if $proxied }}
+      - {{ .Values.exposure.network }}
+{{- end }}
       - {{ .Values.database.network }}
+
+{{- if eq $mode "published" }}
+    ports:
+      - target: {{ ternary 8443 8080 $selfTLS }}
+        published: {{ .Values.publish.port }}
+        protocol: tcp
+        mode: {{ .Values.publish.mode }}
+{{- end }}
 
     secrets:
       - {{ .Values.database.passwordSecretName }}
       - {{ .Values.admin.passwordSecretName }}
+{{- if $selfTLS }}
+      - {{ .Values.publish.tls.certSecretName }}
+      - {{ .Values.publish.tls.keySecretName }}
+{{- end }}
 
-    # All non-secret config is passed via env. Passwords are NOT here: kc.sh has no
-    # *_FILE support (keycloak#10816), so they are read from the mounted secret files
-    # by the entrypoint wrapper below and never appear in the compose file or env.
+    # All non-secret config is passed via env. The DB + admin passwords are NOT here:
+    # kc.sh has no *_FILE support (keycloak#10816), so they are read from the mounted
+    # secret files by the entrypoint wrapper below and never appear in the compose
+    # file or env. (The TLS cert/key, by contrast, are plain file paths Keycloak reads
+    # natively, so KC_HTTPS_*_FILE point straight at the mounted secrets.)
     environment:
       KC_DB: {{ .Values.database.vendor | quote }}
 {{- if .Values.database.url }}
@@ -27,12 +50,29 @@ services:
 {{- end }}
       KC_DB_USERNAME: {{ .Values.database.username | quote }}
       KC_BOOTSTRAP_ADMIN_USERNAME: {{ .Values.admin.username | quote }}
-      # Behind Traefik (TLS terminated at the edge): advertise the public URL, trust
-      # the proxy's X-Forwarded-* headers, and serve plain HTTP on the backend.
-      KC_HOSTNAME: {{ printf "%s://%s" (ternary "https" "http" .Values.ingress.tls) .Values.ingress.host | quote }}
+{{- if eq $mode "published" }}
+      # Direct publish: the public URL carries the published port, so KC_HOSTNAME must
+      # include it or Keycloak emits wrong redirect/issuer URLs.
+      KC_HOSTNAME: {{ printf "%s://%s:%v" $scheme .Values.ingress.host .Values.publish.port | quote }}
+{{- else }}
+      KC_HOSTNAME: {{ printf "%s://%s" $scheme .Values.ingress.host | quote }}
+{{- end }}
+      KC_HEALTH_ENABLED: "true"
+{{- if $proxied }}
+      # Behind a reverse proxy that terminates TLS: trust its X-Forwarded-* headers
+      # and serve plain HTTP on the backend.
       KC_HTTP_ENABLED: "true"
       KC_PROXY_HEADERS: xforwarded
-      KC_HEALTH_ENABLED: "true"
+{{- else if $selfTLS }}
+      # Keycloak terminates TLS from the mounted cert/key. Keep the management port
+      # (9000, health) on plain HTTP so the /dev/tcp healthcheck still works.
+      KC_HTTPS_CERTIFICATE_FILE: /run/secrets/{{ .Values.publish.tls.certSecretName }}
+      KC_HTTPS_CERTIFICATE_KEY_FILE: /run/secrets/{{ .Values.publish.tls.keySecretName }}
+      KC_HTTP_MANAGEMENT_SCHEME: http
+{{- else }}
+      # Direct plain HTTP publish (no proxy, no TLS).
+      KC_HTTP_ENABLED: "true"
+{{- end }}
 
     # kc.sh is the image ENTRYPOINT, so override it with a bash wrapper that loads the
     # two passwords from their mounted secret files via bash's `$(< file)` builtin
@@ -83,9 +123,11 @@ services:
 {{- end }}
       restart_policy:
         condition: any
+{{- if or (eq $mode "traefik") .Values.labels }}
       labels:
+{{- if eq $mode "traefik" }}
         - "traefik.enable=true"
-        - "traefik.docker.network={{ .Values.traefik.network }}"
+        - "traefik.docker.network={{ .Values.exposure.network }}"
         # HTTP router
         - "traefik.http.routers.{{ .Release.Name }}-http.rule=Host(`{{ .Values.ingress.host }}`)"
         - "traefik.http.routers.{{ .Release.Name }}-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
@@ -95,11 +137,13 @@ services:
         - "traefik.http.routers.{{ .Release.Name }}-https.rule=Host(`{{ .Values.ingress.host }}`)"
         - "traefik.http.routers.{{ .Release.Name }}-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
         - "traefik.http.routers.{{ .Release.Name }}-https.tls=true"
-        - "traefik.http.routers.{{ .Release.Name }}-https.tls.certresolver={{ .Values.ingress.certResolver }}"
+        - "traefik.http.routers.{{ .Release.Name }}-https.tls.certresolver={{ .Values.traefik.certResolver }}"
 {{- end }}
         - "traefik.http.services.{{ .Release.Name }}.loadbalancer.server.port={{ .Values.service.port }}"
+{{- end }}
 {{- range $key, $val := .Values.labels }}
         - "{{ $key }}={{ $val }}"
+{{- end }}
 {{- end }}
 
 secrets:
@@ -107,9 +151,17 @@ secrets:
     external: true
   {{ .Values.admin.passwordSecretName }}:
     external: true
+{{- if $selfTLS }}
+  {{ .Values.publish.tls.certSecretName }}:
+    external: true
+  {{ .Values.publish.tls.keySecretName }}:
+    external: true
+{{- end }}
 
 networks:
-  {{ .Values.traefik.network }}:
+{{- if $proxied }}
+  {{ .Values.exposure.network }}:
     external: true
+{{- end }}
   {{ .Values.database.network }}:
     external: true
