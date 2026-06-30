@@ -1,0 +1,13 @@
+# External resources this chart needs. Authoritative: every external
+# network/secret/config the rendered stack references must be listed here
+# (swarmcli pre-flights it; scripts/requirements-check.sh enforces it at PR time).
+networks:
+  - name: redis-net
+    driver: overlay
+    attachable: true
+    autoCreate: true
+    description: "Shared overlay app stacks attach to in order to reach redis by service name"
+secrets:
+  - name: redis_password
+    description: "Redis requirepass password. Pre-create: printf 'S3cr3t' | docker secret create redis_password -"
+configs: []

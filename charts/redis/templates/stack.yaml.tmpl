@@ -1,0 +1,112 @@
+version: "3.9"
+
+services:
+
+  redis:
+    image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
+
+    networks:
+      - {{ .Values.network.name }}
+
+{{- if .Values.exposure.enabled }}
+    ports:
+      - target: {{ .Values.exposure.port }}
+        published: {{ .Values.exposure.port }}
+        protocol: {{ .Values.exposure.protocol | default "tcp" }}
+        mode: {{ .Values.exposure.mode | default "ingress" }}
+{{- end }}
+
+{{- if .Values.persistence.enabled }}
+    volumes:
+      - {{ .Values.persistence.volumeName }}:/data
+{{- end }}
+
+{{- if .Values.auth.enabled }}
+    secrets:
+      - {{ .Values.auth.secretName }}
+{{- end }}
+
+    # Read the password from the mounted secret at start and pass it to
+    # redis-server (the official image has no requirepass-from-file mechanism).
+    # `$$` is the compose escape for a literal `$`, so deploy-time interpolation
+    # yields a real `$(cat ...)` for the shell; the value is never in the compose
+    # file or `docker inspect`, only in the in-container process args.
+{{- $args := list "exec redis-server" }}
+{{- if .Values.persistence.enabled }}
+{{-   $args = append $args "--dir /data" }}
+{{-   if .Values.persistence.appendonly }}{{ $args = append $args "--appendonly yes" }}{{- end }}
+{{- end }}
+{{- if .Values.auth.enabled }}
+{{-   $args = append $args (printf "--requirepass \"$$(cat /run/secrets/%s)\"" .Values.auth.secretName) }}
+{{- end }}
+{{- if .Values.maxmemory }}
+{{-   $args = append $args (printf "--maxmemory %s" .Values.maxmemory) }}
+{{-   $args = append $args (printf "--maxmemory-policy %s" .Values.maxmemoryPolicy) }}
+{{- end }}
+{{- range .Values.extraConfig }}
+{{-   $args = append $args . }}
+{{- end }}
+    command:
+      - sh
+      - -c
+      - {{ join " " $args | quote }}
+
+{{- if .Values.healthcheck.enabled }}
+    healthcheck:
+      test:
+        - CMD-SHELL
+{{- if .Values.auth.enabled }}
+        - REDISCLI_AUTH="$$(cat /run/secrets/{{ .Values.auth.secretName }})" redis-cli ping | grep -q PONG
+{{- else }}
+        - redis-cli ping | grep -q PONG
+{{- end }}
+      interval: {{ .Values.healthcheck.interval }}
+      timeout: {{ .Values.healthcheck.timeout }}
+      retries: {{ .Values.healthcheck.retries }}
+      start_period: {{ .Values.healthcheck.startPeriod }}
+{{- end }}
+
+    deploy:
+      replicas: {{ .Values.replicas }}
+{{- if .Values.placement.constraints }}
+      placement:
+        constraints:
+{{- range .Values.placement.constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- with .Values.resources.limits.memory }}
+      resources:
+        limits:
+          memory: {{ . | quote }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- if .Values.labels }}
+      labels:
+{{- range $key, $val := .Values.labels }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+{{- end }}
+
+{{- if .Values.persistence.enabled }}
+
+volumes:
+  {{ .Values.persistence.volumeName }}: {}
+{{- end }}
+
+{{- if .Values.auth.enabled }}
+
+secrets:
+  {{ .Values.auth.secretName }}:
+    external: true
+{{- end }}
+
+networks:
+  {{ .Values.network.name }}:
+{{- if .Values.network.external }}
+    external: true
+{{- else }}
+    driver: overlay
+    attachable: true
+{{- end }}

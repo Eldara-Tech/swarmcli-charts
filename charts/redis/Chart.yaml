@@ -1,0 +1,20 @@
+name: redis
+description: Redis in-memory data store for Docker Swarm — persistent, secret-authenticated, single-node pinned
+version: 0.1.0
+appVersion: "8.2.7"
+# No swarmcli-charts/allow annotation: no docker.sock, no host bind mount (data is
+# a NAMED volume), unprivileged. security-scan.sh finds nothing to acknowledge.
+maintainers:
+  - name: Eldara
+    url: https://github.com/Eldara-Tech
+keywords:
+  - redis
+  - cache
+  - database
+  - key-value
+  - stateful
+  - swarm
+home: https://github.com/Eldara-Tech/swarmcli-charts
+sources:
+  - https://github.com/Eldara-Tech/swarmcli-charts
+  - https://github.com/redis/redis
