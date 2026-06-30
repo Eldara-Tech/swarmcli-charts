@@ -1,0 +1,4 @@
+# Default render: root + app-user (both external secrets), persistence ON (named
+# volume + placement pin), shared external overlay, no published port. Exercises
+# the two-external-secret + external-network path (the strictest requirements-check
+# case).

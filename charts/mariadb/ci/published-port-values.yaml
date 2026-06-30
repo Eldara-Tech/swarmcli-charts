@@ -1,0 +1,16 @@
+# Published port on a chart-managed internal overlay, with a deploy memory limit
+# and an extra mariadbd flag. Exercises the exposure branch, the
+# network.external:false (chart-managed overlay) branch, the resources path, and
+# the command/extraArgs path.
+exposure:
+  enabled: true
+  port: 3306
+  protocol: tcp
+  mode: ingress
+network:
+  external: false
+resources:
+  limits:
+    memory: "512M"
+extraArgs:
+  - "--max-connections=200"
