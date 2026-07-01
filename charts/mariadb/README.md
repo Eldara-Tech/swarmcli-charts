@@ -43,7 +43,9 @@ authenticating as the app user (`auth.appUser.username` / database
 `auth.appUser.database`) with the `mariadb_password` secret, or as `root` with the
 `mariadb_root_password` secret. To reach MariaDB from outside the overlay, set
 `exposure.enabled: true` (publishes a port; choose `mode: ingress` for the
-cluster-wide routing mesh or `mode: host` for the pinned node only).
+cluster-wide routing mesh or `mode: host` for the pinned node only). `ingress`
+binds 3306 on **every** Swarm node, so prefer `mode: host` and firewall the port
+to trusted sources — or keep exposure disabled and stay on the overlay.
 
 ## Values
 
@@ -77,3 +79,23 @@ values appear only inside the container — never in the compose file or
 `docker inspect`, which show only the `/run/secrets/...` path. The healthcheck uses
 the image's auto-created `healthcheck@localhost` user (via `.my-healthcheck.cnf`),
 so no password ever appears on a command line either.
+
+## Operating notes
+
+- **Password rotation is not automatic.** `MARIADB_ROOT_PASSWORD_FILE` /
+  `MARIADB_PASSWORD_FILE` are applied only during first-boot initialization (an
+  empty data volume). Once the volume holds a database, editing the Swarm secret
+  and re-deploying does **not** change the stored password — new app tasks then
+  fail to authenticate. Rotate inside the database
+  (`ALTER USER 'app'@'%' IDENTIFIED BY '…'`, and likewise for `root`), then update
+  the secret to match. (Persistence off — an ephemeral DB — re-reads the secret on
+  every boot, since each boot re-initializes.)
+- **Backups / availability.** Data lives only on the pinned node's local volume and
+  the service runs a single replica, so there is no built-in HA: if that node is
+  lost the database is unavailable until it returns or you restore a backup. Back
+  the volume up out-of-band.
+- **Healthcheck on a reused volume.** The credential-free healthcheck relies on the
+  `healthcheck@localhost` user, created only by first-boot init on MariaDB images
+  since mid-2023. A data volume first initialized by an older image lacks that user
+  and the healthcheck fails permanently; create it once (or re-initialize on a
+  current image) to recover.
