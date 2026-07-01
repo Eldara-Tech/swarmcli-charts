@@ -9,7 +9,7 @@ own reverse proxy.
 
 The chart is database-agnostic: set `database.vendor` (and the connection fields) to
 any backend Keycloak supports (`mariadb`, `mysql`, `postgres`, `mssql`, `oracle`,
-`tidb`). The [MariaDB chart](../mariadb) is one valid provider, **not** a dependency.
+`tidb`). The MariaDB chart is one valid provider, **not** a dependency.
 
 ## Prerequisites
 
@@ -18,8 +18,8 @@ them (`requirements.yaml`, `autoCreate: false`) but never creates them.
 
 1. A reachable **database**: a running service for your chosen vendor on a shared
    overlay, with an empty schema (`database.database`) and a user
-   (`database.username`) that owns it. With the [MariaDB chart](../mariadb), that is
-   the `mariadb` service on a shared overlay — point `database.network` at it.
+   (`database.username`) that owns it. With the MariaDB chart, that is the `mariadb`
+   service on a shared overlay — point `database.network` at it.
 
 2. Networks — the **database overlay** (always), plus the **`exposure.network`**
    overlay in `traefik`/`none` modes. `traefik-public` is provisioned by the
@@ -93,7 +93,7 @@ request.
 | `image.tag` | `""` | Tag — defaults to appVersion (`26.6.3`) |
 | `replicas` | `1` | Replica count (raise only with cache clustering set up) |
 | `mode` | `start` | kc.sh mode: `start` (production) or `start-dev` (development) |
-| `database.vendor` | `mariadb` | `KC_DB` — `mariadb`/`mysql`/`postgres`/`mssql`/`oracle`/`tidb` |
+| `database.vendor` | `mariadb` | `KC_DB` — `mariadb`/`mysql`/`postgres`/`mssql`/`oracle`/`tidb` (`tidb` is accepted by Keycloak but not on its tested "Supported Configurations" list — treat as experimental) |
 | `database.host` | `mariadb` | `KC_DB_URL_HOST` (ignored when `database.url` is set) |
 | `database.port` | `3306` | `KC_DB_URL_PORT` (ignored when `database.url` is set) |
 | `database.database` | `keycloak` | `KC_DB_URL_DATABASE` (ignored when `database.url` is set) |
@@ -119,6 +119,17 @@ request.
 | `placement.constraints` | `[]` | Optional scheduling constraints (unpinned by default) |
 | `resources.limits.memory` | `""` | Swarm deploy memory limit |
 | `labels` | `{}` | Extra deploy labels |
+
+> **Note — external resource *names* are pinned by `requirements.yaml`.** swarmcli's
+> install pre-flight validates every external network/secret the rendered manifest
+> references against the chart's static `requirements.yaml`. The name-valued keys
+> `database.network`, `exposure.network`, `database.passwordSecretName`,
+> `admin.passwordSecretName`, and `publish.tls.certSecretName`/`keySecretName`
+> therefore default to the names declared there. Overriding them to *different*
+> names fails the pre-flight as "not declared in requirements.yaml" unless you also
+> edit `requirements.yaml` (i.e. fork the chart). Pre-create your external resources
+> under these default names — everything else (DB host/port/vendor/user, secret
+> contents, the overlay itself) is yours to set.
 
 ## Security note
 

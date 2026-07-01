@@ -35,7 +35,9 @@ replicas: 1
 mode: start
 
 # External database. ALL fields are operator-supplied; the chart creates nothing.
-#   vendor    -> KC_DB (mariadb|mysql|postgres|mssql|oracle|tidb).
+#   vendor    -> KC_DB (mariadb|mysql|postgres|mssql|oracle|tidb). Note: tidb is
+#                accepted by Keycloak but is not on its tested "Supported
+#                Configurations" list — treat it as experimental.
 #   host/port/database -> KC_DB_URL_HOST / _PORT / _DATABASE (the convenience path).
 #   url       -> KC_DB_URL. Optional full JDBC URL; when set it OVERRIDES
 #                host/port/database (escape hatch for extra JDBC params, e.g.
