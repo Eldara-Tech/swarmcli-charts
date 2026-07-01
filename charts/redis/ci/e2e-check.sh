@@ -21,9 +21,12 @@ release="$1"
 cid="$(docker ps -q -f "label=com.docker.swarm.service.name=${release}_redis" | head -1)"
 [ -n "$cid" ] || { echo "  ${release}_redis container not found"; exit 1; }
 
-# Build the redis-cli auth prefix only if the secret is actually mounted (auth on).
-if docker exec "$cid" sh -c 'test -f /run/secrets/redis_password'; then
-  pre='REDISCLI_AUTH="$(cat /run/secrets/redis_password)" '
+# Build the redis-cli auth prefix only if a secret is actually mounted (auth on).
+# The chart mounts exactly one secret; discover its name rather than assuming the
+# default, so a fixture that overrides auth.secretName still works.
+secret="$(docker exec "$cid" sh -c 'ls /run/secrets/ 2>/dev/null | head -1')"
+if [ -n "$secret" ]; then
+  pre='REDISCLI_AUTH="$(cat /run/secrets/'"$secret"')" '
 else
   pre=''
 fi

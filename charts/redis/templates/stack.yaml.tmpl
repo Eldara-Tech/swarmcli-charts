@@ -30,8 +30,14 @@ services:
     # redis-server (the official image has no requirepass-from-file mechanism).
     # `$$` is the compose escape for a literal `$`, so deploy-time interpolation
     # yields a real `$(cat ...)` for the shell; the value is never in the compose
-    # file or `docker inspect`, only in the in-container process args.
-{{- $args := list "exec redis-server" }}
+    # file or `docker inspect`, only in the in-container process args. We re-invoke
+    # the image's docker-entrypoint.sh (not redis-server directly) so its gosu step
+    # still drops to the unprivileged `redis` user and chowns /data.
+{{- $args := list }}
+{{- if .Values.auth.enabled }}
+{{-   $args = append $args (printf "test -s /run/secrets/%s || { echo '%s secret is empty' >&2; exit 1; };" .Values.auth.secretName .Values.auth.secretName) }}
+{{- end }}
+{{- $args = append $args "exec docker-entrypoint.sh redis-server" }}
 {{- if .Values.persistence.enabled }}
 {{-   $args = append $args "--dir /data" }}
 {{-   if .Values.persistence.appendonly }}{{ $args = append $args "--appendonly yes" }}{{- end }}
