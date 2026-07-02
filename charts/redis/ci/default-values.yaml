@@ -1,0 +1,3 @@
+# Default render: auth ON (external secret), persistence ON (named volume +
+# placement pin), shared external overlay, no published port. Exercises the
+# external secret + external network path (the strictest requirements-check case).

@@ -1,0 +1,82 @@
+# redis chart default values.
+#
+# Single Redis instance on Docker Swarm. A Swarm named volume is node-local, so
+# this is a single-replica service pinned (via a node label) to the node holding
+# its data volume. Auth is on by default; the password comes from an EXTERNAL
+# Swarm secret the operator pre-creates (never created by the chart). Redis is
+# reachable by other stacks over a shared overlay; it is TCP, so it is NOT
+# Traefik-routed and publishes no port by default.
+
+image:
+  repository: redis
+  tag: ""  # defaults to appVersion from Chart.yaml (8.2.7)
+
+# Stateful + node-local volume => exactly one replica. Do not raise; run a second
+# named release (or Sentinel/Cluster, out of scope) for HA.
+replicas: 1
+
+# Password auth. The official redis image has no REDIS_PASSWORD env and no
+# requirepass-from-file directive, so the password is read from the mounted secret
+# at start and passed to redis-server. secretName is the EXTERNAL Swarm secret's
+# real name — pre-create it, e.g.:
+#   printf 'S3cr3t' | docker secret create redis_password -
+# enabled:false => no-auth (only safe on a private internal overlay).
+auth:
+  enabled: true
+  secretName: redis_password
+
+# Persistence. Named volume at /data with AOF on. enabled:false => ephemeral cache
+# (no volume; also drop the placement pin below).
+persistence:
+  enabled: true
+  volumeName: redis-data
+  appendonly: true
+
+# Pin the service to the node carrying the data volume (Swarm volumes are
+# node-local). Label exactly ONE node first:
+#   docker node update --label-add redis-data=true <node>
+# Set constraints to [] for an unpinned ephemeral instance.
+placement:
+  constraints:
+    - "node.labels.redis-data == true"
+
+# Overlay network redis attaches to. external:true (default) is a shared attachable
+# overlay (declared in requirements.yaml, auto-created if missing) that app stacks
+# also join to reach redis by service name. external:false => chart-managed internal
+# overlay (redis only reachable by services in this same stack).
+network:
+  name: redis-net
+  external: true
+
+# Publish a port. Disabled by default — redis stays internal to the overlay.
+# mode: ingress (cluster-wide routing mesh) or host (only on the pinned node).
+exposure:
+  enabled: false
+  port: 6379
+  protocol: tcp
+  mode: ingress
+
+# redis-server memory cap. Empty leaves Redis' default. When set, maxmemoryPolicy
+# is applied too. Pair with resources.limits.memory (a bit higher, for COW/AOF).
+maxmemory: ""            # e.g. "256mb"
+maxmemoryPolicy: noeviction
+
+# Swarm deploy resource limits (optional). Rendered only when limits.memory is set.
+resources:
+  limits:
+    memory: ""           # e.g. "512M"
+
+# Container healthcheck via redis-cli PING (auth-aware via REDISCLI_AUTH).
+healthcheck:
+  enabled: true
+  interval: 10s
+  timeout: 5s
+  retries: 5
+  startPeriod: 30s
+
+# Arbitrary extra redis-server flags, appended verbatim. Each entry is a full flag
+# string, e.g. "--save 900 1" or "--tcp-keepalive 60".
+extraConfig: []
+
+# Extra deploy labels (key: value).
+labels: {}
