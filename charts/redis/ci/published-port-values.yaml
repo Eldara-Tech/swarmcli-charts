@@ -1,0 +1,18 @@
+# Published port on a chart-managed internal overlay, with eviction config, an
+# extra redis-server flag, and a deploy memory limit. Exercises the exposure
+# branch, the network.external:false (chart-managed overlay) branch, and the
+# maxmemory / extra-flag / resources paths in the command builder.
+exposure:
+  enabled: true
+  port: 6379
+  protocol: tcp
+  mode: ingress
+network:
+  external: false
+maxmemory: "256mb"
+maxmemoryPolicy: allkeys-lru
+resources:
+  limits:
+    memory: "512M"
+extraConfig:
+  - "--save 900 1"

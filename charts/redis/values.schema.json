@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": { "type": "string" },
+        "tag": { "type": "string" }
+      },
+      "required": ["repository"]
+    },
+    "replicas": { "type": "integer", "minimum": 1, "maximum": 1 },
+    "auth": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "secretName": { "type": "string" }
+      }
+    },
+    "persistence": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "volumeName": { "type": "string" },
+        "appendonly": { "type": "boolean" }
+      }
+    },
+    "placement": {
+      "type": "object",
+      "properties": {
+        "constraints": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "network": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "external": { "type": "boolean" }
+      },
+      "required": ["name"]
+    },
+    "exposure": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "protocol": { "type": "string", "enum": ["tcp"] },
+        "mode": { "type": "string", "enum": ["ingress", "host"] }
+      }
+    },
+    "maxmemory": { "type": "string" },
+    "maxmemoryPolicy": {
+      "type": "string",
+      "enum": [
+        "noeviction",
+        "allkeys-lru",
+        "allkeys-lfu",
+        "volatile-lru",
+        "volatile-lfu",
+        "allkeys-random",
+        "volatile-random",
+        "volatile-ttl"
+      ]
+    },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "limits": {
+          "type": "object",
+          "properties": { "memory": { "type": "string" } }
+        }
+      }
+    },
+    "healthcheck": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "interval": { "type": "string" },
+        "timeout": { "type": "string" },
+        "retries": { "type": "integer", "minimum": 1 },
+        "startPeriod": { "type": "string" }
+      }
+    },
+    "extraConfig": { "type": "array", "items": { "type": "string" } },
+    "labels": { "type": "object" }
+  }
+}

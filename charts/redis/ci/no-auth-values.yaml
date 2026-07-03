@@ -1,0 +1,5 @@
+# No-auth instance (only for a trusted internal overlay). No secret is mounted or
+# referenced, so the top-level secrets block is omitted and the healthcheck uses a
+# plain `redis-cli ping`.
+auth:
+  enabled: false
