@@ -38,6 +38,15 @@ auth:
 persistence:
   enabled: true
   volumeName: mariadb-data
+  # Store data under a host directory instead of Docker's managed volume storage.
+  # When volumePath is set it TAKES PRECEDENCE and volumeName is ignored: the data
+  # dir is bind-mounted from this absolute host path on the PINNED node. The
+  # directory must already exist on that node and be writable by the container's
+  # mysql uid (999) — the image entrypoint chowns it on first init, but
+  # pre-creating it with the right owner is safest. This is host-filesystem access,
+  # acknowledged via swarmcli-charts/allow: "host-mount" in Chart.yaml. Leave empty
+  # ("") to use the named volume above.
+  volumePath: ""
 
 # Pin the service to the node carrying the data volume (Swarm volumes are
 # node-local). Label exactly ONE node first:

@@ -1,0 +1,11 @@
+# Host-path persistence: data bind-mounted from an operator-chosen host directory
+# instead of a Docker-managed named volume. volumePath takes precedence over
+# volumeName, so no top-level volumes block is rendered and the service mounts the
+# absolute host path — which the security scan flags as host-mount, acknowledged in
+# Chart.yaml. Exercises the bind-mount branch and the host-mount acknowledgment.
+persistence:
+  enabled: true
+  volumePath: /opt/mariadb-data
+auth:
+  appUser:
+    enabled: false

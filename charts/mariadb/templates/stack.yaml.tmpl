@@ -1,3 +1,6 @@
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) (contains "/" .Values.persistence.volumeName) -}}
+{{- fail "persistence.volumeName is a Docker named-volume name and cannot contain '/'. To store data under a host directory, set persistence.volumePath instead." -}}
+{{- end -}}
 version: "3.9"
 
 services:
@@ -18,7 +21,11 @@ services:
 
 {{- if .Values.persistence.enabled }}
     volumes:
+{{- if .Values.persistence.volumePath }}
+      - {{ .Values.persistence.volumePath }}:/var/lib/mysql
+{{- else }}
       - {{ .Values.persistence.volumeName }}:/var/lib/mysql
+{{- end }}
 {{- end }}
 
     secrets:
@@ -83,7 +90,7 @@ services:
 {{- end }}
 {{- end }}
 
-{{- if .Values.persistence.enabled }}
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) }}
 
 volumes:
   {{ .Values.persistence.volumeName }}: {}

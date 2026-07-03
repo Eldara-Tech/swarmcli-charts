@@ -16,6 +16,9 @@
 #   docker node update --label-add mariadb-data=true <node>
 #   printf test | docker secret create mariadb_root_password -
 #   printf test | docker secret create mariadb_password -
+# The bind-mount fixture additionally needs its host dir to pre-exist on the node
+# (bind mounts are not auto-created with the right owner):
+#   install -d -o 999 -g 999 /opt/mariadb-data
 set -euo pipefail
 
 release="$1"

@@ -31,7 +31,8 @@
       "type": "object",
       "properties": {
         "enabled": { "type": "boolean" },
-        "volumeName": { "type": "string" }
+        "volumeName": { "type": "string" },
+        "volumePath": { "type": "string" }
       }
     },
     "placement": {

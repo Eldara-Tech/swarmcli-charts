@@ -59,8 +59,9 @@ to trusted sources — or keep exposure disabled and stay on the overlay.
 | `auth.appUser.username` | `app` | App user name |
 | `auth.appUser.database` | `app` | Database created and granted to the app user |
 | `auth.appUser.secretName` | `mariadb_password` | External Swarm secret holding the app-user password |
-| `persistence.enabled` | `true` | Mount a named volume at `/var/lib/mysql` |
-| `persistence.volumeName` | `mariadb-data` | Named volume |
+| `persistence.enabled` | `true` | Mount a volume at `/var/lib/mysql` |
+| `persistence.volumeName` | `mariadb-data` | Named volume (used when `volumePath` is empty) |
+| `persistence.volumePath` | `""` | Absolute host path to bind-mount instead; when set it wins over `volumeName` (see Operating notes) |
 | `placement.constraints` | `["node.labels.mariadb-data == true"]` | Node pin |
 | `network.name` | `mariadb-net` | Overlay network |
 | `network.external` | `true` | Use a pre-existing/shared overlay vs chart-managed |
@@ -90,6 +91,18 @@ so no password ever appears on a command line either.
   (`ALTER USER 'app'@'%' IDENTIFIED BY '…'`, and likewise for `root`), then update
   the secret to match. (Persistence off — an ephemeral DB — re-reads the secret on
   every boot, since each boot re-initializes.)
+- **Host-path persistence.** By default data lives on the node-local named volume
+  `mariadb-data` (durable across restarts/redeploys, under Docker's own volume
+  storage). To store it under a directory you choose instead, set
+  `persistence.volumePath` to an absolute path — it takes precedence over
+  `volumeName` and the data dir is **bind-mounted** from that path on the pinned
+  node. The directory must already exist on that node and be writable by the
+  container's `mysql` uid (`999`); the entrypoint chowns it on first init, but
+  pre-creating it with the right owner (`install -d -o 999 -g 999 <path>`) is
+  safest. A bind mount is direct host-filesystem access, acknowledged by this
+  chart's `swarmcli-charts/allow: "host-mount"` annotation. (A host path in
+  `volumeName` is rejected at render time — that field is a Docker named-volume
+  name and cannot contain `/`.)
 - **Backups / availability.** Data lives only on the pinned node's local volume and
   the service runs a single replica, so there is no built-in HA: if that node is
   lost the database is unavailable until it returns or you restore a backup. Back
