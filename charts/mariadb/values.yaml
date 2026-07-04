@@ -1,0 +1,96 @@
+# mariadb chart default values.
+#
+# Single MariaDB instance on Docker Swarm. A Swarm named volume is node-local, so
+# this is a single-replica service pinned (via a node label) to the node holding
+# its data volume. The root password ALWAYS comes from an EXTERNAL Swarm secret
+# the operator pre-creates (never created by the chart); an optional application
+# user + database (on by default) use a second external secret. MariaDB is
+# reachable by other stacks over a shared overlay; it is TCP, so it is NOT
+# Traefik-routed and publishes no port by default.
+
+image:
+  repository: mariadb
+  tag: ""  # defaults to appVersion from Chart.yaml (11.8)
+
+# Stateful + node-local volume => exactly one replica. Do not raise; run a second
+# named release (or Galera, out of scope) for HA.
+replicas: 1
+
+# Credentials. Passwords are read from mounted secret files via the image's
+# MARIADB_*_FILE convention, so the plaintext never lands in the compose file, the
+# environment, or `docker inspect` — only the file path does.
+#   rootSecretName: EXTERNAL Swarm secret holding the root password (always
+#     required). Pre-create it, e.g.:
+#       printf 'S3cr3t' | docker secret create mariadb_root_password -
+#   appUser: optional non-root user + database created at first init. enabled:false
+#     => a root-only DB (no second secret needed). When enabled, secretName is an
+#     EXTERNAL Swarm secret holding the app user's password — pre-create it too.
+auth:
+  rootSecretName: mariadb_root_password
+  appUser:
+    enabled: true
+    username: app
+    database: app
+    secretName: mariadb_password
+
+# Persistence. Named volume at /var/lib/mysql. enabled:false => ephemeral DB (no
+# volume; also drop the placement pin below).
+persistence:
+  enabled: true
+  volumeName: mariadb-data
+  # Store data under a host directory instead of Docker's managed volume storage.
+  # When volumePath is set it TAKES PRECEDENCE and volumeName is ignored: the data
+  # dir is bind-mounted from this absolute host path on the PINNED node. The
+  # directory must already exist on that node and be writable by the container's
+  # mysql uid (999) — the image entrypoint chowns it on first init, but
+  # pre-creating it with the right owner is safest. This is host-filesystem access,
+  # acknowledged via swarmcli-charts/allow: "host-mount" in Chart.yaml. Leave empty
+  # ("") to use the named volume above.
+  volumePath: ""
+
+# Pin the service to the node carrying the data volume (Swarm volumes are
+# node-local). Label exactly ONE node first:
+#   docker node update --label-add mariadb-data=true <node>
+# Set constraints to [] for an unpinned ephemeral instance.
+placement:
+  constraints:
+    - "node.labels.mariadb-data == true"
+
+# Overlay network mariadb attaches to. external:true (default) is a shared
+# attachable overlay (declared in requirements.yaml, auto-created if missing) that
+# app stacks also join to reach mariadb by service name. external:false =>
+# chart-managed internal overlay (mariadb only reachable by services in this stack).
+network:
+  name: mariadb-net
+  external: true
+
+# Publish a port. Disabled by default — mariadb stays internal to the overlay.
+# mode: ingress (cluster-wide routing mesh) or host (only on the pinned node).
+exposure:
+  enabled: false
+  port: 3306
+  protocol: tcp
+  mode: ingress
+
+# Swarm deploy resource limits (optional). Rendered only when limits.memory is set.
+resources:
+  limits:
+    memory: ""           # e.g. "512M"
+
+# Container healthcheck via the image's healthcheck.sh. --connect tests the TCP
+# port and --innodb_initialized waits for InnoDB recovery; the official image
+# auto-creates a healthcheck@localhost user, so no secret is needed on the command
+# line and the check works regardless of auth config.
+healthcheck:
+  enabled: true
+  interval: 10s
+  timeout: 5s
+  retries: 5
+  startPeriod: 30s
+
+# Arbitrary extra mariadbd flags, appended verbatim as the container command. Each
+# entry is a full flag string, e.g. "--max-connections=200" or "--max-allowed-packet=64M".
+extraArgs: []
+
+# Extra deploy labels (key: value).
+labels: {}

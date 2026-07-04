@@ -1,0 +1,6 @@
+# Ephemeral DB: no volume, no node pin. Auth stays on. Exercises the no-volume
+# branch (no top-level volumes block, no placement).
+persistence:
+  enabled: false
+placement:
+  constraints: []

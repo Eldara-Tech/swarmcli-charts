@@ -1,0 +1,15 @@
+# External resources this chart needs. Authoritative: every external
+# network/secret/config the rendered stack references must be listed here
+# (swarmcli pre-flights it; scripts/requirements-check.sh enforces it at PR time).
+networks:
+  - name: mariadb-net
+    driver: overlay
+    attachable: true
+    autoCreate: true
+    description: "Shared overlay app stacks attach to in order to reach mariadb by service name"
+secrets:
+  - name: mariadb_root_password
+    description: "MariaDB root password. Pre-create: printf 'S3cr3t' | docker secret create mariadb_root_password -"
+  - name: mariadb_password
+    description: "MariaDB app-user password (when auth.appUser.enabled). Pre-create: printf 'S3cr3t' | docker secret create mariadb_password -"
+configs: []

@@ -1,0 +1,5 @@
+# Root-only instance: no app user/database. Only the root secret is mounted and
+# referenced, so the app-user env vars and the second external secret are omitted.
+auth:
+  appUser:
+    enabled: false

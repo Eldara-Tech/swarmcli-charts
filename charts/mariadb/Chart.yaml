@@ -1,0 +1,25 @@
+name: mariadb
+description: MariaDB relational database for Docker Swarm — persistent, secret-authenticated, single-node pinned
+version: 0.1.0
+appVersion: "11.8"
+# host-mount is acknowledged because persistence.volumePath can bind-mount the data
+# dir from an operator-chosen host path. The default (named volume) render mounts no
+# host path — no docker.sock, unprivileged — so the annotation is exercised by the
+# security scan only when a host path is configured.
+annotations:
+  swarmcli-charts/allow: "host-mount"
+maintainers:
+  - name: Eldara
+    url: https://github.com/Eldara-Tech
+keywords:
+  - mariadb
+  - mysql
+  - database
+  - sql
+  - relational
+  - stateful
+  - swarm
+home: https://github.com/Eldara-Tech/swarmcli-charts
+sources:
+  - https://github.com/Eldara-Tech/swarmcli-charts
+  - https://github.com/MariaDB/server
