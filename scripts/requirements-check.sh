@@ -18,9 +18,18 @@ set -euo pipefail
 
 rendered="$1"
 dir="$2"
+rendered_req="${3:-}" # optional: requirements.yaml already rendered with the release's values
 req="$dir/requirements.yaml"
 
 [ -f "$req" ] || exit 0 # optional: fall back to manifest-driven behaviour
+
+# Prefer the values-rendered requirements (swarmcli `charts template --requirements`)
+# so a templated declaration — name: "{{ .Values.database.network }}" — is compared
+# as its resolved value; fall back to the on-disk file for standalone invocations.
+reqsrc="$req"
+if [ -n "$rendered_req" ] && [ -f "$rendered_req" ]; then
+  reqsrc="$rendered_req"
+fi
 
 if ! command -v yq >/dev/null 2>&1 || ! yq --version 2>/dev/null | grep -qi mikefarah; then
   echo "   note: mikefarah yq v4 not found — skipping requirements.yaml consistency check"
@@ -47,9 +56,9 @@ manifest_external() {
     | (.value.external.name // .key)" "$rendered" | sort -u
 }
 
-# Declared names in requirements.yaml.
+# Declared names in requirements.yaml (values-resolved when available).
 declared() {
-  yq_or_skip ".${1} // [] | .[].name" "$req" | sort -u
+  yq_or_skip ".${1} // [] | .[].name" "$reqsrc" | sort -u
 }
 
 fail=0

@@ -5,19 +5,22 @@
 # Keycloak is a CONSUMER of both overlays — it owns neither — so both are
 # autoCreate:false (validate-only; a missing one is a hard error, never created):
 #   traefik-public  is provisioned by the traefik chart / operator.
-#   keycloak-db-net is provisioned by the database chart / operator (its name is
-#                   the `database.network` value; keep them in sync if you change it).
+#   the DB overlay  is provisioned by the database chart / operator; its name is
+#                   whatever `database.network` is set to. swarmcli renders this
+#                   file with the release's values, so the declared name always
+#                   tracks the override — point database.network at your DB's
+#                   overlay (e.g. the mariadb chart's `mariadb-net`).
 networks:
   - name: traefik-public
     driver: overlay
     attachable: true
     autoCreate: false
     description: "Shared ingress overlay Traefik publishes routes on; provisioned by the traefik chart/operator (never created here)"
-  - name: keycloak-db-net
+  - name: "{{ .Values.database.network }}"
     driver: overlay
     attachable: true
     autoCreate: false
-    description: "External overlay the database backend is reachable on; provisioned by the DB chart/operator. Must match database.network"
+    description: "External overlay the database backend is reachable on; provisioned by the DB chart/operator (the database.network value)"
 secrets:
   - name: keycloak_db_password
     description: "Database password for KC_DB_USERNAME. Pre-create: printf 'S3cr3t' | docker secret create keycloak_db_password -"

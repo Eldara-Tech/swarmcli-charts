@@ -42,6 +42,30 @@ them (`requirements.yaml`, `autoCreate: false`) but never creates them.
    docker secret create keycloak_tls_key  privkey.pem
    ```
 
+### Connecting to the MariaDB chart
+
+Deploy the [MariaDB chart](../mariadb) with its defaults — it owns and auto-creates
+the `mariadb-net` overlay — then point Keycloak's DB overlay straight at it (no
+separate `keycloak-db-net` to pre-create):
+
+```yaml
+# keycloak values
+database:
+  vendor: mariadb
+  host: mariadb          # the mariadb chart's service name on the shared overlay
+  port: 3306
+  database: keycloak     # an empty schema owned by database.username (see step 1)
+  username: keycloak
+  network: mariadb-net   # the mariadb chart's overlay
+```
+
+`requirements.yaml` declares the DB overlay as `"{{ .Values.database.network }}"`
+and swarmcli renders it with these values, so the name the pre-flight validates
+always tracks `database.network` — set it to whatever overlay your database is
+reachable on. (Requires a swarmcli build that renders requirements.yaml with values;
+older builds pin the default `keycloak-db-net`, so `database.network` cannot be
+overridden there.)
+
 ## Installing
 
 ```bash
