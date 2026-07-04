@@ -1,0 +1,6 @@
+# Bring-your-own-proxy mode: no published port and no Traefik labels. Exercises the
+# exposure.mode=none branch — Keycloak attaches to exposure.network (so your own proxy
+# on that overlay can reach keycloak:8080) plus the DB network, with KC_PROXY_HEADERS
+# on and no deploy labels block.
+exposure:
+  mode: none

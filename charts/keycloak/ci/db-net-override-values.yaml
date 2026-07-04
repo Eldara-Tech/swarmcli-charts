@@ -1,0 +1,8 @@
+# Value-aware DB overlay: point database.network at the mariadb chart's own
+# `mariadb-net` instead of the default keycloak-db-net (the exact config a user
+# hit deploying Keycloak against the MariaDB chart). requirements.yaml templates
+# database.network, so the rendered contract declares `mariadb-net` — the name the
+# manifest actually references — and the check passes. This override failed the
+# pre-flight before requirements.yaml became values-rendered.
+database:
+  network: mariadb-net

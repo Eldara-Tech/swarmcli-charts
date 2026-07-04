@@ -77,7 +77,21 @@ for chart in "${charts[@]}"; do
       fail=1
       continue
     fi
-    if ! scripts/requirements-check.sh "$out" "$dir"; then
+    # Render requirements.yaml with the same values as the manifest so a templated
+    # declaration (e.g. name: "{{ .Values.database.network }}") is checked as its
+    # resolved value. requirements-check.sh falls back to the on-disk file when
+    # this is empty (chart without a requirements.yaml).
+    reqout=""
+    if [ -f "$dir/requirements.yaml" ]; then
+      reqout="$OUT/${chart}__${case}.requirements.yaml"
+      if ! "$SWARMCLI" charts template "$RELEASE" "./$dir" -f "$vf" --requirements >"$reqout" 2>"$err"; then
+        echo "   FAIL: rendering requirements.yaml"
+        sed 's/^/      /' "$err"
+        fail=1
+        continue
+      fi
+    fi
+    if ! scripts/requirements-check.sh "$out" "$dir" "$reqout"; then
       fail=1
       continue
     fi

@@ -1,0 +1,36 @@
+# External resources this chart needs. Authoritative: every external
+# network/secret/config the rendered stack references must be listed here
+# (swarmcli pre-flights it; scripts/requirements-check.sh enforces it at PR time).
+#
+# Keycloak is a CONSUMER of both overlays — it owns neither — so both are
+# autoCreate:false (validate-only; a missing one is a hard error, never created):
+#   traefik-public  is provisioned by the traefik chart / operator.
+#   the DB overlay  is provisioned by the database chart / operator; its name is
+#                   whatever `database.network` is set to. swarmcli renders this
+#                   file with the release's values, so the declared name always
+#                   tracks the override — point database.network at your DB's
+#                   overlay (e.g. the mariadb chart's `mariadb-net`).
+networks:
+  - name: traefik-public
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "Shared ingress overlay Traefik publishes routes on; provisioned by the traefik chart/operator (never created here)"
+  - name: "{{ .Values.database.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "External overlay the database backend is reachable on; provisioned by the DB chart/operator (the database.network value)"
+secrets:
+  - name: keycloak_db_password
+    description: "Database password for KC_DB_USERNAME. Pre-create: printf 'S3cr3t' | docker secret create keycloak_db_password -"
+  - name: keycloak_admin_password
+    description: "Bootstrap admin password (KC_BOOTSTRAP_ADMIN_PASSWORD). Pre-create: printf 'S3cr3t' | docker secret create keycloak_admin_password -"
+  # Only referenced when exposure.mode=published and publish.tls.enabled (Keycloak
+  # terminates TLS). swarmcli's pre-flight is manifest-driven, so these are inert in
+  # every other mode — declared here so the published-TLS path satisfies the contract.
+  - name: keycloak_tls_cert
+    description: "PEM TLS certificate (publish.tls). Pre-create: docker secret create keycloak_tls_cert fullchain.pem"
+  - name: keycloak_tls_key
+    description: "PEM TLS private key (publish.tls). Pre-create: docker secret create keycloak_tls_key privkey.pem"
+configs: []

@@ -1,0 +1,11 @@
+# Published mode, Keycloak-terminated TLS: serve HTTPS on 8443 from mounted cert/key
+# secrets. Exercises the publish.tls.enabled branch — KC_HTTPS_CERTIFICATE_FILE/_KEY_FILE,
+# KC_HTTP_MANAGEMENT_SCHEME=http (keeps the :9000 health probe on plain HTTP), the two
+# extra external TLS secrets, the 8443 target port, and KC_HOSTNAME=https://host:8443.
+exposure:
+  mode: published
+publish:
+  port: 8443
+  mode: host
+  tls:
+    enabled: true

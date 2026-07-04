@@ -1,0 +1,5 @@
+# Exercises the {{ if .Values.ingress.tls }} branch being false: HTTP-only Traefik
+# router (no redirect-to-https, no certresolver labels) and KC_HOSTNAME rendered
+# with the http:// scheme.
+ingress:
+  tls: false

@@ -1,0 +1,6 @@
+# Development mode with the healthcheck disabled. Exercises the `mode: start-dev`
+# command branch and the {{ if .Values.healthcheck.enabled }} branch being false
+# (no healthcheck block in the rendered stack).
+mode: start-dev
+healthcheck:
+  enabled: false

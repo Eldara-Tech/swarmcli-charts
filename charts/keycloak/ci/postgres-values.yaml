@@ -1,0 +1,9 @@
+# DB-agnostic proof: a PostgreSQL backend via host/port/database. Only the
+# `database` vendor/host/port change; the shared overlay name and secret names stay
+# at their declared defaults so the static requirements.yaml still matches. KC_DB
+# renders as postgres and KC_DB_URL_PORT as 5432.
+database:
+  vendor: postgres
+  host: postgres
+  port: 5432
+  database: keycloak
