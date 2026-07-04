@@ -46,25 +46,42 @@ them (`requirements.yaml`, `autoCreate: false`) but never creates them.
 
 Deploy the [MariaDB chart](../mariadb) with its defaults — it owns and auto-creates
 the `mariadb-net` overlay — then point Keycloak's DB overlay straight at it (no
-separate `keycloak-db-net` to pre-create):
+separate `keycloak-db-net` to pre-create).
+
+On the shared overlay the MariaDB service is addressed by its **stack-qualified
+Swarm name**, `<mariadb-release>_mariadb` — e.g. `mariadb_mariadb` when you
+`swarmcli charts install mariadb …`. Use that as the host:
 
 ```yaml
-# keycloak values
+# keycloak values — convenience form (the chart builds the JDBC URL)
 database:
   vendor: mariadb
-  host: mariadb          # the mariadb chart's service name on the shared overlay
+  host: mariadb_mariadb   # <mariadb-release>_mariadb on the shared overlay
   port: 3306
-  database: keycloak     # an empty schema owned by database.username (see step 1)
+  database: keycloak      # an empty schema owned by database.username (see step 1)
   username: keycloak
-  network: mariadb-net   # the mariadb chart's overlay
+  passwordSecretName: keycloak_db_password
+  network: mariadb-net    # the mariadb chart's overlay
+```
+
+Or set the full JDBC URL explicitly — `database.url` **overrides** host/port/database
+(an escape hatch for extra JDBC params). It is self-contained, so its host is the
+same stack-qualified name and its `/<db>` path is the schema Keycloak uses:
+
+```yaml
+database:
+  vendor: mariadb
+  url: "jdbc:mariadb://mariadb_mariadb:3306/keycloak"
+  username: keycloak
+  passwordSecretName: keycloak_db_password
+  network: mariadb-net
 ```
 
 `requirements.yaml` declares the DB overlay as `"{{ .Values.database.network }}"`
-and swarmcli renders it with these values, so the name the pre-flight validates
-always tracks `database.network` — set it to whatever overlay your database is
-reachable on. (Requires a swarmcli build that renders requirements.yaml with values;
-older builds pin the default `keycloak-db-net`, so `database.network` cannot be
-overridden there.)
+and swarmcli renders it with these values, so the pre-flight always validates
+whatever `database.network` is set to. (Requires a swarmcli build that renders
+requirements.yaml with values; older builds pin the default `keycloak-db-net`, so
+`database.network` cannot be overridden there.)
 
 ## Installing
 
