@@ -9,7 +9,7 @@ own reverse proxy.
 
 The chart is database-agnostic: set `database.vendor` (and the connection fields) to
 any backend Keycloak supports (`mariadb`, `mysql`, `postgres`, `mssql`, `oracle`,
-`tidb`). The MariaDB chart is one valid provider, **not** a dependency.
+`tidb`). The [MariaDB chart](../mariadb) is one valid provider, **not** a dependency.
 
 ## Prerequisites
 
@@ -18,8 +18,8 @@ them (`requirements.yaml`, `autoCreate: false`) but never creates them.
 
 1. A reachable **database**: a running service for your chosen vendor on a shared
    overlay, with an empty schema (`database.database`) and a user
-   (`database.username`) that owns it. With the MariaDB chart, that is the `mariadb`
-   service on a shared overlay — point `database.network` at it.
+   (`database.username`) that owns it. With the [MariaDB chart](../mariadb), that is
+   the `mariadb` service on a shared overlay — point `database.network` at it.
 
 2. Networks — the **database overlay** (always), plus the **`exposure.network`**
    overlay in `traefik`/`none` modes. `traefik-public` is provisioned by the
