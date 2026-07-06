@@ -67,6 +67,15 @@ traefik:
   # `<name>-https` routers + the `<name>` service). Empty => the release name.
   # Override to decouple the Traefik object names from the release name.
   routerName: ""
+  # Swarm-provider constraint label. The traefik chart runs with
+  # --providers.swarm.exposedByDefault=false and a constraint on this label, so a routed
+  # service must carry it to be discovered. Match your Traefik's constraintLabel.
+  constraintLabel: traefik-public
+  # Middleware applied to the HTTP router to redirect to HTTPS (when ingress.tls). No
+  # provider suffix => resolved in the swarm provider (https-redirect@swarm). It must be
+  # defined in your Traefik — the traefik chart provides `https-redirect` when its
+  # dashboard is enabled; set e.g. redirect-to-https@file for a file-provider middleware.
+  redirectMiddleware: https-redirect
 
 # published-mode direct port publish. mode: ingress (routing mesh) or host (pinned node).
 publish:

@@ -46,6 +46,8 @@
       "properties": {
         "certResolver": { "type": "string" },
         "routerName": { "type": "string" },
+        "constraintLabel": { "type": "string" },
+        "redirectMiddleware": { "type": "string" },
         "entrypoints": {
           "type": "object",
           "properties": {

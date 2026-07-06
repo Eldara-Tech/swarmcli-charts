@@ -100,6 +100,8 @@ the gateway at it:
 | `ingress.tls` | `true` | Public endpoint is HTTPS (proxied modes) |
 | `traefik.certResolver` | `le` | Traefik ACME cert resolver |
 | `traefik.routerName` | `""` | Base name for the Traefik router/service objects (`<name>-http`/`-https`); empty ⇒ release name |
+| `traefik.constraintLabel` | `traefik-public` | Value of the `traefik.constraint-label` the swarm provider filters on (match your Traefik) |
+| `traefik.redirectMiddleware` | `https-redirect` | HTTP→HTTPS redirect middleware name (must exist in your Traefik) |
 | `traefik.entrypoints.http` / `.https` | `web` / `websecure` | Traefik entrypoints |
 | `publish.port` | `18789` | Published port (published mode) |
 | `publish.mode` | `ingress` | `ingress` (routing mesh) or `host` (pinned node) |

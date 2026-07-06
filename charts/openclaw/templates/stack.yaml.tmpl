@@ -114,12 +114,13 @@ services:
 {{- if eq $mode "traefik" }}
         - "traefik.enable=true"
         - "traefik.swarm.network={{ .Values.exposure.network }}"
+        - "traefik.constraint-label={{ .Values.traefik.constraintLabel }}"
         # HTTP router
         - "traefik.http.routers.{{ $router }}-http.rule=Host(`{{ .Values.ingress.host }}`)"
         - "traefik.http.routers.{{ $router }}-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
 {{- if .Values.ingress.tls }}
         # Redirect plain HTTP to HTTPS, then terminate TLS on the HTTPS router.
-        - "traefik.http.routers.{{ $router }}-http.middlewares=redirect-to-https@file"
+        - "traefik.http.routers.{{ $router }}-http.middlewares={{ .Values.traefik.redirectMiddleware }}"
         - "traefik.http.routers.{{ $router }}-https.rule=Host(`{{ .Values.ingress.host }}`)"
         - "traefik.http.routers.{{ $router }}-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
         - "traefik.http.routers.{{ $router }}-https.tls=true"
