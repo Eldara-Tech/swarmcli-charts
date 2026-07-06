@@ -18,7 +18,8 @@
         "dataVolume": { "type": "string" },
         "authVolume": { "type": "string" },
         "dataPath": { "type": "string" },
-        "authPath": { "type": "string" }
+        "authPath": { "type": "string" },
+        "nodeLabel": { "type": "string" }
       }
     },
     "auth": {

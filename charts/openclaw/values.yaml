@@ -18,9 +18,10 @@ image:
 # Stateful + node-local volumes => exactly one replica. Do not raise.
 replicas: 1
 
-# Node-local named volumes. enabled:false => ephemeral (no persistence; also drop the
-# placement pin below). dataVolume holds config + DB + workspace; authVolume holds the
-# OAuth token encryption keys (keep it, or re-linking channels needs re-authentication).
+# Node-local named volumes. enabled:false => ephemeral (no persistence, and the node
+# pin below is dropped with it). dataVolume holds config + DB + workspace; authVolume
+# holds the OAuth token encryption keys (keep it, or re-linking channels needs
+# re-authentication).
 persistence:
   enabled: true
   dataVolume: openclaw-data
@@ -33,6 +34,13 @@ persistence:
   # swarmcli-charts/allow: "host-mount" in Chart.yaml. Leave "" to use the named volumes.
   dataPath: ""
   authPath: ""
+  # Node label pinning the service to the node carrying the data volumes (Swarm
+  # volumes are node-local). Rendered as `node.labels.<nodeLabel> == true` while
+  # persistence is enabled and dropped automatically when it is not. Label exactly
+  # ONE node first:
+  #   docker node update --label-add openclaw-data=true <node>
+  # Set "" to schedule unpinned even with persistence on (e.g. single-node swarm).
+  nodeLabel: openclaw-data
 
 # Gateway API token — always required (OpenClaw is fail-closed on non-loopback binds
 # without auth). A launch wrapper reads it from the mounted secret into the
@@ -57,12 +65,14 @@ ingress:
   host: openclaw.example.com
   tls: true
 
-# traefik-mode routing. Match certResolver + entrypoints to your Traefik install.
+# traefik-mode routing. The defaults match the traefik chart in this repository;
+# adjust certResolver / entrypoints / constraintLabel / redirectMiddleware to your
+# Traefik install if you run your own.
 traefik:
   certResolver: le
   entrypoints:
-    http: web
-    https: websecure
+    http: http
+    https: https
   # Base name for this chart's Traefik router/service objects (`<name>-http` /
   # `<name>-https` routers + the `<name>` service). Empty => the release name.
   # Override to decouple the Traefik object names from the release name.
@@ -72,9 +82,9 @@ traefik:
   # service must carry it to be discovered. Match your Traefik's constraintLabel.
   constraintLabel: traefik-public
   # Middleware applied to the HTTP router to redirect to HTTPS (when ingress.tls). No
-  # provider suffix => resolved in the swarm provider (https-redirect@swarm). It must be
-  # defined in your Traefik — the traefik chart provides `https-redirect` when its
-  # dashboard is enabled; set e.g. redirect-to-https@file for a file-provider middleware.
+  # provider suffix => resolved in the swarm provider (https-redirect@swarm), which the
+  # traefik chart always defines; set e.g. redirect-to-https@file for a file-provider
+  # middleware of your own Traefik.
   redirectMiddleware: https-redirect
 
 # published-mode direct port publish. mode: ingress (routing mesh) or host (pinned node).
@@ -123,12 +133,9 @@ backend:
 # Prefer external secrets for sensitive keys where the backend supports a *_FILE env.
 extraEnv: {}
 
-# Pin to the node carrying the data volume (Swarm volumes are node-local). Label one node:
-#   docker node update --label-add openclaw-data=true <node>
-# Set to [] only for an unpinned ephemeral instance (persistence.enabled:false).
+# Extra scheduling constraints, always applied (independent of the persistence pin).
 placement:
-  constraints:
-    - "node.labels.openclaw-data == true"
+  constraints: []
 
 # Swarm deploy resource limits (optional; rendered only when set). OpenClaw needs
 # >= 2 GB RAM — builds OOM (exit 137) at 1 GB. Recommended: memory: "2G".

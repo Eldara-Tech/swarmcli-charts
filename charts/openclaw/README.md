@@ -16,7 +16,9 @@ for a network-reachable backend such as a co-located Ollama, `backend.network`).
 ## Prerequisites
 
 1. Label the node that will hold the data volumes (Swarm volumes are node-local, so the
-   service is pinned to exactly one node):
+   service is pinned to exactly one node while `persistence.enabled`; the pin is dropped
+   together with persistence, and `persistence.nodeLabel: ""` skips it, e.g. on a
+   single-node swarm):
 
    ```bash
    docker node update --label-add openclaw-data=true <node>
@@ -108,6 +110,7 @@ the gateway at it:
 | `persistence.authVolume` | `openclaw-auth` | Named volume for `/home/node/.config/openclaw` (OAuth keys) |
 | `persistence.dataPath` | `""` | Host dir for `/home/node/.openclaw`; when set, bind-mounts it and takes precedence over `dataVolume` (needs the `host-mount` acknowledgment) |
 | `persistence.authPath` | `""` | Host dir for `/home/node/.config/openclaw`; when set, bind-mounts it and takes precedence over `authVolume` |
+| `persistence.nodeLabel` | `openclaw-data` | Node label the data pin renders from (`node.labels.<nodeLabel> == true`); dropped when persistence is off, `""` skips the pin |
 | `auth.secretName` | `openclaw_gateway_token` | External Swarm secret holding the (always-required) gateway API token |
 | `exposure.mode` | `traefik` | `traefik` \| `published` \| `none` |
 | `exposure.network` | `traefik-public` | External ingress overlay (traefik & none modes) |
@@ -116,8 +119,8 @@ the gateway at it:
 | `traefik.certResolver` | `le` | Traefik ACME cert resolver |
 | `traefik.routerName` | `""` | Base name for the Traefik router/service objects (`<name>-http`/`-https`); empty ⇒ release name |
 | `traefik.constraintLabel` | `traefik-public` | Value of the `traefik.constraint-label` the swarm provider filters on (match your Traefik) |
-| `traefik.redirectMiddleware` | `https-redirect` | HTTP→HTTPS redirect middleware name (must exist in your Traefik) |
-| `traefik.entrypoints.http` / `.https` | `web` / `websecure` | Traefik entrypoints |
+| `traefik.redirectMiddleware` | `https-redirect` | Middleware on the HTTP router redirecting to HTTPS; the default is always defined by the [traefik chart](../traefik) |
+| `traefik.entrypoints.http` / `.https` | `http` / `https` | Traefik entrypoint names (the traefik chart's) |
 | `publish.port` | `18789` | Published port (published mode) |
 | `publish.mode` | `ingress` | `ingress` (routing mesh) or `host` (pinned node) |
 | `service.port` | `18789` | Container HTTP port (Traefik LB / publish target) |
@@ -128,7 +131,7 @@ the gateway at it:
 | `backend.enabled` | `false` | Join `backend.network` for a network-reachable backend |
 | `backend.network` | `openclaw-backend` | External overlay to join when `backend.enabled` |
 | `extraEnv` | `{}` | Arbitrary extra environment (backend keys/URLs, etc.) |
-| `placement.constraints` | `["node.labels.openclaw-data == true"]` | Node pin |
+| `placement.constraints` | `[]` | Extra scheduling constraints (the data pin comes from `persistence.nodeLabel`) |
 | `resources.limits.memory` | `""` | Swarm deploy memory limit (set `2G`) |
 | `healthcheck.*` | see `values.yaml` | `node fetch()` `/healthz` healthcheck |
 | `labels` | `{}` | Extra deploy labels |
