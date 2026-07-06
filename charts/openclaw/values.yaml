@@ -34,13 +34,12 @@ persistence:
   dataPath: ""
   authPath: ""
 
-# Gateway API token. A launch wrapper reads it from the mounted secret into the
+# Gateway API token — always required (OpenClaw is fail-closed on non-loopback binds
+# without auth). A launch wrapper reads it from the mounted secret into the
 # OPENCLAW_GATEWAY_TOKEN env at runtime, so the value stays out of the compose file.
 # secretName is the EXTERNAL Swarm secret's real name — pre-create it:
 #   printf 'S3cr3t' | docker secret create openclaw_gateway_token -
-# enabled:false => no token (only safe on a private, trusted internal overlay).
 auth:
-  enabled: true
   secretName: openclaw_gateway_token
 
 # How OpenClaw is exposed:

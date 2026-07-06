@@ -27,7 +27,7 @@ version: "3.9"
        gateway auth) at runtime, so the value stays out of the compose file / docker
        inspect. "$$" is the compose escape for a literal "$". */}}
 {{- $launch := printf "exec openclaw gateway%s --bind %s --port %v" (ternary " --allow-unconfigured" "" .Values.allowUnconfigured) .Values.gatewayBind .Values.service.port }}
-{{- if .Values.auth.enabled }}{{ $launch = printf "export OPENCLAW_GATEWAY_TOKEN=\"$$(cat /run/secrets/%s)\"; %s" .Values.auth.secretName $launch }}{{- end }}
+{{- $launch = printf "export OPENCLAW_GATEWAY_TOKEN=\"$$(cat /run/secrets/%s)\"; %s" .Values.auth.secretName $launch }}
 
 services:
 
@@ -55,10 +55,8 @@ services:
       - {{ .Values.persistence.authPath | default .Values.persistence.authVolume }}:/home/node/.config/openclaw
 {{- end }}
 
-{{- if .Values.auth.enabled }}
     secrets:
       - {{ .Values.auth.secretName }}
-{{- end }}
 
     # Container-internal paths are fixed by the image + the mount points above.
     environment:
@@ -144,12 +142,10 @@ volumes:
 {{- end }}
 {{- end }}
 
-{{- if .Values.auth.enabled }}
 
 secrets:
   {{ .Values.auth.secretName }}:
     external: true
-{{- end }}
 
 {{- if $nets }}
 

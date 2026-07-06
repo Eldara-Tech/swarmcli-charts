@@ -24,7 +24,6 @@
     "auth": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
         "secretName": { "type": "string" }
       }
     },

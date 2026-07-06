@@ -1,8 +1,0 @@
-# no-auth: gateway token disabled — only safe on a private, trusted internal overlay,
-# so this fixture pairs it with exposure.mode:none (no public route) rather than the
-# public traefik default. Exercises the token-less path — no secret block and no
-# OPENCLAW_GATEWAY_TOKEN_FILE env.
-auth:
-  enabled: false
-exposure:
-  mode: none

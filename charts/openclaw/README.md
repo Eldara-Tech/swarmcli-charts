@@ -9,8 +9,9 @@ OpenClaw is backend-agnostic — wire any local model or API provider via `extra
 for a network-reachable backend such as a co-located Ollama, `backend.network`).
 
 > **Never expose the gateway (`:18789`) to the internet without TLS and a token.** The
-> defaults (Traefik + TLS at the edge + `auth.enabled`) satisfy this; keep them unless you
-> front the gateway with your own TLS-terminating proxy.
+> gateway token is always required (OpenClaw is fail-closed without auth); the defaults
+> (Traefik + TLS at the edge) satisfy the TLS half — keep them unless you front the gateway
+> with your own TLS-terminating proxy.
 
 ## Prerequisites
 
@@ -92,8 +93,7 @@ the gateway at it:
 | `persistence.authVolume` | `openclaw-auth` | Named volume for `/home/node/.config/openclaw` (OAuth keys) |
 | `persistence.dataPath` | `""` | Host dir for `/home/node/.openclaw`; when set, bind-mounts it and takes precedence over `dataVolume` (needs the `host-mount` acknowledgment) |
 | `persistence.authPath` | `""` | Host dir for `/home/node/.config/openclaw`; when set, bind-mounts it and takes precedence over `authVolume` |
-| `auth.enabled` | `true` | Require a gateway API token |
-| `auth.secretName` | `openclaw_gateway_token` | External Swarm secret holding the token |
+| `auth.secretName` | `openclaw_gateway_token` | External Swarm secret holding the (always-required) gateway API token |
 | `exposure.mode` | `traefik` | `traefik` \| `published` \| `none` |
 | `exposure.network` | `traefik-public` | External ingress overlay (traefik & none modes) |
 | `ingress.host` | `openclaw.example.com` | Public hostname (Traefik rule + default allowed origin) |
@@ -120,7 +120,7 @@ External resources (declared in `requirements.yaml`, validated by swarmcli's pre
 
 - **Network** `traefik-public` (traefik & none modes) — `autoCreate:false`, operator/traefik-provisioned.
 - **Network** `backend.network` (only when `backend.enabled`) — `autoCreate:false`, provisioned by the backend's operator.
-- **Secret** `openclaw_gateway_token` (when `auth.enabled`) — operator-created, never chart-created.
+- **Secret** `openclaw_gateway_token` (always required) — operator-created, never chart-created.
 
 ## Security note
 
