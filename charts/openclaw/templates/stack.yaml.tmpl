@@ -20,6 +20,14 @@ version: "3.9"
 {{- $nets := list }}
 {{- if $proxied }}{{ $nets = append $nets .Values.exposure.network }}{{- end }}
 {{- if .Values.backend.enabled }}{{ $nets = append $nets .Values.backend.network }}{{- end }}
+{{- /* Gateway launch. --bind/--port are passed as explicit flags; --allow-unconfigured
+       clears OpenClaw's gateway.mode config guard so the gateway boots from empty state
+       (configure it afterwards via the Control UI). When auth is on, the token is loaded
+       from its mounted secret into OPENCLAW_GATEWAY_TOKEN (the env OpenClaw reads for
+       gateway auth) at runtime, so the value stays out of the compose file / docker
+       inspect. "$$" is the compose escape for a literal "$". */}}
+{{- $launch := printf "exec openclaw gateway%s --bind %s --port %v" (ternary " --allow-unconfigured" "" .Values.allowUnconfigured) .Values.gatewayBind .Values.service.port }}
+{{- if .Values.auth.enabled }}{{ $launch = printf "export OPENCLAW_GATEWAY_TOKEN=\"$$(cat /run/secrets/%s)\"; %s" .Values.auth.secretName $launch }}{{- end }}
 
 services:
 
@@ -53,9 +61,6 @@ services:
 {{- end }}
 
     # Container-internal paths are fixed by the image + the mount points above.
-    # OpenClaw reads the gateway token from the mounted secret file natively via
-    # OPENCLAW_GATEWAY_TOKEN_FILE, so no entrypoint wrapper is needed and the token
-    # never lands in the compose file or `docker inspect`.
     environment:
       HOME: /home/node
       OPENCLAW_HOME: /home/node
@@ -66,14 +71,15 @@ services:
       OPENCLAW_CONFIG_PATH: /home/node/.openclaw/openclaw.json
       OPENCLAW_WORKSPACE_DIR: /home/node/.openclaw/workspace
       OPENCLAW_DISABLE_BONJOUR: "1"
-      OPENCLAW_GATEWAY_BIND: {{ .Values.gatewayBind | quote }}
       OPENCLAW_ALLOWED_ORIGINS: {{ .Values.allowedOrigins | default $publicOrigin | quote }}
-{{- if .Values.auth.enabled }}
-      OPENCLAW_GATEWAY_TOKEN_FILE: /run/secrets/{{ .Values.auth.secretName }}
-{{- end }}
 {{- range $key, $val := .Values.extraEnv }}
       {{ $key }}: {{ $val | quote }}
 {{- end }}
+
+    command:
+      - sh
+      - -c
+      - {{ $launch | quote }}
 
 {{- if .Values.healthcheck.enabled }}
     healthcheck:

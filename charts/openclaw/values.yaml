@@ -34,7 +34,8 @@ persistence:
   dataPath: ""
   authPath: ""
 
-# Gateway API token. OpenClaw reads OPENCLAW_GATEWAY_TOKEN_FILE natively (no wrapper).
+# Gateway API token. A launch wrapper reads it from the mounted secret into the
+# OPENCLAW_GATEWAY_TOKEN env at runtime, so the value stays out of the compose file.
 # secretName is the EXTERNAL Swarm secret's real name — pre-create it:
 #   printf 'S3cr3t' | docker secret create openclaw_gateway_token -
 # enabled:false => no token (only safe on a private, trusted internal overlay).
@@ -78,9 +79,14 @@ service:
 # access port). Set explicitly if you front published/none mode with your own TLS.
 allowedOrigins: ""
 
-# Interface the gateway binds. "lan" is required so the proxy / routing mesh can reach
-# it across the overlay ("localhost" would be unreachable from Traefik).
+# Interface the gateway binds (passed as --bind). "lan" is required so the proxy /
+# routing mesh can reach it across the overlay ("localhost" would be unreachable).
 gatewayBind: lan
+
+# Start the gateway with --allow-unconfigured so it boots from empty state without a
+# pre-seeded gateway.mode=local (OpenClaw's config guard otherwise aborts first boot).
+# Auth is still enforced. Set false only if you pre-seed a full openclaw.json.
+allowUnconfigured: true
 
 # Optional network-reachable LLM backend (e.g. a co-located Ollama). enabled:true makes
 # the gateway join backend.network (the EXTERNAL overlay the backend is reachable on) so it

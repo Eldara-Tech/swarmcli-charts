@@ -35,10 +35,13 @@ for a network-reachable backend such as a co-located Ollama, `backend.network`).
 4. Provision **≥ 2 GB RAM** for the gateway (`--set resources.limits.memory=2G`); it can
    OOM (exit 137) at 1 GB.
 
-**First boot:** the volumes start empty. Configure the assistant through the Control UI at
-`https://<ingress.host>` after the stack converges. To seed `openclaw.json` (or the OAuth
-keys) declaratively instead, write them into the `openclaw-data` / `openclaw-auth` volumes
-on the pinned node before first start (e.g. `docker run --rm -v openclaw-data:/d busybox …`).
+**First boot:** the volumes start empty. The gateway launches with `--allow-unconfigured`
+(see `allowUnconfigured`) so it boots without a pre-seeded `gateway.mode=local` — OpenClaw's
+config guard would otherwise abort startup; auth stays enforced. Configure the assistant
+through the Control UI at `https://<ingress.host>` after the stack converges. To seed
+`openclaw.json` (or the OAuth keys) declaratively instead, write them into the
+`openclaw-data` / `openclaw-auth` volumes on the pinned node before first start (e.g.
+`docker run --rm -v openclaw-data:/d busybox …`) and you may then set `allowUnconfigured=false`.
 
 ## Installing
 
@@ -101,7 +104,8 @@ the gateway at it:
 | `publish.mode` | `ingress` | `ingress` (routing mesh) or `host` (pinned node) |
 | `service.port` | `18789` | Container HTTP port (Traefik LB / publish target) |
 | `allowedOrigins` | `""` | CORS origins; empty ⇒ `<scheme>://<ingress.host>` |
-| `gatewayBind` | `lan` | Gateway bind interface (`lan` so the proxy can reach it) |
+| `gatewayBind` | `lan` | Gateway bind interface, passed as `--bind` (`lan` so the proxy can reach it) |
+| `allowUnconfigured` | `true` | Launch with `--allow-unconfigured` so the gateway boots from empty state (auth still enforced); set `false` only if you pre-seed `openclaw.json` |
 | `backend.enabled` | `false` | Join `backend.network` for a network-reachable backend |
 | `backend.network` | `openclaw-backend` | External overlay to join when `backend.enabled` |
 | `extraEnv` | `{}` | Arbitrary extra environment (backend keys/URLs, etc.) |
@@ -120,9 +124,10 @@ External resources (declared in `requirements.yaml`, validated by swarmcli's pre
 
 ## Security note
 
-OpenClaw reads the gateway token from its mounted secret file natively via
-`OPENCLAW_GATEWAY_TOKEN_FILE=/run/secrets/openclaw_gateway_token`, so the token never
-lands in the compose file or `docker inspect` — only the file path does. By default state
+The gateway's launch wrapper reads the token from its mounted secret file into the
+`OPENCLAW_GATEWAY_TOKEN` env at runtime (`export OPENCLAW_GATEWAY_TOKEN="$(cat
+/run/secrets/openclaw_gateway_token)"`), so the token value never lands in the compose file
+or `docker inspect` — only the `cat` of the secret path does. By default state
 uses node-local named volumes (no host bind mounts), and the container runs as the image's
 non-root `node` user; the chart adds no `docker.sock`, `privileged`, host network/PID or
 `cap_add`. The only host-filesystem access is the **opt-in** `persistence.dataPath` /

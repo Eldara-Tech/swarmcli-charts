@@ -70,6 +70,7 @@
     },
     "allowedOrigins": { "type": "string" },
     "gatewayBind": { "type": "string" },
+    "allowUnconfigured": { "type": "boolean" },
     "backend": {
       "type": "object",
       "properties": {
