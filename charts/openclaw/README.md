@@ -44,6 +44,21 @@ through the Control UI at `https://<ingress.host>` after the stack converges. To
 `openclaw-data` / `openclaw-auth` volumes on the pinned node before first start (e.g.
 `docker run --rm -v openclaw-data:/d busybox …`) and you may then set `allowUnconfigured=false`.
 
+**Approving your browser (first login):** a non-loopback browser reaching the Control UI is
+shown "pairing required" with the exact device request ID (loopback `127.0.0.1` connections
+are auto-approved, which is why the container health check needs no pairing). Approve it from
+inside the running gateway container:
+
+```bash
+cid=$(docker ps -q -f "label=com.docker.swarm.service.name=<release>_gateway")   # on the pinned node
+docker exec -it "$cid" sh -c \
+  'export OPENCLAW_GATEWAY_TOKEN="$(cat /run/secrets/openclaw_gateway_token)"; openclaw devices approve <requestId>'
+```
+
+If the CLI returns `unknown requestId` (a known OpenClaw bug), approve the device from the
+Control UI dashboard instead. For the gateway to see your real browser IP (not Traefik's) in
+proxied modes, set `trustedProxies` to your ingress overlay's subnet.
+
 ## Installing
 
 ```bash
@@ -106,7 +121,8 @@ the gateway at it:
 | `publish.port` | `18789` | Published port (published mode) |
 | `publish.mode` | `ingress` | `ingress` (routing mesh) or `host` (pinned node) |
 | `service.port` | `18789` | Container HTTP port (Traefik LB / publish target) |
-| `allowedOrigins` | `""` | CORS origins; empty ⇒ `<scheme>://<ingress.host>` |
+| `allowedOrigins` | `[]` | Control-UI allowed origins (`gateway.controlUi.allowedOrigins`, list) — required for non-loopback; empty ⇒ `["<scheme>://<host>"]` |
+| `trustedProxies` | `[]` | Proxy IPs/CIDRs to trust for `X-Forwarded-*` (`gateway.trustedProxies`, proxied modes); e.g. `["10.0.1.0/24"]` |
 | `gatewayBind` | `lan` | Gateway bind interface, passed as `--bind` (`lan` so the proxy can reach it) |
 | `allowUnconfigured` | `true` | Launch with `--allow-unconfigured` so the gateway boots from empty state (auth still enforced); set `false` only if you pre-seed `openclaw.json` |
 | `backend.enabled` | `false` | Join `backend.network` for a network-reachable backend |

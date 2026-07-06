@@ -86,10 +86,17 @@ publish:
 service:
   port: 18789
 
-# Browser origins allowed to talk to the gateway (CORS). Empty => derived as
-# "<scheme>://<ingress.host>" (published mode appends ":<publish.port>", the direct
-# access port). Set explicitly if you front published/none mode with your own TLS.
-allowedOrigins: ""
+# Control-UI browser-origin allowlist (gateway.controlUi.allowedOrigins) — REQUIRED for
+# non-loopback access; the browser can't connect without a matching origin. A list; empty
+# => derived as ["<scheme>://<ingress.host>"] (published mode appends ":<publish.port>",
+# the direct access port). Set explicitly if you front published/none mode with your own TLS.
+allowedOrigins: []
+
+# Reverse-proxy IPs/CIDRs OpenClaw trusts for X-Forwarded-* headers (gateway.trustedProxies),
+# so it reads the real client IP behind Traefik (matters for device pairing/policy). Applied
+# only in proxied modes (traefik/none). Set to your ingress overlay's subnet, e.g.
+# ["10.0.1.0/24"] — find it via `docker network inspect traefik-public`. Empty => not set.
+trustedProxies: []
 
 # Interface the gateway binds (passed as --bind). "lan" is required so the proxy /
 # routing mesh can reach it across the overlay ("localhost" would be unreachable).

@@ -70,7 +70,14 @@ services:
       OPENCLAW_CONFIG_PATH: /home/node/.openclaw/openclaw.json
       OPENCLAW_WORKSPACE_DIR: /home/node/.openclaw/workspace
       OPENCLAW_DISABLE_BONJOUR: "1"
-      OPENCLAW_ALLOWED_ORIGINS: {{ .Values.allowedOrigins | default $publicOrigin | quote }}
+      # Control-UI browser-origin allowlist (gateway.controlUi.allowedOrigins) — required
+      # for non-loopback access. JSON array; defaults to the public origin.
+      OPENCLAW_GATEWAY_CONTROLUI_ALLOWEDORIGINS: {{ .Values.allowedOrigins | default (list $publicOrigin) | toJson | quote }}
+{{- if and $proxied .Values.trustedProxies }}
+      # Reverse-proxy IPs/CIDRs OpenClaw trusts for X-Forwarded-* (gateway.trustedProxies),
+      # so it reads the real client IP behind Traefik. Proxied modes only.
+      OPENCLAW_GATEWAY_TRUSTEDPROXIES: {{ .Values.trustedProxies | toJson | quote }}
+{{- end }}
 {{- range $key, $val := .Values.extraEnv }}
       {{ $key }}: {{ $val | quote }}
 {{- end }}

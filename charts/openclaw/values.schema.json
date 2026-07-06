@@ -70,7 +70,8 @@
         "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
       }
     },
-    "allowedOrigins": { "type": "string" },
+    "allowedOrigins": { "type": "array", "items": { "type": "string" } },
+    "trustedProxies": { "type": "array", "items": { "type": "string" } },
     "gatewayBind": { "type": "string" },
     "allowUnconfigured": { "type": "boolean" },
     "backend": {
