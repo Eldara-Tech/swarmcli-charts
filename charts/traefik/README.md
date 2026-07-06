@@ -30,6 +30,33 @@ export PASSWORD=changethis
 echo $(openssl passwd -apr1 $PASSWORD) | sed 's/\$/\$\$/g'
 ```
 
+## Routing a service
+
+The swarm provider runs with `exposedByDefault=false` **and** a constraint on
+`traefik.constraint-label`, so a routed service must opt in with **both**
+`traefik.enable=true` and the constraint label — without the latter Traefik does
+not discover it at all. `traefik.swarm.network` tells the swarm provider which
+overlay to reach the service on (important when the service sits on several
+networks). A minimal HTTPS service with HTTP→HTTPS redirect:
+
+```
+traefik.enable=true
+traefik.constraint-label=traefik-public          # match traefik.constraintLabel
+traefik.swarm.network=traefik-public             # match traefik.network
+traefik.http.routers.myapp-http.rule=Host(`myapp.example.com`)
+traefik.http.routers.myapp-http.entrypoints=http
+traefik.http.routers.myapp-http.middlewares=https-redirect
+traefik.http.routers.myapp-https.rule=Host(`myapp.example.com`)
+traefik.http.routers.myapp-https.entrypoints=https
+traefik.http.routers.myapp-https.tls=true
+traefik.http.routers.myapp-https.tls.certresolver=le
+traefik.http.services.myapp.loadbalancer.server.port=8080
+```
+
+The `https-redirect` middleware is always defined by this chart (independent of
+the dashboard), so routed services can rely on it. The entrypoints are named
+`http` and `https`.
+
 ## Values
 
 | Key | Default | Description |

@@ -13,12 +13,21 @@ ingress:
   enabled: true
   host: whoami.example.com
   tls: true
-  certResolver: letsencrypt
+  certResolver: le
 
+# Routing defaults match the traefik chart in this repository; adjust to your
+# Traefik install if you run your own.
 traefik:
   network: traefik-public
+  # Swarm-provider constraint label. The traefik chart runs with
+  # --providers.swarm.exposedByDefault=false and a constraint on this label, so a
+  # routed service must carry it to be discovered.
+  constraintLabel: traefik-public
+  # Middleware applied to the HTTP router to redirect to HTTPS (when ingress.tls).
+  # The traefik chart always defines https-redirect in its swarm provider.
+  redirectMiddleware: https-redirect
   entrypoints:
-    http: web
-    https: websecure
+    http: http
+    https: https
 
 labels: {}

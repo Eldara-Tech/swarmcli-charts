@@ -127,13 +127,14 @@ services:
       labels:
 {{- if eq $mode "traefik" }}
         - "traefik.enable=true"
-        - "traefik.docker.network={{ .Values.exposure.network }}"
+        - "traefik.swarm.network={{ .Values.exposure.network }}"
+        - "traefik.constraint-label={{ .Values.traefik.constraintLabel }}"
         # HTTP router
         - "traefik.http.routers.{{ .Release.Name }}-http.rule=Host(`{{ .Values.ingress.host }}`)"
         - "traefik.http.routers.{{ .Release.Name }}-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
 {{- if .Values.ingress.tls }}
         # Redirect plain HTTP to HTTPS, then terminate TLS on the HTTPS router.
-        - "traefik.http.routers.{{ .Release.Name }}-http.middlewares=redirect-to-https@file"
+        - "traefik.http.routers.{{ .Release.Name }}-http.middlewares={{ .Values.traefik.redirectMiddleware }}"
         - "traefik.http.routers.{{ .Release.Name }}-https.rule=Host(`{{ .Values.ingress.host }}`)"
         - "traefik.http.routers.{{ .Release.Name }}-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
         - "traefik.http.routers.{{ .Release.Name }}-https.tls=true"
