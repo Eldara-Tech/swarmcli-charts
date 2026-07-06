@@ -1,0 +1,4 @@
+# none: no published port and no Traefik labels — the gateway sits on exposure.network
+# for an operator-managed reverse proxy. Exercises the proxied-but-label-less branch.
+exposure:
+  mode: none

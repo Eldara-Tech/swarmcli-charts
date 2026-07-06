@@ -1,0 +1,139 @@
+version: "3.9"
+
+{{- /* Exposure mode drives networks, ports, labels and the public scheme. */}}
+{{- $mode := .Values.exposure.mode }}
+{{- $proxied := or (eq $mode "traefik") (eq $mode "none") }}
+{{- $publicTLS := and $proxied .Values.ingress.tls }}
+{{- $scheme := ternary "https" "http" $publicTLS }}
+{{- $nets := list }}
+{{- if $proxied }}{{ $nets = append $nets .Values.exposure.network }}{{- end }}
+{{- if .Values.backend.enabled }}{{ $nets = append $nets .Values.backend.network }}{{- end }}
+
+services:
+
+  gateway:
+    image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
+
+{{- if $nets }}
+    networks:
+{{- range $nets }}
+      - {{ . }}
+{{- end }}
+{{- end }}
+
+{{- if eq $mode "published" }}
+    ports:
+      - target: {{ .Values.service.port }}
+        published: {{ .Values.publish.port }}
+        protocol: tcp
+        mode: {{ .Values.publish.mode }}
+{{- end }}
+
+{{- if .Values.persistence.enabled }}
+    volumes:
+      - {{ .Values.persistence.dataVolume }}:/home/node/.openclaw
+      - {{ .Values.persistence.authVolume }}:/home/node/.config/openclaw
+{{- end }}
+
+{{- if .Values.auth.enabled }}
+    secrets:
+      - {{ .Values.auth.secretName }}
+{{- end }}
+
+    # Container-internal paths are fixed by the image + the mount points above.
+    # OpenClaw reads the gateway token from the mounted secret file natively via
+    # OPENCLAW_GATEWAY_TOKEN_FILE, so no entrypoint wrapper is needed and the token
+    # never lands in the compose file or `docker inspect`.
+    environment:
+      HOME: /home/node
+      OPENCLAW_HOME: /home/node
+      TERM: xterm-256color
+      NODE_ENV: production
+      OPENCLAW_STATE_DIR: /home/node/.openclaw
+      OPENCLAW_CONFIG_DIR: /home/node/.openclaw
+      OPENCLAW_CONFIG_PATH: /home/node/.openclaw/openclaw.json
+      OPENCLAW_WORKSPACE_DIR: /home/node/.openclaw/workspace
+      OPENCLAW_DISABLE_BONJOUR: "1"
+      OPENCLAW_GATEWAY_BIND: {{ .Values.gatewayBind | quote }}
+      OPENCLAW_ALLOWED_ORIGINS: {{ .Values.allowedOrigins | default (printf "%s://%s" $scheme .Values.ingress.host) | quote }}
+{{- if .Values.auth.enabled }}
+      OPENCLAW_GATEWAY_TOKEN_FILE: /run/secrets/{{ .Values.auth.secretName }}
+{{- end }}
+{{- range $key, $val := .Values.extraEnv }}
+      {{ $key }}: {{ $val | quote }}
+{{- end }}
+
+{{- if .Values.healthcheck.enabled }}
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:{{ .Values.service.port }}/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: {{ .Values.healthcheck.interval }}
+      timeout: {{ .Values.healthcheck.timeout }}
+      retries: {{ .Values.healthcheck.retries }}
+      start_period: {{ .Values.healthcheck.startPeriod }}
+{{- end }}
+
+    deploy:
+      replicas: {{ .Values.replicas }}
+{{- if .Values.placement.constraints }}
+      placement:
+        constraints:
+{{- range .Values.placement.constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- with .Values.resources.limits.memory }}
+      resources:
+        limits:
+          memory: {{ . | quote }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- if or (eq $mode "traefik") .Values.labels }}
+      labels:
+{{- if eq $mode "traefik" }}
+        - "traefik.enable=true"
+        - "traefik.docker.network={{ .Values.exposure.network }}"
+        # HTTP router
+        - "traefik.http.routers.{{ .Release.Name }}-http.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ .Release.Name }}-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
+{{- if .Values.ingress.tls }}
+        # Redirect plain HTTP to HTTPS, then terminate TLS on the HTTPS router.
+        - "traefik.http.routers.{{ .Release.Name }}-http.middlewares=redirect-to-https@file"
+        - "traefik.http.routers.{{ .Release.Name }}-https.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ .Release.Name }}-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
+        - "traefik.http.routers.{{ .Release.Name }}-https.tls=true"
+        - "traefik.http.routers.{{ .Release.Name }}-https.tls.certresolver={{ .Values.traefik.certResolver }}"
+{{- end }}
+        - "traefik.http.services.{{ .Release.Name }}.loadbalancer.server.port={{ .Values.service.port }}"
+{{- end }}
+{{- range $key, $val := .Values.labels }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+{{- end }}
+
+{{- if .Values.persistence.enabled }}
+
+volumes:
+  {{ .Values.persistence.dataVolume }}: {}
+  {{ .Values.persistence.authVolume }}: {}
+{{- end }}
+
+{{- if .Values.auth.enabled }}
+
+secrets:
+  {{ .Values.auth.secretName }}:
+    external: true
+{{- end }}
+
+{{- if $nets }}
+
+networks:
+{{- range $nets }}
+  {{ . }}:
+    external: true
+{{- end }}
+{{- end }}

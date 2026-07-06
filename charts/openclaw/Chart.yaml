@@ -1,0 +1,19 @@
+name: openclaw
+description: OpenClaw — self-hosted personal AI assistant gateway on Docker Swarm
+version: 0.1.0                 # placeholder — the git tag (openclaw/vX.Y.Z) sets the real version
+appVersion: "2026.6.11"        # default image tag (ghcr.io/openclaw/openclaw)
+maintainers:
+  - name: Eldara
+    url: https://github.com/Eldara-Tech
+keywords:
+  - openclaw
+  - ai-assistant
+  - llm
+home: https://github.com/Eldara-Tech/swarmcli-charts
+sources:
+  - https://github.com/openclaw/openclaw
+  - https://openclaw.ai
+# No swarmcli-charts/allow annotation is needed: state lives on node-local named
+# volumes (no host mount), the gateway token comes from an external Swarm secret, and
+# there is no docker.sock / privileged / host-network / cap_add. The security scan
+# passes clean.

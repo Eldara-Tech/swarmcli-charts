@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": { "type": "string" },
+        "tag": { "type": "string" }
+      },
+      "required": ["repository"]
+    },
+    "replicas": { "type": "integer", "minimum": 1, "maximum": 1 },
+    "persistence": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "dataVolume": { "type": "string" },
+        "authVolume": { "type": "string" }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "secretName": { "type": "string" }
+      }
+    },
+    "exposure": {
+      "type": "object",
+      "properties": {
+        "mode": { "type": "string", "enum": ["traefik", "published", "none"] },
+        "network": { "type": "string" }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "host": { "type": "string" },
+        "tls": { "type": "boolean" }
+      }
+    },
+    "traefik": {
+      "type": "object",
+      "properties": {
+        "certResolver": { "type": "string" },
+        "entrypoints": {
+          "type": "object",
+          "properties": {
+            "http": { "type": "string" },
+            "https": { "type": "string" }
+          }
+        }
+      }
+    },
+    "publish": {
+      "type": "object",
+      "properties": {
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "mode": { "type": "string", "enum": ["ingress", "host"] }
+      }
+    },
+    "service": {
+      "type": "object",
+      "properties": {
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "allowedOrigins": { "type": "string" },
+    "gatewayBind": { "type": "string" },
+    "backend": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "network": { "type": "string" }
+      }
+    },
+    "extraEnv": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "placement": {
+      "type": "object",
+      "properties": {
+        "constraints": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "limits": {
+          "type": "object",
+          "properties": { "memory": { "type": "string" } }
+        }
+      }
+    },
+    "healthcheck": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "interval": { "type": "string" },
+        "timeout": { "type": "string" },
+        "retries": { "type": "integer", "minimum": 1 },
+        "startPeriod": { "type": "string" }
+      }
+    },
+    "labels": { "type": "object" }
+  }
+}

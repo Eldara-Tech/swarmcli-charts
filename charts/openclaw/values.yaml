@@ -1,0 +1,114 @@
+# openclaw chart default values.
+#
+# OpenClaw's gateway is STATEFUL: config, the SQLite DB, plugins and the agent
+# workspace live under /home/node/.openclaw; the OAuth token encryption keys live
+# under /home/node/.config/openclaw. Both are node-local Swarm named volumes, so this
+# is a single-replica service pinned (via a node label) to the node holding its data.
+#
+# Exposure is pluggable (see exposure.mode): front it with Traefik (default, TLS at the
+# edge), publish a port directly, or expose nothing and attach your own reverse proxy.
+# The gateway API token comes from an EXTERNAL Swarm secret the operator pre-creates.
+# OpenClaw is backend-agnostic: wire any LLM/model backend via extraEnv (and, for a
+# network-reachable backend such as a co-located Ollama, backend.network).
+
+image:
+  repository: ghcr.io/openclaw/openclaw
+  tag: ""  # defaults to appVersion from Chart.yaml (2026.6.11)
+
+# Stateful + node-local volumes => exactly one replica. Do not raise.
+replicas: 1
+
+# Node-local named volumes. enabled:false => ephemeral (no persistence; also drop the
+# placement pin below). dataVolume holds config + DB + workspace; authVolume holds the
+# OAuth token encryption keys (keep it, or re-linking channels needs re-authentication).
+persistence:
+  enabled: true
+  dataVolume: openclaw-data
+  authVolume: openclaw-auth
+
+# Gateway API token. OpenClaw reads OPENCLAW_GATEWAY_TOKEN_FILE natively (no wrapper).
+# secretName is the EXTERNAL Swarm secret's real name — pre-create it:
+#   printf 'S3cr3t' | docker secret create openclaw_gateway_token -
+# enabled:false => no token (only safe on a private, trusted internal overlay).
+auth:
+  enabled: true
+  secretName: openclaw_gateway_token
+
+# How OpenClaw is exposed:
+#   traefik   - Traefik deploy labels on exposure.network (default). TLS at the edge.
+#   published - publish the gateway port on the Swarm directly (plain HTTP; front it
+#               with your own TLS — never expose it raw to the internet).
+#   none      - no port, no labels; sits on exposure.network for your own reverse proxy.
+exposure:
+  mode: traefik
+  network: traefik-public   # external overlay the edge proxy lives on (traefik & none)
+
+# Public-facing address. host drives the Traefik Host() rule and the default
+# OPENCLAW_ALLOWED_ORIGINS; tls selects the public scheme (https/http) for proxied modes.
+ingress:
+  host: openclaw.example.com
+  tls: true
+
+# traefik-mode routing. Match certResolver + entrypoints to your Traefik install.
+traefik:
+  certResolver: le
+  entrypoints:
+    http: web
+    https: websecure
+
+# published-mode direct port publish. mode: ingress (routing mesh) or host (pinned node).
+publish:
+  port: 18789
+  mode: ingress
+
+# Container HTTP port the gateway listens on (Traefik LB target / publish target).
+service:
+  port: 18789
+
+# Browser origins allowed to talk to the gateway (CORS). Empty => derived as
+# "<scheme>://<ingress.host>". Set explicitly for published/none modes if needed.
+allowedOrigins: ""
+
+# Interface the gateway binds. "lan" is required so the proxy / routing mesh can reach
+# it across the overlay ("localhost" would be unreachable from Traefik).
+gatewayBind: lan
+
+# Optional network-reachable LLM backend (e.g. a co-located Ollama). enabled:true makes
+# the gateway join backend.network (the EXTERNAL overlay the backend is reachable on) so it
+# can dial the backend by service name. Leave disabled for API-based providers — they need
+# no extra network; pass their keys/URLs via extraEnv. When you enable it, set
+# backend.network to your backend's real overlay. It is declared in requirements.yaml with
+# autoCreate:false (provisioned by the backend's operator, never created here).
+backend:
+  enabled: false
+  network: openclaw-backend
+
+# Backend wiring / arbitrary extra env (OpenClaw is backend-agnostic). Examples:
+#   OLLAMA_HOST: http://ollama:11434
+#   OPENAI_API_KEY: ...     ANTHROPIC_API_KEY: ...
+# Prefer external secrets for sensitive keys where the backend supports a *_FILE env.
+extraEnv: {}
+
+# Pin to the node carrying the data volume (Swarm volumes are node-local). Label one node:
+#   docker node update --label-add openclaw-data=true <node>
+# Set to [] only for an unpinned ephemeral instance (persistence.enabled:false).
+placement:
+  constraints:
+    - "node.labels.openclaw-data == true"
+
+# Swarm deploy resource limits (optional; rendered only when set). OpenClaw needs
+# >= 2 GB RAM — builds OOM (exit 137) at 1 GB. Recommended: memory: "2G".
+resources:
+  limits:
+    memory: ""
+
+# Container healthcheck: a node fetch() against /healthz (the image ships node, not curl).
+healthcheck:
+  enabled: true
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  startPeriod: 120s
+
+# Extra deploy labels (key: value), merged after any Traefik router labels.
+labels: {}

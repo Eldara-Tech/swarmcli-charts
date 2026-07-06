@@ -1,0 +1,26 @@
+# External resources this chart needs. Authoritative: every external network/secret the
+# rendered stack references must be listed here (swarmcli pre-flights it; CI enforces it
+# via scripts/requirements-check.sh). swarmcli renders this file with the release's
+# values, so the templated names below track any override.
+#
+# This file is plain YAML with value substitution only (no Go-template control flow like
+# if/range — those non-scalar actions would break yamllint). Entries are therefore
+# declared unconditionally: an entry that a given exposure mode does not use (e.g. the
+# ingress overlay in published mode, or the backend overlay when backend.network is unset)
+# is simply never referenced by the manifest, so the used-is-subset-of-declared contract
+# still holds.
+networks:
+  - name: "{{ .Values.exposure.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "Shared ingress overlay the reverse proxy publishes routes on (traefik & none modes); provisioned by the traefik chart/operator (never created here)"
+  - name: "{{ .Values.backend.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "Optional external overlay for a network-reachable LLM backend (e.g. Ollama); referenced only when backend.enabled. Provisioned by that backend's operator"
+secrets:
+  - name: "{{ .Values.auth.secretName }}"
+    description: "Gateway API token (OPENCLAW_GATEWAY_TOKEN_FILE). Pre-create: printf 'S3cr3t' | docker secret create openclaw_gateway_token -"
+configs: []
