@@ -5,6 +5,10 @@ version: "3.9"
 {{- $proxied := or (eq $mode "traefik") (eq $mode "none") }}
 {{- $publicTLS := and $proxied .Values.ingress.tls }}
 {{- $scheme := ternary "https" "http" $publicTLS }}
+{{- /* Public origin for the CORS default. Direct publish is reached on publish.port,
+       so include it there; proxied modes sit behind the proxy on standard ports. */}}
+{{- $publicOrigin := printf "%s://%s" $scheme .Values.ingress.host }}
+{{- if eq $mode "published" }}{{ $publicOrigin = printf "%s://%s:%v" $scheme .Values.ingress.host .Values.publish.port }}{{- end }}
 {{- $nets := list }}
 {{- if $proxied }}{{ $nets = append $nets .Values.exposure.network }}{{- end }}
 {{- if .Values.backend.enabled }}{{ $nets = append $nets .Values.backend.network }}{{- end }}
@@ -55,7 +59,7 @@ services:
       OPENCLAW_WORKSPACE_DIR: /home/node/.openclaw/workspace
       OPENCLAW_DISABLE_BONJOUR: "1"
       OPENCLAW_GATEWAY_BIND: {{ .Values.gatewayBind | quote }}
-      OPENCLAW_ALLOWED_ORIGINS: {{ .Values.allowedOrigins | default (printf "%s://%s" $scheme .Values.ingress.host) | quote }}
+      OPENCLAW_ALLOWED_ORIGINS: {{ .Values.allowedOrigins | default $publicOrigin | quote }}
 {{- if .Values.auth.enabled }}
       OPENCLAW_GATEWAY_TOKEN_FILE: /run/secrets/{{ .Values.auth.secretName }}
 {{- end }}
