@@ -1,7 +1,9 @@
 name: openclaw
 description: OpenClaw — self-hosted personal AI assistant gateway on Docker Swarm
-version: 0.1.0                 # placeholder — the git tag (openclaw/vX.Y.Z) sets the real version
-appVersion: "2026.6.11"        # default image tag (ghcr.io/openclaw/openclaw)
+# version is a placeholder — the git tag (openclaw/vX.Y.Z) sets the real version at release.
+version: 0.1.0
+# appVersion is the default image tag for ghcr.io/openclaw/openclaw.
+appVersion: "2026.6.11"
 maintainers:
   - name: Eldara
     url: https://github.com/Eldara-Tech
