@@ -45,6 +45,7 @@
       "type": "object",
       "properties": {
         "certResolver": { "type": "string" },
+        "routerName": { "type": "string" },
         "entrypoints": {
           "type": "object",
           "properties": {

@@ -63,6 +63,10 @@ traefik:
   entrypoints:
     http: web
     https: websecure
+  # Base name for this chart's Traefik router/service objects (`<name>-http` /
+  # `<name>-https` routers + the `<name>` service). Empty => the release name.
+  # Override to decouple the Traefik object names from the release name.
+  routerName: ""
 
 # published-mode direct port publish. mode: ingress (routing mesh) or host (pinned node).
 publish:

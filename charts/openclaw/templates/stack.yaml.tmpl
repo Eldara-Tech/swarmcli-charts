@@ -10,6 +10,7 @@ version: "3.9"
 
 {{- /* Exposure mode drives networks, ports, labels and the public scheme. */}}
 {{- $mode := .Values.exposure.mode }}
+{{- $router := .Values.traefik.routerName | default .Release.Name }}
 {{- $proxied := or (eq $mode "traefik") (eq $mode "none") }}
 {{- $publicTLS := and $proxied .Values.ingress.tls }}
 {{- $scheme := ternary "https" "http" $publicTLS }}
@@ -112,19 +113,19 @@ services:
       labels:
 {{- if eq $mode "traefik" }}
         - "traefik.enable=true"
-        - "traefik.docker.network={{ .Values.exposure.network }}"
+        - "traefik.swarm.network={{ .Values.exposure.network }}"
         # HTTP router
-        - "traefik.http.routers.{{ .Release.Name }}-http.rule=Host(`{{ .Values.ingress.host }}`)"
-        - "traefik.http.routers.{{ .Release.Name }}-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
+        - "traefik.http.routers.{{ $router }}-http.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ $router }}-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
 {{- if .Values.ingress.tls }}
         # Redirect plain HTTP to HTTPS, then terminate TLS on the HTTPS router.
-        - "traefik.http.routers.{{ .Release.Name }}-http.middlewares=redirect-to-https@file"
-        - "traefik.http.routers.{{ .Release.Name }}-https.rule=Host(`{{ .Values.ingress.host }}`)"
-        - "traefik.http.routers.{{ .Release.Name }}-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
-        - "traefik.http.routers.{{ .Release.Name }}-https.tls=true"
-        - "traefik.http.routers.{{ .Release.Name }}-https.tls.certresolver={{ .Values.traefik.certResolver }}"
+        - "traefik.http.routers.{{ $router }}-http.middlewares=redirect-to-https@file"
+        - "traefik.http.routers.{{ $router }}-https.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ $router }}-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
+        - "traefik.http.routers.{{ $router }}-https.tls=true"
+        - "traefik.http.routers.{{ $router }}-https.tls.certresolver={{ .Values.traefik.certResolver }}"
 {{- end }}
-        - "traefik.http.services.{{ .Release.Name }}.loadbalancer.server.port={{ .Values.service.port }}"
+        - "traefik.http.services.{{ $router }}.loadbalancer.server.port={{ .Values.service.port }}"
 {{- end }}
 {{- range $key, $val := .Values.labels }}
         - "{{ $key }}={{ $val }}"

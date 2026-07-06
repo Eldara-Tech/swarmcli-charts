@@ -99,6 +99,7 @@ the gateway at it:
 | `ingress.host` | `openclaw.example.com` | Public hostname (Traefik rule + default allowed origin) |
 | `ingress.tls` | `true` | Public endpoint is HTTPS (proxied modes) |
 | `traefik.certResolver` | `le` | Traefik ACME cert resolver |
+| `traefik.routerName` | `""` | Base name for the Traefik router/service objects (`<name>-http`/`-https`); empty ⇒ release name |
 | `traefik.entrypoints.http` / `.https` | `web` / `websecure` | Traefik entrypoints |
 | `publish.port` | `18789` | Published port (published mode) |
 | `publish.mode` | `ingress` | `ingress` (routing mesh) or `host` (pinned node) |
