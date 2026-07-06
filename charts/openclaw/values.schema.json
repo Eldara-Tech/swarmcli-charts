@@ -16,7 +16,9 @@
       "properties": {
         "enabled": { "type": "boolean" },
         "dataVolume": { "type": "string" },
-        "authVolume": { "type": "string" }
+        "authVolume": { "type": "string" },
+        "dataPath": { "type": "string" },
+        "authPath": { "type": "string" }
       }
     },
     "auth": {

@@ -1,0 +1,9 @@
+# host-path persistence: data + auth bind-mounted from operator-chosen host directories
+# instead of Docker-managed named volumes. dataPath/authPath take precedence over the
+# *Volume names, so no top-level volumes block is rendered and the service mounts the
+# absolute host paths — which the security scan flags as host-mount, acknowledged in
+# Chart.yaml. Exercises the bind-mount branch and the host-mount acknowledgment.
+persistence:
+  enabled: true
+  dataPath: /opt/openclaw/data
+  authPath: /opt/openclaw/auth

@@ -15,7 +15,10 @@ home: https://github.com/Eldara-Tech/swarmcli-charts
 sources:
   - https://github.com/openclaw/openclaw
   - https://openclaw.ai
-# No swarmcli-charts/allow annotation is needed: state lives on node-local named
-# volumes (no host mount), the gateway token comes from an external Swarm secret, and
-# there is no docker.sock / privileged / host-network / cap_add. The security scan
-# passes clean.
+# The default render needs no acknowledgment: state lives on node-local named volumes
+# (no host mount), the gateway token comes from an external Swarm secret, and there is
+# no docker.sock / privileged / host-network / cap_add. Only the opt-in host-path
+# persistence (persistence.dataPath / authPath) introduces a host bind mount, which the
+# security scan flags as host-mount only when configured — acknowledged here:
+annotations:
+  swarmcli-charts/allow: "host-mount"

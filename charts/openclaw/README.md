@@ -85,8 +85,10 @@ the gateway at it:
 | `image.tag` | `""` | Tag — defaults to appVersion (`2026.6.11`) |
 | `replicas` | `1` | Replica count (must stay 1 — node-local volumes) |
 | `persistence.enabled` | `true` | Mount the named state volumes |
-| `persistence.dataVolume` | `openclaw-data` | Volume for `/home/node/.openclaw` (config, DB, workspace) |
-| `persistence.authVolume` | `openclaw-auth` | Volume for `/home/node/.config/openclaw` (OAuth keys) |
+| `persistence.dataVolume` | `openclaw-data` | Named volume for `/home/node/.openclaw` (config, DB, workspace) |
+| `persistence.authVolume` | `openclaw-auth` | Named volume for `/home/node/.config/openclaw` (OAuth keys) |
+| `persistence.dataPath` | `""` | Host dir for `/home/node/.openclaw`; when set, bind-mounts it and takes precedence over `dataVolume` (needs the `host-mount` acknowledgment) |
+| `persistence.authPath` | `""` | Host dir for `/home/node/.config/openclaw`; when set, bind-mounts it and takes precedence over `authVolume` |
 | `auth.enabled` | `true` | Require a gateway API token |
 | `auth.secretName` | `openclaw_gateway_token` | External Swarm secret holding the token |
 | `exposure.mode` | `traefik` | `traefik` \| `published` \| `none` |
@@ -120,7 +122,10 @@ External resources (declared in `requirements.yaml`, validated by swarmcli's pre
 
 OpenClaw reads the gateway token from its mounted secret file natively via
 `OPENCLAW_GATEWAY_TOKEN_FILE=/run/secrets/openclaw_gateway_token`, so the token never
-lands in the compose file or `docker inspect` — only the file path does. State uses
-node-local named volumes (no host bind mounts), and the container runs as the image's
+lands in the compose file or `docker inspect` — only the file path does. By default state
+uses node-local named volumes (no host bind mounts), and the container runs as the image's
 non-root `node` user; the chart adds no `docker.sock`, `privileged`, host network/PID or
-`cap_add`, so it needs no `swarmcli-charts/allow` acknowledgment.
+`cap_add`. The only host-filesystem access is the **opt-in** `persistence.dataPath` /
+`authPath` (bind-mounting operator-chosen host directories); it is off by default and
+acknowledged via `annotations: { swarmcli-charts/allow: "host-mount" }` in `Chart.yaml`,
+so the security scan flags it only when you configure a host path.

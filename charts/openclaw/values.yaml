@@ -25,6 +25,14 @@ persistence:
   enabled: true
   dataVolume: openclaw-data
   authVolume: openclaw-auth
+  # Store data/auth under host directories instead of Docker-managed named volumes.
+  # When dataPath/authPath is set it TAKES PRECEDENCE and the matching *Volume above is
+  # ignored: that dir is bind-mounted from the given absolute host path on the PINNED
+  # node. The directory must already exist there and be writable by the container's
+  # non-root node user. This is host-filesystem access, acknowledged via
+  # swarmcli-charts/allow: "host-mount" in Chart.yaml. Leave "" to use the named volumes.
+  dataPath: ""
+  authPath: ""
 
 # Gateway API token. OpenClaw reads OPENCLAW_GATEWAY_TOKEN_FILE natively (no wrapper).
 # secretName is the EXTERNAL Swarm secret's real name — pre-create it:

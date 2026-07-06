@@ -1,3 +1,11 @@
+{{- /* Host-path persistence bind-mounts a host dir; a named-volume value must not be a
+       path (docker compose would otherwise emit a cryptic error). */}}
+{{- if and .Values.persistence.enabled (not .Values.persistence.dataPath) (contains "/" .Values.persistence.dataVolume) -}}
+{{- fail "persistence.dataVolume is a Docker named-volume name and cannot contain '/'. To store data under a host directory, set persistence.dataPath instead." -}}
+{{- end -}}
+{{- if and .Values.persistence.enabled (not .Values.persistence.authPath) (contains "/" .Values.persistence.authVolume) -}}
+{{- fail "persistence.authVolume is a Docker named-volume name and cannot contain '/'. To store the auth keys under a host directory, set persistence.authPath instead." -}}
+{{- end -}}
 version: "3.9"
 
 {{- /* Exposure mode drives networks, ports, labels and the public scheme. */}}
@@ -35,8 +43,8 @@ services:
 
 {{- if .Values.persistence.enabled }}
     volumes:
-      - {{ .Values.persistence.dataVolume }}:/home/node/.openclaw
-      - {{ .Values.persistence.authVolume }}:/home/node/.config/openclaw
+      - {{ .Values.persistence.dataPath | default .Values.persistence.dataVolume }}:/home/node/.openclaw
+      - {{ .Values.persistence.authPath | default .Values.persistence.authVolume }}:/home/node/.config/openclaw
 {{- end }}
 
 {{- if .Values.auth.enabled }}
@@ -119,11 +127,15 @@ services:
 {{- end }}
 {{- end }}
 
-{{- if .Values.persistence.enabled }}
+{{- if and .Values.persistence.enabled (or (not .Values.persistence.dataPath) (not .Values.persistence.authPath)) }}
 
 volumes:
+{{- if not .Values.persistence.dataPath }}
   {{ .Values.persistence.dataVolume }}: {}
+{{- end }}
+{{- if not .Values.persistence.authPath }}
   {{ .Values.persistence.authVolume }}: {}
+{{- end }}
 {{- end }}
 
 {{- if .Values.auth.enabled }}
