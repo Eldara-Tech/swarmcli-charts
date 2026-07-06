@@ -30,6 +30,13 @@
         "required": ["target", "published"]
       }
     },
+    "persistence": {
+      "type": "object",
+      "properties": {
+        "volumeName": { "type": "string" },
+        "volumePath": { "type": "string" }
+      }
+    },
     "configs": {
       "type": "array",
       "items": {

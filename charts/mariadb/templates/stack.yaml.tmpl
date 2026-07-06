@@ -69,10 +69,20 @@ services:
 
     deploy:
       replicas: {{ .Values.replicas }}
-{{- if .Values.placement.constraints }}
+{{- /* The data-volume node pin travels with persistence: it exists only while a
+       volume needs pinning, so persistence.enabled:false never leaves a task
+       Pending on a missing node label. placement.constraints adds extras. */}}
+{{- $constraints := list }}
+{{- if and .Values.persistence.enabled .Values.persistence.nodeLabel }}
+{{-   $constraints = append $constraints (printf "node.labels.%s == true" .Values.persistence.nodeLabel) }}
+{{- end }}
+{{- range .Values.placement.constraints }}
+{{-   $constraints = append $constraints . }}
+{{- end }}
+{{- if $constraints }}
       placement:
         constraints:
-{{- range .Values.placement.constraints }}
+{{- range $constraints }}
           - {{ . }}
 {{- end }}
 {{- end }}

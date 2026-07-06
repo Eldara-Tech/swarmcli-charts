@@ -6,7 +6,10 @@ annotations:
   # Traefik is a Docker-provider proxy: it watches the swarm API for routing
   # labels, so it must mount the Docker socket (read-only) on a manager node.
   # This is core to the workload — acknowledged so scripts/security-scan.sh passes.
-  swarmcli-charts/allow: "docker-socket"
+  # host-mount is acknowledged because persistence.volumePath can bind-mount the
+  # ACME certificate store from an operator-chosen host path; the default (named
+  # volume) render mounts no host path beyond the socket.
+  swarmcli-charts/allow: "docker-socket,host-mount"
 maintainers:
   - name: Eldara
     url: https://github.com/Eldara-Tech

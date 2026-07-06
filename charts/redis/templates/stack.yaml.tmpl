@@ -1,3 +1,6 @@
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) (contains "/" .Values.persistence.volumeName) -}}
+{{- fail "persistence.volumeName is a Docker named-volume name and cannot contain '/'. To store data under a host directory, set persistence.volumePath instead." -}}
+{{- end -}}
 version: "3.9"
 
 services:
@@ -18,7 +21,11 @@ services:
 
 {{- if .Values.persistence.enabled }}
     volumes:
+{{- if .Values.persistence.volumePath }}
+      - {{ .Values.persistence.volumePath }}:/data
+{{- else }}
       - {{ .Values.persistence.volumeName }}:/data
+{{- end }}
 {{- end }}
 
 {{- if .Values.auth.enabled }}
@@ -74,10 +81,20 @@ services:
 
     deploy:
       replicas: {{ .Values.replicas }}
-{{- if .Values.placement.constraints }}
+{{- /* The data-volume node pin travels with persistence: it exists only while a
+       volume needs pinning, so persistence.enabled:false never leaves a task
+       Pending on a missing node label. placement.constraints adds extras. */}}
+{{- $constraints := list }}
+{{- if and .Values.persistence.enabled .Values.persistence.nodeLabel }}
+{{-   $constraints = append $constraints (printf "node.labels.%s == true" .Values.persistence.nodeLabel) }}
+{{- end }}
+{{- range .Values.placement.constraints }}
+{{-   $constraints = append $constraints . }}
+{{- end }}
+{{- if $constraints }}
       placement:
         constraints:
-{{- range .Values.placement.constraints }}
+{{- range $constraints }}
           - {{ . }}
 {{- end }}
 {{- end }}
@@ -95,7 +112,7 @@ services:
 {{- end }}
 {{- end }}
 
-{{- if .Values.persistence.enabled }}
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) }}
 
 volumes:
   {{ .Values.persistence.volumeName }}: {}

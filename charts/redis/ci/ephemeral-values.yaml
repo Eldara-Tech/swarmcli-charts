@@ -1,6 +1,5 @@
 # Ephemeral cache: no volume, no AOF, no node pin. Auth stays on. Exercises the
-# no-volume branch (no top-level volumes block, no --dir/--appendonly, no placement).
+# no-volume branch (no top-level volumes block, no --dir/--appendonly) and that the
+# node pin is dropped together with persistence — no placement block may render.
 persistence:
   enabled: false
-placement:
-  constraints: []

@@ -55,6 +55,18 @@ deploy:
     constraints:
       - "node.labels.traefik-certs == true"
 
+# ACME certificate store (acme.json), mounted at /certificates on the pinned node.
+persistence:
+  volumeName: traefik-public-certificates
+  # Store the certificate store under a host directory instead of Docker's managed
+  # volume storage (e.g. to back up acme.json directly). When volumePath is set it
+  # TAKES PRECEDENCE and volumeName is ignored: /certificates is bind-mounted from
+  # this absolute host path on the PINNED node. The directory must already exist
+  # there. This is host-filesystem access, acknowledged via
+  # swarmcli-charts/allow: "host-mount" in Chart.yaml. Leave empty ("") to use the
+  # named volume above.
+  volumePath: ""
+
 traefik:
   # External overlay network Traefik publishes routes on (see requirements.yaml).
   network: traefik-public

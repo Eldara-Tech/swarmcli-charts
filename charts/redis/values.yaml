@@ -26,19 +26,31 @@ auth:
   secretName: redis_password
 
 # Persistence. Named volume at /data with AOF on. enabled:false => ephemeral cache
-# (no volume; also drop the placement pin below).
+# (no volume, and the node pin below is dropped with it).
 persistence:
   enabled: true
   volumeName: redis-data
   appendonly: true
+  # Store data under a host directory instead of Docker's managed volume storage.
+  # When volumePath is set it TAKES PRECEDENCE and volumeName is ignored: the data
+  # dir is bind-mounted from this absolute host path on the PINNED node. The
+  # directory must already exist on that node and be writable by the container's
+  # redis uid (999) — the image entrypoint chowns it at start, but pre-creating it
+  # with the right owner is safest. This is host-filesystem access, acknowledged
+  # via swarmcli-charts/allow: "host-mount" in Chart.yaml. Leave empty ("") to use
+  # the named volume above.
+  volumePath: ""
+  # Node label pinning the service to the node carrying the data volume (Swarm
+  # volumes are node-local). Rendered as `node.labels.<nodeLabel> == true` while
+  # persistence is enabled and dropped automatically when it is not. Label exactly
+  # ONE node first:
+  #   docker node update --label-add redis-data=true <node>
+  # Set "" to schedule unpinned even with persistence on (e.g. single-node swarm).
+  nodeLabel: redis-data
 
-# Pin the service to the node carrying the data volume (Swarm volumes are
-# node-local). Label exactly ONE node first:
-#   docker node update --label-add redis-data=true <node>
-# Set constraints to [] for an unpinned ephemeral instance.
+# Extra scheduling constraints, always applied (independent of the persistence pin).
 placement:
-  constraints:
-    - "node.labels.redis-data == true"
+  constraints: []
 
 # Overlay network redis attaches to. external:true (default) is a shared attachable
 # overlay (declared in requirements.yaml, auto-created if missing) that app stacks

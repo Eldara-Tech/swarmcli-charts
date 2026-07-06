@@ -42,6 +42,8 @@ echo $(openssl passwd -apr1 $PASSWORD) | sed 's/\$/\$\$/g'
 | `ports[].mode` | `host` | `host` preserves the client source IP; `ingress` uses the routing mesh |
 | `configs` | `[]` | Optional Swarm configs exposed to Traefik's file provider at `/config` |
 | `deploy.placement.constraints` | cert-volume label | Pins Traefik to the node holding the ACME cert volume (see Requirements) |
+| `persistence.volumeName` | `traefik-public-certificates` | Named volume for the ACME store (used when `volumePath` is empty) |
+| `persistence.volumePath` | `""` | Absolute host path to bind-mount the ACME store from instead; when set it wins over `volumeName` (see Requirements) |
 | `traefik.network` | `traefik-public` | External overlay network Traefik publishes routes on |
 | `traefik.constraintLabel` | `traefik-public` | Swarm provider constraint label |
 | `traefik.extraEntrypoints` | `[]` | Extra entrypoints (`{name, address}`) beyond http/https; pair each with a `ports` entry |
@@ -124,13 +126,23 @@ traefik.tcp.services.gitlab-ssh.loadbalancer.server.port=22
   services Traefik routes to).
 - **One labelled manager node for certificates.** Traefik's ACME account and
   issued certificates live in a single node-local volume
-  (`traefik-public-certificates`). By default the chart pins Traefik with
-  `node.labels.traefik-certs == true`, so that label must be set on **exactly one
-  manager node**:
+  (`persistence.volumeName`, default `traefik-public-certificates`). By default
+  the chart pins Traefik with `node.labels.traefik-certs == true`, so that label
+  must be set on **exactly one manager node**:
 
   ```bash
   docker node update --label-add traefik-certs=true <node>
   ```
+
+  To keep the store under a directory you choose instead (e.g. to back up
+  `acme.json` directly), set `persistence.volumePath` to an absolute path — it
+  takes precedence over `volumeName` and `/certificates` is **bind-mounted** from
+  that path on the pinned node. The directory must already exist there; keep it
+  private (`acme.json` holds the ACME account key and certificate private keys,
+  Traefik enforces `0600` on the file). A bind mount is direct host-filesystem
+  access, acknowledged via the chart's `swarmcli-charts/allow` annotation. (A
+  host path in `volumeName` is rejected at render time — that field is a Docker
+  named-volume name and cannot contain `/`.)
 
 - **Public DNS + reachable `:80`/`:443`.** ACME `tlschallenge` needs the
   dashboard host (and any routed host) to resolve to the node and ports 80/443 to
