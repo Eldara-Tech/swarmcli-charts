@@ -114,8 +114,10 @@ request.
   no published port. TLS is terminated at Traefik; Keycloak serves plain HTTP on
   `service.port` (`KC_HTTP_ENABLED=true`) and trusts `X-Forwarded-*`
   (`KC_PROXY_HEADERS=xforwarded`). `ingress.tls: true` renders an HTTPS router with
-  `traefik.certResolver` plus an HTTP→HTTPS redirect; `false` renders an HTTP-only
-  router.
+  `traefik.certResolver` plus an HTTP→HTTPS redirect (`traefik.redirectMiddleware`);
+  `false` renders an HTTP-only router. The `traefik.*` defaults (entrypoints,
+  constraint label, redirect middleware, cert resolver) match the
+  [traefik chart](../traefik); override them if you run your own Traefik.
 - **`published`** — publish a port on the Swarm with no proxy. Plain HTTP on
   `publish.port` by default. With `publish.tls.enabled` Keycloak terminates TLS from
   the mounted `publish.tls.certSecretName`/`keySecretName` (PEM) on `8443`
@@ -149,7 +151,9 @@ request.
 | `ingress.host` | `keycloak.example.com` | Public hostname (`KC_HOSTNAME` + Traefik rule) |
 | `ingress.tls` | `true` | Public endpoint is HTTPS (traefik & none scheme; traefik router) |
 | `traefik.certResolver` | `le` | Traefik cert resolver name (match your Traefik) |
-| `traefik.entrypoints.http` / `.https` | `web` / `websecure` | Traefik entrypoint names |
+| `traefik.entrypoints.http` / `.https` | `http` / `https` | Traefik entrypoint names (the [traefik chart](../traefik)'s) |
+| `traefik.constraintLabel` | `traefik-public` | `traefik.constraint-label` value — required for discovery by a swarm provider running with constraints (the traefik chart does) |
+| `traefik.redirectMiddleware` | `https-redirect` | Middleware on the HTTP router redirecting to HTTPS; the default is always defined by the traefik chart |
 | `publish.port` | `8080` | Published port (set `8443` for `publish.tls.enabled`) |
 | `publish.mode` | `ingress` | Swarm port mode: `ingress` (routing mesh) or `host` |
 | `publish.tls.enabled` | `false` | Keycloak terminates TLS from the cert/key secrets |

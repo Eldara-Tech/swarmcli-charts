@@ -54,6 +54,8 @@
       "type": "object",
       "properties": {
         "certResolver": { "type": "string" },
+        "constraintLabel": { "type": "string" },
+        "redirectMiddleware": { "type": "string" },
         "entrypoints": {
           "type": "object",
           "properties": {

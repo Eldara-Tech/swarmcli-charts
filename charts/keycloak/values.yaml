@@ -89,12 +89,23 @@ ingress:
   host: keycloak.example.com
   tls: true
 
-# traefik-mode routing. Match certResolver + entrypoints to your Traefik install.
+# traefik-mode routing. The defaults match the traefik chart in this repository;
+# adjust certResolver / entrypoints / constraintLabel / redirectMiddleware to your
+# Traefik install if you run your own.
 traefik:
   certResolver: le
   entrypoints:
-    http: web
-    https: websecure
+    http: http
+    https: https
+  # Swarm-provider constraint label. The traefik chart runs with
+  # --providers.swarm.exposedByDefault=false and a constraint on this label, so a
+  # routed service must carry it to be discovered. Match your Traefik's constraintLabel.
+  constraintLabel: traefik-public
+  # Middleware applied to the HTTP router to redirect to HTTPS (when ingress.tls). No
+  # provider suffix => resolved in the swarm provider (https-redirect@swarm), which the
+  # traefik chart always defines; set e.g. redirect-to-https@file for a file-provider
+  # middleware of your own Traefik.
+  redirectMiddleware: https-redirect
 
 # published-mode direct port publish.
 #   port -> the published port (and, for plain HTTP, the listener). For tls.enabled

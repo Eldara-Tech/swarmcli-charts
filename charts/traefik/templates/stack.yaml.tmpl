@@ -44,6 +44,12 @@ services:
         - "traefik.swarm.network={{ .Values.traefik.network }}"
         - "traefik.constraint-label={{ .Values.traefik.constraintLabel }}"
 
+        # HTTP → HTTPS redirect middleware. Always defined (not only with the
+        # dashboard): routed charts reference it from their own HTTP routers, so
+        # it must exist in the swarm provider regardless of dashboard.enabled.
+        - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https-redirect.redirectscheme.permanent=true"
+
 {{- if .Values.traefik.hsts.enabled }}
         # HSTS middleware (applied globally on the https entrypoint below)
         - "traefik.http.middlewares.hsts-header.headers.stsSeconds={{ .Values.traefik.hsts.stsSeconds }}"
@@ -57,10 +63,6 @@ services:
         # Dashboard basic-auth middleware
         - "traefik.http.middlewares.admin-auth.basicauth.users={{ .Values.traefik.dashboard.basicAuthUsers }}"
 {{- end }}
-
-        # HTTP → HTTPS redirect middleware
-        - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"
-        - "traefik.http.middlewares.https-redirect.redirectscheme.permanent=true"
 
         # Dashboard HTTP → HTTPS redirect
         - "traefik.http.routers.traefik-public-http.rule=Host(`{{ .Values.traefik.dashboard.host }}`)"
