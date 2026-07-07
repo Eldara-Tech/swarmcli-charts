@@ -34,7 +34,7 @@ auth:
     secretName: mariadb_password
 
 # Persistence. Named volume at /var/lib/mysql. enabled:false => ephemeral DB (no
-# volume; also drop the placement pin below).
+# volume, and the node pin below is dropped with it).
 persistence:
   enabled: true
   volumeName: mariadb-data
@@ -47,14 +47,17 @@ persistence:
   # acknowledged via swarmcli-charts/allow: "host-mount" in Chart.yaml. Leave empty
   # ("") to use the named volume above.
   volumePath: ""
+  # Node label pinning the service to the node carrying the data volume (Swarm
+  # volumes are node-local). Rendered as `node.labels.<nodeLabel> == true` while
+  # persistence is enabled and dropped automatically when it is not. Label exactly
+  # ONE node first:
+  #   docker node update --label-add mariadb-data=true <node>
+  # Set "" to schedule unpinned even with persistence on (e.g. single-node swarm).
+  nodeLabel: mariadb-data
 
-# Pin the service to the node carrying the data volume (Swarm volumes are
-# node-local). Label exactly ONE node first:
-#   docker node update --label-add mariadb-data=true <node>
-# Set constraints to [] for an unpinned ephemeral instance.
+# Extra scheduling constraints, always applied (independent of the persistence pin).
 placement:
-  constraints:
-    - "node.labels.mariadb-data == true"
+  constraints: []
 
 # Overlay network mariadb attaches to. external:true (default) is a shared
 # attachable overlay (declared in requirements.yaml, auto-created if missing) that

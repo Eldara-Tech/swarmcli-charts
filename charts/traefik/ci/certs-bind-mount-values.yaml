@@ -1,0 +1,13 @@
+# Host-path ACME store: /certificates bind-mounted from an operator-chosen host
+# directory instead of the Docker-managed named volume. volumePath takes precedence
+# over volumeName, so no top-level volumes block is rendered and the service mounts
+# the absolute host path — which the security scan flags as host-mount, acknowledged
+# in Chart.yaml (alongside the docker-socket mount). Exercises the bind-mount branch.
+persistence:
+  volumePath: /opt/traefik-certificates
+traefik:
+  acme:
+    email: admin@example.com
+  dashboard:
+    host: traefik.example.com
+    basicAuthUsers: "admin:$$apr1$$otIz5Cnl$$/y77Sc88rr1SfA6k0Ospw/"

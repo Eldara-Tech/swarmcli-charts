@@ -27,8 +27,9 @@ overlay. Not Traefik-routed (MariaDB is TCP); publishes no port by default.
 3. (Optional) the `mariadb-net` overlay — swarmcli auto-creates it if missing.
 
 For a root-only database, set `auth.appUser.enabled: false` (skip the
-`mariadb_password` secret). For an ephemeral database, set `persistence.enabled: false`
-and `placement.constraints: []` (skip step 1).
+`mariadb_password` secret). For an ephemeral database, set
+`persistence.enabled: false` (skip step 1 — the node pin is dropped together with
+the volume).
 
 ## Installing
 
@@ -59,10 +60,11 @@ to trusted sources — or keep exposure disabled and stay on the overlay.
 | `auth.appUser.username` | `app` | App user name |
 | `auth.appUser.database` | `app` | Database created and granted to the app user |
 | `auth.appUser.secretName` | `mariadb_password` | External Swarm secret holding the app-user password |
-| `persistence.enabled` | `true` | Mount a volume at `/var/lib/mysql` |
+| `persistence.enabled` | `true` | Mount a volume at `/var/lib/mysql` (also controls the node pin) |
 | `persistence.volumeName` | `mariadb-data` | Named volume (used when `volumePath` is empty) |
 | `persistence.volumePath` | `""` | Absolute host path to bind-mount instead; when set it wins over `volumeName` (see Operating notes) |
-| `placement.constraints` | `["node.labels.mariadb-data == true"]` | Node pin |
+| `persistence.nodeLabel` | `mariadb-data` | Node label the data pin renders from (`node.labels.<nodeLabel> == true`); dropped when persistence is off, `""` skips the pin |
+| `placement.constraints` | `[]` | Extra scheduling constraints (the data pin comes from `persistence.nodeLabel`) |
 | `network.name` | `mariadb-net` | Overlay network |
 | `network.external` | `true` | Use a pre-existing/shared overlay vs chart-managed |
 | `exposure.enabled` | `false` | Publish a port |
@@ -83,6 +85,14 @@ so no password ever appears on a command line either.
 
 ## Operating notes
 
+- **The node pin travels with persistence.** The
+  `node.labels.mariadb-data == true` constraint is rendered from
+  `persistence.nodeLabel` while `persistence.enabled` is on and dropped with it,
+  so an ephemeral database never sits `Pending` on a missing node label.
+  `placement.constraints` holds *extra* constraints and is applied in all modes.
+  (Before this coupling the pin lived in `placement.constraints` — a values file
+  that still lists it there just applies it twice, which is harmless; to move the
+  pin to a different label, set `persistence.nodeLabel` instead.)
 - **Password rotation is not automatic.** `MARIADB_ROOT_PASSWORD_FILE` /
   `MARIADB_PASSWORD_FILE` are applied only during first-boot initialization (an
   empty data volume). Once the volume holds a database, editing the Swarm secret

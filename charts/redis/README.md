@@ -24,8 +24,8 @@ TCP); publishes no port by default.
 3. (Optional) the `redis-net` overlay — swarmcli auto-creates it if missing.
 
 For an unauthenticated cache on a trusted internal overlay, set `auth.enabled: false`
-(skip step 2). For an ephemeral cache, set `persistence.enabled: false` and
-`placement.constraints: []` (skip step 1).
+(skip step 2). For an ephemeral cache, set `persistence.enabled: false` (skip
+step 1 — the node pin is dropped together with the volume).
 
 ## Installing
 
@@ -49,10 +49,12 @@ the cluster-wide routing mesh or `mode: host` for the pinned node only).
 | `replicas` | `1` | Replica count (must stay 1 — node-local volume) |
 | `auth.enabled` | `true` | Require a password |
 | `auth.secretName` | `redis_password` | External Swarm secret holding the password |
-| `persistence.enabled` | `true` | Mount a named volume at `/data` |
-| `persistence.volumeName` | `redis-data` | Named volume |
+| `persistence.enabled` | `true` | Mount a volume at `/data` (also controls the node pin) |
+| `persistence.volumeName` | `redis-data` | Named volume (used when `volumePath` is empty) |
+| `persistence.volumePath` | `""` | Absolute host path to bind-mount instead; when set it wins over `volumeName` (see Operating notes) |
+| `persistence.nodeLabel` | `redis-data` | Node label the data pin renders from (`node.labels.<nodeLabel> == true`); dropped when persistence is off, `""` skips the pin |
 | `persistence.appendonly` | `true` | Enable AOF |
-| `placement.constraints` | `["node.labels.redis-data == true"]` | Node pin |
+| `placement.constraints` | `[]` | Extra scheduling constraints (the data pin comes from `persistence.nodeLabel`) |
 | `network.name` | `redis-net` | Overlay network |
 | `network.external` | `true` | Use a pre-existing/shared overlay vs chart-managed |
 | `exposure.enabled` | `false` | Publish a port |
@@ -63,6 +65,29 @@ the cluster-wide routing mesh or `mode: host` for the pinned node only).
 | `healthcheck.*` | see `values.yaml` | redis-cli PING healthcheck |
 | `extraConfig` | `[]` | Extra `redis-server` flags appended verbatim |
 | `labels` | `{}` | Extra deploy labels |
+
+## Operating notes
+
+- **The node pin travels with persistence.** The
+  `node.labels.redis-data == true` constraint is rendered from
+  `persistence.nodeLabel` while `persistence.enabled` is on and dropped with it,
+  so an ephemeral cache never sits `Pending` on a missing node label.
+  `placement.constraints` holds *extra* constraints and is applied in all modes.
+  (Before this coupling the pin lived in `placement.constraints` — a values file
+  that still lists it there just applies it twice, which is harmless; to move the
+  pin to a different label, set `persistence.nodeLabel` instead.)
+- **Host-path persistence.** By default data lives on the node-local named volume
+  `redis-data` (durable across restarts/redeploys, under Docker's own volume
+  storage). To store it under a directory you choose instead, set
+  `persistence.volumePath` to an absolute path — it takes precedence over
+  `volumeName` and `/data` is **bind-mounted** from that path on the pinned node.
+  The directory must already exist on that node and be writable by the
+  container's `redis` uid (`999`); the entrypoint chowns it at start, but
+  pre-creating it with the right owner (`install -d -o 999 -g 999 <path>`) is
+  safest. A bind mount is direct host-filesystem access, acknowledged by this
+  chart's `swarmcli-charts/allow: "host-mount"` annotation. (A host path in
+  `volumeName` is rejected at render time — that field is a Docker named-volume
+  name and cannot contain `/`.)
 
 ## Security note
 

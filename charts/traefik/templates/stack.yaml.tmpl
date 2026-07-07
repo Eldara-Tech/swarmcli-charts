@@ -1,3 +1,6 @@
+{{- if and (not .Values.persistence.volumePath) (contains "/" .Values.persistence.volumeName) -}}
+{{- fail "persistence.volumeName is a Docker named-volume name and cannot contain '/'. To store the ACME certificate store under a host directory, set persistence.volumePath instead." -}}
+{{- end -}}
 version: "3.9"
 
 services:
@@ -99,7 +102,11 @@ services:
 
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - traefik-public-certificates:/certificates
+{{- if .Values.persistence.volumePath }}
+      - {{ .Values.persistence.volumePath }}:/certificates
+{{- else }}
+      - {{ .Values.persistence.volumeName }}:/certificates
+{{- end }}
 
     command:
       # Provider
@@ -164,9 +171,11 @@ configs:
 {{- end }}
 {{- end }}
 
+{{- if not .Values.persistence.volumePath }}
 volumes:
-  traefik-public-certificates:
+  {{ .Values.persistence.volumeName }}: {}
 
+{{- end }}
 networks:
   {{ .Values.traefik.network }}:
     external: true

@@ -32,7 +32,8 @@
       "properties": {
         "enabled": { "type": "boolean" },
         "volumeName": { "type": "string" },
-        "volumePath": { "type": "string" }
+        "volumePath": { "type": "string" },
+        "nodeLabel": { "type": "string" }
       }
     },
     "placement": {
