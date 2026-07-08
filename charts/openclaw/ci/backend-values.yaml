@@ -1,0 +1,13 @@
+# backend fixture: a co-located, network-reachable LLM backend, wired the CORRECT way.
+# backend.enabled joins the gateway to backend.network (the external overlay the backend
+# lives on) so it can dial the backend by service name — reachability only. Pointing OpenClaw
+# AT the backend is a CONFIG step (models.providers.<id>.baseUrl), never env; ci/e2e-setup.sh
+# stands up a mock Ollama on ai-internal and ci/e2e-check.sh sets the baseUrl in OpenClaw's
+# config and asserts the gateway actually reaches it. This is the regression guard for #60.
+# extraEnv carries a provider API KEY — the one thing OpenClaw reads from env — so the
+# extraEnv render path stays covered too.
+backend:
+  enabled: true
+  network: ai-internal
+extraEnv:
+  ANTHROPIC_API_KEY: test-key

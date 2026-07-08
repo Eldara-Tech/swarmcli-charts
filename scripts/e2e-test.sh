@@ -5,15 +5,18 @@
 # check, then always tear the release back down. This is the real end-to-end
 # loop that complements the data-only scripts/test-charts.sh (== CI).
 #
-# Unlike test-charts.sh, this is LOCAL-ONLY and is deliberately NOT run by CI:
-# it needs a running Swarm and pulls/starts real containers. See
-# docs/e2e-testing.md.
+# It needs a running Swarm and pulls/starts real containers, so it is heavier than
+# test-charts.sh. The e2e.yml workflow runs it on a throwaway single-node swarm
+# (E2E_SWARM_INIT=1) for the charts that ship CI-provisionable setup; the full local
+# `make e2e` sweep across every chart stays local. See docs/e2e-testing.md.
 #
 # Per chart, per fixture:
+#   0. setup     -> run charts/<chart>/ci/e2e-setup.sh if present (optional) — provision
+#                   external prerequisites swarmcli won't (secrets, node labels, a backend)
 #   1. install   -> swarmcli charts install <release> <chart> (deploy the stack)
 #   2. converge  -> poll until every desired task ACTUALLY reaches Running
 #   3. smoke     -> run charts/<chart>/ci/e2e-check.sh if present (optional)
-#   4. teardown  -> swarmcli charts uninstall <release> --purge-volumes (always)
+#   4. teardown  -> swarmcli uninstall --purge-volumes + ci/e2e-teardown.sh (always)
 #
 # We intentionally do NOT use swarmcli's `--wait`: its convergence check counts
 # tasks whose *desired* state is Running, which Swarm satisfies the instant a
@@ -44,6 +47,17 @@ dur_to_secs() {
     *s) printf '%s' "$(( ${1%s} ))" ;;
     *)  printf '%s' "$(( $1 ))" ;;
   esac
+}
+
+# Tear a fixture down: remove the release stack, then run the chart's optional
+# ci/e2e-teardown.sh to clean up whatever ci/e2e-setup.sh provisioned OUTSIDE the
+# stack (external secrets, node labels, a backend service/overlay). Best-effort so a
+# partial setup still gets cleaned. Stack first, so the hook can then free its network.
+teardown_case() {  # $1 release  $2 chart-dir  $3 case
+  "$SWARMCLI" charts uninstall "$1" --purge-volumes >/dev/null 2>&1 || true
+  if [ -x "$2/ci/e2e-teardown.sh" ]; then
+    "$2/ci/e2e-teardown.sh" "$1" "$2" "$3" >/dev/null 2>&1 || true
+  fi
 }
 
 # --- preflight: a live swarm manager is required -----------------------------
@@ -90,15 +104,29 @@ for chart in "${charts[@]}"; do
       | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-')"
     echo "── $chart [$case]  (release: $release)"
 
-    # Pre-clean any leftover from a previous crashed run.
-    "$SWARMCLI" charts uninstall "$release" --purge-volumes >/dev/null 2>&1 || true
+    # Pre-clean any leftover from a previous crashed run (stack + external setup).
+    teardown_case "$release" "$dir" "$case"
+
+    # Optional per-chart setup: provision external prerequisites this fixture needs
+    # that swarmcli does NOT create (external secrets, node labels, a co-located
+    # backend service/overlay) — swarmcli's requirements pre-flight fails the install
+    # otherwise. Runs before install; a non-zero exit fails the case.
+    if [ -x "$dir/ci/e2e-setup.sh" ]; then
+      echo "   setup: ci/e2e-setup.sh"
+      if ! "$dir/ci/e2e-setup.sh" "$release" "$dir" "$case"; then
+        echo "   FAIL: setup hook"
+        teardown_case "$release" "$dir" "$case"
+        fail=1
+        continue
+      fi
+    fi
 
     # Deploy (no --wait — see header). A non-zero exit means docker stack deploy
     # itself was rejected (bad manifest, failed pre-flight, …).
     if ! out="$("$SWARMCLI" charts install "$release" "./$dir" -f "$vf" 2>&1)"; then
       echo "   FAIL: install was rejected"
       printf '%s\n' "$out" | sed 's/^/      /'
-      "$SWARMCLI" charts uninstall "$release" --purge-volumes >/dev/null 2>&1 || true
+      teardown_case "$release" "$dir" "$case"
       fail=1
       continue
     fi
@@ -125,17 +153,18 @@ for chart in "${charts[@]}"; do
       docker stack ps "$release" --no-trunc 2>/dev/null | sed 's/^/      /' || true
     fi
 
-    # Optional per-chart smoke check.
+    # Optional per-chart smoke check (gets the case name so it can assert
+    # fixture-specific behaviour, e.g. the backend fixture's backend reachability).
     if [ "$ok" -eq 1 ] && [ -x "$dir/ci/e2e-check.sh" ]; then
       echo "   smoke: ci/e2e-check.sh"
-      if ! "$dir/ci/e2e-check.sh" "$release" "$dir"; then
+      if ! "$dir/ci/e2e-check.sh" "$release" "$dir" "$case"; then
         echo "   FAIL: smoke check"
         ok=0
       fi
     fi
 
-    # Always tear the release down before recording the verdict.
-    "$SWARMCLI" charts uninstall "$release" --purge-volumes >/dev/null 2>&1 || true
+    # Always tear the release down (stack + external setup) before recording the verdict.
+    teardown_case "$release" "$dir" "$case"
 
     if [ "$ok" -eq 1 ]; then
       echo "   OK"

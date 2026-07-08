@@ -1,7 +1,0 @@
-# backend: wire a network-reachable LLM backend (Ollama) via backend.enabled + extraEnv.
-# Exercises the extra external overlay (its requirements entry) and the extraEnv loop.
-backend:
-  enabled: true
-  network: ai-internal
-extraEnv:
-  OLLAMA_HOST: http://ollama:11434
