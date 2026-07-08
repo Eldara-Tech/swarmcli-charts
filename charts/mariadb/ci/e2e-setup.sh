@@ -36,9 +36,12 @@ node="$(docker node ls --format '{{.ID}} {{.Self}}' 2>/dev/null | awk '$2=="true
 #     what sets up the healthcheck's local credentials, so the healthcheck then fails
 #     "Access denied for root" and the task crash-loops.
 # Provision via a throwaway root container (dockerd always runs as root, so this works
-# whether or not the runner has sudo): empty the dir for a clean first-init, then chmod
-# 0777 so mysql can write it regardless of owner. Best-effort.
+# whether or not the runner has sudo): empty the dir for a clean first-init, then chown it
+# to the mysql uid/gid (999) so it matches exactly what a fresh named volume gives mariadb
+# (pre-populated mysql-owned). The echo confirms the resulting owner/mode in the CI log.
 if [ "$case" = "bind-mount" ]; then
-  docker run --rm -v /opt/mariadb-data:/data alpine \
-    sh -c 'rm -rf /data/..?* /data/.[!.]* /data/* 2>/dev/null; chmod 0777 /data' >/dev/null 2>&1 || true
+  docker run --rm -v /opt/mariadb-data:/data alpine sh -c '
+    rm -rf /data/..?* /data/.[!.]* /data/* 2>/dev/null
+    chown 999:999 /data && chmod 0755 /data
+    echo "   [e2e-setup] /opt/mariadb-data -> $(stat -c "%u:%g %a" /data)"' || true
 fi
