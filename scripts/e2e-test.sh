@@ -167,6 +167,12 @@ for chart in "${charts[@]}"; do
     if [ "$ok" -ne 1 ]; then
       echo "   FAIL: services did not all reach Running within $TIMEOUT"
       docker stack ps "$release" --no-trunc 2>/dev/null | sed 's/^/      /' || true
+      # Dump each service's recent logs so a non-converging task (crash loop, failed
+      # first-boot init, bad config) is diagnosable straight from the CI output.
+      for svc in $(docker stack services "$release" --format '{{.Name}}' 2>/dev/null); do
+        echo "      --- docker service logs $svc (tail 40) ---"
+        docker service logs --tail 40 "$svc" 2>&1 | sed 's/^/      /' || true
+      done
     fi
 
     # Optional per-chart smoke check (gets the case name so it can assert
