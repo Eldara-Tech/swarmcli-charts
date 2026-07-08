@@ -170,8 +170,8 @@ for chart in "${charts[@]}"; do
       # Dump each service's recent logs so a non-converging task (crash loop, failed
       # first-boot init, bad config) is diagnosable straight from the CI output.
       for svc in $(docker stack services "$release" --format '{{.Name}}' 2>/dev/null); do
-        echo "      --- docker service logs $svc (tail 40) ---"
-        docker service logs --tail 40 "$svc" 2>&1 | sed 's/^/      /' || true
+        echo "      --- docker service logs $svc (tail 120) ---"
+        docker service logs --tail 120 "$svc" 2>&1 | sed 's/^/      /' || true
       done
     fi
 

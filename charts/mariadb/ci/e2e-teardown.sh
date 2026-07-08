@@ -17,9 +17,12 @@ node="$(docker node ls --format '{{.ID}} {{.Self}}' 2>/dev/null | awk '$2=="true
 [ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | head -1)"
 [ -n "$node" ] && docker node update --label-rm mariadb-data "$node" >/dev/null 2>&1 || true
 
+# Empty the host datadir via a throwaway root container (matches e2e-setup.sh): a host
+# path is not removed by `uninstall --purge-volumes`, and on a reused runner a leftover
+# datadir would make the next run skip mariadb's first-init. Best-effort.
 if [ "$case" = "bind-mount" ]; then
-  if [ "$(id -u)" -eq 0 ]; then rm -rf /opt/mariadb-data 2>/dev/null || true
-  else sudo -n rm -rf /opt/mariadb-data 2>/dev/null || true; fi
+  docker run --rm -v /opt/mariadb-data:/data alpine \
+    sh -c 'rm -rf /data/..?* /data/.[!.]* /data/* 2>/dev/null' >/dev/null 2>&1 || true
 fi
 
 exit 0

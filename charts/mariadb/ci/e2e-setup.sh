@@ -27,12 +27,18 @@ node="$(docker node ls --format '{{.ID}} {{.Self}}' 2>/dev/null | awk '$2=="true
 [ -n "$node" ] && docker node update --label-add mariadb-data=true "$node" >/dev/null
 
 # bind-mount fixture only (ci/bind-mount-values.yaml mounts /opt/mariadb-data at
-# /var/lib/mysql). mariadb:11.8 runs its server as the mysql user (uid 999) and — unlike a
-# named volume, which inherits the image's mysql-owned datadir — does NOT chown a
-# bind-mounted host dir, so mysql cannot initialise it unless it is writable by uid 999.
-# The CI runner may be non-root without sudo, so provision the host dir via a throwaway
-# root container (dockerd always runs as root): the -v auto-creates it and chmod 0777
-# makes it writable regardless of its owner. Best-effort.
+# /var/lib/mysql). Two host-path facts bite here, both absent for a named volume:
+#   * it must be writable by the mysql user (uid 999) the server runs as — mariadb:11.8
+#     does not chown a bind-mounted datadir the way a fresh named volume inherits the
+#     image's mysql ownership; and
+#   * `uninstall --purge-volumes` does NOT remove a host path, so on a reused CI runner a
+#     stale datadir from a prior run makes the entrypoint SKIP first-time init — which is
+#     what sets up the healthcheck's local credentials, so the healthcheck then fails
+#     "Access denied for root" and the task crash-loops.
+# Provision via a throwaway root container (dockerd always runs as root, so this works
+# whether or not the runner has sudo): empty the dir for a clean first-init, then chmod
+# 0777 so mysql can write it regardless of owner. Best-effort.
 if [ "$case" = "bind-mount" ]; then
-  docker run --rm -v /opt/mariadb-data:/data alpine chmod 0777 /data >/dev/null 2>&1 || true
+  docker run --rm -v /opt/mariadb-data:/data alpine \
+    sh -c 'rm -rf /data/..?* /data/.[!.]* /data/* 2>/dev/null; chmod 0777 /data' >/dev/null 2>&1 || true
 fi
