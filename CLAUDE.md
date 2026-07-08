@@ -161,11 +161,13 @@ placeholder — the tag wins. Published chart version is plain SemVer; the leadi
 Swarm, asserts convergence, runs optional per-chart `ci/e2e-setup.sh` (before
 install) / `ci/e2e-check.sh` (smoke) / `ci/e2e-teardown.sh` hooks, and tears the
 release down. The `e2e.yml` workflow runs this **in CI** on a throwaway single-node
-swarm (`E2E_SWARM_INIT=1`), scoped to the charts with CI-provisionable setup hooks
-(openclaw today) — fork-safe because it uses only public images + dummy on-runner
-secrets, no repo secrets. The full local `make e2e` across every chart stays the
-developer loop until each chart gains those hooks. Contributor guide:
-`docs/e2e-testing.md`.
+swarm (`E2E_SWARM_INIT=1`) as **one `strategy.matrix` job per chart**, each running a
+curated fixture subset via `E2E_CASES` (unset ⇒ all fixtures, the `make e2e` default) —
+fork-safe because it uses only public images + dummy on-runner secrets, no repo secrets.
+The full local `make e2e` still runs every fixture. Extending CI to a new chart is **one
+matrix line `{chart, cases, timeout}`** plus `ci/e2e-setup.sh`/`-teardown.sh` only if it
+needs external resources (whoami/swarm-cronjob converge solo; keycloak's hook stands up a
+throwaway MariaDB backend). Contributor guide: `docs/e2e-testing.md`.
 
 **Renderer source.** swarmcli is the renderer; its `charts` CLI is only on
 swarmcli `main` today and its module path is `swarmcli` (so `go install` of the

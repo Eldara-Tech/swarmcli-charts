@@ -1,17 +1,20 @@
 name: E2E
 
-# Deploys the chart to a REAL (throwaway, single-node) Docker Swarm and asserts it runs —
-# the loop scripts/e2e-test.sh drives locally via `make e2e`, now also in CI. Unlike the
-# data-only Charts workflow (which only renders), this proves the stack converges, serves,
-# and — for the openclaw backend fixture — that the gateway actually reaches its configured
-# model backend (the regression guard for #60).
+# Deploys every covered chart to a REAL (throwaway, single-node) Docker Swarm and asserts
+# it runs — the loop scripts/e2e-test.sh drives locally via `make e2e`, now also in CI.
+# Unlike the data-only Charts workflow (which only renders), this proves each stack
+# converges, serves, and — for the openclaw backend fixture — that the gateway actually
+# reaches its configured model backend (the regression guard for #60).
 #
 # It stays fork-safe like the other workflows: it uses only public images and dummy secrets
 # created on the runner by each chart's ci/e2e-setup.sh (E2E_SWARM_INIT=1 stands up the
 # throwaway swarm), never a repo secret, with a read-only token.
 #
-# Scoped to the openclaw chart for now — the only chart shipping CI-provisionable setup
-# hooks. Add more charts to the run below as they gain ci/e2e-setup.sh (or converge solo).
+# One job PER CHART (strategy.matrix below), so charts run in parallel and in isolation.
+# CI runs a curated fixture SUBSET per chart via E2E_CASES (the cheap "does it deploy and
+# come up" smoke); the full `make e2e` still runs every fixture locally. Add a chart to CI
+# with one matrix line {chart, cases, timeout} — plus ci/e2e-setup.sh/-teardown.sh only if
+# it needs external resources (charts that converge solo, e.g. whoami/swarm-cronjob, need none).
 #
 # Triggers on every PR but a change-detection job skips the heavy run when no chart/script
 # files changed; a skipped required check counts as passing, so this can be a required check
@@ -65,6 +68,24 @@ jobs:
     needs: changes
     if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
+    name: e2e (${{ matrix.chart }})
+    strategy:
+      fail-fast: false          # one chart's failure must not cancel its siblings
+      matrix:
+        include:
+          # openclaw: ALL fixtures (cases: "" => no filter) — keeps the #60 backend
+          # regression guard. Its >=2 GB image + 120s health start period needs 10m.
+          - { chart: openclaw,      cases: "",                                                                                timeout: 10m }
+          - { chart: whoami,        cases: "",                                                                                timeout: 5m  }
+          - { chart: swarm-cronjob, cases: "",                                                                                timeout: 5m  }
+          - { chart: redis,         cases: "default no-auth ephemeral bind-mount published-port",                             timeout: 6m  }
+          - { chart: mariadb,       cases: "default no-appuser ephemeral bind-mount published-port",                          timeout: 6m  }
+          # traefik: every CI-friendly fixture EXCEPT loki-logging, which needs the
+          # loki:latest Docker log-driver plugin (absent on stock runners).
+          - { chart: traefik,       cases: "default dashboard-off extra-entrypoints hsts-off ingress-ports certs-bind-mount", timeout: 6m  }
+          # keycloak: MariaDB-backed subset only (ci/e2e-setup.sh stands up the backend).
+          # Excludes postgres/jdbc-url (PostgreSQL) and published-tls (real cert material).
+          - { chart: keycloak,      cases: "default tls-off none db-net-override start-dev published-http",                   timeout: 8m  }
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
@@ -78,13 +99,14 @@ jobs:
       - name: Build swarmcli
         run: scripts/install-swarmcli.sh "$PWD/.swarmcli-bin"
 
-      # Deploy each openclaw fixture to a throwaway single-node swarm, converge, smoke-test,
-      # and tear down. E2E_SWARM_INIT=1 initialises the swarm; the chart's ci/e2e-setup.sh
-      # provisions the dummy secret / node label / mock backend. A generous timeout absorbs
-      # the openclaw image pull (>=2 GB, 120s health start period).
-      - name: Deploy + verify (openclaw)
+      # Deploy this chart's curated fixtures to a throwaway single-node swarm, converge,
+      # smoke-test, and tear down. E2E_SWARM_INIT=1 initialises the swarm; the chart's
+      # ci/e2e-setup.sh provisions its dummy secrets / node labels / co-located backend.
+      # E2E_CASES selects the curated subset (empty => every fixture).
+      - name: Deploy + verify (${{ matrix.chart }})
         run: |
           SWARMCLI="$PWD/.swarmcli-bin/swarmcli" \
           E2E_SWARM_INIT=1 \
-          E2E_TIMEOUT=10m \
-          scripts/e2e-test.sh openclaw
+          E2E_CASES="${{ matrix.cases }}" \
+          E2E_TIMEOUT="${{ matrix.timeout }}" \
+          scripts/e2e-test.sh "${{ matrix.chart }}"
