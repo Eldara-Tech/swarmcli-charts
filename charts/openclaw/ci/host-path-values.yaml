@@ -5,5 +5,7 @@
 # Chart.yaml. Exercises the bind-mount branch and the host-mount acknowledgment.
 persistence:
   enabled: true
-  dataPath: /opt/openclaw/data
-  authPath: /opt/openclaw/auth
+  # A world-writable /tmp path so the e2e can provision it without root (ci/e2e-setup.sh
+  # creates it); any absolute path exercises the bind-mount branch + host-mount scan.
+  dataPath: /tmp/openclaw-e2e/data
+  authPath: /tmp/openclaw-e2e/auth

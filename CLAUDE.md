@@ -36,7 +36,7 @@ charts/<name>/
 Makefile                     # make new-chart / lint / test / render / e2e / package
 scripts/install-swarmcli.sh  # builds the swarmcli renderer from source
 scripts/test-charts.sh       # render + compose-validate + no-value + security (== CI)
-scripts/e2e-test.sh          # deploy to a live swarm + converge + smoke (local-only; NOT in CI)
+scripts/e2e-test.sh          # deploy to a live swarm + setup/converge/smoke/teardown (local + e2e.yml CI)
 scripts/local-repo.sh        # serve working-tree charts as a local HTTP repo for `repo add` (local-only)
 scripts/local-repo-test.sh   # integration test: repo add/update/search against local-repo.sh (CI, no swarm)
 scripts/security-scan.sh     # flags risky primitives unless Chart.yaml acknowledges them
@@ -157,11 +157,14 @@ placeholder — the tag wins. Published chart version is plain SemVer; the leadi
   + shellcheck (`--severity=error`).
 - Doc-only changes outside those paths trigger no CI.
 
-**E2E is local-only.** `make e2e` / `scripts/e2e-test.sh` deploys each chart ×
-fixture to a real Swarm (`swarmcli charts install --wait`), asserts convergence,
-runs an optional `charts/<name>/ci/e2e-check.sh` smoke check, and tears the
-release down. It needs a live swarm and pulls real images, so it is deliberately
-**not** wired into CI — CI stays data-only and fork-safe. Contributor guide:
+**E2E.** `make e2e` / `scripts/e2e-test.sh` deploys each chart × fixture to a real
+Swarm, asserts convergence, runs optional per-chart `ci/e2e-setup.sh` (before
+install) / `ci/e2e-check.sh` (smoke) / `ci/e2e-teardown.sh` hooks, and tears the
+release down. The `e2e.yml` workflow runs this **in CI** on a throwaway single-node
+swarm (`E2E_SWARM_INIT=1`), scoped to the charts with CI-provisionable setup hooks
+(openclaw today) — fork-safe because it uses only public images + dummy on-runner
+secrets, no repo secrets. The full local `make e2e` across every chart stays the
+developer loop until each chart gains those hooks. Contributor guide:
 `docs/e2e-testing.md`.
 
 **Renderer source.** swarmcli is the renderer; its `charts` CLI is only on

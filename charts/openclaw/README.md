@@ -5,8 +5,10 @@ Docker Swarm stack. This chart runs the OpenClaw **gateway** (control plane + Co
 HTTP port `18789`): stateful (config, SQLite DB and workspace on a node-local named
 volume; OAuth token encryption keys on a second one), single-node pinned, and fronted by
 Traefik with TLS by default. The gateway API token comes from an external Swarm secret.
-OpenClaw is backend-agnostic — wire any local model or API provider via `extraEnv` (and,
-for a network-reachable backend such as a co-located Ollama, `backend.network`).
+The model backend is configured inside OpenClaw (`openclaw.json` / Control UI), not by this
+chart — for a network-reachable backend such as a co-located Ollama, `backend.network` joins
+the gateway to the backend's overlay so it can reach it (see [Wiring a model
+backend](#wiring-a-model-backend)).
 
 > **Never expose the gateway (`:18789`) to the internet without TLS and a token.** The
 > gateway token is always required (OpenClaw is fail-closed without auth); the defaults
@@ -82,21 +84,40 @@ Set `exposure.mode`:
 
 ## Wiring a model backend
 
-OpenClaw talks to whatever backend you configure. For an API provider, pass its
-credentials/URL via `extraEnv` (no extra network needed):
+**The backend is configured inside OpenClaw, not through this chart's environment.** OpenClaw
+does not select or point at a backend from env vars — provider selection and endpoints live in
+its config (`openclaw.json`, editable via the Control UI or `openclaw config set`). Env vars
+such as `OLLAMA_HOST` / `*_BASE_URL` are **not** honored; see the authoritative list of what
+OpenClaw does read from the environment: <https://docs.openclaw.ai/help/environment>.
+
+**API provider (OpenAI, Anthropic, …).** OpenClaw reads provider API *keys* from its process
+environment, so pass the key via `extraEnv` and configure the provider in OpenClaw:
 
 ```bash
 --set extraEnv.OPENAI_API_KEY=sk-…
 ```
 
-For a network-reachable backend such as a co-located Ollama, join its overlay and point
-the gateway at it:
+Then, in the Control UI (or `openclaw config set`), select the provider/model.
+
+**Network-reachable backend (e.g. a co-located Ollama).** Two steps: (1) join the backend's
+overlay so the gateway can reach it by service name, and (2) point OpenClaw at that address in
+its **config** — the `baseUrl` cannot come from env:
 
 ```bash
+# 1. give the gateway network reachability to the backend
 --set backend.enabled=true \
---set backend.network=ai-internal \
---set extraEnv.OLLAMA_HOST=http://ollama:11434
+--set backend.network=ai-internal
 ```
+
+```bash
+# 2. inside OpenClaw (Control UI, or exec into the gateway container), set the endpoint:
+openclaw config set --batch-json \
+  '{"models":{"providers":{"ollama":{"baseUrl":"http://ollama:11434","api":"ollama"}}}}'
+```
+
+(Setting only `OLLAMA_API_KEY` via `extraEnv` makes OpenClaw auto-discover from
+`http://127.0.0.1:11434` — localhost *inside* the gateway container — which is not your
+co-located Ollama; use the config `baseUrl` above.)
 
 ## Values
 
@@ -130,7 +151,7 @@ the gateway at it:
 | `allowUnconfigured` | `true` | Launch with `--allow-unconfigured` so the gateway boots from empty state (auth still enforced); set `false` only if you pre-seed `openclaw.json` |
 | `backend.enabled` | `false` | Join `backend.network` for a network-reachable backend |
 | `backend.network` | `openclaw-backend` | External overlay to join when `backend.enabled` |
-| `extraEnv` | `{}` | Arbitrary extra environment (backend keys/URLs, etc.) |
+| `extraEnv` | `{}` | Extra env vars OpenClaw reads from its process environment (e.g. a provider API key); not a way to select/point at a backend — see [Wiring a model backend](#wiring-a-model-backend) |
 | `placement.constraints` | `[]` | Extra scheduling constraints (the data pin comes from `persistence.nodeLabel`) |
 | `resources.limits.memory` | `""` | Swarm deploy memory limit (set `2G`) |
 | `healthcheck.*` | see `values.yaml` | `node fetch()` `/healthz` healthcheck |

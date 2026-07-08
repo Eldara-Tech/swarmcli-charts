@@ -7,7 +7,7 @@ renders.
 | Loop | Command | Needs a Swarm? | What it proves | Runs in CI? |
 |------|---------|----------------|----------------|-------------|
 | **Data-only** (`== CI`) | `make test` | no | the template renders to a valid stack | yes |
-| **End-to-end** | `make e2e` | **yes** | the stack deploys, converges, and serves | **no** (local-only) |
+| **End-to-end** | `make e2e` | **yes** | the stack deploys, converges, and serves | partly — see below |
 
 `make test` is covered in [CONTRIBUTING.md](../CONTRIBUTING.md#testing-locally--ci):
 it renders each chart against its `ci/*-values.yaml` fixtures, runs the
@@ -17,9 +17,15 @@ it is exactly what the `charts.yml` workflow runs.
 
 `make e2e` goes the rest of the way: it **deploys each fixture to a real Docker
 Swarm**, waits for the services to converge, optionally smoke-tests them, and
-tears the release back down. It needs a running Swarm and pulls real images, so
-it is **local-only and deliberately not run by CI** — keeping CI safe to run on
-fork PRs.
+tears the release back down. It needs a running Swarm and pulls real images.
+
+The `e2e.yml` workflow runs this loop **in CI** on a throwaway single-node swarm
+(`E2E_SWARM_INIT=1`) — currently scoped to the charts that ship CI-provisionable
+setup (see [Setup / teardown hooks](#setup--teardown-hooks-cie2e-setupsh)); it
+stays fork-safe because it uses only public images and dummy on-runner secrets,
+never a repo secret. The **full** local `make e2e` across *every* chart remains
+the developer loop until each chart gains that setup. Add a chart to the CI run
+by giving it the hooks below, then extending `e2e.yml`'s chart list.
 
 > **It tests your working tree, not a published chart.** `make e2e` installs the
 > chart straight from its local directory (`./charts/<name>`), so you can validate
@@ -74,23 +80,27 @@ Tunables (env vars):
 
 For every chart × `ci/*-values.yaml` fixture, `scripts/e2e-test.sh`:
 
-1. **pre-cleans** — uninstalls any leftover `e2e-<chart>-<case>` release from a
-   prior crashed run.
-2. **installs** — `swarmcli charts install <release> ./charts/<chart> -f <fixture>`,
+1. **pre-cleans** — uninstalls any leftover `e2e-<chart>-<case>` release (and runs
+   the teardown hook) from a prior crashed run.
+2. **sets up (optional)** — if `charts/<chart>/ci/e2e-setup.sh` is executable, runs
+   it *before* install to provision external prerequisites swarmcli validates but
+   never creates (external secrets, node labels, a co-located backend). See
+   [Setup / teardown hooks](#setup--teardown-hooks-cie2e-setupsh).
+3. **installs** — `swarmcli charts install <release> ./charts/<chart> -f <fixture>`,
    straight from your local working-tree directory (no packaging or publishing). A
    non-zero exit (rejected manifest, failed pre-flight) fails the case. swarmcli
    auto-creates any external attachable overlay the chart declares in
    `requirements.yaml` (e.g. `traefik-public`).
-3. **waits for convergence** — polls `docker stack ps` until every task whose
+4. **waits for convergence** — polls `docker stack ps` until every task whose
    desired state is `running` actually reads `Running`, up to `$E2E_TIMEOUT`
    (default `3m`; raise it for slow image pulls). It deliberately does **not** use
    swarmcli's `--wait`, which reports a service converged as soon as its tasks are
    *scheduled* (desired-state Running) — not when they are actually running — so on
    a cold image pull `--wait` returns while tasks are still `Pending`.
-4. **smoke-tests (optional)** — if `charts/<chart>/ci/e2e-check.sh` is
-   executable, runs it; a non-zero exit fails the case.
-5. **tears down** — `swarmcli charts uninstall <release> --purge-volumes`, always,
-   even when a step above failed.
+5. **smoke-tests (optional)** — if `charts/<chart>/ci/e2e-check.sh` is
+   executable, runs it (with the case name as `$3`); a non-zero exit fails the case.
+6. **tears down** — `swarmcli charts uninstall <release> --purge-volumes` plus the
+   optional `ci/e2e-teardown.sh`, always, even when a step above failed.
 
 The run exits non-zero if any case failed. Because every release is torn down,
 repeated runs are idempotent and leave no stacks behind.
@@ -147,6 +157,8 @@ failure. Contract:
 - `$1` — the release name, which is also the Docker **stack** name. Stack deploy
   prefixes service names, so a service `web` is reachable as `<release>_web`.
 - `$2` — the chart directory.
+- `$3` — the fixture case name (the `<case>` in `ci/<case>-values.yaml`), so one
+  check can assert fixture-specific behaviour.
 - Exit `0` for healthy, non-zero to fail the case.
 
 Keep it self-contained and side-effect-free (use `--rm` throwaway containers).
@@ -160,6 +172,32 @@ docker run --rm --network traefik-public curlimages/curl:latest \
 ```
 
 Charts without a hook (e.g. `swarm-cronjob`) are verified by convergence alone.
+
+## Setup / teardown hooks (`ci/e2e-setup.sh`)
+
+Some charts need external resources swarmcli **validates but never creates** — an
+operator-supplied secret, a node label a placement pin requires, a co-located
+backend service — so the install pre-flight fails without them. Provide them with
+two **optional**, executable per-chart hooks the harness runs around each fixture:
+
+- `charts/<name>/ci/e2e-setup.sh <release> <chart-dir> <case>` — runs **before**
+  install. A non-zero exit fails the case (and teardown still runs). Make it
+  **idempotent** (every create tolerates "already exists"): the harness also runs
+  it after pre-clean, and a crashed run may leave resources behind.
+- `charts/<name>/ci/e2e-teardown.sh <release> <chart-dir> <case>` — runs **after**
+  the release is uninstalled. Best-effort (tolerate already-gone resources); remove
+  exactly what setup created, but **leave shared overlays** like `traefik-public`
+  (other releases use them).
+
+The `openclaw` chart is the reference: its setup creates the dummy gateway-token
+secret and the persistence node label for every fixture, and — for the `backend`
+fixture — stands up a mock Ollama backend (`ci/mock-ollama.js` shipped as a swarm
+config) on an `ai-internal` overlay, which `ci/e2e-check.sh` then proves the
+gateway reaches once OpenClaw is pointed at it via config.
+
+These hooks are what let the `e2e.yml` workflow run a chart's e2e in CI without
+any repo secrets: everything the fixture needs is public images plus these
+on-runner, dummy-valued resources.
 
 ## Trying a chart through the repo flow (local repo)
 
