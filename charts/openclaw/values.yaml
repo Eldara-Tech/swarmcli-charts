@@ -8,8 +8,10 @@
 # Exposure is pluggable (see exposure.mode): front it with Traefik (default, TLS at the
 # edge), publish a port directly, or expose nothing and attach your own reverse proxy.
 # The gateway API token comes from an EXTERNAL Swarm secret the operator pre-creates.
-# OpenClaw is backend-agnostic: wire any LLM/model backend via extraEnv (and, for a
-# network-reachable backend such as a co-located Ollama, backend.network).
+# The model backend is configured inside OpenClaw (openclaw.json / Control UI), NOT by
+# this chart or via env: for a network-reachable backend such as a co-located Ollama,
+# enable backend.network so the gateway can dial it by service name, then point OpenClaw
+# at it in config (models.providers.<id>.baseUrl). See https://docs.openclaw.ai/help/environment.
 
 image:
   repository: ghcr.io/openclaw/openclaw
@@ -118,19 +120,24 @@ gatewayBind: lan
 allowUnconfigured: true
 
 # Optional network-reachable LLM backend (e.g. a co-located Ollama). enabled:true makes
-# the gateway join backend.network (the EXTERNAL overlay the backend is reachable on) so it
-# can dial the backend by service name. Leave disabled for API-based providers — they need
-# no extra network; pass their keys/URLs via extraEnv. When you enable it, set
-# backend.network to your backend's real overlay. It is declared in requirements.yaml with
-# autoCreate:false (provisioned by the backend's operator, never created here).
+# the gateway JOIN backend.network (the EXTERNAL overlay the backend is reachable on) so it
+# can dial the backend by service name — this only provides network reachability; you still
+# point OpenClaw at the backend in its config (models.providers.<id>.baseUrl, e.g.
+# http://<service>:11434). Leave disabled for API-based providers — they need no extra
+# network. When you enable it, set backend.network to your backend's real overlay. It is
+# declared in requirements.yaml with autoCreate:false (provisioned by the backend's operator,
+# never created here).
 backend:
   enabled: false
   network: openclaw-backend
 
-# Backend wiring / arbitrary extra env (OpenClaw is backend-agnostic). Examples:
-#   OLLAMA_HOST: http://ollama:11434
-#   OPENAI_API_KEY: ...     ANTHROPIC_API_KEY: ...
-# Prefer external secrets for sensitive keys where the backend supports a *_FILE env.
+# Arbitrary extra environment variables, injected into the gateway container verbatim.
+# OpenClaw reads provider API KEYS from its process environment, so this is the place for
+# them (e.g. ANTHROPIC_API_KEY / OPENAI_API_KEY for a provider you have configured). It is
+# NOT how you select or point at a backend: provider selection and endpoints live in
+# OpenClaw's config (openclaw.json / Control UI), and endpoint-redirect vars such as
+# OLLAMA_HOST / *_BASE_URL are NOT honored. Which vars OpenClaw reads:
+# https://docs.openclaw.ai/help/environment
 extraEnv: {}
 
 # Extra scheduling constraints, always applied (independent of the persistence pin).
