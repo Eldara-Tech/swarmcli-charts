@@ -216,12 +216,15 @@ unconditionally and `/health/ready` only passes once it has connected and migrat
 every keycloak fixture needs a reachable database). `whoami` and `swarm-cronjob` converge
 solo and ship no hooks.
 
-Two fixtures are deliberately **excluded from the curated CI subset** (they still run in a
+Some fixtures are deliberately **excluded from the curated CI subset** (they still run in a
 full local `make e2e`): `traefik`'s `loki-logging` needs the `loki:latest` Docker
 log-driver plugin, which stock runners lack (`docker plugin install
 grafana/loki-docker-driver:latest --alias loki:latest --grant-all-permissions` to run it
-locally); and `keycloak`'s `postgres` / `jdbc-url` (need PostgreSQL) and `published-tls`
-(needs real PEM cert material) fall outside the MariaDB-backed CI subset.
+locally); `mariadb`'s `bind-mount`, because MariaDB's healthcheck cannot authenticate on a
+host bind-mounted datadir in the Swarm CI environment (it works on a named volume, so the
+other mariadb fixtures pass, and the host-path render is covered by `charts.yml`); and
+`keycloak`'s `postgres` / `jdbc-url` (need PostgreSQL) and `published-tls` (needs real PEM
+cert material) fall outside the MariaDB-backed CI subset.
 
 ## Trying a chart through the repo flow (local repo)
 
