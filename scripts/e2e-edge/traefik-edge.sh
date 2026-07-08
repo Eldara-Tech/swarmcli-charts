@@ -186,7 +186,7 @@ edge_whoami_up() {
   docker service create --name "$name" --network "$EDGE_NETWORK" \
     "${labels[@]}" "$EDGE_WHOAMI_IMAGE" >/dev/null
 
-  for i in $(seq 1 40); do
+  for _ in $(seq 1 40); do
     state="$(docker service ps "$name" --filter desired-state=running \
       --format '{{.CurrentState}}' 2>/dev/null | head -1)"
     case "$state" in

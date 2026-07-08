@@ -69,4 +69,4 @@ jobs:
       # shellcheck is preinstalled on ubuntu runners. --severity=error fails only
       # on genuine bugs, not style warnings, so it won't block on existing scripts.
       - name: Lint shell scripts (shellcheck)
-        run: shellcheck --severity=error scripts/*.sh
+        run: shellcheck --severity=error scripts/*.sh scripts/e2e-edge/*.sh
