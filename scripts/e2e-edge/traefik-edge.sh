@@ -77,14 +77,17 @@ edge_up() {
   local sc node out state code
   sc="$(_edge_swarmcli)"
 
+  # Idempotent: clear any edge a crashed run left behind before re-installing. This MUST
+  # come before labelling the node below — edge_down removes the traefik-certs label, so
+  # labelling first would strip the very label the install needs and the task would stay
+  # Pending ("scheduling constraints not satisfied").
+  edge_down >/dev/null 2>&1 || true
+
   # Traefik's default placement pins it to the node holding the ACME cert volume via
   # node.labels.traefik-certs == true, so that label must exist or the task never
   # schedules (the same pin the traefik chart's own ci/e2e-setup.sh sets).
   node="$(_edge_node)"
   [ -n "$node" ] && docker node update --label-add traefik-certs=true "$node" >/dev/null
-
-  # Idempotent: clear any edge a crashed run left behind before re-installing.
-  edge_down >/dev/null 2>&1 || true
 
   # Install the in-repo traefik chart as the edge. Dashboard off drops the otherwise
   # required dashboard.host; a dummy ACME email keeps the resolver well-formed (no cert is
