@@ -53,6 +53,26 @@ There is **no** `.Capabilities` or other Helm context.
 > `{{ .Values.replcas }}` silently becomes the literal `<no value>` instead of
 > erroring. `make test` greps for `<no value>` and fails — fix the reference.
 
+## Chart conventions
+
+The existing charts share deliberate patterns — new charts must follow them.
+The full normative list lives in [CLAUDE.md](CLAUDE.md#chart-design-conventions);
+in short:
+
+- **Traefik-routed** services carry `traefik.enable=true`,
+  `traefik.constraint-label` and `traefik.swarm.network` deploy labels (the
+  swarm provider discovers nothing without the constraint label), and default
+  their `traefik.*` values to the in-repo traefik chart — entrypoints
+  `http`/`https`, cert resolver `le`, redirect middleware `https-redirect`. See
+  "Routing a service" in [charts/traefik/README.md](charts/traefik/README.md).
+- **Stateful** services run a single replica pinned via `persistence.nodeLabel`,
+  rendered only while `persistence.enabled` (never a hardcoded entry in
+  `placement.constraints`, which is for extra constraints); they offer host-path
+  persistence via `persistence.volumePath` with the `host-mount` acknowledgment,
+  and ship `ephemeral` + `bind-mount` CI fixtures. See charts/mariadb.
+- **Secrets** are external and operator-created; charts read them from the
+  mounted `/run/secrets/...` files (never take secret values via values.yaml).
+
 ## External resources (`requirements.yaml`)
 
 If a stack attaches to an external network or mounts an external secret/config

@@ -79,6 +79,62 @@ Templates use Go `text/template` with sprig (minus `env`/`expandenv`/
 > but must not create (e.g. a shared ingress an operator pre-provisions); document
 > such human prerequisites in the chart README too.
 
+## Chart design conventions
+
+Deliberate patterns shared by the existing charts; new charts must follow them.
+Reference implementations: keycloak (routed, pluggable exposure), mariadb
+(stateful), openclaw (both).
+
+**Traefik-routed charts** — anything exposing HTTP via the traefik chart:
+
+- Deploy labels MUST carry `traefik.enable=true`,
+  `traefik.constraint-label=<constraintLabel>` and
+  `traefik.swarm.network=<network>`. The traefik chart's v3 swarm provider runs
+  `exposedByDefault=false` **plus** a constraint on `traefik.constraint-label`,
+  so a service without that label is never discovered (404 at the edge);
+  `traefik.docker.network` is the docker-provider selector, not the swarm
+  provider's — on multi-network services it can resolve the wrong overlay IP
+  (502/504). Full label contract: charts/traefik/README.md "Routing a service".
+- Default the `traefik.*` values to the in-repo traefik chart: entrypoints
+  `http`/`https` (NOT Traefik's conventional `web`/`websecure` — a router bound
+  to an entrypoint the instance doesn't define is dropped), `certResolver: le`,
+  `constraintLabel: traefik-public`, `redirectMiddleware: https-redirect` (the
+  traefik chart always defines it, independent of its dashboard). Operators
+  running their own Traefik override these; say so in the chart README.
+- Render the HTTP router's redirect-middleware label only when TLS is on, so
+  the `tls: false` path serves plain HTTP instead of redirecting into a
+  nonexistent HTTPS router.
+- Real services should make exposure pluggable — `exposure.mode:
+  traefik|published|none` (keycloak/openclaw pattern); demo charts (whoami) may
+  hardcode traefik mode.
+
+**Stateful charts** — anything persisting to a Swarm volume (node-local):
+
+- Single replica, pinned to the data node via `persistence.nodeLabel` (default
+  `<chart>-data`), rendered as `node.labels.<label> == true` ONLY while
+  `persistence.enabled` — the pin must never outlive the volume, or the
+  documented ephemeral mode strands the task `Pending` on a missing label
+  (#55). `nodeLabel: ""` skips the pin (single-node swarm).
+  `placement.constraints` holds only EXTRA constraints and applies in all
+  modes; never put the data pin there.
+- Offer host-path persistence: `persistence.volumePath` (per-volume `<x>Path`
+  when there are several — see openclaw) bind-mounts an absolute host path,
+  takes precedence over `volumeName`, and suppresses the top-level named-volume
+  block. `fail` at render time when a `volumeName` contains `/` (docker compose
+  otherwise emits a cryptic error). Acknowledge with `host-mount` in the
+  Chart.yaml `swarmcli-charts/allow` annotation (comma-separated with other
+  keys) and note in a comment that the default named-volume render is clean.
+- Ship both fixtures: `ci/ephemeral-values.yaml` (persistence off — must render
+  no placement block) and `ci/bind-mount-values.yaml` (host path — exercises
+  the host-mount acknowledgment).
+
+**Secrets** — always EXTERNAL Swarm secrets the operator pre-creates; charts
+never create secrets or take secret values through `values.yaml`. Prefer the
+image's `*_FILE` convention; if the image lacks one, read the mounted file in a
+command/entrypoint wrapper (`$$` compose-escapes the `$`) so the plaintext never
+lands in the compose file or `docker inspect`. Document the
+`docker secret create` pre-step in the chart README.
+
 ## Releasing
 
 The **git tag is the source of truth** for the version. Push a tag of the form
