@@ -11,6 +11,12 @@ set -uo pipefail
 
 case="$3"
 
+# Remove the traefik edge the edge fixture stood up (issue #63); leaves traefik-public.
+if [ "$case" = "edge" ]; then
+  . "$2/../../scripts/e2e-edge/traefik-edge.sh"
+  edge_down
+fi
+
 docker service rm mariadb >/dev/null 2>&1 || true
 docker secret rm keycloak_db_password    >/dev/null 2>&1 || true
 docker secret rm keycloak_admin_password >/dev/null 2>&1 || true

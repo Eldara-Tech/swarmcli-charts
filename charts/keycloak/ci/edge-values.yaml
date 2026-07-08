@@ -1,0 +1,15 @@
+# Edge-routing fixture (issue #63): prove a real HTTP request reaches Keycloak THROUGH a
+# live Traefik edge, exercising the traefik-mode label/discovery contract at runtime — not
+# just as rendered strings. ci/e2e-setup.sh stands up the in-repo traefik chart via
+# scripts/e2e-edge/traefik-edge.sh (the MariaDB backend + secrets + overlays it already
+# provisions for every fixture stay); ci/e2e-check.sh curls the edge with a matching Host
+# header and asserts a 200 from a public realm endpoint (/realms/master).
+#
+# tls:false so the http-entrypoint router forwards straight to Keycloak's 8080 listener
+# (there is no https-redirect / ACME router in CI); Keycloak trusts X-Forwarded-* and
+# serves plain HTTP behind the proxy.
+exposure:
+  mode: traefik
+ingress:
+  host: keycloak.e2e.test
+  tls: false

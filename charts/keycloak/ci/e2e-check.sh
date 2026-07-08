@@ -38,14 +38,30 @@ probe() {
     [[ "$status" == *" 200 "* ]]' 2>/dev/null
 }
 
+ready=0
 for _ in $(seq 1 30); do
   if probe; then
     echo "  ${release}_keycloak: /health/ready returned 200 OK"
-    exit 0
+    ready=1
+    break
   fi
   sleep 5
 done
 
-echo "  FAIL: ${release}_keycloak /health/ready never returned 200 within ~2.5m"
-docker service ps "${release}_keycloak" --no-trunc 2>/dev/null | sed 's/^/    /' || true
-exit 1
+if [ "$ready" != 1 ]; then
+  echo "  FAIL: ${release}_keycloak /health/ready never returned 200 within ~2.5m"
+  docker service ps "${release}_keycloak" --no-trunc 2>/dev/null | sed 's/^/    /' || true
+  exit 1
+fi
+
+# --- edge fixture: prove a request routes THROUGH the stood-up traefik edge to Keycloak
+# (issue #63). Health above proved Keycloak is serving; now assert a public realm endpoint
+# is reachable via the edge with a matching Host header, and that an unknown host 404s. ---
+case="${3:-}"
+if [ "$case" = "edge" ]; then
+  . "$2/../../scripts/e2e-edge/traefik-edge.sh"
+  edge_assert_routed keycloak.e2e.test /realms/master 200 || exit 1
+  edge_assert_unrouted no-such-host.invalid || exit 1
+fi
+
+exit 0

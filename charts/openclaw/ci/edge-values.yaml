@@ -1,0 +1,16 @@
+# Edge-routing fixture (issue #63): prove a real HTTP request reaches the gateway THROUGH
+# a live Traefik edge, exercising the traefik-mode label/discovery contract at runtime —
+# not just as rendered strings. ci/e2e-setup.sh stands up the in-repo traefik chart via
+# scripts/e2e-edge/traefik-edge.sh; ci/e2e-check.sh curls the edge with a matching Host
+# header and asserts a 200 from /healthz (plus a 404 for an unknown host).
+#
+# tls:false so the http-entrypoint router forwards straight to the gateway instead of
+# emitting the https-redirect middleware (there is no ACME/HTTPS router in CI). Ephemeral
+# to keep it light — no data volume and no node pin needed for a routing check.
+exposure:
+  mode: traefik
+ingress:
+  host: openclaw.e2e.test
+  tls: false
+persistence:
+  enabled: false

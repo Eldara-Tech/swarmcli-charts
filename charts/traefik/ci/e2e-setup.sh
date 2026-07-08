@@ -29,3 +29,12 @@ if [ "$case" = "certs-bind-mount" ]; then
       || mkdir -p /opt/traefik-certificates 2>/dev/null || true
   fi
 fi
+
+# --- routing fixture only: stand up two whoami backends on traefik-public — one correctly
+# labelled (discovered -> 200) and one MISSING only the constraint label (never discovered
+# -> 404). ci/e2e-check.sh asserts both; ci/e2e-teardown.sh removes them (issue #63). -----
+if [ "$case" = "routing" ]; then
+  . "$2/../../scripts/e2e-edge/traefik-edge.sh"
+  edge_whoami_up whoami-ok  whoami-ok.e2e.test  true
+  edge_whoami_up whoami-bad whoami-bad.e2e.test false
+fi

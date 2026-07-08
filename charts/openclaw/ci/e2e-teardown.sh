@@ -12,6 +12,12 @@ set -uo pipefail
 
 case="$3"
 
+# Remove the traefik edge the edge fixture stood up (issue #63); leaves traefik-public.
+if [ "$case" = "edge" ]; then
+  . "$2/../../scripts/e2e-edge/traefik-edge.sh"
+  edge_down
+fi
+
 if [ "$case" = "backend" ]; then
   docker service rm mock-ollama >/dev/null 2>&1 || true
   docker config rm mock-ollama-js >/dev/null 2>&1 || true

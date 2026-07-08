@@ -216,6 +216,36 @@ unconditionally and `/health/ready` only passes once it has connected and migrat
 every keycloak fixture needs a reachable database). `whoami` and `swarm-cronjob` converge
 solo and ship no hooks.
 
+### Proving Traefik actually routes (the shared edge helper)
+
+The data-only render proves a routed chart *emits* the right `traefik.*` deploy labels, but
+not that Traefik **discovers and routes to** it — the "renders fine, silently 404s/502s at
+the edge" footgun in [CLAUDE.md](../CLAUDE.md) (wrong/absent constraint-label ⇒ never
+discovered). `scripts/e2e-edge/traefik-edge.sh` is a **sourced** helper (not executed —
+hooks `. ` it) that stands up the in-repo **traefik** chart as a real edge and asserts an
+HTTP request routes *through* it, so the label/discovery contract is exercised at runtime.
+Two fixtures consume it:
+
+- **openclaw** and **keycloak** ship an `edge` fixture. Their `ci/e2e-setup.sh` calls
+  `edge_up` (installs traefik on `traefik-public` with the dashboard off and a dummy ACME
+  email, keeping the default `:80/:443` host ports), and `ci/e2e-check.sh` calls
+  `edge_assert_routed <host> <path>` — a curl through the edge with a matching `Host:`
+  header must return 200 from the app (`/healthz` for openclaw, `/realms/master` for
+  keycloak) — plus `edge_assert_unrouted` for an unknown host (404). The fixture sets
+  `ingress.tls: false` so the `http`-entrypoint router forwards straight to the app (no
+  HTTPS/ACME router exists in CI). `ci/e2e-teardown.sh` calls `edge_down`.
+- **traefik** ships a `routing` fixture where traefik itself is the chart under test: its
+  `ci/e2e-setup.sh` uses `edge_whoami_up` to stand up two `whoami` backends — one correctly
+  labelled, one **missing only the constraint label** — and `ci/e2e-check.sh` asserts the
+  first routes (200) while the second is never discovered (404), reproducing the footgun
+  for real.
+
+All curls run from a throwaway `--rm` container on `traefik-public` and hit the traefik
+service VIP with an explicit `Host:` header (a bare swarm has no DNS; the header is what
+drives Traefik's router rules). Real ACME/TLS is out of reach in CI (no public DNS or cert
+issuance), so this verifies **HTTP routing and label discovery**, not certificate
+resolution — plain HTTP only.
+
 Some fixtures are deliberately **excluded from the curated CI subset** (they still run in a
 full local `make e2e`): `traefik`'s `loki-logging` needs the `loki:latest` Docker
 log-driver plugin, which stock runners lack (`docker plugin install
