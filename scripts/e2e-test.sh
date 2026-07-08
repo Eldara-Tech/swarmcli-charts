@@ -28,6 +28,7 @@
 #   Env: E2E_TIMEOUT     convergence budget per release, simple duration like
 #                        3m / 90s / 1h (default 3m)
 #        E2E_SWARM_INIT  set to 1 to `docker swarm init` if no swarm is active
+#        E2E_CASES       space/comma-separated fixture case names to run (default: all)
 #
 # Note: swarmcli auto-creates external attachable overlays (e.g. traefik-public)
 # at install time per a chart's requirements.yaml. Uninstall leaves those shared
@@ -38,6 +39,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 SWARMCLI="${SWARMCLI:-swarmcli}"
 TIMEOUT="${E2E_TIMEOUT:-3m}"
+
+# Optional per-chart fixture-case filter. E2E_CASES is a comma/space-separated list of
+# case names (the <case> in ci/<case>-values.yaml). Set => only those fixtures run;
+# unset/empty => every fixture runs (the `make e2e` default). CI passes a curated subset
+# per chart (dropping fixtures that need a host plugin or a second DB engine).
+CASES="${E2E_CASES:-}"; CASES="${CASES//,/ }"
 
 # Convert a simple Go-style duration (3m / 90s / 1h / bare seconds) to seconds.
 dur_to_secs() {
@@ -98,8 +105,17 @@ for chart in "${charts[@]}"; do
     continue
   fi
 
+  matched=0
   for vf in "${fixtures[@]}"; do
     case="$(basename "$vf" -values.yaml)"
+
+    # Fixture-case filter: skip cases not named in E2E_CASES (when it is set). Placed
+    # before the release/echo lines so a filtered-out case produces no output at all.
+    if [ -n "$CASES" ] && [[ " $CASES " != *" $case "* ]]; then
+      continue
+    fi
+    matched=$(( matched + 1 ))
+
     release="$(printf 'e2e-%s-%s' "$chart" "$case" \
       | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-')"
     echo "── $chart [$case]  (release: $release)"
@@ -172,6 +188,13 @@ for chart in "${charts[@]}"; do
       fail=1
     fi
   done
+
+  # A set E2E_CASES that matched nothing for this chart is almost always a typo in the
+  # curated list — fail loudly rather than silently reporting a green "no cases ran".
+  if [ -n "$CASES" ] && [ "$matched" -eq 0 ]; then
+    echo "ERROR: $chart — E2E_CASES='$E2E_CASES' matched none of its ci/*-values.yaml fixtures"
+    fail=1
+  fi
 done
 
 if [ "$fail" -eq 0 ]; then
