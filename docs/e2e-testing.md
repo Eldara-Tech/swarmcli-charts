@@ -20,12 +20,15 @@ Swarm**, waits for the services to converge, optionally smoke-tests them, and
 tears the release back down. It needs a running Swarm and pulls real images.
 
 The `e2e.yml` workflow runs this loop **in CI** on a throwaway single-node swarm
-(`E2E_SWARM_INIT=1`) — currently scoped to the charts that ship CI-provisionable
-setup (see [Setup / teardown hooks](#setup--teardown-hooks-cie2e-setupsh)); it
-stays fork-safe because it uses only public images and dummy on-runner secrets,
-never a repo secret. The **full** local `make e2e` across *every* chart remains
-the developer loop until each chart gains that setup. Add a chart to the CI run
-by giving it the hooks below, then extending `e2e.yml`'s chart list.
+(`E2E_SWARM_INIT=1`), as **one job per chart** (a `strategy.matrix`, so charts run in
+parallel and in isolation). Each job runs a **curated fixture subset** (via `E2E_CASES`,
+below) — the cheap "does it deploy and come up" smoke — while the **full** local
+`make e2e` still runs *every* fixture. It stays fork-safe because it uses only public
+images and dummy on-runner secrets, never a repo secret. **Add a chart to CI** with one
+`matrix.include` line `{chart, cases, timeout}`, plus `ci/e2e-setup.sh` /
+`ci/e2e-teardown.sh` (see [Setup / teardown hooks](#setup--teardown-hooks-cie2e-setupsh))
+only if the chart needs external resources — charts that converge solo (whoami,
+swarm-cronjob) need no hooks.
 
 > **It tests your working tree, not a published chart.** `make e2e` installs the
 > chart straight from its local directory (`./charts/<name>`), so you can validate
@@ -75,6 +78,11 @@ Tunables (env vars):
 - `E2E_SWARM_INIT=1` — let the harness run `docker swarm init` for you when no
   swarm is active (handy for throwaway VMs/CI runners; off by default because it
   mutates global Docker state).
+- `E2E_CASES` — space/comma-separated fixture **case** names to run (the `<case>` in
+  `ci/<case>-values.yaml`); unset ⇒ every fixture (the `make e2e` default). CI sets a
+  curated subset per chart; run one case locally with e.g.
+  `E2E_CASES=default make e2e CHART=redis`. A set `E2E_CASES` that matches no fixture for
+  a chart fails loudly (guards against a typo silently passing green).
 
 ## What `make e2e` does
 
@@ -198,6 +206,25 @@ gateway reaches once OpenClaw is pointed at it via config.
 These hooks are what let the `e2e.yml` workflow run a chart's e2e in CI without
 any repo secrets: everything the fixture needs is public images plus these
 on-runner, dummy-valued resources.
+
+Charts shipping these hooks today: **openclaw** (the reference above); **redis** and
+**mariadb** (dummy auth secret(s) + the persistence node-label pin + the bind-mount host
+dir); **traefik** (the `traefik-certs` node-label pin + the certs-bind-mount host dir);
+and **keycloak** (the two operator secrets + the DB/ingress overlays + a throwaway
+co-located MariaDB backend on `keycloak-db-net`, because Keycloak attaches its DB overlay
+unconditionally and `/health/ready` only passes once it has connected and migrated — so
+every keycloak fixture needs a reachable database). `whoami` and `swarm-cronjob` converge
+solo and ship no hooks.
+
+Some fixtures are deliberately **excluded from the curated CI subset** (they still run in a
+full local `make e2e`): `traefik`'s `loki-logging` needs the `loki:latest` Docker
+log-driver plugin, which stock runners lack (`docker plugin install
+grafana/loki-docker-driver:latest --alias loki:latest --grant-all-permissions` to run it
+locally); `mariadb`'s `bind-mount`, because MariaDB's healthcheck cannot authenticate on a
+host bind-mounted datadir in the Swarm CI environment (it works on a named volume, so the
+other mariadb fixtures pass, and the host-path render is covered by `charts.yml`); and
+`keycloak`'s `postgres` / `jdbc-url` (need PostgreSQL) and `published-tls` (needs real PEM
+cert material) fall outside the MariaDB-backed CI subset.
 
 ## Trying a chart through the repo flow (local repo)
 
