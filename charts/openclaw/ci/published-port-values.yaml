@@ -1,0 +1,7 @@
+# published: publish the gateway port directly on the Swarm (no Traefik labels, no
+# ingress overlay). Exercises the ports: block and the non-proxied environment branch.
+exposure:
+  mode: published
+publish:
+  port: 18789
+  mode: ingress

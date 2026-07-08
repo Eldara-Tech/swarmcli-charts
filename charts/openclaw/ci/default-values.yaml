@@ -1,0 +1,4 @@
+# default: Traefik-fronted with TLS, gateway token on, persistence on, node-pinned.
+# Exercises the primary path — traefik router labels + external secret + named volumes.
+ingress:
+  host: openclaw.example.com
