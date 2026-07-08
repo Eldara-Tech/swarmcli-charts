@@ -130,10 +130,14 @@ make e2e                 # all charts
 make e2e CHART=mychart   # just yours
 ```
 
-This is **local-only** (it needs a live Swarm and pulls real images) and is
-deliberately not run by CI, which stays fork-safe. See
-[docs/e2e-testing.md](docs/e2e-testing.md) for prerequisites, a manual lifecycle
-walkthrough, writing a `ci/e2e-check.sh` smoke check, and troubleshooting.
+It needs a live Swarm and pulls real images. The `e2e.yml` workflow runs this
+**in CI** on a throwaway single-node swarm for charts that ship CI-provisionable
+setup hooks (`ci/e2e-setup.sh` / `ci/e2e-teardown.sh`) — fork-safe, using only
+public images and dummy on-runner secrets; the full local `make e2e` across every
+chart stays your loop until each chart gains those hooks. See
+[docs/e2e-testing.md](docs/e2e-testing.md) for prerequisites, the setup/teardown
+hooks, a manual lifecycle walkthrough, writing a `ci/e2e-check.sh` smoke check,
+and troubleshooting.
 
 To exercise the consumer flow (`repo add` → `search` → `install repo/chart`)
 against your unpublished chart, `make local-repo` serves the working tree as a
