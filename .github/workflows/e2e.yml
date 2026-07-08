@@ -74,7 +74,8 @@ jobs:
       matrix:
         include:
           # openclaw: ALL fixtures (cases: "" => no filter) — keeps the #60 backend
-          # regression guard. Its >=2 GB image + 120s health start period needs 10m.
+          # regression guard and picks up the #63 edge-routing fixture automatically. Its
+          # >=2 GB image + 120s health start period needs the 10m per-fixture budget.
           - { chart: openclaw,      cases: "",                                                                                timeout: 10m }
           - { chart: whoami,        cases: "",                                                                                timeout: 5m  }
           - { chart: swarm-cronjob, cases: "",                                                                                timeout: 5m  }
@@ -85,11 +86,13 @@ jobs:
           # charts.yml and the fixture still runs in local `make e2e`.
           - { chart: mariadb,       cases: "default no-appuser ephemeral published-port",                                     timeout: 6m  }
           # traefik: every CI-friendly fixture EXCEPT loki-logging, which needs the
-          # loki:latest Docker log-driver plugin (absent on stock runners).
-          - { chart: traefik,       cases: "default dashboard-off extra-entrypoints hsts-off ingress-ports certs-bind-mount", timeout: 6m  }
+          # loki:latest Docker log-driver plugin (absent on stock runners). `routing` (#63)
+          # stands up two whoami backends and proves a request routes THROUGH the edge.
+          - { chart: traefik,       cases: "default dashboard-off extra-entrypoints hsts-off ingress-ports certs-bind-mount routing", timeout: 6m }
           # keycloak: MariaDB-backed subset only (ci/e2e-setup.sh stands up the backend).
           # Excludes postgres/jdbc-url (PostgreSQL) and published-tls (real cert material).
-          - { chart: keycloak,      cases: "default tls-off none db-net-override start-dev published-http",                   timeout: 8m  }
+          # `edge` (#63) additionally stands up the traefik chart and routes through it.
+          - { chart: keycloak,      cases: "default tls-off none db-net-override start-dev published-http edge",             timeout: 8m  }
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 

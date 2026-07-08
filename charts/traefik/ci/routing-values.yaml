@@ -1,0 +1,14 @@
+# Routing fixture (issue #63): here traefik IS the chart-under-test — the harness installs
+# it as the edge, ci/e2e-setup.sh stands up two whoami backends on traefik-public (one
+# correctly labelled, one MISSING only the constraint label), and ci/e2e-check.sh asserts
+# the labelled backend routes (200) while the unlabelled one is never discovered (404) —
+# the faithful "wrong/absent constraint-label => never routed" footgun from CLAUDE.md.
+#
+# Dashboard off drops the otherwise-required dashboard.host; a dummy ACME email keeps the
+# resolver well-formed (no cert is ever requested — plain HTTP only — so ACME stays
+# dormant). Default :80/:443 host ports are kept.
+traefik:
+  dashboard:
+    enabled: false
+  acme:
+    email: admin@example.com

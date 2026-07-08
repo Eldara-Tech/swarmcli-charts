@@ -56,3 +56,11 @@ if [ "$case" = "backend" ]; then
     sleep 3
   done
 fi
+
+# --- edge fixture only: stand up the traefik chart as a REAL edge on traefik-public, so
+# ci/e2e-check.sh can prove a request routes THROUGH it to the gateway (shared helper,
+# issue #63). Removed again by ci/e2e-teardown.sh. -------------------------------------
+if [ "$case" = "edge" ]; then
+  . "$dir/../../scripts/e2e-edge/traefik-edge.sh"
+  edge_up
+fi

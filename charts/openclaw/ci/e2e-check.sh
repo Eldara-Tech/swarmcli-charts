@@ -48,6 +48,16 @@ fi
 cid="$(gateway_cid)"
 echo "  ${release}_gateway: /healthz OK"
 
+# --- edge fixture: prove a request routes THROUGH the stood-up traefik edge to the gateway
+# (issue #63). The in-container /healthz above proved the app serves; now assert it is
+# reachable via the edge with a matching Host header, and that an unknown host 404s. -----
+if [ "$case" = "edge" ]; then
+  . "$2/../../scripts/e2e-edge/traefik-edge.sh"
+  edge_assert_routed openclaw.e2e.test /healthz 200 || exit 1
+  edge_assert_unrouted no-such-host.invalid || exit 1
+  exit 0
+fi
+
 [ "$case" = "backend" ] || exit 0
 
 # --- backend fixture: prove the gateway reaches the co-located backend ----------------

@@ -62,3 +62,11 @@ for _ in $(seq 1 40); do
   fi
   sleep 3
 done
+
+# --- edge fixture only: stand up the traefik chart as a REAL edge on traefik-public so
+# ci/e2e-check.sh can prove a request routes THROUGH it to Keycloak (shared helper, issue
+# #63). The DB/secrets/overlays above are provisioned for every fixture. -----------------
+if [ "$case" = "edge" ]; then
+  . "$2/../../scripts/e2e-edge/traefik-edge.sh"
+  edge_up
+fi

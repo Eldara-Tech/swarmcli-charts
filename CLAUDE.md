@@ -169,6 +169,12 @@ matrix line `{chart, cases, timeout}`** plus `ci/e2e-setup.sh`/`-teardown.sh` on
 needs external resources (whoami/swarm-cronjob converge solo; keycloak's hook stands up a
 throwaway MariaDB backend). Contributor guide: `docs/e2e-testing.md`.
 
+`scripts/e2e-edge/traefik-edge.sh` is a **sourced** helper that stands up the traefik chart
+as a real edge and asserts a request routes *through* it (not just that the labels render):
+the openclaw/keycloak `edge` fixtures (`edge_up` → `edge_assert_routed`/`edge_assert_unrouted`
+→ `edge_down`) and traefik's `routing` fixture (a labelled-vs-unlabelled `whoami` proving the
+constraint-label discovery gate). HTTP routing + label discovery only — no ACME/TLS in CI.
+
 **Renderer source.** swarmcli is the renderer; its `charts` CLI is only on
 swarmcli `main` today and its module path is `swarmcli` (so `go install` of the
 GitHub path fails). `scripts/install-swarmcli.sh` clones+builds `main`
