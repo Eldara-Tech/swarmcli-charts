@@ -62,17 +62,21 @@ if ! docker exec "$cid" node -e \
 fi
 echo "  backend: gateway reaches mock-ollama over ai-internal"
 
-# (b) Point OpenClaw at the backend the ONLY supported way — config, not env. The chart's
-#     own launch wrapper already relies on `openclaw config set --batch-json`, so the form is
-#     known-good; we deep-merge the ollama provider next to the boot-set keys.
-docker exec "$cid" openclaw config set --batch-json \
-  '{"models":{"providers":{"ollama":{"baseUrl":"http://mock-ollama:11434","api":"ollama","apiKey":"test"}}}}' \
-  >/dev/null 2>&1 || { echo "  FAIL: openclaw config set rejected the ollama provider"; exit 1; }
+# (b) Point OpenClaw at the backend the ONLY supported way — config, not env. Use the exact
+#     form the chart's launch wrapper uses: `openclaw config set --batch-json` takes a JSON
+#     ARRAY of {path, value} objects (not a nested config object).
+cfg='[{"path":"models.providers.ollama.baseUrl","value":"http://mock-ollama:11434"},{"path":"models.providers.ollama.api","value":"ollama"},{"path":"models.providers.ollama.apiKey","value":"test"}]'
+if ! out="$(docker exec "$cid" openclaw config set --batch-json "$cfg" 2>&1)"; then
+  echo "  FAIL: openclaw config set rejected the ollama provider"
+  printf '%s\n' "$out" | sed 's/^/    /'
+  exit 1
+fi
 
 # (c) Trigger OpenClaw to contact the backend (discovery -> GET /api/tags; a one-shot infer
 #     -> /api/chat|/api/generate). Best-effort — the assertion is on what the mock actually
 #     received, not these commands' exit codes (their exact flags vary by OpenClaw version).
 docker exec "$cid" openclaw models list --provider ollama >/dev/null 2>&1 || true
+docker exec "$cid" openclaw models list >/dev/null 2>&1 || true
 docker exec "$cid" openclaw infer model run --model ollama/mockllama:latest \
   --prompt 'reply with ok' >/dev/null 2>&1 || true
 
