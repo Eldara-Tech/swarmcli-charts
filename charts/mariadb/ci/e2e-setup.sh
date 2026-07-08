@@ -26,13 +26,13 @@ node="$(docker node ls --format '{{.ID}} {{.Self}}' 2>/dev/null | awk '$2=="true
 [ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | head -1)"
 [ -n "$node" ] && docker node update --label-add mariadb-data=true "$node" >/dev/null
 
-# bind-mount fixture only: pre-create /opt/mariadb-data owned by the container's mysql uid
-# (999), matching ci/bind-mount-values.yaml. Best-effort (dockerd/entrypoint recover).
+# bind-mount fixture only (ci/bind-mount-values.yaml mounts /opt/mariadb-data at
+# /var/lib/mysql). mariadb:11.8 runs its server as the mysql user (uid 999) and — unlike a
+# named volume, which inherits the image's mysql-owned datadir — does NOT chown a
+# bind-mounted host dir, so mysql cannot initialise it unless it is writable by uid 999.
+# The CI runner may be non-root without sudo, so provision the host dir via a throwaway
+# root container (dockerd always runs as root): the -v auto-creates it and chmod 0777
+# makes it writable regardless of its owner. Best-effort.
 if [ "$case" = "bind-mount" ]; then
-  if [ "$(id -u)" -eq 0 ]; then
-    install -d -o 999 -g 999 /opt/mariadb-data 2>/dev/null || true
-  else
-    sudo -n install -d -o 999 -g 999 /opt/mariadb-data 2>/dev/null \
-      || mkdir -p /opt/mariadb-data 2>/dev/null || true
-  fi
+  docker run --rm -v /opt/mariadb-data:/data alpine chmod 0777 /data >/dev/null 2>&1 || true
 fi
