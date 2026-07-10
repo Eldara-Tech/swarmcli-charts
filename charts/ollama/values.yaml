@@ -93,10 +93,14 @@ service:
 placement:
   constraints: []
 
-# Swarm deploy resource limits (optional; rendered only when set). Model inference is
-# memory-hungry — size this to the largest model you run, e.g. memory: "8G".
+# Swarm deploy resources (optional; each rendered only when set). Model inference is
+# memory-hungry — size these to the largest model you run. limits.memory caps usage;
+# reservations.memory tells the scheduler to place Ollama on a node with that much free RAM
+# (e.g. limits "16G" + reservations "4G").
 resources:
   limits:
+    memory: ""
+  reservations:
     memory: ""
 
 # GPU acceleration (NVIDIA). enabled:true reserves `count` generic resources of kind `kind`
@@ -108,6 +112,19 @@ gpu:
   enabled: false
   kind: NVIDIA-GPU
   count: 1
+
+# Fully-offline operation. true (default) sets OLLAMA_NO_CLOUD so Ollama never routes a
+# request to its cloud (ollama.com) models — the point of running your own node. Set false
+# to allow cloud/remote models. Overriding OLLAMA_NO_CLOUD in extraEnv takes precedence.
+offline: true
+
+# Preload models on deploy (opt-in). A non-empty list renders a one-shot init service that
+# waits for the API, then `POST /api/pull`s each model, so the stack comes up with models
+# already present instead of an empty server you must `ollama pull` into by hand. Each entry
+# is an Ollama model ref, e.g. ["llama3.2:3b", "qwen2.5-coder:7b"]. Empty => no init service.
+models: []
+# Image for that one-shot preload service (needs curl). Only used when models is non-empty.
+modelInitImage: curlimages/curl:latest
 
 # Arbitrary extra environment variables, injected verbatim. Ollama tunables go here, e.g.
 # OLLAMA_KEEP_ALIVE, OLLAMA_NUM_PARALLEL, OLLAMA_MAX_LOADED_MODELS, OLLAMA_FLASH_ATTENTION.

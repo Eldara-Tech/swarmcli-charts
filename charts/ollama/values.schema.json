@@ -69,10 +69,17 @@
         "constraints": { "type": "array", "items": { "type": "string" } }
       }
     },
+    "offline": { "type": "boolean" },
+    "models": { "type": "array", "items": { "type": "string" } },
+    "modelInitImage": { "type": "string" },
     "resources": {
       "type": "object",
       "properties": {
         "limits": {
+          "type": "object",
+          "properties": { "memory": { "type": "string" } }
+        },
+        "reservations": {
           "type": "object",
           "properties": { "memory": { "type": "string" } }
         }

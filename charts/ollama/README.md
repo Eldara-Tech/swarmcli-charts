@@ -81,6 +81,30 @@ The swarm node must **advertise** the GPU first, or the task stays `Pending`:
    (`<uuid>` from `nvidia-smi -a | grep UUID`.) The `kind` before `=` must equal `gpu.kind`.
 3. Pin the service to that node (`persistence.nodeLabel`) so it schedules where the GPU is.
 
+## Offline (no cloud)
+
+Recent Ollama can route to hosted **cloud models** on `ollama.com`. Since the point of this
+chart is running models on your own node, `offline: true` (the default) sets
+`OLLAMA_NO_CLOUD`, which blocks all cloud routing — nothing leaves the box. Set
+`offline: false` to allow cloud/remote models (or override `OLLAMA_NO_CLOUD` via `extraEnv`).
+
+## Preload models
+
+By default the server starts empty and you pull models yourself (`docker exec … ollama pull
+llama3`). To have the stack come up with models already present, list them in `models`:
+
+```yaml
+models:
+  - llama3.2:3b
+  - qwen2.5-coder:7b
+```
+
+This renders a one-shot `model-init` sidecar (`modelInitImage`, `curlimages/curl` by default)
+that waits for the API and `POST /api/pull`s each model, then exits (`restart_policy:
+condition: none`). It shares Ollama's network, so it reaches the server as `ollama:<service.port>`.
+Pulls are large — the first deploy takes as long as the downloads. Empty `models` (the
+default) renders no sidecar.
+
 ## Values
 
 | Key | Default | Description |
@@ -105,10 +129,14 @@ The swarm node must **advertise** the GPU first, or the task stays `Pending`:
 | `publish.mode` | `ingress` | `ingress` (routing mesh) or `host` (pinned node) |
 | `service.port` | `11434` | Container API port (LB / publish / dial target) |
 | `placement.constraints` | `[]` | Extra scheduling constraints |
-| `resources.limits.memory` | `""` | Optional memory limit, e.g. `"8G"` |
+| `resources.limits.memory` | `""` | Optional memory limit, e.g. `"16G"` |
+| `resources.reservations.memory` | `""` | Optional memory reservation (scheduler places on a node with this free), e.g. `"4G"` |
 | `gpu.enabled` | `false` | Reserve a GPU via Swarm generic resources |
 | `gpu.kind` | `NVIDIA-GPU` | Generic-resource kind (matches the node advertisement) |
 | `gpu.count` | `1` | Number of GPUs to reserve |
+| `offline` | `true` | Set `OLLAMA_NO_CLOUD` to block cloud/remote models (fully offline) |
+| `models` | `[]` | Models to preload on deploy via a one-shot init sidecar |
+| `modelInitImage` | `curlimages/curl:latest` | Image for the preload sidecar (needs curl) |
 | `extraEnv` | `{}` | Extra env vars, e.g. `OLLAMA_KEEP_ALIVE` (`OLLAMA_HOST` is bound to `0.0.0.0:<service.port>` automatically; override here) |
 | `healthcheck.enabled` | `true` | `ollama list` liveness probe |
 | `labels` | `{}` | Extra deploy labels |

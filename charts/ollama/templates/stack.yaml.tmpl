@@ -48,6 +48,12 @@ services:
 {{- if not (hasKey .Values.extraEnv "OLLAMA_HOST") }}
       OLLAMA_HOST: {{ printf "0.0.0.0:%v" .Values.service.port | quote }}
 {{- end }}
+{{- /* Enforce fully-offline operation: OLLAMA_NO_CLOUD stops Ollama routing any request to
+       its cloud (ollama.com) models. On by default (offline:true) to match this chart's
+       offline positioning; set offline:false, or override OLLAMA_NO_CLOUD via extraEnv. */}}
+{{- if and .Values.offline (not (hasKey .Values.extraEnv "OLLAMA_NO_CLOUD")) }}
+      OLLAMA_NO_CLOUD: "1"
+{{- end }}
 {{- range $key, $val := .Values.extraEnv }}
       {{ $key }}: {{ $val | quote }}
 {{- end }}
@@ -85,19 +91,25 @@ services:
 {{- /* One resources: block carries both the optional memory limit and, when GPU is on,
        the Swarm generic-resources reservation. GPU under `devices:` would validate but is
        a no-op in `docker stack deploy` — generic_resources is the Swarm-native request. */}}
-{{- $memory := .Values.resources.limits.memory }}
-{{- if or $memory .Values.gpu.enabled }}
+{{- $limitMem := .Values.resources.limits.memory }}
+{{- $resMem := .Values.resources.reservations.memory }}
+{{- if or $limitMem $resMem .Values.gpu.enabled }}
       resources:
-{{-   with $memory }}
+{{-   with $limitMem }}
         limits:
           memory: {{ . | quote }}
 {{-   end }}
-{{-   if .Values.gpu.enabled }}
+{{-   if or $resMem .Values.gpu.enabled }}
         reservations:
+{{-     with $resMem }}
+          memory: {{ . | quote }}
+{{-     end }}
+{{-     if .Values.gpu.enabled }}
           generic_resources:
             - discrete_resource_spec:
                 kind: {{ .Values.gpu.kind | quote }}
                 value: {{ .Values.gpu.count }}
+{{-     end }}
 {{-   end }}
 {{- end }}
       restart_policy:
@@ -124,6 +136,37 @@ services:
 {{- range $key, $val := .Values.labels }}
         - "{{ $key }}={{ $val }}"
 {{- end }}
+{{- end }}
+
+{{- /* Opt-in model preload: a one-shot init service waits for the API, then POST /api/pulls
+       each model so the stack comes up with models present. It shares ollama's network(s)
+       ($nets) — in published mode both land on the stack's default overlay, in traefik/none
+       modes both sit on exposure.network — and reaches the server by its stack-local name
+       `ollama`. restart_policy condition:none => runs once and does not restart. */}}
+{{- if .Values.models }}
+{{- $port := .Values.service.port }}
+{{- $parts := list "echo 'waiting for ollama...';" (printf "until curl -fsS http://ollama:%v/api/tags >/dev/null 2>&1; do sleep 5; done;" $port) }}
+{{- range .Values.models }}
+{{-   $parts = append $parts (printf "echo 'pulling %s...';" .) }}
+{{-   $parts = append $parts (printf "curl -fsS http://ollama:%v/api/pull -d '{\"name\":\"%s\"}' >/dev/null;" $port .) }}
+{{- end }}
+{{- $parts = append $parts "echo 'all models ready.';" }}
+  model-init:
+    image: {{ .Values.modelInitImage }}
+{{- if $nets }}
+    networks:
+{{- range $nets }}
+      - {{ . }}
+{{- end }}
+{{- end }}
+    command:
+      - sh
+      - -c
+      - {{ join " " $parts | quote }}
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: none
 {{- end }}
 
 {{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) }}

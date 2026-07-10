@@ -7,6 +7,10 @@ gpu:
   enabled: true
   kind: NVIDIA-GPU
   count: 1
+# Also set both memory knobs so this fixture exercises the full merged resources block:
+# limits.memory + reservations.memory + the generic_resources reservation under one key.
 resources:
   limits:
-    memory: "8G"
+    memory: "16G"
+  reservations:
+    memory: "4G"
