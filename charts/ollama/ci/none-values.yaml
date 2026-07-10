@@ -1,0 +1,5 @@
+# none: no port, no traefik labels — the service sits on the ingress overlay so a reverse
+# proxy or other stacks reach it as ollama:11434. Exercises the external-network block with
+# no ports: and no traefik labels (the labels: key is omitted when there are none).
+exposure:
+  mode: none

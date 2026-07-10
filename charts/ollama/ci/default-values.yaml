@@ -1,0 +1,5 @@
+# default: published mode (the chart default) — publishes the API port on the swarm,
+# persistence on, node-pinned. Exercises the primary path: ports: block, named volume,
+# the persistence node pin, no traefik labels, no external network.
+exposure:
+  mode: published

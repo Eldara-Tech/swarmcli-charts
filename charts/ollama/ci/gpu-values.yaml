@@ -1,0 +1,12 @@
+# gpu: request an NVIDIA GPU. Exercises the Swarm-native generic_resources reservation and,
+# together with a memory limit, the single merged resources: block (limits + reservations).
+# This is the GPU render-assertion fixture — ci/e2e-check.sh asserts the rendered stack emits
+# generic_resources / discrete_resource_spec and NOT the no-op devices/driver:nvidia form.
+# Not deployed in CI (a GPU-less runner cannot schedule the reservation); render-only.
+gpu:
+  enabled: true
+  kind: NVIDIA-GPU
+  count: 1
+resources:
+  limits:
+    memory: "8G"

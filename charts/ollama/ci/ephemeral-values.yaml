@@ -1,0 +1,7 @@
+# ephemeral: no model volume, no node pin. Exercises the no-volume branch (no top-level
+# volumes block) and that the persistence node pin is dropped together with persistence —
+# no placement block may render. Stays in published mode so the case still serves.
+exposure:
+  mode: published
+persistence:
+  enabled: false

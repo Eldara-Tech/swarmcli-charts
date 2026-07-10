@@ -1,0 +1,8 @@
+# traefik + TLS: Traefik-fronted on the ingress overlay. Exercises the full traefik label
+# block including the HTTPS router + https-redirect middleware branch (ingress.tls: true),
+# and the external-network block. No ports: block in this mode.
+exposure:
+  mode: traefik
+ingress:
+  host: ollama.example.com
+  tls: true

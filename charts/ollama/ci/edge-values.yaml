@@ -1,0 +1,16 @@
+# edge: prove a real HTTP request reaches Ollama THROUGH a live Traefik edge, exercising the
+# traefik-mode label/discovery contract at runtime — not just as rendered strings.
+# ci/e2e-setup.sh stands up the in-repo traefik chart via scripts/e2e-edge/traefik-edge.sh;
+# ci/e2e-check.sh curls the edge with a matching Host header and asserts a 200 from
+# /api/version (plus a 404 for an unknown host).
+#
+# tls:false so the http-entrypoint router forwards straight to Ollama instead of emitting the
+# https-redirect middleware (there is no ACME/HTTPS router in CI). Ephemeral to keep it light
+# — no model volume and no node pin needed for a routing check.
+exposure:
+  mode: traefik
+ingress:
+  host: ollama.e2e.test
+  tls: false
+persistence:
+  enabled: false

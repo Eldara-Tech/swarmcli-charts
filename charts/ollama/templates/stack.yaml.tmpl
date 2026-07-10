@@ -1,0 +1,142 @@
+{{- /* Host-path persistence bind-mounts a host dir; a named-volume value must not be a
+       path (docker compose would otherwise emit a cryptic error). */}}
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) (contains "/" .Values.persistence.volumeName) -}}
+{{- fail "persistence.volumeName is a Docker named-volume name and cannot contain '/'. To store models under a host directory, set persistence.volumePath instead." -}}
+{{- end -}}
+version: "3.9"
+
+{{- /* Exposure mode drives networks, ports, labels and the public scheme. */}}
+{{- $mode := .Values.exposure.mode }}
+{{- $router := .Values.traefik.routerName | default .Release.Name }}
+{{- $proxied := or (eq $mode "traefik") (eq $mode "none") }}
+{{- $nets := list }}
+{{- if $proxied }}{{ $nets = append $nets .Values.exposure.network }}{{- end }}
+
+services:
+
+  ollama:
+    image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
+
+{{- if $nets }}
+    networks:
+{{- range $nets }}
+      - {{ . }}
+{{- end }}
+{{- end }}
+
+{{- if eq $mode "published" }}
+    ports:
+      - target: {{ .Values.service.port }}
+        published: {{ .Values.publish.port }}
+        protocol: tcp
+        mode: {{ .Values.publish.mode }}
+{{- end }}
+
+{{- if .Values.persistence.enabled }}
+    volumes:
+{{- if .Values.persistence.volumePath }}
+      - {{ .Values.persistence.volumePath }}:/root/.ollama
+{{- else }}
+      - {{ .Values.persistence.volumeName }}:/root/.ollama
+{{- end }}
+{{- end }}
+
+    environment:
+{{- /* Bind the API to all interfaces on service.port so it is reachable over the overlay /
+       published port (the container default listens on loopback only). Kept in sync with
+       service.port automatically; a user may override it via extraEnv. */}}
+{{- if not (hasKey .Values.extraEnv "OLLAMA_HOST") }}
+      OLLAMA_HOST: {{ printf "0.0.0.0:%v" .Values.service.port | quote }}
+{{- end }}
+{{- range $key, $val := .Values.extraEnv }}
+      {{ $key }}: {{ $val | quote }}
+{{- end }}
+
+{{- if .Values.healthcheck.enabled }}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - ollama list >/dev/null 2>&1
+      interval: {{ .Values.healthcheck.interval }}
+      timeout: {{ .Values.healthcheck.timeout }}
+      retries: {{ .Values.healthcheck.retries }}
+      start_period: {{ .Values.healthcheck.startPeriod }}
+{{- end }}
+
+    deploy:
+      replicas: {{ .Values.replicas }}
+{{- /* The data-volume node pin travels with persistence: it exists only while a
+       volume needs pinning, so persistence.enabled:false never leaves a task
+       Pending on a missing node label. placement.constraints adds extras. */}}
+{{- $constraints := list }}
+{{- if and .Values.persistence.enabled .Values.persistence.nodeLabel }}
+{{-   $constraints = append $constraints (printf "node.labels.%s == true" .Values.persistence.nodeLabel) }}
+{{- end }}
+{{- range .Values.placement.constraints }}
+{{-   $constraints = append $constraints . }}
+{{- end }}
+{{- if $constraints }}
+      placement:
+        constraints:
+{{- range $constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- /* One resources: block carries both the optional memory limit and, when GPU is on,
+       the Swarm generic-resources reservation. GPU under `devices:` would validate but is
+       a no-op in `docker stack deploy` — generic_resources is the Swarm-native request. */}}
+{{- $memory := .Values.resources.limits.memory }}
+{{- if or $memory .Values.gpu.enabled }}
+      resources:
+{{-   with $memory }}
+        limits:
+          memory: {{ . | quote }}
+{{-   end }}
+{{-   if .Values.gpu.enabled }}
+        reservations:
+          generic_resources:
+            - discrete_resource_spec:
+                kind: {{ .Values.gpu.kind | quote }}
+                value: {{ .Values.gpu.count }}
+{{-   end }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- if or (eq $mode "traefik") .Values.labels }}
+      labels:
+{{- if eq $mode "traefik" }}
+        - "traefik.enable=true"
+        - "traefik.swarm.network={{ .Values.exposure.network }}"
+        - "traefik.constraint-label={{ .Values.traefik.constraintLabel }}"
+        # HTTP router
+        - "traefik.http.routers.{{ $router }}-http.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ $router }}-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
+{{- if .Values.ingress.tls }}
+        # Redirect plain HTTP to HTTPS, then terminate TLS on the HTTPS router.
+        - "traefik.http.routers.{{ $router }}-http.middlewares={{ .Values.traefik.redirectMiddleware }}"
+        - "traefik.http.routers.{{ $router }}-https.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ $router }}-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
+        - "traefik.http.routers.{{ $router }}-https.tls=true"
+        - "traefik.http.routers.{{ $router }}-https.tls.certresolver={{ .Values.traefik.certResolver }}"
+{{- end }}
+        - "traefik.http.services.{{ $router }}.loadbalancer.server.port={{ .Values.service.port }}"
+{{- end }}
+{{- range $key, $val := .Values.labels }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+{{- end }}
+
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) }}
+
+volumes:
+  {{ .Values.persistence.volumeName }}: {}
+{{- end }}
+
+{{- if $nets }}
+
+networks:
+{{- range $nets }}
+  {{ . }}:
+    external: true
+{{- end }}
+{{- end }}
