@@ -1,0 +1,7 @@
+# bind-mount: store models under a host directory instead of a named volume. Exercises the
+# host-path branch (volumePath wins, no top-level named-volume block) and the host-mount
+# security acknowledgment in Chart.yaml. Excluded from the curated CI e2e subset; run by the
+# local `make e2e` (ci/e2e-setup.sh pre-creates the dir).
+persistence:
+  enabled: true
+  volumePath: /tmp/ollama-e2e/data

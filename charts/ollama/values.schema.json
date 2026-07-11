@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": { "type": "string" },
+        "tag": { "type": "string" }
+      },
+      "required": ["repository"]
+    },
+    "replicas": { "type": "integer", "minimum": 1, "maximum": 1 },
+    "persistence": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "volumeName": { "type": "string" },
+        "volumePath": { "type": "string" },
+        "nodeLabel": { "type": "string" }
+      }
+    },
+    "exposure": {
+      "type": "object",
+      "properties": {
+        "mode": { "type": "string", "enum": ["traefik", "published", "none"] },
+        "network": { "type": "string" }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "host": { "type": "string" },
+        "tls": { "type": "boolean" }
+      }
+    },
+    "traefik": {
+      "type": "object",
+      "properties": {
+        "certResolver": { "type": "string" },
+        "routerName": { "type": "string" },
+        "constraintLabel": { "type": "string" },
+        "redirectMiddleware": { "type": "string" },
+        "entrypoints": {
+          "type": "object",
+          "properties": {
+            "http": { "type": "string" },
+            "https": { "type": "string" }
+          }
+        }
+      }
+    },
+    "publish": {
+      "type": "object",
+      "properties": {
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "mode": { "type": "string", "enum": ["ingress", "host"] }
+      }
+    },
+    "service": {
+      "type": "object",
+      "properties": {
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "placement": {
+      "type": "object",
+      "properties": {
+        "constraints": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "offline": { "type": "boolean" },
+    "models": { "type": "array", "items": { "type": "string" } },
+    "modelInitImage": { "type": "string" },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "limits": {
+          "type": "object",
+          "properties": { "memory": { "type": "string" } }
+        },
+        "reservations": {
+          "type": "object",
+          "properties": { "memory": { "type": "string" } }
+        }
+      }
+    },
+    "gpu": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "kind": { "type": "string" },
+        "count": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "extraEnv": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "healthcheck": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "interval": { "type": "string" },
+        "timeout": { "type": "string" },
+        "retries": { "type": "integer", "minimum": 1 },
+        "startPeriod": { "type": "string" }
+      }
+    },
+    "labels": { "type": "object" }
+  }
+}

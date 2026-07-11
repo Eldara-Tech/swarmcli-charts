@@ -93,6 +93,12 @@ jobs:
           # Excludes postgres/jdbc-url (PostgreSQL) and published-tls (real cert material).
           # `edge` (#63) additionally stands up the traefik chart and routes through it.
           - { chart: keycloak,      cases: "default tls-off none db-net-override start-dev published-http edge",             timeout: 8m  }
+          # ollama: published (default) + ephemeral + none + edge. Excludes bind-mount (its
+          # host-path render is covered by charts.yml; still runs in local `make e2e`) and gpu
+          # (a GPU-less runner cannot schedule a generic-resources reservation — the GPU
+          # assertion is a render check in charts.yml via ci/render-check.sh). The large
+          # ollama/ollama image pull needs the 10m budget.
+          - { chart: ollama,        cases: "default ephemeral none edge",                                                    timeout: 10m }
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 

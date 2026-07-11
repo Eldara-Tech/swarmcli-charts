@@ -12,6 +12,10 @@
 #   4. scripts/security-scan.sh   -> flag unacknowledged risky primitives
 #   5. scripts/requirements-check -> every external resource the manifest uses is
 #                                    declared in requirements.yaml (swarmcli's contract)
+#   6. ci/render-check.sh (opt-in) -> chart-specific assertions on the rendered stack
+#                                    (e.g. a GPU fixture emits the Swarm generic_resources
+#                                    form, not the no-op devices form). Runs only if the
+#                                    chart ships an executable ci/render-check.sh.
 #
 # Usage: SWARMCLI=/path/to/swarmcli scripts/test-charts.sh [chart ...]
 #   Defaults to all charts under charts/*. Rendered output is written to
@@ -92,6 +96,11 @@ for chart in "${charts[@]}"; do
       fi
     fi
     if ! scripts/requirements-check.sh "$out" "$dir" "$reqout"; then
+      fail=1
+      continue
+    fi
+    # Optional per-chart render assertion: charts/<chart>/ci/render-check.sh <rendered> <case>
+    if [ -x "$dir/ci/render-check.sh" ] && ! "$dir/ci/render-check.sh" "$out" "$case"; then
       fail=1
       continue
     fi

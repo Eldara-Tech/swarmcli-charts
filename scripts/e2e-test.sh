@@ -30,6 +30,12 @@
 #        E2E_SWARM_INIT  set to 1 to `docker swarm init` if no swarm is active
 #        E2E_CASES       space/comma-separated fixture case names to run (default: all)
 #
+# A chart may mark render-only fixtures (value combinations meant for scripts/test-charts.sh
+# but not deployable in a normal environment — e.g. a GPU reservation that needs special
+# hardware) by listing their case names, one per line, in charts/<chart>/ci/e2e-render-only.
+# Those cases are skipped by the default all-fixtures sweep and only run when named
+# explicitly in E2E_CASES (so someone with the hardware can still exercise them).
+#
 # Note: swarmcli auto-creates external attachable overlays (e.g. traefik-public)
 # at install time per a chart's requirements.yaml. Uninstall leaves those shared
 # networks in place (they are harmless); see docs/e2e-testing.md for cleanup.
@@ -112,6 +118,15 @@ for chart in "${charts[@]}"; do
     # Fixture-case filter: skip cases not named in E2E_CASES (when it is set). Placed
     # before the release/echo lines so a filtered-out case produces no output at all.
     if [ -n "$CASES" ] && [[ " $CASES " != *" $case "* ]]; then
+      continue
+    fi
+
+    # Render-only fixtures (charts/<chart>/ci/e2e-render-only) are skipped by the default
+    # all-fixtures sweep — they render/validate in test-charts.sh but cannot converge here
+    # (e.g. a GPU reservation needing hardware this runner lacks). Still run if E2E_CASES
+    # names them explicitly.
+    if [ -z "$CASES" ] && [ -f "$dir/ci/e2e-render-only" ] && grep -qxF "$case" "$dir/ci/e2e-render-only"; then
+      echo "── $chart [$case]  render-only — skipped in e2e (runs in test-charts.sh)"
       continue
     fi
     matched=$(( matched + 1 ))

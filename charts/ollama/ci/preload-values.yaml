@@ -1,0 +1,7 @@
+# preload: opt-in model preloading. A non-empty models list renders the one-shot model-init
+# sidecar that waits for the API and POST /api/pulls each model. Exercises the second-service
+# render + its shared-network wiring. Marked render-only (ci/e2e-render-only): pulling real
+# multi-GB models is too slow/large for the CI e2e sweep, so this validates the render only.
+models:
+  - llama3.2:3b
+  - qwen2.5-coder:7b

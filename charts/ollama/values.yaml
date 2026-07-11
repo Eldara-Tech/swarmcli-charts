@@ -1,0 +1,145 @@
+# ollama chart default values.
+#
+# Ollama is a self-hosted LLM server: it serves an HTTP API on port 11434 and stores
+# pulled models under /root/.ollama. That model store is a node-local Swarm named volume,
+# so this is a single-replica service pinned (via a node label) to the node holding its
+# data. "Offline" is the point — models run on your own node and no prompt data leaves it.
+#
+# Exposure is pluggable (see exposure.mode): publish the API port directly (default — a
+# local box is reachable at :11434 immediately), front it with the in-repo Traefik chart,
+# or expose nothing and sit on a shared overlay for your own reverse proxy / for other
+# stacks (e.g. an OpenClaw gateway) to dial ollama:11434 by service name.
+#
+# GPU is opt-in (gpu.enabled). Docker Swarm schedules GPUs via "generic resources", NOT
+# the `--gpus` / `deploy.resources.reservations.devices` form (that Compose form is a
+# silent no-op under `docker stack deploy`). The node must advertise the GPU first — see
+# the GPU section in the chart README.
+
+image:
+  repository: ollama/ollama
+  tag: ""  # defaults to appVersion from Chart.yaml (0.30.11)
+
+# Stateful + node-local model volume => exactly one replica. Do not raise.
+replicas: 1
+
+# Persistence. Named volume at /root/.ollama (pulled models + manifests). enabled:false =>
+# ephemeral (no volume; models are re-pulled on every restart, and the node pin below is
+# dropped with it).
+persistence:
+  enabled: true
+  volumeName: ollama-data
+  # Store the model store under a host directory instead of Docker's managed volume
+  # storage. When volumePath is set it TAKES PRECEDENCE and volumeName is ignored: the
+  # /root/.ollama dir is bind-mounted from this absolute host path on the PINNED node. The
+  # directory must already exist on that node and be writable by the container (root). This
+  # is host-filesystem access, acknowledged via swarmcli-charts/allow: "host-mount" in
+  # Chart.yaml. Leave empty ("") to use the named volume above.
+  volumePath: ""
+  # Node label pinning the service to the node carrying the data volume (Swarm volumes are
+  # node-local). Rendered as `node.labels.<nodeLabel> == true` while persistence is enabled
+  # and dropped automatically when it is not. Label exactly ONE node first:
+  #   docker node update --label-add ollama-data=true <node>
+  # Set "" to schedule unpinned even with persistence on (e.g. single-node swarm).
+  nodeLabel: ollama-data
+
+# How the Ollama API is exposed:
+#   published - publish the API port on the Swarm directly (default; plain HTTP). Reachable
+#               at <host>:<publish.port>. Ollama has NO auth — only publish on a trusted
+#               network, or front it with your own TLS/auth.
+#   traefik   - Traefik deploy labels on exposure.network. TLS at the edge. Still no app
+#               auth, so add a Traefik auth middleware if it faces anything untrusted.
+#   none      - no port, no labels; sits on exposure.network so your own reverse proxy or
+#               other stacks reach it as ollama:<service.port>.
+exposure:
+  mode: published
+  network: traefik-public   # external overlay the edge proxy lives on (traefik & none)
+
+# Public-facing address for proxied modes. host drives the Traefik Host() rule; tls selects
+# the public scheme (https/http). Unused in published mode.
+ingress:
+  host: ollama.example.com
+  tls: true
+
+# traefik-mode routing. The defaults match the traefik chart in this repository; adjust
+# certResolver / entrypoints / constraintLabel / redirectMiddleware to your Traefik install
+# if you run your own.
+traefik:
+  certResolver: le
+  entrypoints:
+    http: http
+    https: https
+  # Base name for this chart's Traefik router/service objects (`<name>-http` / `<name>-https`
+  # routers + the `<name>` service). Empty => the release name.
+  routerName: ""
+  # Swarm-provider constraint label. The traefik chart runs with
+  # --providers.swarm.exposedByDefault=false and a constraint on this label, so a routed
+  # service must carry it to be discovered. Match your Traefik's constraintLabel.
+  constraintLabel: traefik-public
+  # Middleware applied to the HTTP router to redirect to HTTPS (when ingress.tls). The
+  # traefik chart always defines https-redirect in the swarm provider.
+  redirectMiddleware: https-redirect
+
+# published-mode direct port publish. mode: ingress (routing mesh) or host (pinned node).
+publish:
+  port: 11434
+  mode: ingress
+
+# Container HTTP port Ollama listens on (Traefik LB target / publish target / the port
+# other stacks dial in none mode). Ollama's fixed default is 11434.
+service:
+  port: 11434
+
+# Extra scheduling constraints, always applied (independent of the persistence pin).
+placement:
+  constraints: []
+
+# Swarm deploy resources (optional; each rendered only when set). Model inference is
+# memory-hungry — size these to the largest model you run. limits.memory caps usage;
+# reservations.memory tells the scheduler to place Ollama on a node with that much free RAM
+# (e.g. limits "16G" + reservations "4G").
+resources:
+  limits:
+    memory: ""
+  reservations:
+    memory: ""
+
+# GPU acceleration (NVIDIA). enabled:true reserves `count` generic resources of kind `kind`
+# under deploy.resources.reservations — the Docker SWARM way to request a GPU. The swarm
+# node must advertise the GPU first (daemon.json node-generic-resources + the NVIDIA
+# container runtime); see the GPU section of the chart README. Default off so a plain node
+# still schedules. kind must match the node-generic-resources key (conventionally NVIDIA-GPU).
+gpu:
+  enabled: false
+  kind: NVIDIA-GPU
+  count: 1
+
+# Fully-offline operation. true (default) sets OLLAMA_NO_CLOUD so Ollama never routes a
+# request to its cloud (ollama.com) models — the point of running your own node. Set false
+# to allow cloud/remote models. Overriding OLLAMA_NO_CLOUD in extraEnv takes precedence.
+offline: true
+
+# Preload models on deploy (opt-in). A non-empty list renders a one-shot init service that
+# waits for the API, then `POST /api/pull`s each model, so the stack comes up with models
+# already present instead of an empty server you must `ollama pull` into by hand. Each entry
+# is an Ollama model ref, e.g. ["llama3.2:3b", "qwen2.5-coder:7b"]. Empty => no init service.
+models: []
+# Image for that one-shot preload service (needs curl). Only used when models is non-empty.
+modelInitImage: curlimages/curl:latest
+
+# Arbitrary extra environment variables, injected verbatim. Ollama tunables go here, e.g.
+# OLLAMA_KEEP_ALIVE, OLLAMA_NUM_PARALLEL, OLLAMA_MAX_LOADED_MODELS, OLLAMA_FLASH_ATTENTION.
+# The chart binds OLLAMA_HOST to 0.0.0.0:<service.port> automatically (so the API is
+# reachable over the overlay / published port); set OLLAMA_HOST here to override that.
+extraEnv: {}
+
+# Container healthcheck: `ollama list` (ships in the image; no curl) exits 0 once the server
+# answers on the local API. Generous startPeriod — first boot may initialise the runners.
+healthcheck:
+  enabled: true
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  startPeriod: 60s
+
+# Extra deploy labels (key: value), merged after any Traefik router labels.
+labels: {}
