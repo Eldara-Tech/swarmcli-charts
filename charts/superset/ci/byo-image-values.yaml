@@ -1,0 +1,9 @@
+# The production path: an image that already carries the drivers, so no pip step is rendered at
+# all. Render-only in e2e (ci/e2e-render-only) — the image does not exist on a CI runner.
+image:
+  repository: registry.example.com/superset
+  tag: 5.0.0-drivers
+python:
+  installDrivers: false
+ingress:
+  host: superset.e2e.local

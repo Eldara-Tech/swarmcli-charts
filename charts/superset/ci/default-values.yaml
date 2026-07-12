@@ -1,0 +1,8 @@
+# Default path: PostgreSQL metadata DB, authenticated Redis, Celery worker + beat, Traefik
+# routing with TLS at the edge. Exercises every service the chart can render.
+ingress:
+  host: superset.e2e.local
+database:
+  host: postgres
+redis:
+  host: redis

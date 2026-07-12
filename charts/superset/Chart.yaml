@@ -1,0 +1,21 @@
+name: superset
+description: Apache Superset BI/visualization platform on Docker Swarm — external metadata DB + Redis, Celery workers, Traefik-routed
+# version is a placeholder — the git tag (superset/vX.Y.Z) sets the real version at release.
+version: 0.1.0
+# appVersion is the default image tag for apache/superset.
+appVersion: "5.0.0"
+maintainers:
+  - name: Eldara
+    url: https://github.com/Eldara-Tech
+keywords:
+  - superset
+  - bi
+  - analytics
+  - visualization
+home: https://github.com/Eldara-Tech/swarmcli-charts
+sources:
+  - https://github.com/apache/superset
+  - https://superset.apache.org/
+# No swarmcli-charts/allow annotation: Superset is STATELESS here (all state lives in the
+# external metadata DB + Redis), so the rendered stack mounts no host path, no docker.sock,
+# and runs unprivileged as the image's non-root `superset` user.

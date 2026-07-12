@@ -1,0 +1,6 @@
+# celery.enabled: false -> only init + app render (no worker, no beat). Redis is still used for
+# the caches and rate-limit storage, so it stays required.
+ingress:
+  host: superset.e2e.local
+celery:
+  enabled: false

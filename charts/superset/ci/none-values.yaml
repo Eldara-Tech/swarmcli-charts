@@ -1,0 +1,6 @@
+# none mode: no published port, no Traefik labels — the app just sits on exposure.network for
+# an operator's own reverse proxy. X-Forwarded-* is still trusted (ENABLE_PROXY_FIX).
+exposure:
+  mode: none
+ingress:
+  host: superset.e2e.local

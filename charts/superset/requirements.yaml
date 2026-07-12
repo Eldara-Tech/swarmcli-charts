@@ -1,0 +1,47 @@
+# External resources this chart needs. Authoritative: every external network/secret the
+# rendered stack references must be listed here (swarmcli pre-flights it; CI enforces it via
+# scripts/requirements-check.sh). swarmcli renders this file with the release's values, so the
+# templated names below track any override.
+#
+# This file is plain YAML with value substitution only (no Go-template control flow like
+# if/range — those non-scalar actions would break yamllint). Entries are therefore declared
+# unconditionally: an entry a given configuration does not use (the ingress overlay in
+# published mode, the OIDC client secret while oidc.enabled is false, …) is simply never
+# referenced by the manifest, and swarmcli's pre-flight is manifest-driven, so it stays inert.
+#
+# Superset OWNS none of these overlays — it is a consumer of an edge proxy, a database, a Redis
+# and (optionally) a data-source network — so every one is autoCreate:false: a missing one is a
+# hard error, never created here.
+networks:
+  - name: "{{ .Values.exposure.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "Shared ingress overlay the edge proxy publishes routes on (traefik & none modes); provisioned by the traefik chart/operator"
+  - name: "{{ .Values.database.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "External overlay the metadata database is reachable on; provisioned by the DB chart/operator (the database.network value)"
+  - name: "{{ .Values.redis.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "External overlay Redis is reachable on; provisioned by the redis chart/operator (the redis.network value)"
+  - name: "{{ .Values.dataNetwork.name }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "Optional external overlay carrying the analytics data sources Superset queries; referenced only when dataNetwork.enabled"
+secrets:
+  - name: "{{ .Values.secretKey.secretName }}"
+    description: "Superset SECRET_KEY (signs cookies, encrypts stored DB credentials). Pre-create: openssl rand -base64 42 | tr -d '\n' | docker secret create superset_secret_key -"
+  - name: "{{ .Values.database.passwordSecretName }}"
+    description: "Metadata database password for database.username. Pre-create: printf 'S3cr3t' | docker secret create superset_db_password -"
+  - name: "{{ .Values.redis.auth.secretName }}"
+    description: "Redis password (redis.auth.enabled). Pre-create: printf 'S3cr3t' | docker secret create superset_redis_password -"
+  - name: "{{ .Values.init.admin.passwordSecretName }}"
+    description: "Bootstrap admin password (init.admin.enabled). Pre-create: printf 'S3cr3t' | docker secret create superset_admin_password -"
+  - name: "{{ .Values.oidc.clientSecretSecretName }}"
+    description: "OAuth client secret (oidc.enabled). Pre-create: printf 'S3cr3t' | docker secret create superset_oidc_client_secret -"
+configs: []

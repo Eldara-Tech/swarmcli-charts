@@ -1,0 +1,7 @@
+# published mode: the app port is published on the swarm directly, no Traefik labels and no
+# ingress overlay. Superset cannot terminate TLS, so this is plain HTTP.
+exposure:
+  mode: published
+publish:
+  port: 8088
+  mode: ingress
