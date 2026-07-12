@@ -41,6 +41,18 @@ done
 
 # Metadata database. The mysql fixture points database.host at `mysql`; every other fixture
 # uses postgres. Both images create the schema + user from these env vars on first boot.
+#
+# WHY postgres:15 and not the postgres chart's default 18: 15 is the newest major Apache
+# documents for the Superset metadata database (charts/superset/README.md, "Connecting to a
+# database chart"). Keep this aligned with the pin that README tells operators to set.
+#
+# WHY a raw `docker service create` and not `swarmcli charts install ../postgres` (issue #71):
+# deliberate, not inertia — the same call keycloak's hook makes for MariaDB. The postgres chart
+# already runs EVERY fixture in its own e2e job, including `legacy-major`, which pins this exact
+# tag; installing it here would duplicate that signal while making superset's 15-minute job fail
+# on postgres-chart regressions, with worse attribution. Superset sees the same TCP endpoint
+# either way — unlike Traefik, whose label/discovery contract is invisible until a real request
+# routes through it, which is why THAT one is worth standing up for real (scripts/e2e-edge).
 if [ "$case" = "mysql" ]; then
   docker service rm mysql >/dev/null 2>&1 || true
   docker service create --name mysql --network superset-db-net \

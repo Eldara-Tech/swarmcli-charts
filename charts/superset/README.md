@@ -45,7 +45,11 @@ GRANT ALL PRIVILEGES ON DATABASE superset TO superset;
 ```
 
 **3. A Redis**, reachable on `redis.network` — see [Connecting to the redis
-chart](#connecting-to-the-redis-chart).
+chart](#connecting-to-the-redis-chart). It is required in **every** configuration, including
+`celery.enabled: false` and `exposure.mode: none`: Superset uses Redis for the Celery broker and
+result backend, for all four caches, *and* for rate-limit storage — the image bakes
+`SUPERSET_ENV=production`, which turns rate limiting on, and its default in-memory store is
+per-replica. Redis is not part of exposure and no exposure mode makes it optional.
 
 **4. The overlays.** Superset owns none of them, so swarmcli validates but never creates them
 (`autoCreate: false`): `traefik-public` (the edge, in `traefik`/`none` modes), `database.network`
@@ -138,6 +142,12 @@ the escape hatch for settings the chart does not model (`CUSTOM_SECURITY_MANAGER
 | `published` | The app port published on the swarm directly. Plain HTTP — Superset cannot terminate TLS. |
 | `none` | No port, no labels. Superset sits on `exposure.network` for your own reverse proxy, and still trusts `X-Forwarded-*`. |
 
+`none` does **not** mean "on no network". The app still joins `exposure.network`, because that
+overlay is exactly how your own proxy reaches it — so the overlay must exist in `traefik` **and**
+`none` modes, and only `published` drops it. If you do not want a separate ingress overlay, point
+`exposure.network` at one you already have (the database or Redis overlay, say): the chart
+deduplicates the attachments rather than emitting the network twice.
+
 The `traefik.*` defaults match the [traefik chart](../traefik) in this repository (entrypoints
 `http`/`https`, cert resolver `le`, constraint label `traefik-public`, redirect middleware
 `https-redirect`). Running your own Traefik? Override them to match it — see "Routing a service"
@@ -164,11 +174,40 @@ redis chart at `superset_redis_password`.
 
 ## Connecting to a database chart
 
-Same shape. The [mariadb chart](../mariadb) can back `dialect: mysql`
-(`database.host: mariadb_mariadb`, `database.network: mariadb-net`) — but see the warning under
-[Operating notes](#operating-notes): **MariaDB is not on Superset's supported list.** PostgreSQL
-is what Superset recommends, and this catalog has no Postgres chart yet, so a Postgres metadata
-DB is operator-provided today.
+The [postgres chart](../postgres) is the first-party metadata backend. Superset documents
+PostgreSQL **≤ 15** for the metadata database and that chart ships 18, so pin the major — the
+only change it needs, because it mounts the volume one level *above* `PGDATA` and derives the
+data directory from the tag:
+
+```yaml
+# postgres release (named `postgres` here), installed FIRST. Its image bootstraps the database
+# and the user, so this also covers prerequisite 2 — no manual CREATE DATABASE / CREATE USER.
+image:
+  tag: "15"                         # Superset's documented ceiling; the chart defaults to 18
+auth:
+  username: superset                # the superuser initdb creates — it owns the schema
+  database: superset
+  secretName: superset_db_password  # the SAME secret Superset reads (below)
+```
+
+```yaml
+# superset release
+database:
+  dialect: postgresql
+  host: postgres_postgres  # <postgres-release>_postgres — the stack-qualified Swarm name
+  database: superset
+  username: superset
+  passwordSecretName: superset_db_password
+  network: postgres-net  # the postgres chart's own overlay
+```
+
+Install postgres first: it **owns** `postgres-net` and creates it, while Superset only validates
+it (`autoCreate: false`). Both stacks must read the same password, so the snippet points the
+postgres chart at `superset_db_password` rather than creating one password under two names.
+
+The [mariadb chart](../mariadb) can back `dialect: mysql` instead (`database.host:
+mariadb_mariadb`, `database.network: mariadb-net`) — but see the warning under [Operating
+notes](#operating-notes): **MariaDB is not on Superset's supported matrix.**
 
 `database.sqlalchemyUri` overrides `host`/`port`/`database`/`username` when you need more than
 the convenience path — TLS, connection parameters, a different driver. The literal `{password}`
