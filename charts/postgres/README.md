@@ -151,6 +151,9 @@ docker exec -it $(docker ps -q -f label=com.docker.swarm.service.name=postgres_p
 - **[keycloak](../keycloak)** — `database.vendor: postgres`, wiring as shown under
   [Connecting](#connecting). Keycloak 26.5+ supports PostgreSQL 14–18 and tests against 18, so
   the chart default matches.
-- **superset** — Apache documents PostgreSQL **≤ 15** for the metadata database. Pin
-  `image.tag: "15"` (the mount contract is unchanged; only `PGDATA` moves to
-  `/var/lib/postgresql/15/docker`) if you want to stay inside that tested matrix.
+- **superset** — the chart default (18) works: superset's e2e deploys Superset 5.0.0 against it
+  on every push. Apache's published matrix for 5.0.0 stops at PostgreSQL **15**, but that is
+  documentation lag rather than a ceiling (upstream's own compose already runs 17) — see
+  [PostgreSQL versions](../superset/README.md#postgresql-versions). To stay strictly inside that
+  matrix, pin `image.tag: "15"`; the mount contract is unchanged, only `PGDATA` moves to
+  `/var/lib/postgresql/15/docker`.

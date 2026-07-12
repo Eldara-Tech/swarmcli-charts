@@ -9,9 +9,10 @@
 # auto-created), so EVERY fixture needs this hook. It provisions:
 #   * the four operator secrets (dummy values);
 #   * the overlays superset-db-net / redis-net / traefik-public;
-#   * a throwaway metadata database on superset-db-net — postgres:15 named `postgres`, or
-#     mysql:8 named `mysql` for the mysql fixture (matching each fixture's database.host) —
-#     with the `superset` schema + user created from the image's own env bootstrap;
+#   * a throwaway metadata database on superset-db-net — postgres named `postgres` (major 18,
+#     or 15 for the no-celery fixture; see below), or mysql:8 named `mysql` for the mysql
+#     fixture (matching each fixture's database.host) — with the `superset` schema + user
+#     created from the image's own env bootstrap;
 #   * a throwaway redis:7 named `redis` on redis-net, password-protected to match
 #     redis.auth.enabled;
 #   * for the edge fixture, the traefik chart as a real edge (shared helper, issue #63).
@@ -42,9 +43,15 @@ done
 # Metadata database. The mysql fixture points database.host at `mysql`; every other fixture
 # uses postgres. Both images create the schema + user from these env vars on first boot.
 #
-# WHY postgres:15 and not the postgres chart's default 18: 15 is the newest major Apache
-# documents for the Superset metadata database (charts/superset/README.md, "Connecting to a
-# database chart"). Keep this aligned with the pin that README tells operators to set.
+# WHICH postgres major, and why BOTH. The README tells operators to use the postgres chart with
+# its own default (18) and NOT to pin, so that is the path the primary fixtures must prove — an
+# untested recommendation is worse than none. Apache's published matrix for Superset 5.0.0 stops
+# at PostgreSQL 15, but that is documentation lag, not a ceiling: master's table already lists
+# 16, upstream's own compose runs postgres:17, and nothing in Superset enforces a version (the
+# metadata store is plain SQL; compatibility is whatever SQLAlchemy + psycopg2 support). The
+# conservative in-matrix pin is still documented, so it needs coverage too — `no-celery` runs it
+# on 15. It is already in the CI subset and is indifferent to the DB major, so both majors are
+# proven at zero extra wall-clock.
 #
 # WHY a raw `docker service create` and not `swarmcli charts install ../postgres` (issue #71):
 # deliberate, not inertia — the same call keycloak's hook makes for MariaDB. The postgres chart
@@ -64,12 +71,14 @@ if [ "$case" = "mysql" ]; then
   db_probe() { docker exec "$1" mysqladmin ping --silent >/dev/null 2>&1; }
   db_name=mysql
 else
+  pg_tag=18                                   # the postgres chart's default — what the README recommends
+  [ "$case" = "no-celery" ] && pg_tag=15      # …and the conservative in-matrix pin it documents
   docker service rm postgres >/dev/null 2>&1 || true
   docker service create --name postgres --network superset-db-net \
     --env POSTGRES_DB=superset \
     --env POSTGRES_USER=superset \
     --env POSTGRES_PASSWORD="$PW" \
-    postgres:15 >/dev/null
+    "postgres:$pg_tag" >/dev/null
   db_probe() { docker exec "$1" pg_isready -U superset -d superset >/dev/null 2>&1; }
   db_name=postgres
 fi

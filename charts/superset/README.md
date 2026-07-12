@@ -174,16 +174,14 @@ redis chart at `superset_redis_password`.
 
 ## Connecting to a database chart
 
-The [postgres chart](../postgres) is the first-party metadata backend. Superset documents
-PostgreSQL **≤ 15** for the metadata database and that chart ships 18, so pin the major — the
-only change it needs, because it mounts the volume one level *above* `PGDATA` and derives the
-data directory from the tag:
+The [postgres chart](../postgres) is the first-party metadata backend, and its **defaults are
+what you want** — no version pin needed. Its e2e runs Superset 5.0.0 against `postgres:18` on
+every push (see [PostgreSQL versions](#postgresql-versions) if you want the conservative pin
+instead):
 
 ```yaml
 # postgres release (named `postgres` here), installed FIRST. Its image bootstraps the database
 # and the user, so this also covers prerequisite 2 — no manual CREATE DATABASE / CREATE USER.
-image:
-  tag: "15"                         # Superset's documented ceiling; the chart defaults to 18
 auth:
   username: superset                # the superuser initdb creates — it owns the schema
   database: superset
@@ -208,6 +206,27 @@ postgres chart at `superset_db_password` rather than creating one password under
 The [mariadb chart](../mariadb) can back `dialect: mysql` instead (`database.host:
 mariadb_mariadb`, `database.network: mariadb-net`) — but see the warning under [Operating
 notes](#operating-notes): **MariaDB is not on Superset's supported matrix.**
+
+### PostgreSQL versions
+
+Apache's published matrix for Superset 5.0.0 lists PostgreSQL **10–15**, and its own
+`docker-compose.yml` ships `postgres:15` — which is where the "Superset needs an old Postgres"
+folklore comes from. It is **documentation lag, not a ceiling**:
+
+- Superset enforces no version check. Its metadata store is plain SQL, so compatibility is
+  whatever SQLAlchemy and `psycopg2` support.
+- Upstream's matrix on `master` already reads 10–16 (PostgreSQL 16 was added in
+  [apache/superset#32597](https://github.com/apache/superset/pull/32597), after the 5.0 branch
+  was cut), and upstream's *own* compose now runs `postgres:17` — a major their table still
+  does not list.
+- This chart's e2e deploys Superset 5.0.0 against `postgres:18` — migrations, login, the lot —
+  on every push, which is why the section above does not pin.
+
+If your policy is to stay strictly inside the matrix Apache publishes for 5.0.0, pin the
+postgres chart to `image.tag: "15"`. That is the *only* change it needs: the chart mounts the
+volume one level above `PGDATA` and derives the data directory from the tag, so the mount
+contract is identical across majors. The `no-celery` e2e fixture runs that pin, so it stays
+covered too.
 
 `database.sqlalchemyUri` overrides `host`/`port`/`database`/`username` when you need more than
 the convenience path — TLS, connection parameters, a different driver. The literal `{password}`
@@ -299,9 +318,12 @@ revokes the Superset role too.
   already-existing admin is tolerated.
 - **`beat` never scales past 1.** Two schedulers double-fire every scheduled report, so the chart
   hardcodes one replica and rolls it stop-first.
-- **MariaDB is not on Superset's supported matrix** (PostgreSQL 10–15 and MySQL 5.7/8 are). The
+- **MariaDB is not on Superset's supported matrix** (PostgreSQL and MySQL 5.7/8 are). The
   mariadb chart *can* back `dialect: mysql`, and it works today, but you are in community
-  territory: newer Superset releases have broken on MariaDB. Prefer PostgreSQL.
+  territory: newer Superset releases have broken on MariaDB. Prefer PostgreSQL — and note this
+  is a different situation from the PostgreSQL *version* numbers in that matrix, which merely
+  lag reality (see [PostgreSQL versions](#postgresql-versions)); MariaDB is absent from it on
+  the merits.
 - **Scaling the web app** needs nothing extra — sessions are cookie-based, so no sticky sessions
   — but every replica must share the same `SECRET_KEY`, which they do by construction.
 - **Alerts & Reports / thumbnails** need `celery.enabled` plus the matching entries in
