@@ -1,0 +1,7 @@
+# Fixtures that render + validate in scripts/test-charts.sh but cannot converge on any swarm, so
+# the default all-fixtures `make e2e` sweep skips them (name one in E2E_CASES to force it).
+#   jdbc-url      the JDBC URL demands ssl=require, and the stock postgres image ships ssl=off;
+#                 it also carries a node.labels.keycloak == true constraint no e2e node has.
+#   published-tls needs real PEM certificate material.
+jdbc-url
+published-tls

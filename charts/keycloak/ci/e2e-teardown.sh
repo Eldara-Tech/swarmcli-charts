@@ -3,9 +3,10 @@
 # e2e teardown for the keycloak chart. scripts/e2e-test.sh runs this AFTER it uninstalls
 # the release, once per fixture:
 #   $1 = release name   $2 = chart directory   $3 = fixture case name
-# It removes the co-located MariaDB backend service, the two secrets, and the DB overlay
-# this hook OWNS (keycloak-db-net). It LEAVES the shared traefik-public overlay and, for
-# the db-net-override fixture, the shared mariadb-net (owned by the mariadb chart/operator).
+# It removes the co-located backend service (MariaDB or PostgreSQL, whichever the fixture used),
+# the two secrets, and the DB overlay this hook OWNS (keycloak-db-net). It LEAVES the shared
+# traefik-public overlay and, for the db-net-override fixture, the shared mariadb-net (owned by
+# the mariadb chart/operator).
 # Best-effort: every step tolerates already-gone resources.
 set -uo pipefail
 
@@ -17,7 +18,10 @@ if [ "$case" = "edge" ]; then
   edge_down
 fi
 
-docker service rm mariadb >/dev/null 2>&1 || true
+# Only one of these exists per fixture (ci/e2e-setup.sh picks the backend by case); removing
+# both unconditionally is simpler than re-deriving which, and a miss is a no-op.
+docker service rm mariadb  >/dev/null 2>&1 || true
+docker service rm postgres >/dev/null 2>&1 || true
 docker secret rm keycloak_db_password    >/dev/null 2>&1 || true
 docker secret rm keycloak_admin_password >/dev/null 2>&1 || true
 

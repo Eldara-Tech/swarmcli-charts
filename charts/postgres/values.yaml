@@ -1,0 +1,107 @@
+# postgres chart default values.
+#
+# Single PostgreSQL instance on Docker Swarm. A Swarm named volume is node-local, so this is a
+# single-replica service pinned (via a node label) to the node holding its data volume. The
+# password ALWAYS comes from an EXTERNAL Swarm secret the operator pre-creates (never created by
+# the chart). PostgreSQL is reachable by other stacks over a shared overlay; it is TCP, so it is
+# NOT Traefik-routed and publishes no port by default.
+
+image:
+  repository: postgres
+  tag: ""  # defaults to appVersion from Chart.yaml (18)
+
+# Stateful + node-local volume => exactly one replica. Do not raise; run a second named release
+# (or streaming replication, out of scope) for HA.
+replicas: 1
+
+# Credentials. PostgreSQL has ONE bootstrap role: POSTGRES_USER *is* the superuser initdb
+# creates (there is no root/app-user split like MariaDB's), and POSTGRES_DB is the database
+# created for it. Anything connecting with these credentials is therefore a superuser — see the
+# README for the CREATE ROLE / CREATE DATABASE recipe that adds a least-privilege app role.
+# The password is read from the mounted secret file via the image's POSTGRES_PASSWORD_FILE
+# convention, so the plaintext never lands in the compose file, the environment, or
+# `docker inspect` — only the file path does.
+#   secretName: EXTERNAL Swarm secret holding the password. Pre-create it, e.g.:
+#     printf 'S3cr3t' | docker secret create postgres_password -
+auth:
+  username: postgres
+  database: postgres
+  secretName: postgres_password
+
+# Persistence. Named volume at /var/lib/postgresql (the MOUNT), with the data directory itself
+# one level down at /var/lib/postgresql/<major>/docker (the PGDATA — see below).
+# enabled:false => ephemeral database (no volume, and the node pin below is dropped with it).
+persistence:
+  enabled: true
+  volumeName: postgres-data
+  # Store data under a host directory instead of Docker's managed volume storage. When
+  # volumePath is set it TAKES PRECEDENCE and volumeName is ignored: /var/lib/postgresql is
+  # bind-mounted from this absolute host path on the PINNED node. The directory must already
+  # exist on that node and be writable by the container's postgres uid (999) — the image
+  # entrypoint creates and chowns PGDATA beneath it on first init, but pre-creating it with the
+  # right owner is safest. This is host-filesystem access, acknowledged via
+  # swarmcli-charts/allow: "host-mount" in Chart.yaml. Leave empty ("") to use the named volume.
+  volumePath: ""
+  # Node label pinning the service to the node carrying the data volume (Swarm volumes are
+  # node-local). Rendered as `node.labels.<nodeLabel> == true` while persistence is enabled and
+  # dropped automatically when it is not. Label exactly ONE node first:
+  #   docker node update --label-add postgres-data=true <node>
+  # Set "" to schedule unpinned even with persistence on (e.g. single-node swarm).
+  nodeLabel: postgres-data
+  # PGDATA — the data directory INSIDE the mount above. Leave empty ("") and the chart derives
+  # /var/lib/postgresql/<major>/docker from the image tag (falling back to appVersion). That is
+  # the postgres:18+ image's own default layout, and the image's documented opt-in for 17 and
+  # older, so a single mount contract serves every major: `image.tag: "15"` needs no other
+  # change. Keeping PGDATA one level BELOW the mount is also what makes host-path persistence
+  # safe (initdb refuses a mountpoint that is non-empty or cannot be chowned).
+  # Set this only when the tag carries no major version to derive from (e.g. a custom image, or
+  # `postgres:alpine`) — otherwise the render fails rather than guess where your data lives.
+  pgdata: ""
+
+# Extra scheduling constraints, always applied (independent of the persistence pin).
+placement:
+  constraints: []
+
+# Overlay network postgres attaches to. external:true (default) is a shared attachable overlay
+# (declared in requirements.yaml, auto-created if missing) that app stacks also join to reach
+# postgres by service name. external:false => chart-managed internal overlay (postgres only
+# reachable by services in this stack).
+network:
+  name: postgres-net
+  external: true
+
+# Publish a port. Disabled by default — postgres stays internal to the overlay.
+#   port: the port published on the HOST. The container always listens on 5432, so this maps
+#     <port> -> 5432 and you can republish elsewhere (e.g. 15432) when the host's 5432 is taken.
+#   mode: ingress (cluster-wide routing mesh) or host (only on the pinned node).
+exposure:
+  enabled: false
+  port: 5432
+  protocol: tcp
+  mode: ingress
+
+# Swarm deploy resource limits (optional). Rendered only when limits.memory is set.
+resources:
+  limits:
+    memory: ""           # e.g. "512M"
+
+# Container healthcheck via pg_isready. It probes 127.0.0.1 (TCP) rather than the local unix
+# socket ON PURPOSE: during first init the entrypoint runs a temporary server that listens on
+# the socket ONLY, so a socket probe would report healthy before initdb has finished — and
+# dependants (keycloak, superset) wait on this health. pg_isready needs no password: it reports
+# that the server responds, not that it authenticated.
+healthcheck:
+  enabled: true
+  interval: 10s
+  timeout: 5s
+  retries: 5
+  startPeriod: 60s
+
+# Arbitrary extra postgres server flags, appended verbatim as the container command. Each entry
+# is ONE argv element, so a `-c` setting takes two entries:
+#   extraArgs: ["-c", "max_connections=200", "-c", "shared_buffers=256MB"]
+# Do not set `-c port=...`: the published port and the healthcheck both assume 5432.
+extraArgs: []
+
+# Extra deploy labels (key: value).
+labels: {}
