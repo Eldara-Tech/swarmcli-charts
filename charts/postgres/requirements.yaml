@@ -1,0 +1,16 @@
+# External resources this chart needs. Authoritative: every external network/secret/config the
+# rendered stack references must be listed here (swarmcli pre-flights it; scripts/
+# requirements-check.sh enforces it at PR time).
+#
+# The names are values-templated so an operator who overrides network.name or auth.secretName
+# still passes the pre-flight (swarmcli renders this file with the release's values).
+networks:
+  - name: "{{ .Values.network.name }}"
+    driver: overlay
+    attachable: true
+    autoCreate: true
+    description: "Shared overlay app stacks attach to in order to reach postgres by service name"
+secrets:
+  - name: "{{ .Values.auth.secretName }}"
+    description: "PostgreSQL superuser password. Pre-create: printf 'S3cr3t' | docker secret create postgres_password -"
+configs: []

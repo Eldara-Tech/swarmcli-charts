@@ -85,14 +85,20 @@ jobs:
           # volume, so all other fixtures pass); the host-path render is covered by
           # charts.yml and the fixture still runs in local `make e2e`.
           - { chart: mariadb,       cases: "default no-appuser ephemeral published-port",                                     timeout: 6m  }
+          # postgres: EVERY fixture (cases: "" => no filter). bind-mount is included, unlike
+          # mariadb's: PGDATA sits one level below the mount (/var/lib/postgresql/<major>/docker),
+          # so initdb never has to chown or empty the bind-mounted mountpoint itself. legacy-major
+          # pulls a second image (postgres:15) — hence the 8m budget.
+          - { chart: postgres,      cases: "",                                                                                timeout: 8m  }
           # traefik: every CI-friendly fixture EXCEPT loki-logging, which needs the
           # loki:latest Docker log-driver plugin (absent on stock runners). `routing` (#63)
           # stands up two whoami backends and proves a request routes THROUGH the edge.
           - { chart: traefik,       cases: "default dashboard-off extra-entrypoints hsts-off ingress-ports certs-bind-mount routing", timeout: 6m }
-          # keycloak: MariaDB-backed subset only (ci/e2e-setup.sh stands up the backend).
-          # Excludes postgres/jdbc-url (PostgreSQL) and published-tls (real cert material).
-          # `edge` (#63) additionally stands up the traefik chart and routes through it.
-          - { chart: keycloak,      cases: "default tls-off none db-net-override start-dev published-http edge",             timeout: 8m  }
+          # keycloak: ci/e2e-setup.sh stands up the backend the fixture asks for — MariaDB for
+          # most, PostgreSQL for `postgres` (#69). jdbc-url and published-tls converge nowhere
+          # and are marked ci/e2e-render-only. `edge` (#63) additionally stands up the traefik
+          # chart and routes through it.
+          - { chart: keycloak,      cases: "default tls-off none db-net-override start-dev published-http postgres edge",    timeout: 8m  }
           # ollama: published (default) + ephemeral + none + edge. Excludes bind-mount (its
           # host-path render is covered by charts.yml; still runs in local `make e2e`) and gpu
           # (a GPU-less runner cannot schedule a generic-resources reservation — the GPU

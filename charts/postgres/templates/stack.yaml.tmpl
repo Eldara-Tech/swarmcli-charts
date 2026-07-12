@@ -1,0 +1,157 @@
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) (contains "/" .Values.persistence.volumeName) -}}
+{{- fail "persistence.volumeName is a Docker named-volume name and cannot contain '/'. To store data under a host directory, set persistence.volumePath instead." -}}
+{{- end -}}
+{{- /* One mount contract for every major. The volume (or host path) is mounted at
+       /var/lib/postgresql — the PARENT — and PGDATA lives one level down at
+       /var/lib/postgresql/<major>/docker. That is the postgres:18+ image's own default layout,
+       and the image's DOCUMENTED opt-in for 17 and older, so `image.tag: "15"` needs no other
+       change. It also keeps PGDATA below the mountpoint, which is what makes the host-path
+       (bind-mount) render safe: initdb refuses a data directory that is a non-empty or
+       unchownable mountpoint. The major is taken from the tag (appVersion when the tag is
+       empty); a tag with no leading digits (a custom image, `postgres:alpine`) has no major to
+       derive from, so we fail loudly instead of guessing where the operator's data lives. */}}
+{{- $tag := .Values.image.tag | default .Chart.AppVersion }}
+{{- $major := regexFind "^[0-9]+" $tag }}
+{{- $pgdata := .Values.persistence.pgdata }}
+{{- if not $pgdata }}
+{{-   if not $major }}
+{{-     fail (printf "cannot derive the PostgreSQL major version from image.tag %q — set persistence.pgdata to the data directory inside /var/lib/postgresql (e.g. /var/lib/postgresql/18/docker)" $tag) }}
+{{-   end }}
+{{-   $pgdata = printf "/var/lib/postgresql/%s/docker" $major }}
+{{- end }}
+version: "3.9"
+
+services:
+
+  postgres:
+    image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
+
+    networks:
+      - {{ .Values.network.name }}
+
+{{- if .Values.exposure.enabled }}
+    # The server always listens on 5432 inside the container; exposure.port is the port
+    # published on the host, so a taken 5432 can be republished (e.g. 15432:5432).
+    ports:
+      - target: 5432
+        published: {{ .Values.exposure.port }}
+        protocol: {{ .Values.exposure.protocol | default "tcp" }}
+        mode: {{ .Values.exposure.mode | default "ingress" }}
+{{- end }}
+
+{{- if or .Values.persistence.enabled (and $major (le (atoi $major) 17)) }}
+    volumes:
+{{- if .Values.persistence.enabled }}
+{{- if .Values.persistence.volumePath }}
+      - {{ .Values.persistence.volumePath }}:/var/lib/postgresql
+{{- else }}
+      - {{ .Values.persistence.volumeName }}:/var/lib/postgresql
+{{- end }}
+{{- end }}
+{{- if and $major (le (atoi $major) 17) }}
+      # 17 and older declare VOLUME /var/lib/postgresql/data. Our mount is the parent, which
+      # does NOT suppress that declaration, so Swarm would attach a stray anonymous volume
+      # there on every task (and litter a bind-mounted host path with a root-owned data/).
+      # A mount whose destination matches it exactly does suppress it; the directory is unused
+      # under our layout (PGDATA is {{ $pgdata }}), so an empty tmpfs is the cheapest lid.
+      - type: tmpfs
+        target: /var/lib/postgresql/data
+{{- end }}
+{{- end }}
+
+    secrets:
+      - {{ .Values.auth.secretName }}
+
+    # POSTGRES_USER is the superuser initdb creates (PostgreSQL has no separate root account),
+    # POSTGRES_DB the database created for it. The password is read from the mounted secret file
+    # via the image's POSTGRES_PASSWORD_FILE convention, so the plaintext is never in the compose
+    # file or `docker inspect` (which show only the /run/secrets/... path), only inside the
+    # container. All three are consumed by initdb on FIRST BOOT only.
+    environment:
+      POSTGRES_USER: {{ .Values.auth.username | quote }}
+      POSTGRES_DB: {{ .Values.auth.database | quote }}
+      POSTGRES_PASSWORD_FILE: /run/secrets/{{ .Values.auth.secretName }}
+      PGDATA: {{ $pgdata | quote }}
+
+{{- if .Values.extraArgs }}
+    # Extra server flags. The image entrypoint runs first-boot initialization and then execs
+    # this command; each entry is one argv element (a `-c` setting is two).
+    command:
+      - postgres
+{{- range .Values.extraArgs }}
+      - {{ . | quote }}
+{{- end }}
+{{- end }}
+
+{{- if .Values.healthcheck.enabled }}
+    # pg_isready over TCP, not the local socket: during first init the entrypoint runs a
+    # temporary server that listens on the unix socket ONLY, so a socket probe would report
+    # healthy before initdb (and any init scripts) have finished. No password needed — it
+    # reports that the server responds, not that it authenticated.
+    healthcheck:
+      test:
+        - CMD
+        - pg_isready
+        - -h
+        - 127.0.0.1
+        - -U
+        - {{ .Values.auth.username | quote }}
+        - -d
+        - {{ .Values.auth.database | quote }}
+      interval: {{ .Values.healthcheck.interval }}
+      timeout: {{ .Values.healthcheck.timeout }}
+      retries: {{ .Values.healthcheck.retries }}
+      start_period: {{ .Values.healthcheck.startPeriod }}
+{{- end }}
+
+    deploy:
+      replicas: {{ .Values.replicas }}
+{{- /* The data-volume node pin travels with persistence: it exists only while a volume needs
+       pinning, so persistence.enabled:false never leaves a task Pending on a missing node
+       label. placement.constraints adds extras. */}}
+{{- $constraints := list }}
+{{- if and .Values.persistence.enabled .Values.persistence.nodeLabel }}
+{{-   $constraints = append $constraints (printf "node.labels.%s == true" .Values.persistence.nodeLabel) }}
+{{- end }}
+{{- range .Values.placement.constraints }}
+{{-   $constraints = append $constraints . }}
+{{- end }}
+{{- if $constraints }}
+      placement:
+        constraints:
+{{- range $constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- with .Values.resources.limits.memory }}
+      resources:
+        limits:
+          memory: {{ . | quote }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- if .Values.labels }}
+      labels:
+{{- range $key, $val := .Values.labels }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+{{- end }}
+
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) }}
+
+volumes:
+  {{ .Values.persistence.volumeName }}: {}
+{{- end }}
+
+secrets:
+  {{ .Values.auth.secretName }}:
+    external: true
+
+networks:
+  {{ .Values.network.name }}:
+{{- if .Values.network.external }}
+    external: true
+{{- else }}
+    driver: overlay
+    attachable: true
+{{- end }}

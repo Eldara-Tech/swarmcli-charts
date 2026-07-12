@@ -1,0 +1,27 @@
+name: postgres
+description: PostgreSQL relational database for Docker Swarm — persistent, secret-authenticated, single-node pinned
+version: 0.1.0
+# Quoted: the renderer unmarshals appVersion into a Go string, and the template derives the
+# data directory (/var/lib/postgresql/<major>/docker) from it when image.tag is empty.
+appVersion: "18"
+# host-mount is acknowledged because persistence.volumePath can bind-mount the data dir from
+# an operator-chosen host path. The default (named volume) render mounts no host path — no
+# docker.sock, unprivileged — so the annotation is exercised by the security scan only when a
+# host path is configured.
+annotations:
+  swarmcli-charts/allow: "host-mount"
+maintainers:
+  - name: Eldara
+    url: https://github.com/Eldara-Tech
+keywords:
+  - postgres
+  - postgresql
+  - database
+  - sql
+  - relational
+  - stateful
+  - swarm
+home: https://github.com/Eldara-Tech/swarmcli-charts
+sources:
+  - https://github.com/Eldara-Tech/swarmcli-charts
+  - https://github.com/postgres/postgres

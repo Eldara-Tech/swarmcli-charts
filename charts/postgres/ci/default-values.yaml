@@ -1,0 +1,4 @@
+# Default render: superuser + database from the external secret, persistence ON (named volume
+# mounted at /var/lib/postgresql + placement pin), PGDATA derived from appVersion
+# (/var/lib/postgresql/18/docker), shared external overlay, no published port. Exercises the
+# external-secret + external-network path (the strictest requirements-check case).

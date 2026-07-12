@@ -1,0 +1,9 @@
+# Host-path persistence: /var/lib/postgresql bind-mounted from an operator-chosen host directory
+# instead of a Docker-managed named volume. volumePath takes precedence over volumeName, so no
+# top-level volumes block is rendered and the service mounts the absolute host path — which the
+# security scan flags as host-mount, acknowledged in Chart.yaml. Exercises the bind-mount branch
+# and the host-mount acknowledgment. PGDATA still resolves one level below the mount
+# (/var/lib/postgresql/18/docker), which is what keeps initdb happy on a host directory.
+persistence:
+  enabled: true
+  volumePath: /opt/postgres-data

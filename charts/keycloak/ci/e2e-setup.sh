@@ -8,16 +8,17 @@
 # finished migrations, so EVERY CI fixture needs a reachable backend. This hook:
 #   * creates the two operator secrets (dummy values);
 #   * creates the DB overlay + traefik-public (both autoCreate:false — swarmcli won't);
-#   * stands up a throwaway MariaDB named `mariadb` (matching database.host) on the DB
-#     overlay, with the `keycloak` schema + `keycloak` user auto-created from
-#     MARIADB_DATABASE/_USER/_PASSWORD, and waits until it accepts connections.
-# The backend is EPHEMERAL and UNPINNED — it deliberately does NOT use the mariadb
-# chart's `mariadb-data` node label, so it never collides with that chart's own e2e.
+#   * stands up a throwaway backend on the DB overlay, named to match the fixture's
+#     database.host — `mariadb` for most fixtures, `postgres` for the PostgreSQL ones —
+#     with the `keycloak` schema + `keycloak` user auto-created from the image's own env
+#     bootstrap, and waits until it accepts connections.
+# The backend is EPHEMERAL and UNPINNED — it deliberately does NOT use the mariadb/postgres
+# charts' data node labels, so it never collides with those charts' own e2e.
 # ci/e2e-teardown.sh removes everything created here (leaving shared overlays).
 #
-# INVARIANT: MARIADB_PASSWORD must equal the keycloak_db_password secret value ($DBPW),
-# and MARIADB_USER must equal database.username (keycloak) — else migrations fail on
-# auth. The hook owns both, so it sets one $DBPW and uses it for both.
+# INVARIANT: the backend's app-user password must equal the keycloak_db_password secret value
+# ($DBPW), and its user/schema must equal database.username/database.database (keycloak) — else
+# migrations fail on auth. The hook owns both sides, so it sets one $DBPW and uses it for both.
 #
 # Idempotent: safe to re-run after a crashed run.
 set -euo pipefail
@@ -37,27 +38,49 @@ dbnet=keycloak-db-net
 docker network create --driver overlay --attachable "$dbnet"       >/dev/null 2>&1 || true
 docker network create --driver overlay --attachable traefik-public >/dev/null 2>&1 || true
 
-# Co-located backend, resolvable as `mariadb` on the DB overlay.
-docker service rm mariadb >/dev/null 2>&1 || true
-docker service create --name mariadb --network "$dbnet" \
-  --env MARIADB_ROOT_PASSWORD="$DBPW" \
-  --env MARIADB_DATABASE=keycloak \
-  --env MARIADB_USER=keycloak \
-  --env MARIADB_PASSWORD="$DBPW" \
-  mariadb:11.8 >/dev/null
+# Co-located backend, resolvable on the DB overlay as the fixture's database.host: the
+# PostgreSQL fixtures (ci/postgres-values.yaml, ci/jdbc-url-values.yaml) dial `postgres`, every
+# other fixture `mariadb`. Both images create the keycloak schema + user from these env vars on
+# first boot. (Same shape as charts/superset/ci/e2e-setup.sh, which picks its metadata DB the
+# same way.)
+case "$case" in
+  postgres | jdbc-url) db_name=postgres ;;
+  *)                   db_name=mariadb ;;
+esac
 
-# Wait for the task to run (image pull), then until it actually accepts connections
-# (the image's healthcheck.sh --connect uses its own localhost socket — no creds needed)
-# so Keycloak does not race the DB during its own boot/migration.
+docker service rm "$db_name" >/dev/null 2>&1 || true
+if [ "$db_name" = postgres ]; then
+  docker service create --name postgres --network "$dbnet" \
+    --env POSTGRES_DB=keycloak \
+    --env POSTGRES_USER=keycloak \
+    --env POSTGRES_PASSWORD="$DBPW" \
+    postgres:18 >/dev/null
+  # pg_isready against 127.0.0.1 (TCP), not the unix socket: during first init the entrypoint
+  # runs a temporary server that listens on the socket ONLY, so a socket probe would report
+  # ready while initdb is still running — exactly the race this loop exists to prevent.
+  db_probe() { docker exec "$1" pg_isready -h 127.0.0.1 -U keycloak -d keycloak >/dev/null 2>&1; }
+else
+  docker service create --name mariadb --network "$dbnet" \
+    --env MARIADB_ROOT_PASSWORD="$DBPW" \
+    --env MARIADB_DATABASE=keycloak \
+    --env MARIADB_USER=keycloak \
+    --env MARIADB_PASSWORD="$DBPW" \
+    mariadb:11.8 >/dev/null
+  # The image's healthcheck.sh --connect uses its own localhost socket — no creds needed.
+  db_probe() { docker exec "$1" healthcheck.sh --connect >/dev/null 2>&1; }
+fi
+
+# Wait for the task to run (image pull), then until it actually accepts connections, so
+# Keycloak does not race the DB during its own boot/migration.
 for _ in $(seq 1 40); do
-  state="$(docker service ps mariadb --filter desired-state=running \
+  state="$(docker service ps "$db_name" --filter desired-state=running \
     --format '{{.CurrentState}}' 2>/dev/null | head -1)"
   case "$state" in Running*) break ;; esac
   sleep 3
 done
 for _ in $(seq 1 40); do
-  cid="$(docker ps -q -f 'label=com.docker.swarm.service.name=mariadb' | head -1)"
-  if [ -n "$cid" ] && docker exec "$cid" healthcheck.sh --connect >/dev/null 2>&1; then
+  cid="$(docker ps -q -f "label=com.docker.swarm.service.name=${db_name}" | head -1)"
+  if [ -n "$cid" ] && db_probe "$cid"; then
     break
   fi
   sleep 3

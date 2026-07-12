@@ -1,0 +1,8 @@
+# A pre-18 image, the path a Superset operator takes (Apache documents PostgreSQL <= 15 for the
+# metadata database). The mount contract does not change: the volume still mounts at
+# /var/lib/postgresql and PGDATA is derived as /var/lib/postgresql/15/docker — the image's
+# documented opt-in to the 18+ layout. Also exercises the tmpfs lid that suppresses the stray
+# anonymous volume <=17 images would otherwise attach at their own VOLUME /var/lib/postgresql/data.
+# Quoted: image.tag is a string (an unquoted 15 would be an int and fail schema validation).
+image:
+  tag: "15"

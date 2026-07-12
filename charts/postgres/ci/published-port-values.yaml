@@ -1,0 +1,18 @@
+# Published port on a chart-managed internal overlay, with a deploy memory limit and extra server
+# flags. Exercises the exposure branch (published 15432 -> target 5432, proving the two are not
+# the same knob), the network.external:false (chart-managed overlay) branch, the resources path,
+# and the command/extraArgs path — where each entry is ONE argv element, so a `-c` setting takes
+# two.
+exposure:
+  enabled: true
+  port: 15432
+  protocol: tcp
+  mode: ingress
+network:
+  external: false
+resources:
+  limits:
+    memory: "512M"
+extraArgs:
+  - "-c"
+  - "max_connections=200"
