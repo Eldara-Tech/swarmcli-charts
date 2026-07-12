@@ -73,6 +73,7 @@ if [ "$case" = "mysql" ]; then
 else
   pg_tag=18                                   # the postgres chart's default — what the README recommends
   [ "$case" = "no-celery" ] && pg_tag=15      # …and the conservative in-matrix pin it documents
+  echo "   db: postgres:$pg_tag"              # which major this case proves (the README cites it)
   docker service rm postgres >/dev/null 2>&1 || true
   docker service create --name postgres --network superset-db-net \
     --env POSTGRES_DB=superset \
