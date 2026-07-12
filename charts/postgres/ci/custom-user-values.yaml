@@ -1,0 +1,6 @@
+# Renamed bootstrap role: POSTGRES_USER/POSTGRES_DB drive the superuser and database initdb
+# creates, so an app-owned instance is a rename, not a second account. Exercises that the
+# username/database flow through to the environment AND the healthcheck (pg_isready -U app -d app).
+auth:
+  username: app
+  database: app

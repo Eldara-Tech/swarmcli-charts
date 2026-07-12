@@ -207,14 +207,14 @@ These hooks are what let the `e2e.yml` workflow run a chart's e2e in CI without
 any repo secrets: everything the fixture needs is public images plus these
 on-runner, dummy-valued resources.
 
-Charts shipping these hooks today: **openclaw** (the reference above); **redis** and
-**mariadb** (dummy auth secret(s) + the persistence node-label pin + the bind-mount host
+Charts shipping these hooks today: **openclaw** (the reference above); **redis**, **mariadb**
+and **postgres** (dummy auth secret(s) + the persistence node-label pin + the bind-mount host
 dir); **traefik** (the `traefik-certs` node-label pin + the certs-bind-mount host dir);
 and **keycloak** (the two operator secrets + the DB/ingress overlays + a throwaway
-co-located MariaDB backend on `keycloak-db-net`, because Keycloak attaches its DB overlay
-unconditionally and `/health/ready` only passes once it has connected and migrated — so
-every keycloak fixture needs a reachable database). `whoami` and `swarm-cronjob` converge
-solo and ship no hooks.
+co-located backend on `keycloak-db-net` — MariaDB, or PostgreSQL for the `postgres` fixture —
+because Keycloak attaches its DB overlay unconditionally and `/health/ready` only passes once
+it has connected and migrated, so every keycloak fixture needs a reachable database).
+`whoami` and `swarm-cronjob` converge solo and ship no hooks.
 
 ### Proving Traefik actually routes (the shared edge helper)
 
@@ -250,11 +250,21 @@ Some fixtures are deliberately **excluded from the curated CI subset** (they sti
 full local `make e2e`): `traefik`'s `loki-logging` needs the `loki:latest` Docker
 log-driver plugin, which stock runners lack (`docker plugin install
 grafana/loki-docker-driver:latest --alias loki:latest --grant-all-permissions` to run it
-locally); `mariadb`'s `bind-mount`, because MariaDB's healthcheck cannot authenticate on a
+locally); and `mariadb`'s `bind-mount`, because MariaDB's healthcheck cannot authenticate on a
 host bind-mounted datadir in the Swarm CI environment (it works on a named volume, so the
-other mariadb fixtures pass, and the host-path render is covered by `charts.yml`); and
-`keycloak`'s `postgres` / `jdbc-url` (need PostgreSQL) and `published-tls` (needs real PEM
-cert material) fall outside the MariaDB-backed CI subset.
+other mariadb fixtures pass, and the host-path render is covered by `charts.yml`). The
+`postgres` chart's own `bind-mount` fixture *does* run in CI: its `PGDATA` sits one level below
+the mount (`/var/lib/postgresql/<major>/docker`), so initdb never has to chown or empty the
+bind-mounted mountpoint itself.
+
+A fixture that can converge **nowhere** — not in CI and not locally — belongs in
+`charts/<name>/ci/e2e-render-only` instead (one case name per line): the default sweep skips
+it, `scripts/test-charts.sh` still renders it, and naming it explicitly in `E2E_CASES` still
+forces it. `keycloak` lists `jdbc-url` (its JDBC URL demands `ssl=require`, and the stock
+postgres image ships `ssl=off`; it also carries a `node.labels.keycloak == true` constraint no
+e2e node has) and `published-tls` (needs real PEM material). Keycloak's `postgres` fixture, by
+contrast, now runs in CI — `ci/e2e-setup.sh` stands up a throwaway PostgreSQL backend for it
+(issue #69).
 
 ## Trying a chart through the repo flow (local repo)
 
