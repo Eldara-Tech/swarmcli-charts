@@ -27,9 +27,13 @@ case="${2:-}"
 fail=0
 note() { echo "   FAIL: $1"; fail=1; }
 
+# Hard failure, never a skip: a skipped check is indistinguishable from a passing one, so
+# degrading to `exit 0` here would let `make test` report success while asserting nothing about
+# the config blob below. scripts/test-charts.sh pre-flights yq (#74) so this should be
+# unreachable — it stays as a backstop for a standalone invocation.
 if ! command -v yq >/dev/null 2>&1 || ! yq --version 2>/dev/null | grep -qi mikefarah; then
-  echo "   note: mikefarah yq v4 not found — skipping superset render checks"
-  exit 0
+  echo "   FAIL: mikefarah yq v4 is required by the superset render checks but was not found" >&2
+  exit 1
 fi
 
 cfg="$(yq -r '.services.app.environment.SUPERSET_CONFIG_B64' "$out" | base64 -d)"
