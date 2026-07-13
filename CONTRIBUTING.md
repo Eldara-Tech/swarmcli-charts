@@ -22,6 +22,12 @@ that far.
 
 - **Go** (to build the swarmcli renderer from source — see below) and **Docker
   Compose v2** (`docker compose`, used to validate rendered stacks).
+- **mikefarah `yq` v4** — required by `make test`, which *refuses to run without
+  it*: the `requirements.yaml` consistency check and the charts' `ci/render-check.sh`
+  assertions are written in it. Install with `go install github.com/mikefarah/yq/v4@latest`,
+  `snap install yq`, `brew install yq`, or a [release binary](https://github.com/mikefarah/yq/releases).
+  Beware: the `yq` in Debian/Ubuntu apt is a **different tool** (a Python `jq`
+  wrapper) — `yq --version` must say `mikefarah`.
 - Optional: `yamllint` (`pip install yamllint`) for `make lint`.
 
 `make install-tools` builds the renderer and tells you what else is missing.

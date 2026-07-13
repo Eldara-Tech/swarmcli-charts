@@ -80,6 +80,15 @@ jobs:
       - name: Build swarmcli renderer
         run: scripts/install-swarmcli.sh "$PWD/.swarmcli-bin"
 
+      # test-charts.sh now REFUSES to run without mikefarah yq (it would otherwise
+      # skip the requirements + render checks and still report success). Ubuntu
+      # runners ship yq today, but install it explicitly so this job's coverage does
+      # not silently depend on the runner image's contents.
+      - name: Install yq (mikefarah v4)
+        run: |
+          go install github.com/mikefarah/yq/v4@v4.44.3
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
       - name: Render + validate all charts
         run: SWARMCLI="$PWD/.swarmcli-bin/swarmcli" scripts/test-charts.sh
 

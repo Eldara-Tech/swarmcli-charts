@@ -20,6 +20,8 @@
 # Usage: SWARMCLI=/path/to/swarmcli scripts/test-charts.sh [chart ...]
 #   Defaults to all charts under charts/*. Rendered output is written to
 #   .rendered/<chart>__<case>.yaml for inspection and CI artifact upload.
+#
+# Requires mikefarah yq v4 (steps 5 and 6 are written in it) — hard-checked below.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -27,6 +29,33 @@ cd "$ROOT"
 SWARMCLI="${SWARMCLI:-swarmcli}"
 RELEASE="${RELEASE:-ci}"
 OUT="$ROOT/.rendered"
+
+# mikefarah yq v4 is a HARD prerequisite, not a nice-to-have. Steps 5 and 6 above are
+# written in it, and they used to degrade to a "note: … skipping" + exit 0 when it was
+# absent — which meant `make test` printed "All charts passed." while asserting nothing
+# about requirements.yaml or any chart's render checks. A skipped check is
+# indistinguishable from a passing one, so the harness now refuses to run without it.
+# (GitHub-hosted runners ship it; charts.yml also installs it explicitly so CI never
+# depends on the runner image's contents.)
+if ! command -v yq >/dev/null 2>&1 || ! yq --version 2>/dev/null | grep -qi mikefarah; then
+  cat >&2 <<'EOF'
+ERROR: mikefarah yq v4 not found — refusing to run.
+
+  scripts/requirements-check.sh and the charts' ci/render-check.sh assertions are
+  written in it. Without yq they would silently skip, and `make test` would report
+  success while checking nothing.
+
+  Install one of:
+    go install github.com/mikefarah/yq/v4@latest        # needs Go; lands in $(go env GOPATH)/bin
+    snap install yq
+    brew install yq                                     # macOS
+    https://github.com/mikefarah/yq/releases            # static binary
+
+  NOTE: the `yq` in Debian/Ubuntu apt is a DIFFERENT tool (a Python jq wrapper) and
+  will not work — `yq --version` must mention "mikefarah".
+EOF
+  exit 1
+fi
 
 charts=("$@")
 if [ "${#charts[@]}" -eq 0 ]; then

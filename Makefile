@@ -17,6 +17,7 @@ help:
 
 ## install-tools: build the swarmcli renderer and check for helper tools
 install-tools: $(SWARMCLI_BIN)
+	@yq --version 2>/dev/null | grep -qi mikefarah || echo "ERROR: mikefarah yq v4 not found (REQUIRED by 'make test': go install github.com/mikefarah/yq/v4@latest). The apt 'yq' is a different tool and will not work."
 	@command -v yamllint        >/dev/null 2>&1 || echo "note: yamllint not found    (pip install yamllint)"
 	@command -v shellcheck      >/dev/null 2>&1 || echo "note: shellcheck not found"
 	@command -v actionlint      >/dev/null 2>&1 || echo "note: actionlint not found  (optional, used by ci.yml)"
