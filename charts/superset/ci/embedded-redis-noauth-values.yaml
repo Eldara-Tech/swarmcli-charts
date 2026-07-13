@@ -1,0 +1,15 @@
+# redis.mode: embedded + auth.enabled: false — the zero-secret Redis path the README documents.
+# The embedded Redis is reachable ONLY from this stack (its overlay is chart-managed, not a shared
+# external one), so requirepass buys little there and dropping it removes superset_redis_password
+# from the operator's pre-create list entirely. This is also the only fixture in the repo that
+# renders redis.auth.enabled: false at all, so it guards the template's no-auth branch —
+# no secret mount, no command override, and a plain (non-REDISCLI_AUTH) healthcheck.
+# Render-only: the e2e subset covers the authenticated embedded path instead.
+ingress:
+  host: superset.e2e.local
+database:
+  host: postgres
+redis:
+  mode: embedded
+  auth:
+    enabled: false

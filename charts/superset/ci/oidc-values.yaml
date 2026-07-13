@@ -1,0 +1,13 @@
+# OIDC single sign-on against the keycloak chart. Render-only in e2e (ci/e2e-render-only): it
+# needs a live identity provider. ci/render-check.sh asserts the generated config wires
+# AUTH_OAUTH and does NOT hand new SSO users the Admin role.
+oidc:
+  enabled: true
+  serverMetadataUrl: https://keycloak.example.com/realms/eldara/.well-known/openid-configuration
+  clientId: superset-client
+  rolesMapping:
+    superset_admin: [Admin]
+    superset_alpha: [Alpha]
+    superset_gamma: [Gamma]
+ingress:
+  host: superset.e2e.local

@@ -1,0 +1,54 @@
+# External resources this chart needs. Authoritative: every external network/secret the
+# rendered stack references must be listed here (swarmcli pre-flights it; CI enforces it via
+# scripts/requirements-check.sh). swarmcli renders this file with the release's values, so the
+# templated names below track any override.
+#
+# This file is plain YAML with value substitution only (no Go-template control flow like
+# if/range — those non-scalar actions would break yamllint). Entries are therefore declared
+# unconditionally: an entry a given configuration does not use (the ingress overlay in
+# published mode, the OIDC client secret while oidc.enabled is false, …) is simply never
+# referenced by the manifest, and swarmcli's pre-flight is manifest-driven, so it stays inert.
+#
+# Superset owns none of these overlays as declared here — it is a consumer of an edge proxy, a
+# database, a Redis and (optionally) a data-source network — so every one is autoCreate:false: a
+# missing one is a hard error, never created here.
+#
+# The ONE exception is redis.mode: embedded, and it needs no entry of its own. In that mode the
+# chart runs its own Redis on an overlay it MANAGES, so the rendered manifest no longer declares
+# that network external — and swarmcli's pre-flight is driven by the manifest, so the entry below
+# simply goes inert (exactly like the ingress overlay in published mode). An embedded-mode install
+# therefore requires no Redis overlay to pre-exist, without this file having to say so
+# conditionally — which it could not: see the no-if/range note above.
+networks:
+  - name: "{{ .Values.exposure.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "Shared ingress overlay the edge proxy publishes routes on (traefik & none modes); provisioned by the traefik chart/operator"
+  - name: "{{ .Values.database.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "External overlay the metadata database is reachable on; provisioned by the DB chart/operator (the database.network value)"
+  - name: "{{ .Values.redis.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "redis.mode: external ONLY — the external overlay Redis is reachable on, provisioned by the redis chart/operator (the redis.network value). Inert under redis.mode: embedded, which renders this overlay as a chart-managed one the stack creates itself"
+  - name: "{{ .Values.dataNetwork.name }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "Optional external overlay carrying the analytics data sources Superset queries; referenced only when dataNetwork.enabled"
+secrets:
+  - name: "{{ .Values.secretKey.secretName }}"
+    description: "Superset SECRET_KEY (signs cookies, encrypts stored DB credentials). Pre-create: openssl rand -base64 42 | tr -d '\n' | docker secret create superset_secret_key -"
+  - name: "{{ .Values.database.passwordSecretName }}"
+    description: "Metadata database password for database.username. Pre-create: printf 'S3cr3t' | docker secret create superset_db_password -"
+  - name: "{{ .Values.redis.auth.secretName }}"
+    description: "Redis password (redis.auth.enabled). Under redis.mode: embedded the chart mounts this SAME secret into the Redis it runs, so both sides agree by construction. Pre-create: printf 'S3cr3t' | docker secret create superset_redis_password -"
+  - name: "{{ .Values.init.admin.passwordSecretName }}"
+    description: "Bootstrap admin password (init.admin.enabled). Pre-create: printf 'S3cr3t' | docker secret create superset_admin_password -"
+  - name: "{{ .Values.oidc.clientSecretSecretName }}"
+    description: "OAuth client secret (oidc.enabled). Pre-create: printf 'S3cr3t' | docker secret create superset_oidc_client_secret -"
+configs: []

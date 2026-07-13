@@ -1,0 +1,11 @@
+# redis.mode: embedded — the chart runs its OWN Redis in the stack, on a chart-managed overlay.
+# Nothing about Redis is pre-created: no redis-net, no redis service (ci/e2e-setup.sh skips both
+# for this case). Auth stays ON (the default), so the chart mounts the same superset_redis_password
+# into the Redis it starts and into Superset — proving both sides agree by construction.
+# Everything else is the default path: PostgreSQL metadata DB, Celery worker + beat, Traefik edge.
+ingress:
+  host: superset.e2e.local
+database:
+  host: postgres
+redis:
+  mode: embedded

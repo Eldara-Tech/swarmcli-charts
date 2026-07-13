@@ -1,0 +1,310 @@
+# superset chart default values.
+#
+# Apache Superset on Docker Swarm. Superset is STATELESS here: every piece of DURABLE state
+# lives in an EXTERNAL metadata database, so this chart has no volume and no node pin. It
+# renders four services: a one-shot `init` (migrations + roles + admin), the `app` (gunicorn),
+# and — while celery.enabled — a Celery `worker` and a single `beat`. Redis (required, see
+# below) is external by default, or — with redis.mode: embedded — an EPHEMERAL fifth service
+# this chart runs itself; either way nothing durable is stored in the stack.
+#
+# The chart is DB-AGNOSTIC (database.dialect: postgresql | mysql) and works against any
+# Superset-supported metadata DB. PostgreSQL is what Superset recommends; MySQL 5.7/8 is also
+# on its supported matrix. MariaDB is NOT (see README) — the mariadb chart can back
+# dialect: mysql, but that is community territory, not endorsed by Superset.
+#
+# ALL credentials come from EXTERNAL Swarm secrets the operator pre-creates (never created by
+# the chart, never passed through values). Superset has no *_FILE convention, but its config
+# is plain Python: the chart renders a superset_config.py that reads /run/secrets/* itself, so
+# no password is ever exposed in the compose file, in `docker inspect`, or in the container's
+# environment.
+#
+# IMPORTANT — the stock image has NO database driver. apache/superset:5.0.0 is the upstream
+# "lean" build: it installs requirements/base.txt only, so psycopg2 / mysqlclient / Authlib are
+# all absent, and it runs as the non-root `superset` user. python.installDrivers (below) pip-
+# installs the right pinned driver at start; for production, bake your own image instead and
+# set python.installDrivers: false. See the README.
+
+image:
+  repository: apache/superset
+  tag: ""  # defaults to appVersion from Chart.yaml (5.0.0)
+
+# Web (gunicorn) replicas. Superset's session is cookie-based, so replicas need no sticky
+# sessions — only the same SECRET_KEY, which all services share by construction.
+replicas: 1
+
+# Python packages installed INTO THE CONTAINER at start, non-root, into /tmp/pip-packages
+# (PYTHONPATH is prepended for every service).
+#   installDrivers  true (default) => install the pinned metadata-DB driver for
+#                   database.dialect — postgresql -> psycopg2-binary, mysql -> PyMySQL — plus
+#                   Authlib when oidc.enabled. This is what makes the stock lean image usable.
+#                   Set FALSE when you run an image that already carries them (recommended for
+#                   production: it removes the PyPI dependency from every task start).
+#   extraPackages   Additional pip requirements, e.g. drivers for the ANALYTICS databases you
+#                   connect Superset to: ["clickhouse-connect==0.8.5", "pyhive[hive]==0.7.0"].
+#   indexUrl        Alternative PyPI index (a private mirror; required if the swarm has no
+#                   route to pypi.org and you keep installDrivers on).
+# No packages at all (installDrivers: false + empty extraPackages) => no pip step is rendered.
+python:
+  installDrivers: true
+  extraPackages: []
+  indexUrl: ""
+
+# EXTERNAL metadata database. ALL fields are operator-supplied; the chart creates nothing —
+# the database and the user must exist, and the user must own the schema.
+#   dialect       postgresql (default) or mysql. Selects the SQLAlchemy driver:
+#                 postgresql+psycopg2 / mysql+pymysql. PyMySQL (not mysqlclient) because it is
+#                 pure Python and therefore installable into the lean image, which has no
+#                 compiler.
+#   host/port/database/username  the convenience path — the chart assembles the URI.
+#   passwordSecretName  EXTERNAL Swarm secret holding the DB password. Pre-create:
+#                 printf 'S3cr3t' | docker secret create superset_db_password -
+#   sqlalchemyUri Optional FULL SQLAlchemy URI. When set it OVERRIDES host/port/database/
+#                 username (escape hatch for extra params — TLS, a non-default driver, …).
+#                 The literal "{password}" in it is replaced at runtime with the URL-quoted
+#                 secret, e.g.
+#                   postgresql+psycopg2://superset:{password}@pg:5432/superset?sslmode=require
+#   network       name of the EXTERNAL overlay the database is reachable on; every Superset
+#                 service attaches to it. Provisioned by the DB chart/operator (declared in
+#                 requirements.yaml with autoCreate:false — never created here).
+database:
+  dialect: postgresql
+  host: postgres
+  port: 5432
+  database: superset
+  username: superset
+  passwordSecretName: superset_db_password
+  sqlalchemyUri: ""
+  network: superset-db-net
+
+# Redis. Superset uses it for the Celery broker + result backend, for all four caches, and for
+# rate-limit storage (the image bakes SUPERSET_ENV=production, which turns rate limiting ON —
+# its default in-memory storage would be per-replica, so Redis is NOT optional: it is required
+# in every configuration, including celery.enabled: false).
+#   mode          external (default) => an operator-provided Redis on an EXTERNAL overlay. The
+#                 production path: the data survives a redeploy of this stack, and one Redis can
+#                 back several of them. Use the redis chart (see README).
+#                 embedded => THIS CHART RUNS ITS OWN redis, in this stack, on a chart-managed
+#                 overlay — nothing to pre-create, no separate release. It is EPHEMERAL (no
+#                 volume, no node pin, keeping the stack stateless), so restarting it drops the
+#                 queued Celery tasks and every cache. Superset re-populates the caches and
+#                 Celery re-queues on the next run, so this is safe — but it is for single-node,
+#                 evaluation and dev stacks; production wants mode: external.
+#   host          address on redis.network. IGNORED when mode: embedded — the in-stack service
+#                 is always reachable as `redis`.
+#   image         the Redis the chart runs when mode: embedded (ignored in external mode).
+#   auth.enabled  true => read the password from the EXTERNAL secret and authenticate. Pre-create:
+#                 printf 'S3cr3t' | docker secret create superset_redis_password -
+#                 In embedded mode the chart mounts that SAME secret into the Redis it runs and
+#                 starts it with --requirepass, so both sides agree by construction.
+#                 false => connect without auth. Only sane on a private overlay — which is
+#                 exactly what mode: embedded renders, so embedded + auth.enabled: false is the
+#                 zero-secret path (the chart still never creates a secret).
+#   network       overlay Redis is reachable on. mode: external => an EXTERNAL overlay the
+#                 operator/redis chart provisions (defaults to the redis chart's own). mode:
+#                 embedded => the name of the CHART-MANAGED overlay this stack creates; it must
+#                 not collide with database.network / exposure.network / dataNetwork.name.
+#   db            Redis logical databases. Separate numbers keep celery state, cached query
+#                 results and rate-limit counters from colliding.
+redis:
+  mode: external
+  host: redis
+  port: 6379
+  image:
+    repository: redis
+    tag: "8.2.7"  # pinned; tracks the redis chart's appVersion
+  auth:
+    enabled: true
+    secretName: superset_redis_password
+  network: redis-net
+  db:
+    broker: 0
+    results: 1
+    cache: 2
+    rateLimit: 3
+
+# SECRET_KEY, from an EXTERNAL Swarm secret. Superset 5 REFUSES TO START on the built-in
+# default key, so this is mandatory. It signs session cookies AND encrypts the database
+# credentials Superset stores in its metadata DB — rotating it is therefore not a redeploy
+# (see "Rotating SECRET_KEY" in the README). Pre-create:
+#   openssl rand -base64 42 | tr -d '\n' | docker secret create superset_secret_key -
+secretKey:
+  secretName: superset_secret_key
+
+# One-shot init service: `superset db upgrade` (alembic migrations) -> `superset init` (roles
+# and permissions) -> optional admin bootstrap -> optional examples. It runs to completion and
+# is not restarted; app/worker/beat wait for it before starting (Swarm has no depends_on).
+# Superset's migrations take no lock, so this must NOT be done by the app replicas themselves.
+#   enabled  false => you run migrations yourself (`superset db upgrade`) out of band. The
+#            other services still wait for a migrated database.
+#   admin    the first login. The password comes from an EXTERNAL secret. Pre-create:
+#              printf 'S3cr3t' | docker secret create superset_admin_password -
+#            Creating an existing admin is a no-op (the chart tolerates the error), so this is
+#            safe on every upgrade. Set enabled:false when you use OIDC exclusively.
+init:
+  enabled: true
+  loadExamples: false
+  admin:
+    enabled: true
+    username: admin
+    firstName: Superset
+    lastName: Admin
+    email: admin@example.com
+    passwordSecretName: superset_admin_password
+
+# Celery. Required for Alerts & Reports, thumbnails, cache warm-up and async SQL Lab; plain
+# dashboards and synchronous SQL Lab work without it.
+#   enabled       false => neither worker nor beat is rendered (Redis is still used for caches
+#                 and rate limiting).
+#   beat.enabled  the scheduler for periodic tasks. It is ALWAYS a single replica — two beats
+#                 double-fire every scheduled report — and rolls stop-first for the same reason.
+celery:
+  enabled: true
+  worker:
+    replicas: 1
+    concurrency: 2
+  beat:
+    enabled: true
+
+# gunicorn tuning, consumed by the image's run-server.sh. Its own defaults are 1 worker /
+# 20 threads / 60s; one worker is too few for anything real. logLevel is always set because
+# run-server.sh's own default substitution for it is malformed upstream.
+server:
+  workers: 4
+  threads: 20
+  timeout: 60
+  logLevel: info
+
+# How the web app is exposed:
+#   traefik   - Traefik deploy labels on exposure.network (default). TLS at the edge; Superset
+#               trusts X-Forwarded-* (ENABLE_PROXY_FIX) and serves plain HTTP on the backend.
+#   published - publish the port on the Swarm directly (no proxy, no TLS). Superset cannot
+#               terminate TLS itself; use this behind something else, or for a private swarm.
+#   none      - no published port and no Traefik labels. Superset sits on exposure.network so
+#               your OWN reverse proxy (joined to that overlay) can reach it; X-Forwarded-* is
+#               trusted exactly as in traefik mode.
+exposure:
+  mode: traefik
+  # Shared EXTERNAL overlay the edge proxy lives on (traefik & none modes). Unused in published
+  # mode. Provisioned by the proxy chart/operator (requirements.yaml, autoCreate:false).
+  network: traefik-public
+
+# Public-facing address. host drives the Traefik Host() router rule; tls says whether the
+# PUBLIC endpoint is HTTPS, which selects the secure-cookie settings. Superset builds its OAuth
+# redirect URIs from the forwarded headers, so this must match the address users actually type.
+ingress:
+  host: superset.example.com
+  tls: true
+
+# traefik-mode routing. The defaults match the traefik chart in this repository; adjust
+# certResolver / entrypoints / constraintLabel / redirectMiddleware to your Traefik install if
+# you run your own.
+traefik:
+  certResolver: le
+  entrypoints:
+    http: http
+    https: https
+  # Base name for this chart's Traefik router/service objects (`<name>-http` / `<name>-https`
+  # routers + the `<name>` service). Empty => the release name.
+  routerName: ""
+  # Swarm-provider constraint label. The traefik chart runs with
+  # --providers.swarm.exposedByDefault=false and a constraint on this label, so a routed
+  # service must carry it to be discovered. Match your Traefik's constraintLabel.
+  constraintLabel: traefik-public
+  # Middleware applied to the HTTP router to redirect to HTTPS (when ingress.tls). The traefik
+  # chart always defines https-redirect in the swarm provider.
+  redirectMiddleware: https-redirect
+
+# published-mode direct port publish. mode: ingress (routing mesh) or host (pinned node).
+publish:
+  port: 8088
+  mode: ingress
+
+# Container HTTP port gunicorn listens on (Traefik LB target / publish target / the port your
+# own proxy dials in none mode).
+service:
+  port: 8088
+
+# Optional EXTERNAL overlay carrying the ANALYTICS data sources Superset queries (a shared
+# services overlay with your warehouses on it). enabled:true makes every Superset service join
+# it, so a data source can be addressed by its Swarm service name. Data sources outside the
+# swarm (a managed warehouse, a host on your LAN) need nothing here.
+# One slot by design: requirements.yaml is static YAML, so a variable-length list of overlays
+# cannot be declared for swarmcli's pre-flight. Declared with autoCreate:false — provisioned by
+# whoever owns those data sources.
+dataNetwork:
+  enabled: false
+  name: superset-data-net
+
+# OIDC / OAuth single sign-on (e.g. the keycloak chart in this repository). Superset delegates
+# to Flask-AppBuilder's AUTH_OAUTH, which needs the Authlib package — python.installDrivers adds
+# it automatically, or bake it into your image.
+#   serverMetadataUrl  the provider's OpenID discovery document. For Keycloak:
+#                      https://<kc-host>/realms/<realm>/.well-known/openid-configuration
+#   clientSecretSecretName  EXTERNAL Swarm secret with the OAuth client secret. Pre-create:
+#                      printf 'S3cr3t' | docker secret create superset_oidc_client_secret -
+#   registrationRole   the Superset role a NEW SSO user is created with. Gamma (default) can
+#                      view what it is granted; Alpha can create charts; Admin can do anything,
+#                      INCLUDING reading every database connection. Do not set this to Admin
+#                      just to bootstrap yourself — grant your own account Admin once, then
+#                      leave the default. See the README.
+#   rolesMapping       provider role/group -> Superset roles, applied at every login when
+#                      rolesSyncAtLogin. e.g. {superset_admin: [Admin], superset_alpha: [Alpha]}
+oidc:
+  enabled: false
+  name: keycloak
+  icon: fa-key
+  serverMetadataUrl: ""
+  clientId: superset
+  clientSecretSecretName: superset_oidc_client_secret
+  scope: "openid email profile"
+  userRegistration: true
+  registrationRole: Gamma
+  rolesSyncAtLogin: true
+  rolesMapping: {}
+
+# Superset FEATURE_FLAGS, injected verbatim. Alerts & Reports and thumbnails additionally need
+# celery.enabled. e.g. {ALERT_REPORTS: true, THUMBNAILS: true, DASHBOARD_RBAC: true}
+featureFlags: {}
+
+# Raw Python appended VERBATIM to the generated superset_config.py — the last word, so it can
+# override anything the chart sets. This is the escape hatch for settings the chart does not
+# model (CUSTOM_SECURITY_MANAGER, TALISMAN_CONFIG, SQLLAB_* limits, mapbox keys, …). It is
+# operator-supplied code executing in the Superset process: treat it like any other config file.
+config:
+  extraPy: ""
+
+# Arbitrary extra environment variables, injected into every Superset service verbatim. Note
+# that Superset 5 has NO env-var config mechanism (the SUPERSET__* scheme does not exist in
+# this version) — real configuration goes through config.extraPy above. This is for the few
+# vars the IMAGE reads (SUPERSET_LOG_LEVEL, gunicorn knobs you want to override, …).
+extraEnv: {}
+
+# Extra scheduling constraints, applied to every service. Superset is stateless, so it is
+# unpinned by default.
+placement:
+  constraints: []
+
+# Swarm deploy resources, applied per service (each rendered only when set). Superset's web and
+# worker processes are memory-hungry; limits.memory caps a container, reservations.memory tells
+# the scheduler to place it on a node with that much free RAM (e.g. limits "2G").
+resources:
+  limits:
+    memory: ""
+  reservations:
+    memory: ""
+
+# Container healthcheck for the web app: curl -f http://localhost:<port>/health (curl ships in
+# the image — this is the image's own healthcheck). The worker gets a Celery ping instead, and
+# init/beat have none (they serve no HTTP: an inherited HTTP healthcheck would fail them
+# forever). startPeriod is generous: first boot is an image pull + the pip step + waiting for
+# the init service's migrations.
+healthcheck:
+  enabled: true
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  startPeriod: 180s
+
+# Extra deploy labels (key: value), merged after any Traefik router labels. Applied to the web
+# app only.
+labels: {}

@@ -1,0 +1,225 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": { "type": "string" },
+        "tag": { "type": "string" }
+      },
+      "required": ["repository"]
+    },
+    "replicas": { "type": "integer", "minimum": 1 },
+    "python": {
+      "type": "object",
+      "properties": {
+        "installDrivers": { "type": "boolean" },
+        "extraPackages": { "type": "array", "items": { "type": "string" } },
+        "indexUrl": { "type": "string" }
+      }
+    },
+    "database": {
+      "type": "object",
+      "properties": {
+        "dialect": { "type": "string", "enum": ["postgresql", "mysql"] },
+        "host": { "type": "string" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "database": { "type": "string" },
+        "username": { "type": "string" },
+        "passwordSecretName": { "type": "string", "minLength": 1 },
+        "sqlalchemyUri": { "type": "string" },
+        "network": { "type": "string", "minLength": 1 }
+      }
+    },
+    "redis": {
+      "type": "object",
+      "properties": {
+        "mode": { "type": "string", "enum": ["external", "embedded"] },
+        "host": { "type": "string" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": { "type": "string" },
+            "tag": { "type": "string" }
+          },
+          "required": ["repository"]
+        },
+        "auth": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "secretName": { "type": "string", "minLength": 1 }
+          }
+        },
+        "network": { "type": "string", "minLength": 1 },
+        "db": {
+          "type": "object",
+          "properties": {
+            "broker": { "type": "integer", "minimum": 0 },
+            "results": { "type": "integer", "minimum": 0 },
+            "cache": { "type": "integer", "minimum": 0 },
+            "rateLimit": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "secretKey": {
+      "type": "object",
+      "properties": {
+        "secretName": { "type": "string", "minLength": 1 }
+      }
+    },
+    "init": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "loadExamples": { "type": "boolean" },
+        "admin": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "username": { "type": "string", "minLength": 1 },
+            "firstName": { "type": "string" },
+            "lastName": { "type": "string" },
+            "email": { "type": "string" },
+            "passwordSecretName": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "celery": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "worker": {
+          "type": "object",
+          "properties": {
+            "replicas": { "type": "integer", "minimum": 1 },
+            "concurrency": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "beat": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "server": {
+      "type": "object",
+      "properties": {
+        "workers": { "type": "integer", "minimum": 1 },
+        "threads": { "type": "integer", "minimum": 1 },
+        "timeout": { "type": "integer", "minimum": 1 },
+        "logLevel": { "type": "string", "enum": ["debug", "info", "warning", "error", "critical"] }
+      }
+    },
+    "exposure": {
+      "type": "object",
+      "properties": {
+        "mode": { "type": "string", "enum": ["traefik", "published", "none"] },
+        "network": { "type": "string", "minLength": 1 }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "host": { "type": "string", "minLength": 1 },
+        "tls": { "type": "boolean" }
+      }
+    },
+    "traefik": {
+      "type": "object",
+      "properties": {
+        "certResolver": { "type": "string" },
+        "entrypoints": {
+          "type": "object",
+          "properties": {
+            "http": { "type": "string" },
+            "https": { "type": "string" }
+          }
+        },
+        "routerName": { "type": "string" },
+        "constraintLabel": { "type": "string" },
+        "redirectMiddleware": { "type": "string" }
+      }
+    },
+    "publish": {
+      "type": "object",
+      "properties": {
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "mode": { "type": "string", "enum": ["ingress", "host"] }
+      }
+    },
+    "service": {
+      "type": "object",
+      "properties": {
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "dataNetwork": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "name": { "type": "string", "minLength": 1 }
+      }
+    },
+    "oidc": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "name": { "type": "string", "minLength": 1 },
+        "icon": { "type": "string" },
+        "serverMetadataUrl": { "type": "string" },
+        "clientId": { "type": "string" },
+        "clientSecretSecretName": { "type": "string", "minLength": 1 },
+        "scope": { "type": "string" },
+        "userRegistration": { "type": "boolean" },
+        "registrationRole": { "type": "string", "enum": ["Admin", "Alpha", "Gamma", "Public"] },
+        "rolesSyncAtLogin": { "type": "boolean" },
+        "rolesMapping": { "type": "object" }
+      }
+    },
+    "featureFlags": { "type": "object" },
+    "config": {
+      "type": "object",
+      "properties": {
+        "extraPy": { "type": "string" }
+      }
+    },
+    "extraEnv": { "type": "object" },
+    "placement": {
+      "type": "object",
+      "properties": {
+        "constraints": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "limits": {
+          "type": "object",
+          "properties": { "memory": { "type": "string" } }
+        },
+        "reservations": {
+          "type": "object",
+          "properties": { "memory": { "type": "string" } }
+        }
+      }
+    },
+    "healthcheck": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "interval": { "type": "string" },
+        "timeout": { "type": "string" },
+        "retries": { "type": "integer", "minimum": 1 },
+        "startPeriod": { "type": "string" }
+      }
+    },
+    "labels": { "type": "object" }
+  }
+}

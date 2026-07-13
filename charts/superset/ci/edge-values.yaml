@@ -1,0 +1,9 @@
+# Routed through a REAL Traefik edge in e2e (scripts/e2e-edge/traefik-edge.sh). TLS off: CI has
+# no ACME, so the HTTPS router (and its redirect middleware) must not render.
+exposure:
+  mode: traefik
+ingress:
+  host: superset.e2e.local
+  tls: false
+celery:
+  enabled: false

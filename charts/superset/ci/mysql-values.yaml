@@ -1,0 +1,10 @@
+# The second dialect: mysql -> the mysql+pymysql driver (PyMySQL is pure Python, so it installs
+# into the lean image, which has no compiler). Backed by a throwaway mysql:8 in e2e.
+database:
+  dialect: mysql
+  host: mysql
+  port: 3306
+ingress:
+  host: superset.e2e.local
+celery:
+  enabled: false

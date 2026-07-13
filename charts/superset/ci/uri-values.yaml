@@ -1,0 +1,8 @@
+# database.sqlalchemyUri escape hatch: a full SQLAlchemy URI OVERRIDES host/port/database/
+# username, and "{password}" in it is replaced at runtime with the URL-quoted secret.
+database:
+  sqlalchemyUri: "postgresql+psycopg2://superset:{password}@postgres:5432/superset?connect_timeout=10"
+ingress:
+  host: superset.e2e.local
+celery:
+  enabled: false
