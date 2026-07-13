@@ -1,9 +1,11 @@
 # superset chart default values.
 #
-# Apache Superset on Docker Swarm. Superset is STATELESS here: every piece of state lives in
-# an EXTERNAL metadata database and an EXTERNAL Redis, so this chart has no volume and no node
-# pin. It renders four services: a one-shot `init` (migrations + roles + admin), the `app`
-# (gunicorn), and — while celery.enabled — a Celery `worker` and a single `beat`.
+# Apache Superset on Docker Swarm. Superset is STATELESS here: every piece of DURABLE state
+# lives in an EXTERNAL metadata database, so this chart has no volume and no node pin. It
+# renders four services: a one-shot `init` (migrations + roles + admin), the `app` (gunicorn),
+# and — while celery.enabled — a Celery `worker` and a single `beat`. Redis (required, see
+# below) is external by default, or — with redis.mode: embedded — an EPHEMERAL fifth service
+# this chart runs itself; either way nothing durable is stored in the stack.
 #
 # The chart is DB-AGNOSTIC (database.dialect: postgresql | mysql) and works against any
 # Superset-supported metadata DB. PostgreSQL is what Superset recommends; MySQL 5.7/8 is also
@@ -74,19 +76,42 @@ database:
   sqlalchemyUri: ""
   network: superset-db-net
 
-# EXTERNAL Redis. Superset uses it for the Celery broker + result backend, for all four caches,
-# and for rate-limit storage (the image bakes SUPERSET_ENV=production, which turns rate
-# limiting ON — its default in-memory storage would be per-replica, so Redis is not optional).
+# Redis. Superset uses it for the Celery broker + result backend, for all four caches, and for
+# rate-limit storage (the image bakes SUPERSET_ENV=production, which turns rate limiting ON —
+# its default in-memory storage would be per-replica, so Redis is NOT optional: it is required
+# in every configuration, including celery.enabled: false).
+#   mode          external (default) => an operator-provided Redis on an EXTERNAL overlay. The
+#                 production path: the data survives a redeploy of this stack, and one Redis can
+#                 back several of them. Use the redis chart (see README).
+#                 embedded => THIS CHART RUNS ITS OWN redis, in this stack, on a chart-managed
+#                 overlay — nothing to pre-create, no separate release. It is EPHEMERAL (no
+#                 volume, no node pin, keeping the stack stateless), so restarting it drops the
+#                 queued Celery tasks and every cache. Superset re-populates the caches and
+#                 Celery re-queues on the next run, so this is safe — but it is for single-node,
+#                 evaluation and dev stacks; production wants mode: external.
+#   host          address on redis.network. IGNORED when mode: embedded — the in-stack service
+#                 is always reachable as `redis`.
+#   image         the Redis the chart runs when mode: embedded (ignored in external mode).
 #   auth.enabled  true => read the password from the EXTERNAL secret and authenticate. Pre-create:
 #                 printf 'S3cr3t' | docker secret create superset_redis_password -
-#                 false => connect without auth (only sane on a private overlay).
-#   network       EXTERNAL overlay Redis is reachable on. Defaults to the redis chart's own
-#                 overlay; with that chart the host is its stack-qualified name (see README).
+#                 In embedded mode the chart mounts that SAME secret into the Redis it runs and
+#                 starts it with --requirepass, so both sides agree by construction.
+#                 false => connect without auth. Only sane on a private overlay — which is
+#                 exactly what mode: embedded renders, so embedded + auth.enabled: false is the
+#                 zero-secret path (the chart still never creates a secret).
+#   network       overlay Redis is reachable on. mode: external => an EXTERNAL overlay the
+#                 operator/redis chart provisions (defaults to the redis chart's own). mode:
+#                 embedded => the name of the CHART-MANAGED overlay this stack creates; it must
+#                 not collide with database.network / exposure.network / dataNetwork.name.
 #   db            Redis logical databases. Separate numbers keep celery state, cached query
 #                 results and rate-limit counters from colliding.
 redis:
+  mode: external
   host: redis
   port: 6379
+  image:
+    repository: redis
+    tag: "8.2.7"  # pinned; tracks the redis chart's appVersion
   auth:
     enabled: true
     secretName: superset_redis_password

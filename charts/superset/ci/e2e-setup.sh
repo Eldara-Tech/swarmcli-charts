@@ -4,9 +4,9 @@
 # install`, once per fixture:
 #   $1 = release name   $2 = chart directory   $3 = fixture case name
 #
-# Superset is a pure consumer: it owns no overlay, no database and no Redis, and swarmcli
-# creates none of them (every network it needs is autoCreate:false, and secrets are never
-# auto-created), so EVERY fixture needs this hook. It provisions:
+# Superset owns no overlay and no metadata database, and swarmcli creates neither (every EXTERNAL
+# network it needs is autoCreate:false, and secrets are never auto-created), so every fixture
+# needs this hook. It provisions:
 #   * the four operator secrets (dummy values);
 #   * the overlays superset-db-net / redis-net / traefik-public;
 #   * a throwaway metadata database on superset-db-net — postgres named `postgres` (major 18,
@@ -14,8 +14,21 @@
 #     fixture (matching each fixture's database.host) — with the `superset` schema + user
 #     created from the image's own env bootstrap;
 #   * a throwaway redis:7 named `redis` on redis-net, password-protected to match
-#     redis.auth.enabled;
+#     redis.auth.enabled — EXCEPT for the embedded-redis fixture (see below);
 #   * for the edge fixture, the traefik chart as a real edge (shared helper, issue #63).
+#
+# REDIS IS THE ONE BACKEND THAT IS NOT ALWAYS EXTERNAL. redis.mode: embedded makes the chart run
+# its own, so the embedded-redis fixture gets NO redis service from this hook — if embedded mode
+# rendered no Redis, or a broken one, superset would simply never converge. That is the point of
+# the fixture. The superset_redis_password secret IS still created: embedded mode keeps auth on
+# and mounts that same secret into the Redis it runs.
+#
+# The redis-net OVERLAY is still created, for the other fixtures — and it is irrelevant to this
+# one: embedded mode's overlay is chart-managed, so Swarm namespaces it as <release>_redis-net.
+# Which also means e2e canNOT prove that embedded mode stopped depending on the external
+# redis-net (teardown deliberately leaves overlays behind, so a sibling fixture's redis-net is
+# usually lying around, and a regression that rendered the overlay external would still install).
+# ci/render-check.sh asserts that directly instead — see its redis.mode block.
 #
 # The backends are EPHEMERAL and UNPINNED — they deliberately do not use the redis/mariadb
 # charts' node labels, so they never collide with those charts' own e2e runs.
@@ -84,13 +97,19 @@ else
   db_name=postgres
 fi
 
+wait_svcs=("$db_name")
 docker service rm redis >/dev/null 2>&1 || true
-docker service create --name redis --network redis-net \
-  redis:7 redis-server --requirepass "$PW" >/dev/null
+if [ "$case" = "embedded-redis" ]; then
+  echo "   redis: none — the chart runs its own (redis.mode: embedded)"
+else
+  docker service create --name redis --network redis-net \
+    redis:7 redis-server --requirepass "$PW" >/dev/null
+  wait_svcs+=(redis)
+fi
 
 # Wait for the task to run (image pull), then until the server actually accepts connections, so
 # superset-init does not burn its restart budget racing a database that is still starting.
-for svc in "$db_name" redis; do
+for svc in "${wait_svcs[@]}"; do
   for _ in $(seq 1 40); do
     state="$(docker service ps "$svc" --filter desired-state=running \
       --format '{{.CurrentState}}' 2>/dev/null | head -1)"

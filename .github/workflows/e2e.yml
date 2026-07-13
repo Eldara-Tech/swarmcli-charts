@@ -108,11 +108,14 @@ jobs:
           # superset: the cheap subset. Every fixture needs the full backend (ci/e2e-setup.sh
           # stands up postgres + redis + the secrets), and each one deploys FOUR services off a
           # ~930 MB image that then pip-installs its DB driver and waits for alembic migrations —
-          # hence the 15m budget. `default` covers init+app+worker+beat; `no-celery` the 2-service
-          # render; `edge` (#63) routes a real request through the traefik chart. Excludes
+          # hence the large budget. `default` covers init+app+worker+beat; `no-celery` the 2-service
+          # render; `edge` (#63) routes a real request through the traefik chart; `embedded-redis`
+          # gets NO redis from the setup hook and must stand up its own (redis.mode: embedded) —
+          # its celery worker only goes healthy if that Redis really carries the broker. Excludes
           # published/none/mysql/uri (covered by charts.yml; still run in local `make e2e`) and
-          # oidc/byo-image (render-only: they need a live IdP / a private registry).
-          - { chart: superset,      cases: "default no-celery edge",                                                        timeout: 15m }
+          # oidc/byo-image/embedded-redis-noauth (render-only: they need a live IdP / a private
+          # registry / are a render variant of embedded-redis).
+          - { chart: superset,      cases: "default no-celery edge embedded-redis",                                         timeout: 20m }
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 

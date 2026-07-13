@@ -3,9 +3,11 @@
 [Apache Superset](https://superset.apache.org/) — the open-source BI and data-visualization
 platform — on Docker Swarm.
 
-Superset is **stateless** in this chart: all of its state lives in an **external metadata
-database** (PostgreSQL or MySQL) and an **external Redis**, so there is no volume and no node
-pin. The stack renders up to four services:
+Superset is **stateless** in this chart: all of its durable state lives in an **external metadata
+database** (PostgreSQL or MySQL), so there is no volume and no node pin. Redis is required too —
+bring your own (`redis.mode: external`, the default and the production path) or let the chart run
+an ephemeral one for you (`redis.mode: embedded`, see [Redis](#redis)). The stack renders up to
+five services:
 
 | Service | What it is |
 |---|---|
@@ -13,6 +15,7 @@ pin. The stack renders up to four services:
 | `app` | the web app (gunicorn). Traefik-routed by default. |
 | `worker` | a Celery worker — Alerts & Reports, thumbnails, cache warm-up, async SQL Lab. |
 | `beat` | the Celery scheduler. Always exactly one replica. |
+| `redis` | only with `redis.mode: embedded` — the Redis the chart runs itself. Ephemeral. |
 
 `app`, `worker` and `beat` wait for `init` to finish migrating before they start (Swarm has no
 `depends_on`, and Superset's migrations take no lock).
@@ -30,7 +33,7 @@ pin. The stack renders up to four services:
 ```bash
 openssl rand -base64 42 | tr -d '\n' | docker secret create superset_secret_key -
 printf 'S3cr3t'  | docker secret create superset_db_password -
-printf 'S3cr3t'  | docker secret create superset_redis_password -   # redis.auth.enabled
+printf 'S3cr3t'  | docker secret create superset_redis_password -   # redis.auth.enabled (skip it with redis.mode: embedded + auth.enabled: false)
 printf 'S3cr3t'  | docker secret create superset_admin_password -   # init.admin.enabled
 printf 'S3cr3t'  | docker secret create superset_oidc_client_secret -  # oidc.enabled only
 ```
@@ -44,17 +47,23 @@ CREATE USER superset WITH PASSWORD '…';           -- the superset_db_password 
 GRANT ALL PRIVILEGES ON DATABASE superset TO superset;
 ```
 
-**3. A Redis**, reachable on `redis.network` — see [Connecting to the redis
-chart](#connecting-to-the-redis-chart). It is required in **every** configuration, including
-`celery.enabled: false` and `exposure.mode: none`: Superset uses Redis for the Celery broker and
-result backend, for all four caches, *and* for rate-limit storage — the image bakes
-`SUPERSET_ENV=production`, which turns rate limiting on, and its default in-memory store is
-per-replica. Redis is not part of exposure and no exposure mode makes it optional.
+**3. A Redis** — **only if** you keep the default `redis.mode: external`, in which case it must be
+reachable on `redis.network` (see [Redis](#redis)). With `redis.mode: embedded` the chart runs its
+own and there is nothing to provision.
 
-**4. The overlays.** Superset owns none of them, so swarmcli validates but never creates them
-(`autoCreate: false`): `traefik-public` (the edge, in `traefik`/`none` modes), `database.network`
-and `redis.network`. `swarmcli charts template <release> swarmcli-charts/superset --requirements`
-prints the resolved list for your values.
+Redis itself is required in **every** configuration, including `celery.enabled: false` and
+`exposure.mode: none`: Superset uses it for the Celery broker and result backend, for all four
+caches, *and* for rate-limit storage — the image bakes `SUPERSET_ENV=production`, which turns rate
+limiting on, and its default in-memory store is per-replica. Redis is not part of exposure and no
+exposure mode makes it optional. What `redis.mode` chooses is **who runs it**, not whether you need
+one.
+
+**4. The overlays.** swarmcli validates but never creates these (`autoCreate: false`):
+`traefik-public` (the edge, in `traefik`/`none` modes), `database.network`, and — with
+`redis.mode: external` — `redis.network`. The embedded Redis's overlay is the one network this
+chart *owns*: the stack creates it, so it does not have to pre-exist.
+`swarmcli charts template <release> swarmcli-charts/superset --requirements` prints the resolved
+list for your values.
 
 ## Installing
 
@@ -63,6 +72,15 @@ swarmcli charts install superset swarmcli-charts/superset \
   --set ingress.host=superset.example.com \
   --set database.host=postgres_postgres \
   --set redis.host=redis_redis
+```
+
+Or, with the chart running its own Redis — no Redis, no `redis-net` to provision first:
+
+```bash
+swarmcli charts install superset swarmcli-charts/superset \
+  --set ingress.host=superset.example.com \
+  --set database.host=postgres_postgres \
+  --set redis.mode=embedded
 ```
 
 First boot takes a few minutes: the image is ~930 MB, the driver is pip-installed, and `init`
@@ -146,14 +164,29 @@ the escape hatch for settings the chart does not model (`CUSTOM_SECURITY_MANAGER
 overlay is exactly how your own proxy reaches it — so the overlay must exist in `traefik` **and**
 `none` modes, and only `published` drops it. If you do not want a separate ingress overlay, point
 `exposure.network` at one you already have (the database or Redis overlay, say): the chart
-deduplicates the attachments rather than emitting the network twice.
+deduplicates the attachments rather than emitting the network twice. The one exception is the
+**embedded** Redis overlay, which the chart manages and therefore cannot share — see
+[Redis](#redis).
 
 The `traefik.*` defaults match the [traefik chart](../traefik) in this repository (entrypoints
 `http`/`https`, cert resolver `le`, constraint label `traefik-public`, redirect middleware
 `https-redirect`). Running your own Traefik? Override them to match it — see "Routing a service"
 in the [traefik chart README](../traefik/README.md).
 
-## Connecting to the redis chart
+## Redis
+
+Redis is not optional (see [Prerequisites](#prerequisites)); `redis.mode` only decides **who runs
+it**.
+
+| | `external` (default) | `embedded` |
+|---|---|---|
+| Who runs Redis | you — the [redis chart](../redis) or your own | this chart, as a fifth service |
+| Survives a redeploy | **yes** (the redis chart persists to a volume) | **no** — it is ephemeral |
+| To provision first | a Redis + its overlay | nothing |
+| Shareable with other stacks | yes | no — its overlay is stack-private |
+| Use it for | **production** | single-node, evaluation, dev |
+
+### `redis.mode: external` — connecting to the redis chart
 
 Deploy the [redis chart](../redis) with its defaults — it owns and auto-creates the `redis-net`
 overlay. On a shared overlay a service is addressed by its **stack-qualified** Swarm name, so
@@ -161,6 +194,7 @@ with `swarmcli charts install redis …` the host is `redis_redis`:
 
 ```yaml
 redis:
+  mode: external      # the default
   host: redis_redis   # <redis-release>_redis
   port: 6379
   network: redis-net  # the redis chart's overlay
@@ -171,6 +205,48 @@ redis:
 
 Both stacks must read the same password. Either create one secret under both names, or point the
 redis chart at `superset_redis_password`.
+
+### `redis.mode: embedded` — the chart runs its own
+
+The chart adds a `redis` service to the stack, on an overlay it creates itself. Nothing to
+pre-create, no second release, and `redis.host` is ignored (the in-stack service is always
+reachable as `redis`):
+
+```yaml
+redis:
+  mode: embedded
+  auth:
+    enabled: true                         # the chart mounts superset_redis_password into
+    secretName: superset_redis_password   # BOTH Superset and the Redis it starts
+```
+
+Because that overlay is stack-private — nothing outside this stack can reach the Redis — you may
+also drop the password entirely, which removes `superset_redis_password` from the secrets you
+pre-create in [Prerequisites](#prerequisites):
+
+```yaml
+redis:
+  mode: embedded
+  auth:
+    enabled: false   # zero-secret; only sane BECAUSE the overlay is stack-private
+```
+
+**It is ephemeral, by design.** No volume and no node pin — that is what keeps the whole stack
+stateless and schedulable anywhere. Restarting it drops every cache and any queued Celery task;
+Superset re-populates the caches on demand and Celery re-queues on the next schedule, so nothing
+is *lost* — but an Alert or Report that was mid-flight will not fire. If you want a Redis that
+survives, that is exactly what `mode: external` + the [redis chart](../redis) is for.
+
+Two constraints worth knowing:
+
+- `redis.network` must **not** be a name you also use for `database.network`, `exposure.network`
+  or `dataNetwork.name`. In embedded mode the chart *manages* that overlay, and sharing the name
+  would turn one of your external overlays into a chart-managed one — cutting Superset off from
+  its real database. The chart refuses to render instead of letting that happen. (In `external`
+  mode sharing is fine, and the chart deduplicates the attachments.)
+- `app`, `worker` and `beat` additionally wait for the embedded Redis before they start. `/health`
+  never touches Redis, so without that gate a redeploy against an already-migrated database could
+  come up "healthy" and then serve 500s out of rate-limit storage.
 
 ## Connecting to a database chart
 
@@ -253,10 +329,12 @@ database:
 | `database.passwordSecretName` | `superset_db_password` | EXTERNAL secret with the DB password. |
 | `database.sqlalchemyUri` | `""` | Full URI; overrides host/port/database/username. `{password}` is substituted. |
 | `database.network` | `superset-db-net` | EXTERNAL overlay the DB is on. |
-| `redis.host` / `.port` | `redis` / `6379` | Redis address on `redis.network`. |
-| `redis.auth.enabled` | `true` | Authenticate with `redis.auth.secretName`. |
-| `redis.auth.secretName` | `superset_redis_password` | EXTERNAL secret with the Redis password. |
-| `redis.network` | `redis-net` | EXTERNAL overlay Redis is on. |
+| `redis.mode` | `external` | `external` = you provide Redis; `embedded` = the chart runs an ephemeral one. See [Redis](#redis). |
+| `redis.host` / `.port` | `redis` / `6379` | Redis address on `redis.network`. `host` is ignored when `mode: embedded`. |
+| `redis.image.repository` / `.tag` | `redis` / `8.2.7` | The Redis the chart runs when `mode: embedded`. Ignored otherwise. |
+| `redis.auth.enabled` | `true` | Authenticate with `redis.auth.secretName`. `false` + `mode: embedded` is the zero-secret path. |
+| `redis.auth.secretName` | `superset_redis_password` | EXTERNAL secret with the Redis password. In `embedded` mode it is mounted into the Redis too. |
+| `redis.network` | `redis-net` | Overlay Redis is on: EXTERNAL in `external` mode, chart-managed in `embedded` mode. |
 | `redis.db.*` | `0/1/2/3` | Logical DBs: broker / results / cache / rate-limit. |
 | `secretKey.secretName` | `superset_secret_key` | EXTERNAL secret with `SECRET_KEY`. Mandatory. |
 | `init.enabled` | `true` | Render the one-shot migration/init service. |

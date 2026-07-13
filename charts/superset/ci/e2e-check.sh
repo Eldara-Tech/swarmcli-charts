@@ -47,6 +47,30 @@ for path in /health /login/; do
   echo "   ok: $path -> 200"
 done
 
+# The embedded-redis fixture additionally proves the chart's OWN Redis actually works. /login/
+# above does not: Superset renders it fine against a dead Redis (the caches miss, and rate-limit
+# storage only bites under load). The Celery worker's healthcheck is the honest probe — it is
+# `celery ... inspect ping`, which round-trips through the broker, so a healthy worker means the
+# embedded Redis is up, authenticated with the mounted secret, and carrying Celery traffic.
+if [ "$case" = "embedded-redis" ]; then
+  ok=0
+  for _ in $(seq 1 60); do
+    cid="$(docker ps -q -f "label=com.docker.swarm.service.name=${release}_worker" | head -1)"
+    if [ -n "$cid" ] &&
+       [ "$(docker inspect -f '{{ .State.Health.Status }}' "$cid" 2>/dev/null)" = "healthy" ]; then
+      ok=1; break
+    fi
+    sleep 5
+  done
+  if [ "$ok" -ne 1 ]; then
+    echo "   FAIL: the celery worker never went healthy — the embedded Redis is not carrying broker traffic"
+    docker service logs --tail 60 "${release}_redis"  2>&1 | sed 's/^/      redis:  /' || true
+    docker service logs --tail 60 "${release}_worker" 2>&1 | sed 's/^/      worker: /' || true
+    exit 1
+  fi
+  echo "   ok: celery worker healthy -> the embedded Redis is serving the broker"
+fi
+
 # The edge fixture additionally proves a real request routes THROUGH Traefik to Superset —
 # the deploy labels being present in the manifest is not the same as the swarm provider
 # actually discovering the service (issue #63).

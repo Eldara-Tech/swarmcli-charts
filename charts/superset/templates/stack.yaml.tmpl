@@ -1,6 +1,7 @@
-{{- /* Superset is STATELESS here: the metadata DB and Redis are external, so there is no
-       volume and no node pin. Four services: a one-shot init (migrations/roles/admin), the
-       gunicorn app, and — while celery.enabled — a Celery worker and a single beat. */}}
+{{- /* Superset is STATELESS here: the metadata DB is external and the embedded Redis is
+       EPHEMERAL, so there is no volume and no node pin. Four services: a one-shot init
+       (migrations/roles/admin), the gunicorn app, and — while celery.enabled — a Celery worker
+       and a single beat; redis.mode: embedded adds a fifth, the Redis this chart runs itself. */}}
 {{- $mode := .Values.exposure.mode }}
 {{- $proxied := or (eq $mode "traefik") (eq $mode "none") }}
 {{- $publicTLS := and $proxied .Values.ingress.tls }}
@@ -13,6 +14,13 @@
        at a mysql+mysqldb:// URI instead. */}}
 {{- $driver := ternary "mysql+pymysql" "postgresql+psycopg2" $mysql }}
 
+{{- /* embedded: the chart runs its OWN redis in this stack (see values.yaml). The service is
+       then always reachable as `redis`, so redis.host is ignored — honouring it would let a
+       stale value silently point Superset at some OTHER Redis while a perfectly good one runs
+       right here. */}}
+{{- $embeddedRedis := eq .Values.redis.mode "embedded" }}
+{{- $redisHost := ternary "redis" .Values.redis.host $embeddedRedis }}
+
 {{- /* Every service sits on the DB + Redis overlays (and the optional data-source overlay);
        the app additionally joins the ingress overlay in proxied modes. uniq: an operator may
        legitimately point several of these at ONE overlay, and a duplicate entry is invalid. */}}
@@ -22,6 +30,23 @@
 {{- end }}
 {{- $nets = $nets | uniq }}
 {{- $appNets := ternary (append $nets .Values.exposure.network | uniq) $nets $proxied }}
+
+{{- /* …but that dedup is exactly why embedded mode cannot share its overlay: the embedded
+       Redis overlay is CHART-MANAGED (not external), and `uniq` would collapse a shared name
+       into a single entry that then renders the operator's EXTERNAL db/ingress overlay as a
+       chart-managed one — quietly cutting Superset off from its real database. Fail loudly. */}}
+{{- if $embeddedRedis }}
+{{-   $others := list .Values.database.network }}
+{{-   if $proxied }}
+{{-     $others = append $others .Values.exposure.network }}
+{{-   end }}
+{{-   if .Values.dataNetwork.enabled }}
+{{-     $others = append $others .Values.dataNetwork.name }}
+{{-   end }}
+{{-   if has .Values.redis.network $others }}
+{{-     fail (printf "redis.network (%q) is shared with database.network / exposure.network / dataNetwork.name, but redis.mode: embedded renders it as a CHART-MANAGED overlay — give the embedded Redis its own network name (it is created by this stack, so it need not pre-exist)." .Values.redis.network) }}
+{{-   end }}
+{{- end }}
 
 {{- /* ---------------------------------------------------------------------------------------
        superset_config.py. Superset 5 has NO env-var configuration mechanism, and a chart cannot
@@ -62,10 +87,10 @@
 {{- $py = append $py "# --- redis: celery broker/results, caches, rate-limit storage ---" }}
 {{- if .Values.redis.auth.enabled }}
 {{-   $py = append $py (printf "_R_PW = _secret(%q)" .Values.redis.auth.secretName) }}
-{{-   $py = append $py (printf "_R = 'redis://:' + quote(_R_PW, safe='') + %q" (printf "@%s:%v" .Values.redis.host .Values.redis.port)) }}
+{{-   $py = append $py (printf "_R = 'redis://:' + quote(_R_PW, safe='') + %q" (printf "@%s:%v" $redisHost .Values.redis.port)) }}
 {{- else }}
 {{-   $py = append $py "_R_PW = None" }}
-{{-   $py = append $py (printf "_R = %q" (printf "redis://%s:%v" .Values.redis.host .Values.redis.port)) }}
+{{-   $py = append $py (printf "_R = %q" (printf "redis://%s:%v" $redisHost .Values.redis.port)) }}
 {{- end }}
 {{- $py = append $py "" }}
 {{- $py = append $py "def _cache(db, prefix):" }}
@@ -82,7 +107,7 @@
        that would need a volume shared by the app and the workers, which a Swarm named volume
        (node-local) cannot be. */}}
 {{- $py = append $py (printf "RESULTS_BACKEND = RedisCache(host=%q, port=%v, password=_R_PW, db=%v, key_prefix='superset_results_')"
-      .Values.redis.host .Values.redis.port .Values.redis.db.results) }}
+      $redisHost .Values.redis.port .Values.redis.db.results) }}
 {{- /* The image bakes SUPERSET_ENV=production, which turns rate limiting ON with flask-limiter's
        in-memory storage — per-replica, and lost on restart. Point it at Redis. */}}
 {{- $py = append $py (printf "RATELIMIT_STORAGE_URI = _R + '/%v'" .Values.redis.db.rateLimit) }}
@@ -181,6 +206,15 @@
        A stack whose init never succeeds then fails LOUDLY (the healthcheck's start_period
        expires and the task is restarted) instead of quietly serving 500s. */}}
 {{- $waitInit := printf "until python -c \"%s('select 1 from alembic_version')\" >/dev/null 2>&1; do echo 'waiting for superset-init to migrate the database...'; sleep 5; done" $probe }}
+{{- /* The embedded Redis starts CONCURRENTLY with the services that use it (Swarm has no
+       depends_on). The database gate above usually hides that — but not on a redeploy against an
+       ALREADY-migrated database, where it releases at once. /health does not touch Redis, so the
+       app would come up "healthy" and then 500 on rate-limit storage. Gate on Redis too.
+       Like $probe, this runs through the generated config, so it reuses the config's URL AND its
+       password (the config reads /run/secrets itself) without ever putting either in the
+       environment — and it therefore proves auth works, not merely that the port is open.
+       `redis` is importable by construction: the config already imports cachelib.redis. */}}
+{{- $waitRedis := "until python -c \"import sys; sys.path.insert(0, '/tmp'); import superset_config as c; import redis; redis.from_url(c.RATELIMIT_STORAGE_URI).ping()\" >/dev/null 2>&1; do echo 'waiting for redis...'; sleep 2; done" }}
 
 {{- /* Shared environment. Superset 5 reads NO configuration from env (the SUPERSET__* scheme
        does not exist in it) — these are the few vars the image itself reads, plus the config
@@ -311,6 +345,9 @@ services:
     command:
       - |-
 {{ join "\n" $pre | indent 8 }}
+{{- if $embeddedRedis }}
+        {{ $waitRedis }}
+{{- end }}
         {{ $waitInit }}
         exec /usr/bin/run-server.sh
 
@@ -398,6 +435,9 @@ services:
     command:
       - |-
 {{ join "\n" $pre | indent 8 }}
+{{- if $embeddedRedis }}
+        {{ $waitRedis }}
+{{- end }}
         {{ $waitInit }}
         exec /app/docker/docker-bootstrap.sh worker
 
@@ -465,6 +505,9 @@ services:
     command:
       - |-
 {{ join "\n" $pre | indent 8 }}
+{{- if $embeddedRedis }}
+        {{ $waitRedis }}
+{{- end }}
         {{ $waitInit }}
         exec /app/docker/docker-bootstrap.sh beat
 
@@ -499,6 +542,63 @@ services:
 {{- end }}
 {{- end }}
 
+{{- if $embeddedRedis }}
+
+  {{- /* The Redis this chart runs itself (redis.mode: embedded). Deliberately a stripped-down
+         port of the redis chart: no persistence, no exposure, no maxmemory/extraConfig, and NO
+         data-node pin — it is EPHEMERAL, which is what keeps this stack stateless (no volume, no
+         `swarmcli-charts/allow` annotation) and lets it schedule anywhere. Operators who need a
+         Redis that survives a redeploy run the redis chart and use redis.mode: external.
+         It is reachable ONLY from this stack: redis.network is chart-managed (see below). */}}
+  redis:
+    image: {{ .Values.redis.image.repository }}:{{ .Values.redis.image.tag }}
+
+    networks:
+      - {{ .Values.redis.network }}
+
+{{- if .Values.redis.auth.enabled }}
+    secrets:
+      - {{ .Values.redis.auth.secretName }}
+
+    {{- /* The image has no requirepass-from-file convention, so read the mounted secret in the
+           command (`$$` escapes the compose `$`): the password never lands in the compose file,
+           in `docker inspect` or in the environment. Re-invoking docker-entrypoint.sh keeps the
+           image's gosu drop to uid 999. The guard turns an EMPTY secret — which would otherwise
+           start an unauthenticated Redis that Superset then fails to talk to — into a loud
+           startup failure. Same construction as charts/redis. */}}
+    command:
+      - sh
+      - -c
+      - "test -s /run/secrets/{{ .Values.redis.auth.secretName }} || { echo '{{ .Values.redis.auth.secretName }} secret is empty' >&2; exit 1; }; exec docker-entrypoint.sh redis-server --requirepass \"$$(cat /run/secrets/{{ .Values.redis.auth.secretName }})\""
+{{- end }}
+
+    {{- /* REDISCLI_AUTH, not --pass: the password must not appear in the container's argv. */}}
+    healthcheck:
+      test:
+        - CMD-SHELL
+{{- if .Values.redis.auth.enabled }}
+        - REDISCLI_AUTH="$$(cat /run/secrets/{{ .Values.redis.auth.secretName }})" redis-cli ping | grep -q PONG
+{{- else }}
+        - redis-cli ping | grep -q PONG
+{{- end }}
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+    deploy:
+      replicas: 1
+{{- if .Values.placement.constraints }}
+      placement:
+        constraints:
+{{- range .Values.placement.constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- end }}
+
 secrets:
   {{ $secretName }}:
     external: true
@@ -517,8 +617,19 @@ secrets:
     external: true
 {{- end }}
 
+{{- /* Every overlay is EXTERNAL (operator/other-chart provisioned; requirements.yaml declares
+       them autoCreate:false) — except the embedded Redis overlay, which THIS stack owns and
+       creates. Rendering it chart-managed is also what makes its requirements.yaml entry go
+       inert: swarmcli's pre-flight is driven by the networks the manifest declares external, so
+       an embedded-mode install demands nothing that does not already exist. The guard at the top
+       of this file is what guarantees this branch can only ever match the Redis overlay. */}}
 networks:
 {{- range $appNets }}
   {{ . }}:
+{{- if and $embeddedRedis (eq . $.Values.redis.network) }}
+    driver: overlay
+    attachable: true
+{{- else }}
     external: true
+{{- end }}
 {{- end }}

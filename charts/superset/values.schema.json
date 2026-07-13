@@ -35,8 +35,17 @@
     "redis": {
       "type": "object",
       "properties": {
+        "mode": { "type": "string", "enum": ["external", "embedded"] },
         "host": { "type": "string" },
         "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": { "type": "string" },
+            "tag": { "type": "string" }
+          },
+          "required": ["repository"]
+        },
         "auth": {
           "type": "object",
           "properties": {

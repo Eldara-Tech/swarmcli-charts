@@ -16,7 +16,9 @@
 #   3. the Celery broker is not the SQLite default (which silently breaks workers);
 #   4. rate limiting is backed by Redis, not flask-limiter's per-replica in-memory store;
 #   5. proxied modes trust X-Forwarded-* (without it, OAuth/CSRF redirects are built as http://);
-#   6. SSO never hands a new user the Admin role (the footgun this chart deliberately avoids).
+#   6. SSO never hands a new user the Admin role (the footgun this chart deliberately avoids);
+#   7. redis.mode renders the Redis it promises — embedded owns its overlay and pre-creates
+#      nothing; external runs no Redis of its own — and either way the password comes from a file.
 set -euo pipefail
 
 out="$1"
@@ -65,8 +67,44 @@ if [ "$case" = "oidc" ]; then
   grep -q "'client_secret': _secret(" <<<"$cfg" || note "the OAuth client secret is not read from a mounted secret"
 fi
 
-# The pip step exists exactly when the chart is expected to install a driver.
+# 7. redis.mode. Every fixture leaves redis.network at its default, so the overlay is redis-net.
+#    The two modes are mirror images and each must not leak into the other: embedded OWNS its
+#    overlay (rendering it external would re-introduce the very pre-flight requirement embedded
+#    mode exists to remove), external must render no Redis service at all.
 pkgs="$(yq -r '.services.app.command[0]' "$out")"
+case "$case" in
+  embedded-redis|embedded-redis-noauth)
+    [ "$(yq -r '.services | has("redis")' "$out")" = "true" ] \
+      || note "redis.mode: embedded rendered no redis service"
+    [ "$(yq -r '.networks."redis-net".external // false' "$out")" = "false" ] \
+      || note "the embedded Redis overlay is rendered external — embedded mode must own it, or the install still demands a redis-net that nothing creates"
+    grep -q 'host="redis"' <<<"$cfg" \
+      || note "embedded mode does not dial the in-stack redis service (a stale redis.host leaked into the config?)"
+    grep -q "waiting for redis" <<<"$pkgs" \
+      || note "app does not gate on the embedded Redis — it can serve 500s from rate-limit storage before Redis is up"
+    ;;
+  *)
+    [ "$(yq -r '.services | has("redis")' "$out")" = "false" ] \
+      || note "redis.mode: external rendered a redis service (the embedded block leaked)"
+    [ "$(yq -r '.networks."redis-net".external // false' "$out")" = "true" ] \
+      || note "external mode must consume an EXTERNAL redis overlay"
+    ;;
+esac
+
+# The Redis password is a mounted secret on BOTH sides — never a value in the config or the
+# manifest. (auth.enabled: false is the one documented exception: an embedded Redis on a
+# stack-private overlay, where there is no secret at all.)
+if [ "$case" = "embedded-redis-noauth" ]; then
+  grep -q "_R_PW = None" <<<"$cfg" || note "auth.enabled: false still renders a Redis password"
+else
+  grep -q "_R_PW = _secret(" <<<"$cfg" || note "the Redis password is not read from a mounted secret"
+fi
+if [ "$case" = "embedded-redis" ]; then
+  yq -r '.services.redis.command[]' "$out" | grep -q 'cat /run/secrets/' \
+    || note "the embedded Redis does not take its requirepass from the mounted secret"
+fi
+
+# The pip step exists exactly when the chart is expected to install a driver.
 if [ "$case" = "byo-image" ]; then
   grep -q "pip install" <<<"$pkgs" && note "byo-image renders a pip step (python.installDrivers is false)"
 else
