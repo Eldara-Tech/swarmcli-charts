@@ -37,8 +37,11 @@ render: $(SWARMCLI_BIN)
 	@"$(SWARMCLI_BIN)" charts template $(RELEASE) ./charts/$(CHART) \
 		$(if $(VALUES),-f $(VALUES),-f charts/$(CHART)/ci/default-values.yaml)
 
-## test: render + validate every chart against its ci/ fixtures (== CI). CHART= limits to one
-test: $(SWARMCLI_BIN)
+## test: lint + render + validate every chart against its ci/ fixtures (== CI). CHART= limits to one
+# `lint` is a dependency, not an optional extra: charts.yml runs BOTH lint.sh and
+# test-charts.sh, so without it `make test` would pass locally on a chart that CI
+# then rejects — which is exactly what "== CI" promises it will not do.
+test: lint $(SWARMCLI_BIN)
 	@SWARMCLI="$(SWARMCLI_BIN)" RELEASE="$(RELEASE)" scripts/test-charts.sh $(CHART)
 
 ## e2e: deploy charts to a live local swarm, assert convergence, tear down (CHART= limits to one)

@@ -40,10 +40,15 @@ for dir in charts/*/; do
     fail=1
   fi
 
-  # A version echoed into a comment drifts the moment Renovate bumps appVersion,
-  # because Renovate edits Chart.yaml and never touches these.
+  # A version echoed into prose drifts the moment Renovate bumps appVersion, because
+  # Renovate edits Chart.yaml and never touches values.yaml comments or the README.
+  # Say "defaults to appVersion" and let the reader look it up.
   if grep -qE 'defaults to appVersion from Chart\.yaml \(' "$dir/values.yaml" 2>/dev/null; then
     echo "ERROR: $chart values.yaml repeats the appVersion in a comment; it will drift — drop the parenthetical"
+    fail=1
+  fi
+  if grep -qEi 'defaults to .?appVersion.? \(' "$dir/README.md" 2>/dev/null; then
+    echo "ERROR: $chart README.md repeats the appVersion in the values table; it will drift — say 'defaults to appVersion in Chart.yaml'"
     fail=1
   fi
 
@@ -51,6 +56,10 @@ for dir in charts/*/; do
   # a commit. Renovate can only keep a concrete tag fresh.
   if grep -nE '^[^#]*: *[^ #]+:latest *(#.*)?$' "$dir/values.yaml" 2>/dev/null; then
     echo "ERROR: $chart values.yaml references a :latest image (see above); pin a concrete tag"
+    fail=1
+  fi
+  if grep -qE '`[^`]+:latest`' "$dir/README.md" 2>/dev/null; then
+    echo "ERROR: $chart README.md documents a :latest default that values.yaml cannot have"
     fail=1
   fi
 done

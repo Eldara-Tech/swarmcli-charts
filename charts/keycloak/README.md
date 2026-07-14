@@ -133,7 +133,7 @@ request.
 | Key | Default | Description |
 |-----|---------|-------------|
 | `image.repository` | `quay.io/keycloak/keycloak` | Image repository |
-| `image.tag` | `""` | Tag — defaults to appVersion (`26.6.3`) |
+| `image.tag` | `""` | Tag — defaults to `appVersion` in Chart.yaml |
 | `replicas` | `1` | Replica count (raise only with cache clustering set up) |
 | `mode` | `start` | kc.sh mode: `start` (production) or `start-dev` (development) |
 | `database.vendor` | `mariadb` | `KC_DB` — `mariadb`/`mysql`/`postgres`/`mssql`/`oracle`/`tidb` (`tidb` is accepted by Keycloak but not on its tested "Supported Configurations" list — treat as experimental) |

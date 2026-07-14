@@ -110,7 +110,7 @@ default) renders no sidecar.
 | Key | Default | Description |
 |-----|---------|-------------|
 | `image.repository` | `ollama/ollama` | Container image |
-| `image.tag` | `""` | Image tag — defaults to `appVersion` (`0.30.11`) |
+| `image.tag` | `""` | Image tag — defaults to `appVersion` in Chart.yaml |
 | `replicas` | `1` | Pinned to 1 (stateful, node-local volume) |
 | `persistence.enabled` | `true` | Persist models to a named volume |
 | `persistence.volumeName` | `ollama-data` | Named volume mounted at `/root/.ollama` |
@@ -136,7 +136,7 @@ default) renders no sidecar.
 | `gpu.count` | `1` | Number of GPUs to reserve |
 | `offline` | `true` | Set `OLLAMA_NO_CLOUD` to block cloud/remote models (fully offline) |
 | `models` | `[]` | Models to preload on deploy via a one-shot init sidecar |
-| `modelInitImage` | `curlimages/curl:latest` | Image for the preload sidecar (needs curl) |
+| `modelInitImage` | pinned in values.yaml | Image for the preload sidecar (needs curl). Kept fresh by Renovate. |
 | `extraEnv` | `{}` | Extra env vars, e.g. `OLLAMA_KEEP_ALIVE` (`OLLAMA_HOST` is bound to `0.0.0.0:<service.port>` automatically; override here) |
 | `healthcheck.enabled` | `true` | `ollama list` liveness probe |
 | `labels` | `{}` | Extra deploy labels |

@@ -61,7 +61,7 @@ or keep exposure disabled and stay on the overlay.
 | Key | Default | Description |
 |-----|---------|-------------|
 | `image.repository` | `postgres` | Image repository |
-| `image.tag` | `""` | Tag — defaults to appVersion (`18`). Drives the derived `PGDATA` (see Operating notes) |
+| `image.tag` | `""` | Tag — defaults to `appVersion` in Chart.yaml. Drives the derived `PGDATA` (see Operating notes) |
 | `replicas` | `1` | Replica count (must stay 1 — node-local volume) |
 | `auth.username` | `postgres` | `POSTGRES_USER` — the **superuser** initdb creates |
 | `auth.database` | `postgres` | `POSTGRES_DB` — the database created for it |

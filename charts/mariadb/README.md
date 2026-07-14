@@ -53,7 +53,7 @@ to trusted sources — or keep exposure disabled and stay on the overlay.
 | Key | Default | Description |
 |-----|---------|-------------|
 | `image.repository` | `mariadb` | Image repository |
-| `image.tag` | `""` | Tag — defaults to appVersion (`11.8`) |
+| `image.tag` | `""` | Tag — defaults to `appVersion` in Chart.yaml |
 | `replicas` | `1` | Replica count (must stay 1 — node-local volume) |
 | `auth.rootSecretName` | `mariadb_root_password` | External Swarm secret holding the root password |
 | `auth.appUser.enabled` | `true` | Create a non-root app user + database |

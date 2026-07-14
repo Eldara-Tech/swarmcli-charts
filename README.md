@@ -94,8 +94,19 @@ chart repository you add, not just this one.
 
 ## Releasing a New Chart Version
 
-The **git tag is the source of truth** for the version. To release, push a tag of
-the form `<chart>/v<version>`:
+The **git tag is the source of truth** for the version. The easiest way to cut one
+is the workflow dispatch, which derives the next version from the newest existing
+tag and creates the tag itself:
+
+```bash
+gh workflow run release.yml -f chart=whoami -f bump=patch   # or minor / major
+```
+
+Prefer it over a hand-pushed tag when releasing **several** charts at once: GitHub
+silently drops tag-push events beyond 3 tags per `git push`, so some charts would be
+tagged and never published.
+
+Pushing a tag by hand also works:
 
 ```bash
 git tag whoami/v0.2.0
