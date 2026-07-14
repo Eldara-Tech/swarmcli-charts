@@ -1,6 +1,7 @@
 name: mariadb
 description: MariaDB relational database for Docker Swarm — persistent, secret-authenticated, single-node pinned
 version: 0.1.0
+# renovate: image=mariadb
 appVersion: "11.8"
 # host-mount is acknowledged because persistence.volumePath can bind-mount the data
 # dir from an operator-chosen host path. The default (named volume) render mounts no

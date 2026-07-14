@@ -8,7 +8,7 @@
 
 image:
   repository: postgres
-  tag: ""  # defaults to appVersion from Chart.yaml (18)
+  tag: ""  # defaults to appVersion from Chart.yaml
 
 # Stateful + node-local volume => exactly one replica. Do not raise; run a second named release
 # (or streaming replication, out of scope) for HA.

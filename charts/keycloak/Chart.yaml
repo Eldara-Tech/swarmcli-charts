@@ -1,6 +1,7 @@
 name: keycloak
 description: Keycloak identity & access management for Docker Swarm — DB-agnostic, secret-authenticated, Traefik-routed
 version: 0.1.0
+# renovate: image=quay.io/keycloak/keycloak
 appVersion: "26.6.3"
 # No swarmcli-charts/allow annotation: no docker.sock, no host bind mount (state
 # lives in an external database, no volume), unprivileged. security-scan.sh finds

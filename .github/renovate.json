@@ -1,0 +1,97 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    ":dependencyDashboard",
+    ":rebaseStalePrs"
+  ],
+  "timezone": "Europe/Zurich",
+  "schedule": ["before 6am on monday"],
+  "prConcurrentLimit": 5,
+  "prHourlyLimit": 2,
+  "minimumReleaseAge": "5 days",
+  "internalChecksFilter": "strict",
+  "labels": ["dependencies"],
+  "semanticCommitType": "chore",
+  "semanticCommitScope": "deps",
+
+  "enabledManagers": ["custom.regex", "helm-values", "github-actions"],
+
+  "ignorePaths": ["charts/*/ci/**", ".rendered/**", ".localrepo/**"],
+
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Chart.yaml appVersion is the real image pin: every chart ships image.tag: '' and the template falls back to .Chart.AppVersion. helm-values covers the two values.yaml that do pin a tag (superset's embedded redis, ollama's model-preload init image); charts with tag: '' extract a dep with no currentValue, which is non-actionable, so the default helm-values pattern needs no narrowing.",
+      "managerFilePatterns": ["/(^|/)Chart\\.yaml$/"],
+      "matchStrings": [
+        "#\\s*renovate:\\s*image=(?<depName>\\S+)[^\\S\\n]*\\n\\s*appVersion:\\s*[\"']?(?<currentValue>[^\"'\\s]+)[\"']?"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker",
+      "depTypeTemplate": "appVersion"
+    }
+  ],
+
+  "packageRules": [
+    {
+      "description": "Group GitHub Actions bumps into one PR, keeping the pinned <sha> # <tag> form every workflow already uses. Replaces the dependabot group.",
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions",
+      "pinDigests": true
+    },
+
+    {
+      "description": "Coarse-tag databases. The tag IS the version series (postgres:18, mariadb:11.8) — the registry re-publishes it with patches, so the only update Renovate can see is a series change, and that is a DATA MIGRATION: postgres derives /var/lib/postgresql/<major>/docker from appVersion, and an existing volume initialised by the old server will not be read by the new one. Dashboard approval keeps it visible without ever auto-opening a PR.",
+      "matchDepNames": ["postgres", "mariadb"],
+      "dependencyDashboardApproval": true,
+      "labels": ["dependencies", "data-migration"],
+      "prBodyNotes": [
+        "**This is a database series upgrade, not a version bump.** Volumes initialised by the old server will not be read by the new one without an explicit dump/restore (or `pg_upgrade` / `mariadb-upgrade`). Before merging: bump the chart MINOR (not patch), document the migration in the chart README, and check `ci/legacy-major-values.yaml` still pins an older series so the previous layout stays covered."
+      ]
+    },
+
+    {
+      "description": "Services that own a schema or a static config: minor/patch flow as normal PRs, majors are breaking. Keycloak migrates the external DB schema; superset's init service runs `superset db upgrade` irreversibly; traefik v3->v4 breaks static config; redis RDB is forward-only.",
+      "matchDepNames": [
+        "quay.io/keycloak/keycloak",
+        "apache/superset",
+        "traefik",
+        "redis"
+      ],
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true,
+      "labels": ["dependencies", "major-upgrade"]
+    },
+
+    {
+      "description": "openclaw ships calver (2026.6.11), so docker versioning reports a new YEAR as a major. That is not a breaking-change signal — exempt it from the major gate above and let CI + e2e + minimumReleaseAge carry the risk.",
+      "matchDepNames": ["ghcr.io/openclaw/openclaw"],
+      "labels": ["dependencies", "calver"]
+    },
+
+    {
+      "description": "Per-chart semantic commit scope, matching the repo's feat(redis):/fix(traefik): convention.",
+      "matchFileNames": ["charts/keycloak/**"],
+      "semanticCommitScope": "keycloak"
+    },
+    { "matchFileNames": ["charts/mariadb/**"], "semanticCommitScope": "mariadb" },
+    { "matchFileNames": ["charts/ollama/**"], "semanticCommitScope": "ollama" },
+    { "matchFileNames": ["charts/openclaw/**"], "semanticCommitScope": "openclaw" },
+    { "matchFileNames": ["charts/postgres/**"], "semanticCommitScope": "postgres" },
+    { "matchFileNames": ["charts/redis/**"], "semanticCommitScope": "redis" },
+    { "matchFileNames": ["charts/superset/**"], "semanticCommitScope": "superset" },
+    { "matchFileNames": ["charts/swarm-cronjob/**"], "semanticCommitScope": "swarm-cronjob" },
+    { "matchFileNames": ["charts/traefik/**"], "semanticCommitScope": "traefik" },
+    { "matchFileNames": ["charts/whoami/**"], "semanticCommitScope": "whoami" },
+
+    {
+      "description": "Merging a pin does not publish a chart — the git tag is the source of truth for the chart version.",
+      "matchFileNames": ["charts/**"],
+      "prBodyNotes": [
+        "Merging this changes the chart's **default image** only. It does **not** publish a chart. Release it after merge by pushing a chart tag:\n```bash\ngit tag <chart>/v<next> && git push origin <chart>/v<next>\n```"
+      ]
+    }
+  ]
+}

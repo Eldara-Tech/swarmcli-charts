@@ -17,7 +17,7 @@
 
 image:
   repository: ollama/ollama
-  tag: ""  # defaults to appVersion from Chart.yaml (0.30.11)
+  tag: ""  # defaults to appVersion from Chart.yaml
 
 # Stateful + node-local model volume => exactly one replica. Do not raise.
 replicas: 1
@@ -124,7 +124,7 @@ offline: true
 # is an Ollama model ref, e.g. ["llama3.2:3b", "qwen2.5-coder:7b"]. Empty => no init service.
 models: []
 # Image for that one-shot preload service (needs curl). Only used when models is non-empty.
-modelInitImage: curlimages/curl:latest
+modelInitImage: curlimages/curl:8.21.0
 
 # Arbitrary extra environment variables, injected verbatim. Ollama tunables go here, e.g.
 # OLLAMA_KEEP_ALIVE, OLLAMA_NUM_PARALLEL, OLLAMA_MAX_LOADED_MODELS, OLLAMA_FLASH_ATTENTION.

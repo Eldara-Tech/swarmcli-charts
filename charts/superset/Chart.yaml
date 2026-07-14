@@ -3,6 +3,7 @@ description: Apache Superset BI/visualization platform on Docker Swarm — exter
 # version is a placeholder — the git tag (superset/vX.Y.Z) sets the real version at release.
 version: 0.1.0
 # appVersion is the default image tag for apache/superset.
+# renovate: image=apache/superset
 appVersion: "5.0.0"
 maintainers:
   - name: Eldara

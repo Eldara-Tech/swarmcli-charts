@@ -10,7 +10,7 @@
 
 image:
   repository: mariadb
-  tag: ""  # defaults to appVersion from Chart.yaml (11.8)
+  tag: ""  # defaults to appVersion from Chart.yaml
 
 # Stateful + node-local volume => exactly one replica. Do not raise; run a second
 # named release (or Galera, out of scope) for HA.

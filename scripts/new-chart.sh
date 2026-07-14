@@ -31,7 +31,8 @@ cat >"$DIR/Chart.yaml" <<EOF
 name: $NAME
 description: TODO one-line description of $NAME
 version: 0.1.0
-appVersion: "latest"
+# renovate: image=nginx
+appVersion: "1.31.2"
 maintainers:
   - name: Eldara
     url: https://github.com/Eldara-Tech

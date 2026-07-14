@@ -26,7 +26,7 @@
 
 image:
   repository: apache/superset
-  tag: ""  # defaults to appVersion from Chart.yaml (5.0.0)
+  tag: ""  # defaults to appVersion from Chart.yaml
 
 # Web (gunicorn) replicas. Superset's session is cookie-based, so replicas need no sticky
 # sessions — only the same SECRET_KEY, which all services share by construction.
