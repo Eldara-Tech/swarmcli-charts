@@ -87,10 +87,10 @@
     { "matchFileNames": ["charts/whoami/**"], "semanticCommitScope": "whoami" },
 
     {
-      "description": "Merging a pin does not publish a chart — the git tag is the source of truth for the chart version.",
+      "description": "Merging a pin does not publish a chart — the chart version is a human judgement (an image patch can still warrant a chart minor), so releasing stays an explicit step.",
       "matchFileNames": ["charts/**"],
       "prBodyNotes": [
-        "Merging this changes the chart's **default image** only. It does **not** publish a chart. Release it after merge by pushing a chart tag:\n```bash\ngit tag <chart>/v<next> && git push origin <chart>/v<next>\n```"
+        "Merging this changes the chart's **default image** only. It does **not** publish a chart. Release it after merge:\n```bash\ngh workflow run release.yml -f chart=<chart> -f bump=patch\n```\nPrefer the dispatch over pushing tags by hand when releasing several charts at once: GitHub silently drops tag-push events beyond 3 tags per `git push`, which would leave some charts tagged but never published."
       ]
     }
   ]

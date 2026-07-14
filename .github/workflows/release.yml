@@ -1,9 +1,32 @@
 name: Release Chart
 
+# Two ways in, one release path:
+#
+#   - push a tag `<chart>/v<version>` (the original flow, unchanged), or
+#   - run this workflow with a chart + bump, and it derives the next version from
+#     the newest existing tag and creates the tag itself.
+#
+# The dispatch path exists because GitHub silently DROPS tag-push events beyond 3
+# tags in a single `git push`. Releasing several charts after one grouped Renovate
+# PR would therefore leave some charts tagged but never published. One dispatch is
+# always exactly one release. The tag is still the source of truth for the version
+# either way — the dispatch just computes it and lets the release API create it.
 on:
   push:
     tags:
       - '*/v*'
+  workflow_dispatch:
+    inputs:
+      chart:
+        description: Chart to release
+        required: true
+        type: string
+      bump:
+        description: Version bump, applied to the newest existing <chart>/v* tag
+        required: true
+        default: patch
+        type: choice
+        options: [patch, minor, major]
 
 jobs:
   release:
@@ -12,23 +35,65 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          # Release notes are derived from the commits touching this chart since
+          # its previous tag, so the job needs full history and every tag.
+          fetch-depth: 0
 
-      - name: Parse chart name and version from tag
+      - name: Resolve chart and version
         id: parse
+        env:
+          EVENT: ${{ github.event_name }}
+          IN_CHART: ${{ inputs.chart }}
+          IN_BUMP: ${{ inputs.bump }}
         run: |
-          TAG=${GITHUB_REF#refs/tags/}
-          CHART=$(echo "$TAG" | cut -d/ -f1)
-          VERSION=$(echo "$TAG" | cut -d/ -f2)
+          set -euo pipefail
+          if [ "$EVENT" = "push" ]; then
+            TAG=${GITHUB_REF#refs/tags/}
+            CHART=${TAG%%/*}
+            VERSION=${TAG#*/}
+          else
+            CHART="$IN_CHART"
+            PREV=$(git tag --list "${CHART}/v*" --sort=-v:refname | head -1)
+            if [ -z "$PREV" ]; then
+              # First release of a chart: start the series rather than bumping nothing.
+              NEXT="0.1.0"
+            else
+              CUR=${PREV#"${CHART}"/v}
+              IFS=. read -r MA MI PA <<<"$CUR"
+              case "$IN_BUMP" in
+                major) NEXT="$((MA + 1)).0.0" ;;
+                minor) NEXT="${MA}.$((MI + 1)).0" ;;
+                patch) NEXT="${MA}.${MI}.$((PA + 1))" ;;
+              esac
+            fi
+            VERSION="v${NEXT}"
+            TAG="${CHART}/${VERSION}"
+          fi
           SEMVER=${VERSION#v}                       # Helm/SemVer form, no leading "v"
-          echo "chart=$CHART"   >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "semver=$SEMVER" >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG"       >> "$GITHUB_OUTPUT"
+          {
+            echo "chart=$CHART"
+            echo "version=$VERSION"
+            echo "semver=$SEMVER"
+            echo "tag=$TAG"
+          } >> "$GITHUB_OUTPUT"
+          echo "Releasing $TAG"
 
       - name: Verify chart directory exists
         run: |
           if [ ! -d "charts/${{ steps.parse.outputs.chart }}" ]; then
             echo "ERROR: charts/${{ steps.parse.outputs.chart }} does not exist"
+            exit 1
+          fi
+
+      # On the dispatch path the tag does not exist yet and the release API will
+      # create it. Refuse to clobber one that somehow already does.
+      - name: Verify the release does not already exist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${{ steps.parse.outputs.tag }}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "ERROR: release ${{ steps.parse.outputs.tag }} already exists"
             exit 1
           fi
 
@@ -52,6 +117,35 @@ jobs:
           sha256sum ${{ steps.package.outputs.filename }} > ${{ steps.package.outputs.filename }}.sha256
           cat ${{ steps.package.outputs.filename }}.sha256
 
+      # Renovate resolves these notes for anyone consuming the chart downstream —
+      # its release matcher `(?:^|/)(?:<dep>)[@_/-]v?<version>` matches our
+      # `<chart>/v<version>` tags — so whatever lands here is the changelog a
+      # downstream bump PR shows. Boilerplate was being rendered as the changelog.
+      - name: Build release notes
+        id: notes
+        env:
+          CHART: ${{ steps.parse.outputs.chart }}
+          TAG: ${{ steps.parse.outputs.tag }}
+        run: |
+          set -euo pipefail
+          PREV=$(git tag --list "${CHART}/v*" --sort=-v:refname | grep -vFx "$TAG" | head -1)
+          if [ -n "$PREV" ]; then
+            RANGE="${PREV}..HEAD"
+            HEADING="Changes since ${PREV#"${CHART}"/}"
+          else
+            RANGE="HEAD"
+            HEADING="Changes"
+          fi
+          CHANGES=$(git log --no-merges --pretty='- %s (%h)' "$RANGE" -- "charts/${CHART}" || true)
+          [ -z "$CHANGES" ] && CHANGES="- Initial release."
+          {
+            echo "body<<NOTES_EOF"
+            echo "### ${HEADING}"
+            echo
+            echo "$CHANGES"
+            echo "NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
         with:
@@ -59,6 +153,8 @@ jobs:
           name: "${{ steps.parse.outputs.chart }} ${{ steps.parse.outputs.version }}"
           body: |
             ## ${{ steps.parse.outputs.chart }} ${{ steps.parse.outputs.version }}
+
+            ${{ steps.notes.outputs.body }}
 
             Install with SwarmCLI:
             ```bash
