@@ -1,0 +1,8 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Keep SwarmCLI chart versions in swarmcli-release.yaml up to date. Point `swarmcli charts apply -f` at the same file. Chart versions are plain SemVer (0.1.8) — the leading `v` belongs to the release git tag, not the chart version.",
+  "helmfile": {
+    "description": "swarmcli-release.yaml uses Helmfile's key names (repositories[].{name,url}, releases[].{name,chart,version}) precisely so Renovate's built-in helmfile manager can read it — no custom regex to maintain. The chart's registry is resolved from the `repositories` block in the file itself, so this preset hardcodes no URL and works for any chart repository you add.",
+    "managerFilePatterns": ["/(^|/)swarmcli-release\\.ya?ml$/"]
+  }
+}

@@ -52,6 +52,46 @@ swarmcli charts install whoami swarmcli-charts/whoami -f my-values.yaml
 swarmcli charts search
 ```
 
+## Keeping Charts Up to Date
+
+Pin your releases in a file and let [Renovate](https://docs.renovatebot.com/) bump
+them:
+
+```yaml
+# swarmcli-release.yaml
+repositories:
+  - name: swarmcli-charts
+    url: https://eldara-tech.github.io/swarmcli-charts
+releases:
+  - name: edge
+    chart: swarmcli-charts/traefik
+    version: "0.1.1"
+    values: [./traefik.yaml]
+  - name: hello
+    chart: swarmcli-charts/whoami
+    version: "0.1.8"
+```
+
+```bash
+swarmcli charts apply -f swarmcli-release.yaml --dry-run   # plan
+swarmcli charts apply -f swarmcli-release.yaml             # converge
+swarmcli charts outdated                                   # what has a newer chart?
+```
+
+Then extend this repository's Renovate preset — that is the whole configuration:
+
+```json
+{ "extends": ["github>Eldara-Tech/swarmcli-charts"] }
+```
+
+Renovate opens a PR whenever a chart you pin gets a new version, with the chart's
+release notes attached. Merge it, and `swarmcli charts apply` in CI rolls it out.
+
+The file's key names match Helmfile's on purpose, so Renovate's **built-in**
+`helmfile` manager reads it — there is no custom regex to maintain, and the chart
+registry is resolved from the `repositories` block, so the preset works for any
+chart repository you add, not just this one.
+
 ## Releasing a New Chart Version
 
 The **git tag is the source of truth** for the version. To release, push a tag of
