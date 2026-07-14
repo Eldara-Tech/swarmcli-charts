@@ -1,0 +1,95 @@
+# renovate chart default values.
+#
+# Renovate is a ONE-SHOT process: it scans the repositories you point it at, opens or
+# updates pull requests, and exits. It is not a server. So the only real question this
+# chart has to answer is "how does it get run again" — see `schedule.mode`.
+#
+# It needs no Docker socket. Renovate only shells out to sidecar containers for
+# *lockfile artifact updates* (the deprecated binarySource=docker); the managers that
+# read a swarmcli-release.yaml simply rewrite `version:` strings and push a branch.
+# That makes this the one chart in this repo with no risky primitive to acknowledge.
+
+image:
+  repository: renovate/renovate
+  tag: ""  # defaults to appVersion from Chart.yaml
+
+# How Renovate gets run, repeatedly.
+#
+#   interval - (default) SELF-CONTAINED. One replica; Renovate runs, exits, and Swarm
+#              starts it again `interval` later (restart_policy: any + delay). Nothing
+#              else to deploy. Between runs the service reports 0/1 replicas — that is
+#              the container having finished, not a failure.
+#   cronjob  - the service sits at 0 replicas and the swarm-cronjob chart scales it to
+#              1 on `cron`. Real cron expressions and skip-running, but it REQUIRES the
+#              swarm-cronjob chart to be deployed on this swarm. Without it nothing ever
+#              runs and the service just sits at 0/0 looking healthy.
+schedule:
+  mode: interval
+  # interval mode: how long Swarm waits after a run finishes before starting the next.
+  interval: 4h
+  # cronjob mode: standard 5-field cron (or `@every 4h`).
+  cron: "0 */4 * * *"
+  # cronjob mode: don't start a run while the previous one is still going.
+  skipRunning: true
+
+platform:
+  # github | gitlab | gitea | bitbucket | azure
+  type: github
+  # API endpoint for a SELF-HOSTED platform (GitHub Enterprise, self-managed GitLab,
+  # Gitea). Empty = that platform's public endpoint.
+  endpoint: ""
+
+# Which repositories Renovate touches. List them explicitly, or let it autodiscover
+# everything the token can see (optionally narrowed by a filter). Autodiscovering with
+# a broad token is how people open PRs across an entire org by accident, so it is off.
+repositories: []
+autodiscover: false
+autodiscoverFilter: ""
+
+# Credentials. Always EXTERNAL Swarm secrets you pre-create — never chart values.
+#
+# Renovate reads its token from the RENOVATE_TOKEN environment variable and has no
+# *_FILE convention, so the container reads the secret file and exports it before
+# exec'ing Renovate. The plaintext never lands in the compose file or `docker inspect`.
+auth:
+  # Platform token (a PAT, or a GitHub App installation token).
+  #   docker secret create renovate_token -    # paste the token, then Ctrl-D
+  tokenSecret: renovate_token
+
+  # OPTIONAL, and only needed on a NON-GitHub platform (GitLab, Gitea, GH Enterprise).
+  # Renovate fetches release notes — and any `github>`-hosted preset, such as
+  # swarmcli-charts' own — from github.com. Unauthenticated those requests get
+  # rate-limited, so changelogs go missing and a `github>` preset can fail to resolve.
+  # A read-only, no-scope github.com token fixes both. Leave empty on GitHub.
+  githubComTokenSecret: ""
+
+# Renovate's own config file, as an external Docker config you pre-create. The escape
+# hatch for anything the values above do not cover (onboarding, packageRules, hostRules).
+# Empty = configure entirely through the values here.
+#   docker config create renovate_config ./config.js
+configName: ""
+
+logLevel: info
+
+# "" (off) | extract | lookup | full. A dry run writes NOTHING to your repositories.
+# Start here: `dryRun: full` proves the token, platform and repo list are right before
+# Renovate opens a single pull request.
+dryRun: ""
+
+# Extra environment variables (RENOVATE_* or otherwise), injected verbatim.
+extraEnv: {}
+
+# Swarm deploy resources (each rendered only when set). Renovate clones repositories and
+# runs package managers; a few hundred MB is typical, more for a large monorepo.
+resources:
+  limits:
+    memory: ""
+  reservations:
+    memory: ""
+
+# Extra scheduling constraints.
+placement:
+  constraints: []
+
+# Extra deploy labels, merged after any swarm-cronjob labels.
+labels: {}

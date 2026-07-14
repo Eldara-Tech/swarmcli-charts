@@ -1,0 +1,10 @@
+# A self-hosted, non-GitHub platform. GITHUB_COM_TOKEN is the point of this fixture:
+# without it Renovate cannot fetch github-hosted presets or release notes.
+platform:
+  type: gitlab
+  endpoint: https://gitlab.example.com/api/v4/
+auth:
+  tokenSecret: gitlab_token
+  githubComTokenSecret: github_com_token
+autodiscover: true
+autodiscoverFilter: "infra/*"

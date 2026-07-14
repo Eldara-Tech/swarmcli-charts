@@ -1,0 +1,10 @@
+# The escape hatch: Renovate's own config.js as an external Docker config.
+configName: renovate_config
+dryRun: full
+logLevel: debug
+repositories:
+  - Eldara-Tech/swarmcli
+  - Eldara-Tech/swarmcli-charts
+resources:
+  limits:
+    memory: 2G
