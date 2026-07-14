@@ -6,15 +6,18 @@
 # stacks by swarmcli's `charts template` command, so testing a chart requires
 # swarmcli itself. Two constraints force a source build rather than `go install`
 # or a release download:
-#   1. The `charts` CLI is currently only on swarmcli's `main` branch — no
-#      published release renders these charts yet.
+#   1. `charts template` HAS shipped (since swarmcli v1.10.0), but the newer
+#      subcommands this repo's tooling wants — `charts apply`, `charts outdated`
+#      — are on `main` and not in any release yet. Building from `main` is what
+#      keeps the two repos in step.
 #   2. swarmcli's module path is `swarmcli` (not its GitHub path), so
 #      `go install github.com/Eldara-Tech/swarmcli@...` does not resolve.
 #
 # Tracks the latest `main` by default. Override the ref (a branch or tag) with
-# SWARMCLI_REF, or the repo with SWARMCLI_REPO. Once a swarmcli release ships
-# the charts CLI, this can be swapped for downloading the release asset
-# (swarmcli_<OS>_<ARCH>.tar.gz) + verifying it against checksums.txt.
+# SWARMCLI_REF, or the repo with SWARMCLI_REPO. Once a release ships those
+# subcommands, constraint 1 lifts and this can download the release asset
+# (swarmcli_<OS>_<ARCH>.tar.gz) + verify it against checksums.txt instead —
+# faster, and it pins CI to a version users actually have.
 #
 # Usage: scripts/install-swarmcli.sh [dest-dir]
 #   Builds <dest-dir>/swarmcli and prints its absolute path on stdout.

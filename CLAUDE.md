@@ -216,11 +216,12 @@ the openclaw/keycloak `edge` fixtures (`edge_up` → `edge_assert_routed`/`edge_
 → `edge_down`) and traefik's `routing` fixture (a labelled-vs-unlabelled `whoami` proving the
 constraint-label discovery gate). HTTP routing + label discovery only — no ACME/TLS in CI.
 
-**Renderer source.** swarmcli is the renderer; its `charts` CLI is only on
-swarmcli `main` today and its module path is `swarmcli` (so `go install` of the
-GitHub path fails). `scripts/install-swarmcli.sh` clones+builds `main`
-(`SWARMCLI_REF` overrides). Switch to release-asset download once a swarmcli
-release ships the charts CLI.
+**Renderer source.** swarmcli is the renderer. `charts template` has shipped since
+swarmcli v1.10.0, but the newer subcommands (`charts apply`, `charts outdated`) are
+on `main` and unreleased, and swarmcli's module path is `swarmcli` (so `go install`
+of the GitHub path fails). `scripts/install-swarmcli.sh` therefore clones+builds
+`main` (`SWARMCLI_REF` overrides). Once a release ships those subcommands, switch to
+the release asset — faster, and it pins CI to a version users actually have.
 
 **Security acknowledgments.** Risky primitives in a rendered stack (docker.sock,
 host mounts, `privileged`, host network/PID, `cap_add`) fail CI unless the chart
