@@ -1,0 +1,7 @@
+# swarm-cronjob mode: 0 replicas, scaled up on schedule by the swarm-cronjob chart.
+schedule:
+  mode: cronjob
+  cron: "0 6 * * 1"
+  skipRunning: true
+repositories:
+  - Eldara-Tech/swarmcli-charts

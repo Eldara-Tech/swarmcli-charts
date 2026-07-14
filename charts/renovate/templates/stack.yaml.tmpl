@@ -1,0 +1,120 @@
+{{- /* schedule.mode and platform.type are enum-checked by values.schema.json; this is the
+       cross-field rule a schema states far less legibly than it reads here. */ -}}
+{{- if and (not .Values.autodiscover) (not .Values.repositories) }}
+{{-   fail "set repositories: [owner/repo, ...] or autodiscover: true — Renovate would otherwise have nothing to do" }}
+{{- end }}
+version: "3.9"
+
+services:
+  {{ .Chart.Name }}:
+    image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
+    # Renovate takes its token from RENOVATE_TOKEN and has no *_FILE convention, so the
+    # secret is read here and exported. `$$` escapes the `$` for Compose, so the value
+    # is resolved inside the container and never appears in the manifest or in
+    # `docker inspect`. The image's own entrypoint still runs; this only replaces its
+    # command.
+    command:
+      - bash
+      - -c
+      - >-
+        set -eu;
+        test -s /run/secrets/{{ .Values.auth.tokenSecret }}
+        || { echo 'secret {{ .Values.auth.tokenSecret }} is empty' >&2; exit 1; };
+        export RENOVATE_TOKEN="$$(cat /run/secrets/{{ .Values.auth.tokenSecret }})";
+{{- if .Values.auth.githubComTokenSecret }}
+        export GITHUB_COM_TOKEN="$$(cat /run/secrets/{{ .Values.auth.githubComTokenSecret }})";
+{{- end }}
+        exec renovate
+    environment:
+      RENOVATE_PLATFORM: {{ .Values.platform.type | quote }}
+{{- if .Values.platform.endpoint }}
+      RENOVATE_ENDPOINT: {{ .Values.platform.endpoint | quote }}
+{{- end }}
+{{- if .Values.autodiscover }}
+      RENOVATE_AUTODISCOVER: "true"
+{{- if .Values.autodiscoverFilter }}
+      RENOVATE_AUTODISCOVER_FILTER: {{ .Values.autodiscoverFilter | quote }}
+{{- end }}
+{{- end }}
+{{- if .Values.repositories }}
+      RENOVATE_REPOSITORIES: {{ toJson .Values.repositories | quote }}
+{{- end }}
+{{- if .Values.configName }}
+      RENOVATE_CONFIG_FILE: /run/configs/renovate-config
+{{- end }}
+{{- if .Values.dryRun }}
+      RENOVATE_DRY_RUN: {{ .Values.dryRun | quote }}
+{{- end }}
+      LOG_LEVEL: {{ .Values.logLevel | quote }}
+{{- range $key, $val := .Values.extraEnv }}
+      {{ $key }}: {{ $val | quote }}
+{{- end }}
+    secrets:
+      - {{ .Values.auth.tokenSecret }}
+{{- if .Values.auth.githubComTokenSecret }}
+      - {{ .Values.auth.githubComTokenSecret }}
+{{- end }}
+{{- if .Values.configName }}
+    configs:
+      - source: {{ .Values.configName }}
+        target: /run/configs/renovate-config
+{{- end }}
+    deploy:
+{{- if eq .Values.schedule.mode "cronjob" }}
+      # swarm-cronjob scales this to 1 on schedule and back to 0 when the run finishes.
+      # It does nothing at all unless the swarm-cronjob chart is deployed on this swarm.
+      replicas: 0
+      restart_policy:
+        condition: none
+      labels:
+        - "swarm.cronjob.enable=true"
+        - "swarm.cronjob.schedule={{ .Values.schedule.cron }}"
+        - "swarm.cronjob.skip-running={{ .Values.schedule.skipRunning }}"
+{{- else }}
+      # Renovate exits when a run finishes; `condition: any` makes Swarm start it again
+      # after `delay`. That delay IS the schedule — there is no daemon and no cron.
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: {{ .Values.schedule.interval }}
+{{- end }}
+{{- if .Values.labels }}
+{{-   if ne .Values.schedule.mode "cronjob" }}
+      labels:
+{{-   end }}
+{{-   range $key, $val := .Values.labels }}
+        - "{{ $key }}={{ $val }}"
+{{-   end }}
+{{- end }}
+{{- if .Values.placement.constraints }}
+      placement:
+        constraints:
+{{- range .Values.placement.constraints }}
+          - {{ . | quote }}
+{{- end }}
+{{- end }}
+{{- if or .Values.resources.limits.memory .Values.resources.reservations.memory }}
+      resources:
+{{- if .Values.resources.limits.memory }}
+        limits:
+          memory: {{ .Values.resources.limits.memory | quote }}
+{{- end }}
+{{- if .Values.resources.reservations.memory }}
+        reservations:
+          memory: {{ .Values.resources.reservations.memory | quote }}
+{{- end }}
+{{- end }}
+
+secrets:
+  {{ .Values.auth.tokenSecret }}:
+    external: true
+{{- if .Values.auth.githubComTokenSecret }}
+  {{ .Values.auth.githubComTokenSecret }}:
+    external: true
+{{- end }}
+{{- if .Values.configName }}
+
+configs:
+  {{ .Values.configName }}:
+    external: true
+{{- end }}

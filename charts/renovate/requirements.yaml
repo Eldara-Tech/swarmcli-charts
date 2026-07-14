@@ -1,0 +1,23 @@
+# External resources this chart needs. Authoritative: every external network/secret/config
+# the rendered stack references must be listed here (swarmcli pre-flights it; CI enforces it
+# via scripts/requirements-check.sh). swarmcli renders this file with the release's values,
+# so the templated names below track any override.
+#
+# This file is plain YAML with value substitution only (no Go-template if/range — those
+# non-scalar actions would break yamllint, and the file must parse as YAML unrendered, so
+# every substitution is quoted). Entries are declared unconditionally, with a fallback name
+# so none can render empty: an entry a given configuration does not use — the github.com
+# token on the GitHub platform, the config object when configName is unset — is simply never
+# referenced by the manifest, and swarmcli's pre-flight is manifest-driven, so it stays inert.
+#
+# Renovate needs NO overlay network: it only makes outbound HTTPS calls. It needs no Docker
+# socket either, which is why this chart carries no swarmcli-charts/allow annotation.
+networks: []
+secrets:
+  - name: "{{ .Values.auth.tokenSecret }}"
+    description: "Renovate's platform token — a PAT, or a GitHub App installation token. Pre-create: docker secret create renovate_token - (paste the token, then Ctrl-D)"
+  - name: "{{ .Values.auth.githubComTokenSecret | default `github_com_token` }}"
+    description: "NON-GitHub platforms only (auth.githubComTokenSecret). Renovate fetches release notes and any github>-hosted preset from github.com; unauthenticated those calls get rate-limited, so changelogs vanish and a github> preset can fail to resolve. A read-only, no-scope token fixes both. Pre-create: docker secret create github_com_token -"
+configs:
+  - name: "{{ .Values.configName | default `renovate_config` }}"
+    description: "Renovate's own config file (configName), mounted at /run/configs/renovate-config — the escape hatch for anything the chart values do not cover. Pre-create: docker config create renovate_config ./config.js"

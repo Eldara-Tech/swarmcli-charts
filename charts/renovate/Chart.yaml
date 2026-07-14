@@ -1,0 +1,18 @@
+name: renovate
+description: Self-hosted Renovate for Docker Swarm — opens dependency-update PRs, including for your swarmcli-release.yaml
+# version is a placeholder — the git tag (renovate/vX.Y.Z) sets the real version at release.
+version: 0.1.0
+# renovate: image=renovate/renovate
+appVersion: "43.262.2"
+maintainers:
+  - name: Eldara
+    url: https://github.com/Eldara-Tech
+keywords:
+  - renovate
+  - dependencies
+  - automation
+  - gitops
+home: https://github.com/Eldara-Tech/swarmcli-charts
+sources:
+  - https://github.com/Eldara-Tech/swarmcli-charts
+  - https://github.com/renovatebot/renovate

@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string" }
+      },
+      "required": ["repository"]
+    },
+    "schedule": {
+      "type": "object",
+      "properties": {
+        "mode": { "enum": ["interval", "cronjob"] },
+        "interval": { "type": "string", "minLength": 1 },
+        "cron": { "type": "string", "minLength": 1 },
+        "skipRunning": { "type": "boolean" }
+      },
+      "required": ["mode"]
+    },
+    "platform": {
+      "type": "object",
+      "properties": {
+        "type": { "enum": ["github", "gitlab", "gitea", "bitbucket", "azure"] },
+        "endpoint": { "type": "string" }
+      },
+      "required": ["type"]
+    },
+    "repositories": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "autodiscover": { "type": "boolean" },
+    "autodiscoverFilter": { "type": "string" },
+    "auth": {
+      "type": "object",
+      "properties": {
+        "tokenSecret": { "type": "string", "minLength": 1 },
+        "githubComTokenSecret": { "type": "string" }
+      },
+      "required": ["tokenSecret"]
+    },
+    "configName": { "type": "string" },
+    "logLevel": { "enum": ["trace", "debug", "info", "warn", "error", "fatal"] },
+    "dryRun": { "enum": ["", "extract", "lookup", "full"] },
+    "extraEnv": { "type": "object" },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "limits": {
+          "type": "object",
+          "properties": { "memory": { "type": "string" } }
+        },
+        "reservations": {
+          "type": "object",
+          "properties": { "memory": { "type": "string" } }
+        }
+      }
+    },
+    "placement": {
+      "type": "object",
+      "properties": {
+        "constraints": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "labels": { "type": "object" }
+  },
+  "required": ["image", "schedule", "platform", "auth"]
+}
