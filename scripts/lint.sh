@@ -23,6 +23,45 @@ for dir in charts/*/; do
     || { echo "ERROR: $chart is missing templates/stack.yaml.tmpl"; fail=1; }
   ls "$dir"ci/*-values.yaml >/dev/null 2>&1 \
     || { echo "ERROR: $chart has no ci/*-values.yaml fixture"; fail=1; }
+
+  # Renovate reads the image pin from a `# renovate: image=<repo>` comment on the
+  # line directly above appVersion. Without this check a new chart silently
+  # escapes Renovate and its image goes stale forever, so require the comment and
+  # require it to name the same image values.yaml actually deploys.
+  declared="$(grep -B1 '^appVersion:' "$dir/Chart.yaml" 2>/dev/null \
+    | sed -n 's|^# renovate: image=||p')"
+  actual="$(sed -n '/^image:/,/^[^ ]/p' "$dir/values.yaml" 2>/dev/null \
+    | sed -n 's|^  repository: *||p')"
+  if [ -z "$declared" ]; then
+    echo "ERROR: $chart Chart.yaml has no '# renovate: image=<repo>' comment directly above appVersion"
+    fail=1
+  elif [ "$declared" != "$actual" ]; then
+    echo "ERROR: $chart renovate comment pins '$declared' but values.yaml image.repository is '$actual'"
+    fail=1
+  fi
+
+  # A version echoed into prose drifts the moment Renovate bumps appVersion, because
+  # Renovate edits Chart.yaml and never touches values.yaml comments or the README.
+  # Say "defaults to appVersion" and let the reader look it up.
+  if grep -qE 'defaults to appVersion from Chart\.yaml \(' "$dir/values.yaml" 2>/dev/null; then
+    echo "ERROR: $chart values.yaml repeats the appVersion in a comment; it will drift — drop the parenthetical"
+    fail=1
+  fi
+  if grep -qEi 'defaults to .?appVersion.? \(' "$dir/README.md" 2>/dev/null; then
+    echo "ERROR: $chart README.md repeats the appVersion in the values table; it will drift — say 'defaults to appVersion in Chart.yaml'"
+    fail=1
+  fi
+
+  # A floating tag is unpinnable and unreviewable: it changes what deploys without
+  # a commit. Renovate can only keep a concrete tag fresh.
+  if grep -nE '^[^#]*: *[^ #]+:latest *(#.*)?$' "$dir/values.yaml" 2>/dev/null; then
+    echo "ERROR: $chart values.yaml references a :latest image (see above); pin a concrete tag"
+    fail=1
+  fi
+  if grep -qE '`[^`]+:latest`' "$dir/README.md" 2>/dev/null; then
+    echo "ERROR: $chart README.md documents a :latest default that values.yaml cannot have"
+    fail=1
+  fi
 done
 
 if command -v yamllint >/dev/null 2>&1; then

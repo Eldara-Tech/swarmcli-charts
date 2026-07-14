@@ -9,7 +9,7 @@
 
 image:
   repository: redis
-  tag: ""  # defaults to appVersion from Chart.yaml (8.2.7)
+  tag: ""  # defaults to appVersion from Chart.yaml
 
 # Stateful + node-local volume => exactly one replica. Do not raise; run a second
 # named release (or Sentinel/Cluster, out of scope) for HA.

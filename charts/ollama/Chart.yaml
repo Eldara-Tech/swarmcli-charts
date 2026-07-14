@@ -3,6 +3,7 @@ description: Ollama self-hosted LLM server for Docker Swarm — offline models, 
 # version is a placeholder — the git tag (ollama/vX.Y.Z) sets the real version at release.
 version: 0.1.0
 # appVersion is the default image tag for ollama/ollama.
+# renovate: image=ollama/ollama
 appVersion: "0.30.11"
 maintainers:
   - name: Eldara

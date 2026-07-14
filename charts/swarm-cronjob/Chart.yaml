@@ -1,6 +1,7 @@
 name: swarm-cronjob
 description: Create jobs on a time-based schedule on Docker Swarm using service labels
 version: 0.1.0
+# renovate: image=crazymax/swarm-cronjob
 appVersion: "1.16.0"
 annotations:
   # swarm-cronjob watches the Docker API to schedule services, so it must mount

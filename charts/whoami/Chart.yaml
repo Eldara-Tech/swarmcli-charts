@@ -1,6 +1,7 @@
 name: whoami
 description: A simple HTTP echo service for testing SwarmCLI chart delivery
 version: 0.1.0
+# renovate: image=ghcr.io/traefik/whoami
 appVersion: "v1.11.0"
 maintainers:
   - name: Eldara

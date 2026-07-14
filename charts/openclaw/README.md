@@ -124,7 +124,7 @@ co-located Ollama; use the config `baseUrl` above.)
 | Key | Default | Description |
 |-----|---------|-------------|
 | `image.repository` | `ghcr.io/openclaw/openclaw` | Image repository |
-| `image.tag` | `""` | Tag — defaults to appVersion (`2026.6.11`) |
+| `image.tag` | `""` | Tag — defaults to `appVersion` in Chart.yaml |
 | `replicas` | `1` | Replica count (must stay 1 — node-local volumes) |
 | `persistence.enabled` | `true` | Mount the named state volumes |
 | `persistence.dataVolume` | `openclaw-data` | Named volume for `/home/node/.openclaw` (config, DB, workspace) |

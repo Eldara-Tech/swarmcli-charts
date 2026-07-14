@@ -15,7 +15,7 @@
 
 image:
   repository: ghcr.io/openclaw/openclaw
-  tag: ""  # defaults to appVersion from Chart.yaml (2026.6.11)
+  tag: ""  # defaults to appVersion from Chart.yaml
 
 # Stateful + node-local volumes => exactly one replica. Do not raise.
 replicas: 1

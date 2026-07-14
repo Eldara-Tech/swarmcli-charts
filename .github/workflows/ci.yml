@@ -1,14 +1,15 @@
 name: CI
 
-# Lints the release machinery itself — the GitHub Actions workflows and the
-# shell scripts that package charts and build the index. A broken workflow or
-# script silently fails releases, so this guards the parts chart-structure
-# linting (charts.yml) doesn't cover.
+# Lints the release machinery itself — the GitHub Actions workflows, the Renovate
+# config, and the shell scripts that package charts and build the index. A broken
+# workflow, script, or matchString silently fails releases or silently stops
+# maintaining the image pins, so this guards the parts chart-structure linting
+# (charts.yml) doesn't cover.
 #
 # The workflow triggers on every PR (no path filter) but a change-detection job
-# skips the `lint` job when no workflow/script files changed. A skipped required
-# check counts as passing, so `lint` can be a required check enforced only when
-# relevant files change, without leaving unrelated PRs pending.
+# skips the `lint` job when nothing under .github/ or scripts/ changed. A skipped
+# required check counts as passing, so `lint` can be a required check enforced
+# only when relevant files change, without leaving unrelated PRs pending.
 on:
   pull_request:
     branches:
@@ -44,7 +45,7 @@ jobs:
           fi
           git fetch --no-tags origin "$BASE_REF" >/dev/null 2>&1 || true
           changed=$(git diff --name-only "origin/$BASE_REF...HEAD" 2>/dev/null || git diff --name-only HEAD)
-          if printf '%s\n' "$changed" | grep -qE '^(\.github/workflows/|scripts/)'; then
+          if printf '%s\n' "$changed" | grep -qE '^(\.github/|scripts/)'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
@@ -70,3 +71,11 @@ jobs:
       # on genuine bugs, not style warnings, so it won't block on existing scripts.
       - name: Lint shell scripts (shellcheck)
         run: shellcheck --severity=error scripts/*.sh scripts/e2e-edge/*.sh
+
+      # A malformed matchString does not error at run time — Renovate just extracts
+      # zero dependencies and opens no PRs, so the pins silently stop being
+      # maintained. The validator is the only thing that turns that into a failure.
+      # default.json is the shareable preset downstream users extend, so breaking
+      # it breaks *their* updates, not ours: validate it too.
+      - name: Validate Renovate config
+        run: npx --yes --package renovate -- renovate-config-validator --strict .github/renovate.json default.json

@@ -28,6 +28,8 @@ that far.
   `snap install yq`, `brew install yq`, or a [release binary](https://github.com/mikefarah/yq/releases).
   Beware: the `yq` in Debian/Ubuntu apt is a **different tool** (a Python `jq`
   wrapper) — `yq --version` must say `mikefarah`.
+- **`jq`** and **`gh`** — only needed to run `scripts/generate-index.sh` (the release
+  path); it exits with an error without them.
 - Optional: `yamllint` (`pip install yamllint`) for `make lint`.
 
 `make install-tools` builds the renderer and tells you what else is missing.
@@ -37,6 +39,7 @@ that far.
 ```
 charts/<name>/
   Chart.yaml                 # name, version, appVersion, description (all required)
+                             #   + `# renovate: image=<repo>` directly above appVersion
   values.yaml                # default values
   values.schema.json         # optional JSON Schema — swarmcli validates values against it
   templates/stack.yaml.tmpl  # Go text/template → Docker Swarm stack
@@ -65,6 +68,13 @@ The existing charts share deliberate patterns — new charts must follow them.
 The full normative list lives in [CLAUDE.md](CLAUDE.md#chart-design-conventions);
 in short:
 
+- **Image pins.** `Chart.yaml:appVersion` is the image pin (every chart ships
+  `image.tag: ""` and the template falls back to `.Chart.AppVersion`). Renovate
+  maintains it, so every `Chart.yaml` needs a `# renovate: image=<repo>` comment
+  directly above `appVersion`, naming the same image as `values.yaml`
+  `image.repository`. No `:latest`, and never repeat the version in a comment or in
+  the README values table — Renovate edits `Chart.yaml` and touches neither, so it
+  drifts. `make new-chart` gets all of this right; `make test` enforces it.
 - **Traefik-routed** services carry `traefik.enable=true`,
   `traefik.constraint-label` and `traefik.swarm.network` deploy labels (the
   swarm provider discovers nothing without the constraint label), and default
@@ -173,8 +183,19 @@ example (it mounts the Docker socket by design). Risk keys: `docker-socket`,
 
 ## Releasing (maintainers)
 
-The **git tag is the source of truth** for the version. Push a tag of the form
-`<chart>/v<version>`:
+The **git tag is the source of truth** for the version. The easiest way to cut one
+is the workflow dispatch, which derives the next version from the newest existing
+tag and creates the tag for you:
+
+```bash
+gh workflow run release.yml -f chart=whoami -f bump=patch   # or minor / major
+```
+
+**Use it, not a hand-pushed tag, when releasing several charts at once**: GitHub
+silently drops tag-push events beyond 3 tags per `git push`, so some charts would
+end up tagged but never published. One dispatch is always exactly one release.
+
+Pushing a tag by hand still works:
 
 ```bash
 git tag whoami/v0.2.0

@@ -318,7 +318,7 @@ database:
 | Key | Default | Description |
 |---|---|---|
 | `image.repository` | `apache/superset` | Image. Point at your derived image to bake in drivers. |
-| `image.tag` | `""` | Defaults to `appVersion` (5.0.0). |
+| `image.tag` | `""` | Defaults to `appVersion` in Chart.yaml. |
 | `replicas` | `1` | Web (gunicorn) replicas. Stateless — safe to scale. |
 | `python.installDrivers` | `true` | Pip-install the metadata-DB driver (+ Authlib for OIDC) at start. `false` for an image that has them. |
 | `python.extraPackages` | `[]` | Extra pip requirements (e.g. analytics DB drivers). |
@@ -331,7 +331,7 @@ database:
 | `database.network` | `superset-db-net` | EXTERNAL overlay the DB is on. |
 | `redis.mode` | `external` | `external` = you provide Redis; `embedded` = the chart runs an ephemeral one. See [Redis](#redis). |
 | `redis.host` / `.port` | `redis` / `6379` | Redis address on `redis.network`. `host` is ignored when `mode: embedded`. |
-| `redis.image.repository` / `.tag` | `redis` / `8.2.7` | The Redis the chart runs when `mode: embedded`. Ignored otherwise. |
+| `redis.image.repository` / `.tag` | `redis` / see values.yaml | The Redis the chart runs when `mode: embedded`. Ignored otherwise. Kept in step with the redis chart by Renovate. |
 | `redis.auth.enabled` | `true` | Authenticate with `redis.auth.secretName`. `false` + `mode: embedded` is the zero-secret path. |
 | `redis.auth.secretName` | `superset_redis_password` | EXTERNAL secret with the Redis password. In `embedded` mode it is mounted into the Redis too. |
 | `redis.network` | `redis-net` | Overlay Redis is on: EXTERNAL in `external` mode, chart-managed in `embedded` mode. |

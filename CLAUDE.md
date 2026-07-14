@@ -16,6 +16,10 @@ The user-facing command is **`swarmcli charts`** (plural), defined in the
   `swarmcli-charts`, so refs look like `swarmcli-charts/whoami`).
 - `swarmcli charts search` / `list` / `status <release>` / `upgrade` /
   `uninstall` / `rollback` / `history` / `template`
+- `swarmcli charts apply -f <release-file>` / `swarmcli charts outdated` — the
+  declarative path. The release file pins each release to a chart version, which is
+  what an updater (Renovate) bumps; `default.json` in this repo points Renovate at
+  it. Consumers of these charts use this, so keep the README example working.
 
 Common doc mistakes: writing `chart` (singular), dropping the `<repo/chart>` arg
 from `install`, or using a stale repo alias. Verify against `cli/charts.go` in
@@ -26,6 +30,7 @@ the `swarmcli` repo, not from memory.
 ```
 charts/<name>/
   Chart.yaml                 # name, version, appVersion, description (all required by CI)
+                             #   + `# renovate: image=<repo>` directly above appVersion
   values.yaml                # default values
   values.schema.json         # optional JSON Schema — swarmcli validates values against it
   templates/stack.yaml.tmpl  # Go text/template → Swarm stack
@@ -41,9 +46,11 @@ scripts/local-repo.sh        # serve working-tree charts as a local HTTP repo fo
 scripts/local-repo-test.sh   # integration test: repo add/update/search against local-repo.sh (CI, no swarm)
 scripts/security-scan.sh     # flags risky primitives unless Chart.yaml acknowledges them
 scripts/new-chart.sh         # scaffolds a passing chart skeleton
-scripts/lint.sh              # chart structure + yamllint
-scripts/generate-index.sh    # rebuilds the published index.yaml (release path)
+scripts/lint.sh              # chart structure + yamllint + the Renovate pin gates
+scripts/generate-index.sh    # rebuilds the published index.yaml (release path); needs gh + jq + yq
 .github/workflows/           # charts.yml (validate), ci.yml (machinery), integration.yml (repo-flow), release.yml
+.github/renovate.json        # Renovate config for THIS repo (maintains the chart image pins)
+default.json                 # shareable Renovate preset DOWNSTREAM users extend
 ```
 
 Templates use Go `text/template` with sprig (minus `env`/`expandenv`/
@@ -128,6 +135,24 @@ Reference implementations: keycloak (routed, pluggable exposure), mariadb
   no placement block) and `ci/bind-mount-values.yaml` (host path — exercises
   the host-mount acknowledgment).
 
+**Image pins** — the image a chart deploys is pinned by `Chart.yaml:appVersion`
+(every chart ships `image.tag: ""` and the template falls back to
+`.Chart.AppVersion`). Renovate maintains those pins, and `scripts/lint.sh` enforces
+the three rules that keep it working:
+
+- Every `Chart.yaml` carries `# renovate: image=<repo>` on the line **directly
+  above** `appVersion`, naming the same image as `values.yaml` `image.repository`.
+  Without it a new chart silently escapes Renovate and its image goes stale forever.
+- No `:latest` anywhere in `values.yaml` (or documented in the README). A floating
+  tag changes what deploys without a commit, and Renovate can only keep a concrete
+  tag fresh.
+- Never echo the appVersion into prose — not a `values.yaml` comment, not the
+  README values table. Renovate edits `Chart.yaml` and touches neither, so the
+  number drifts on the first bump. Say "defaults to `appVersion` in Chart.yaml".
+
+`make new-chart` scaffolds all of this correctly. A chart whose `image.repository`
+you change must have its renovate comment changed to match, or lint fails.
+
 **Secrets** — always EXTERNAL Swarm secrets the operator pre-creates; charts
 never create secrets or take secret values through `values.yaml`. Prefer the
 image's `*_FILE` convention; if the image lacks one, read the mounted file in a
@@ -137,24 +162,40 @@ lands in the compose file or `docker inspect`. Document the
 
 ## Releasing
 
-The **git tag is the source of truth** for the version. Push a tag of the form
-`<chart>/v<version>` (e.g. `whoami/v0.2.0`). `release.yml` stamps that version
-into `Chart.yaml` at package time, publishes a GitHub Release with the `.tgz`,
-and rebuilds `index.yaml` on GitHub Pages. The `version:` in `Chart.yaml` is a
+The **git tag is the source of truth** for the version, and `release.yml` stamps it
+into `Chart.yaml` at package time, publishes a GitHub Release with the `.tgz`, and
+rebuilds `index.yaml` on GitHub Pages. The `version:` in `Chart.yaml` is a
 placeholder — the tag wins. Published chart version is plain SemVer; the leading
 `v` belongs only to the git tag.
+
+**Prefer the workflow dispatch**, which derives the next version from the newest
+existing tag and creates the tag itself:
+
+```bash
+gh workflow run release.yml -f chart=whoami -f bump=patch   # or minor / major
+```
+
+Pushing a tag by hand still works (`git tag whoami/v0.2.0 && git push origin
+whoami/v0.2.0`) but **do not use it to release several charts at once**: GitHub
+silently DROPS tag-push events beyond 3 tags per `git push`, so some charts would be
+tagged and never published. One dispatch is always exactly one release — which is
+what you want after merging a grouped Renovate PR that touched several charts.
 
 ## CI & testing
 
 - `charts.yml` — runs on `charts/**`/`scripts/**`/`Makefile`/`.yamllint` PRs and
   pushes to main. Builds the swarmcli renderer from source, then for every chart
-  × `ci/*-values.yaml` fixture: renders (`swarmcli charts template`),
-  no-`<no value>` guard, `docker compose config`, and `scripts/security-scan.sh`.
-  All steps are data-only (no secrets, read-only token, render-never-deploy) so
-  they are safe on fork PRs. Mirrors `make test` exactly. Uploads rendered output
-  as the `rendered-stacks` artifact.
-- `ci.yml` — runs on `.github/workflows/**` and `scripts/**` changes; actionlint
-  + shellcheck (`--severity=error`).
+  × `ci/*-values.yaml` fixture: `scripts/lint.sh`, then renders (`swarmcli charts
+  template`), no-`<no value>` guard, `docker compose config`, and
+  `scripts/security-scan.sh`. All steps are data-only (no secrets, read-only token,
+  render-never-deploy) so they are safe on fork PRs. Mirrors `make test` exactly
+  (which is why `test` depends on `lint`). Uploads rendered output as the
+  `rendered-stacks` artifact.
+- `ci.yml` — runs on `.github/**` and `scripts/**` changes; actionlint + shellcheck
+  (`--severity=error`) + `renovate-config-validator` on `.github/renovate.json` and
+  `default.json`. A malformed matchString does not error at run time — Renovate just
+  extracts zero deps and silently stops maintaining the pins — so the validator is
+  the only thing that turns that into a failure.
 - Doc-only changes outside those paths trigger no CI.
 
 **E2E.** `make e2e` / `scripts/e2e-test.sh` deploys each chart × fixture to a real
@@ -186,7 +227,8 @@ host mounts, `privileged`, host network/PID, `cap_add`) fail CI unless the chart
 declares `annotations: { swarmcli-charts/allow: "<keys>" }` in `Chart.yaml`. See
 `charts/swarm-cronjob` (docker-socket).
 
-**Local = CI.** `make test` runs the identical pipeline; `make new-chart NAME=x`
+**Local = CI.** `make test` depends on `lint`, so it runs the identical pipeline
+(charts.yml runs both `lint.sh` and `test-charts.sh`); `make new-chart NAME=x`
 scaffolds a passing skeleton. GitHub action versions are SHA-pinned across all
 workflows.
 

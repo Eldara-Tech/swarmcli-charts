@@ -45,7 +45,7 @@ the cluster-wide routing mesh or `mode: host` for the pinned node only).
 | Key | Default | Description |
 |-----|---------|-------------|
 | `image.repository` | `redis` | Image repository |
-| `image.tag` | `""` | Tag — defaults to appVersion (`8.2.7`) |
+| `image.tag` | `""` | Tag — defaults to `appVersion` in Chart.yaml |
 | `replicas` | `1` | Replica count (must stay 1 — node-local volume) |
 | `auth.enabled` | `true` | Require a password |
 | `auth.secretName` | `redis_password` | External Swarm secret holding the password |

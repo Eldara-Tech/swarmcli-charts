@@ -19,7 +19,7 @@
 
 image:
   repository: quay.io/keycloak/keycloak
-  tag: ""  # defaults to appVersion from Chart.yaml (26.6.3)
+  tag: ""  # defaults to appVersion from Chart.yaml
 
 # Keycloak is stateless, so it can scale horizontally — BUT more than one replica
 # needs Infinispan cache clustering (JGroups discovery) configured for shared
