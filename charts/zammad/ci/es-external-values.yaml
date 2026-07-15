@@ -1,0 +1,10 @@
+# External Elasticsearch cluster on its own overlay, with authentication (exercises the ES
+# password secret + external overlay). External PostgreSQL + Redis as in the default.
+elasticsearch:
+  mode: external
+  host: es.internal
+  schema: https
+  port: 9200
+  auth:
+    enabled: true
+    username: elastic

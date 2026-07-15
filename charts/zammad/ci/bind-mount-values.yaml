@@ -1,0 +1,16 @@
+# Host-path persistence for every stateful volume (exercises the host-mount acknowledgment).
+# Embedded backing so all three host paths render in one stack.
+persistence:
+  storagePath: /srv/zammad/storage
+database:
+  mode: embedded
+  embedded:
+    volumePath: /srv/zammad/postgres
+redis:
+  mode: embedded
+elasticsearch:
+  mode: embedded
+  persistence:
+    volumePath: /srv/zammad/elasticsearch
+exposure:
+  mode: published

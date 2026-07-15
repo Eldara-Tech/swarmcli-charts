@@ -1,0 +1,4 @@
+# Single-node swarm: persistence on (volumes kept) but the data-node pin dropped (nodeLabel: "").
+# Must render volumes but NO node.labels placement constraint.
+persistence:
+  nodeLabel: ""

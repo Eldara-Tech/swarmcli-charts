@@ -1,0 +1,760 @@
+{{- /* Zammad on Docker Swarm. ONE Zammad image runs five roles — a one-shot `init`
+       (create/migrate/seed the DB + configure Elasticsearch), `railsserver` (the app),
+       `websocket`, `scheduler` (background jobs) and `nginx` (the HTTP front door proxying rails +
+       websocket) — plus backing services: memcached (always in-stack), Elasticsearch (embedded by
+       default / external / disabled), and PostgreSQL + Redis (external by default, embedded for
+       evaluation).
+
+       Swarm has NO depends_on, but the image self-coordinates: every non-init role runs the
+       image's own `check_zammad_ready`, which blocks until migrations+seeds have landed, so this
+       chart adds no wait-loops. `init` runs to completion (restart on-failure) and is not restarted.
+
+       SECRETS. Zammad has no *_FILE convention, so each Zammad role overrides the entrypoint with a
+       tiny bash wrapper that reads the mounted /run/secrets/* file into POSTGRESQL_PASS /
+       REDIS_PASSWORD / ELASTICSEARCH_PASS and then execs the image entrypoint. `$$` is the compose
+       escape for a literal `$`, so the plaintext never lands in the compose file, in
+       `docker inspect`, or in the `environment:` map (the passwords are exported by the wrapper,
+       never listed there). */ -}}
+
+{{- /* Named-volume names cannot contain '/': that is how you would try to smuggle a host path into
+       the named-volume slot, and docker compose otherwise emits a cryptic error. Set the matching
+       *Path value for host-path storage instead. */ -}}
+{{- if and .Values.persistence.enabled (not .Values.persistence.storagePath) (contains "/" .Values.persistence.storageVolumeName) }}
+{{-   fail "persistence.storageVolumeName is a Docker named-volume name and cannot contain '/'. To store attachments under a host directory, set persistence.storagePath instead." }}
+{{- end }}
+{{- $dbEmbedded := eq .Values.database.mode "embedded" }}
+{{- if and $dbEmbedded (not .Values.database.embedded.volumePath) (contains "/" .Values.database.embedded.volumeName) }}
+{{-   fail "database.embedded.volumeName is a Docker named-volume name and cannot contain '/'. Use database.embedded.volumePath for a host directory." }}
+{{- end }}
+{{- $esMode := .Values.elasticsearch.mode }}
+{{- $esEmbedded := eq $esMode "embedded" }}
+{{- if and $esEmbedded (not .Values.elasticsearch.persistence.volumePath) (contains "/" .Values.elasticsearch.persistence.volumeName) }}
+{{-   fail "elasticsearch.persistence.volumeName is a Docker named-volume name and cannot contain '/'. Use elasticsearch.persistence.volumePath for a host directory." }}
+{{- end }}
+{{- if and .Values.backup.enabled (not .Values.backup.volumePath) (contains "/" .Values.backup.volumeName) }}
+{{-   fail "backup.volumeName is a Docker named-volume name and cannot contain '/'. Use backup.volumePath for a host directory." }}
+{{- end }}
+{{- if not (has $esMode (list "embedded" "external" "disabled")) }}
+{{-   fail (printf "elasticsearch.mode must be embedded, external or disabled, got %q" $esMode) }}
+{{- end }}
+
+{{- $mode := .Values.exposure.mode }}
+{{- $proxied := or (eq $mode "traefik") (eq $mode "none") }}
+{{- $publicTLS := and $proxied .Values.ingress.tls }}
+{{- /* The scheme the PUBLIC endpoint speaks. nginx overwrites X-Forwarded-Proto with this and
+       Zammad advertises it (ZAMMAD_HTTP_TYPE), so links/redirects are built https:// behind a
+       TLS-terminating proxy. published mode has no proxy and no TLS, so it is http. */ -}}
+{{- $scheme := ternary "https" "http" $publicTLS }}
+{{- $router := .Values.traefik.routerName | default .Release.Name }}
+{{- $image := printf "%s:%s" .Values.image.repository (.Values.image.tag | default .Chart.AppVersion) }}
+
+{{- $redisEmbedded := eq .Values.redis.mode "embedded" }}
+{{- $esEnabled := ne $esMode "disabled" }}
+{{- $memEmbedded := eq .Values.memcache.servers "" }}
+{{- $esExtAuth := and $esEnabled (not $esEmbedded) .Values.elasticsearch.auth.enabled }}
+
+{{- /* Resolved hosts. An embedded backing service is always reachable in-stack by its plain
+       service name (`postgres` / `redis` / `elasticsearch` / `memcached`), so the *.host value is
+       ignored in embedded mode — honouring a stale one would silently point Zammad elsewhere. */ -}}
+{{- $dbHost := ternary "postgres" .Values.database.host $dbEmbedded }}
+{{- $redisHost := ternary "redis" .Values.redis.host $redisEmbedded }}
+{{- $esHost := ternary "elasticsearch" .Values.elasticsearch.host $esEmbedded }}
+{{- $memServers := ternary "memcached:11211" .Values.memcache.servers $memEmbedded }}
+
+{{- $internal := .Values.internalNetwork }}
+
+{{- /* The EXTERNAL overlays this render references (each only in the corresponding external mode).
+       They may share a name with each other (an operator may put DB+ES on one overlay: both render
+       external:true and dedup) — but none may collide with the CHART-MANAGED internal overlay, or
+       `uniq` in the footer would collapse the two into one entry and render the operator's external
+       overlay as a chart-managed one, cutting Zammad off from its real backing service. Fail loud. */ -}}
+{{- $externalNets := list }}
+{{- if not $dbEmbedded }}{{ $externalNets = append $externalNets .Values.database.network }}{{ end }}
+{{- if not $redisEmbedded }}{{ $externalNets = append $externalNets .Values.redis.network }}{{ end }}
+{{- if and $esEnabled (not $esEmbedded) }}{{ $externalNets = append $externalNets .Values.elasticsearch.network }}{{ end }}
+{{- if $proxied }}{{ $externalNets = append $externalNets .Values.exposure.network }}{{ end }}
+{{- if has $internal $externalNets }}
+{{-   fail (printf "internalNetwork (%q) collides with an EXTERNAL overlay (database.network / redis.network / elasticsearch.network / exposure.network). The internal overlay is chart-managed and created by this stack; give it a name none of the external overlays use." $internal) }}
+{{- end }}
+
+{{- /* Networks each Zammad role attaches to: the internal overlay always, plus every backing
+       service that is EXTERNAL, plus (nginx only, in proxied modes) the ingress overlay. nginx
+       needs the DB/Redis overlays too — its readiness gate runs `bundle exec rails r`. */ -}}
+{{- $svcNets := list $internal }}
+{{- if not $dbEmbedded }}{{ $svcNets = append $svcNets .Values.database.network }}{{ end }}
+{{- if not $redisEmbedded }}{{ $svcNets = append $svcNets .Values.redis.network }}{{ end }}
+{{- if and $esEnabled (not $esEmbedded) }}{{ $svcNets = append $svcNets .Values.elasticsearch.network }}{{ end }}
+{{- $svcNets = $svcNets | uniq }}
+{{- $nginxNets := ternary (append $svcNets .Values.exposure.network | uniq) $svcNets $proxied }}
+
+{{- /* Shared environment. Non-secret only (passwords are exported by each role's command wrapper,
+       never here — the `environment:` map shows up in `docker inspect`). Healthchecks run in a
+       fresh shell that sees only this map, but the checks here are port-open probes that need no
+       credentials, so that is fine. */ -}}
+{{- $env := dict
+      "POSTGRESQL_HOST" $dbHost
+      "POSTGRESQL_PORT" (printf "%v" .Values.database.port)
+      "POSTGRESQL_DB" .Values.database.name
+      "POSTGRESQL_USER" .Values.database.username
+      "POSTGRESQL_OPTIONS" .Values.database.options
+      "POSTGRESQL_DB_CREATE" (ternary "true" "false" .Values.database.createDb)
+      "MEMCACHE_SERVERS" $memServers
+      "ELASTICSEARCH_ENABLED" (ternary "true" "false" $esEnabled)
+      "ZAMMAD_FQDN" .Values.ingress.host
+      "ZAMMAD_HTTP_TYPE" $scheme
+      "RAILS_TRUSTED_PROXIES" .Values.trustedProxies
+      "NGINX_PORT" (printf "%v" .Values.service.nginxPort)
+      "NGINX_SERVER_NAME" .Values.nginx.serverName
+      "NGINX_SERVER_SCHEME" $scheme
+      "NGINX_CLIENT_MAX_BODY_SIZE" .Values.nginx.clientMaxBodySize
+      "ZAMMAD_RAILSSERVER_HOST" "railsserver"
+      "ZAMMAD_RAILSSERVER_PORT" (printf "%v" .Values.service.railsPort)
+      "ZAMMAD_WEBSOCKET_HOST" "websocket"
+      "ZAMMAD_WEBSOCKET_PORT" (printf "%v" .Values.service.websocketPort)
+}}
+{{- if $esEnabled }}
+{{-   $env = mergeOverwrite $env (dict
+        "ELASTICSEARCH_SCHEMA" .Values.elasticsearch.schema
+        "ELASTICSEARCH_HOST" $esHost
+        "ELASTICSEARCH_PORT" (printf "%v" .Values.elasticsearch.port)
+        "ELASTICSEARCH_NAMESPACE" .Values.elasticsearch.namespace
+        "ELASTICSEARCH_REINDEX" (ternary "true" "false" .Values.elasticsearch.reindex)) }}
+{{-   if $esExtAuth }}
+{{-     $env = mergeOverwrite $env (dict "ELASTICSEARCH_USER" .Values.elasticsearch.auth.username) }}
+{{-   end }}
+{{- end }}
+{{- /* REDIS_URL carries the password (Zammad's standalone Redis config reads ONLY the URL —
+       REDIS_PASSWORD is a sentinel-only field). So with auth on, the URL is built in the command
+       wrapper from the mounted secret (below), NOT here; without auth it is a plain URL in the
+       environment. */ -}}
+{{- if not .Values.redis.auth.enabled }}
+{{-   $env = mergeOverwrite $env (dict "REDIS_URL" (printf "redis://%s:%v" $redisHost (.Values.redis.port | int))) }}
+{{- end }}
+{{- $env = mergeOverwrite $env .Values.extraEnv }}
+{{- $envYaml := toYaml $env }}
+
+{{- /* Secret-reading wrapper prelude, shared by every Zammad role. */ -}}
+{{- $exports := list (printf "export POSTGRESQL_PASS=\"$$(cat /run/secrets/%s)\"" .Values.database.passwordSecretName) }}
+{{- if .Values.redis.auth.enabled }}{{ $exports = append $exports (printf "export REDIS_URL=\"redis://:$$(cat /run/secrets/%s)@%s:%v\"" .Values.redis.auth.secretName $redisHost (.Values.redis.port | int)) }}{{ end }}
+{{- if $esExtAuth }}{{ $exports = append $exports (printf "export ELASTICSEARCH_PASS=\"$$(cat /run/secrets/%s)\"" .Values.elasticsearch.auth.passwordSecretName) }}{{ end }}
+{{- $exportsBlock := join "\n" $exports }}
+
+{{- /* External secrets mounted into every Zammad role. */ -}}
+{{- $appSecrets := list .Values.database.passwordSecretName }}
+{{- if .Values.redis.auth.enabled }}{{ $appSecrets = append $appSecrets .Values.redis.auth.secretName }}{{ end }}
+{{- if $esExtAuth }}{{ $appSecrets = append $appSecrets .Values.elasticsearch.auth.passwordSecretName }}{{ end }}
+
+{{- /* Storage mounts shared by every Zammad role: the attachment volume, plus the backup volume
+       :ro (so a running restore blocks startup — the entrypoint's check_no_restore_running). */ -}}
+{{- $storageMounts := list }}
+{{- if .Values.persistence.enabled }}
+{{-   if .Values.persistence.storagePath }}{{ $storageMounts = append $storageMounts (printf "%s:/opt/zammad/storage" .Values.persistence.storagePath) }}
+{{-   else }}{{ $storageMounts = append $storageMounts (printf "%s:/opt/zammad/storage" .Values.persistence.storageVolumeName) }}{{ end }}
+{{- end }}
+{{- if .Values.backup.enabled }}
+{{-   if .Values.backup.volumePath }}{{ $storageMounts = append $storageMounts (printf "%s:/var/tmp/zammad:ro" .Values.backup.volumePath) }}
+{{-   else }}{{ $storageMounts = append $storageMounts (printf "%s:/var/tmp/zammad:ro" .Values.backup.volumeName) }}{{ end }}
+{{- end }}
+
+{{- /* Placement. The data pin travels with persistence (dropped with the volume, so an ephemeral
+       task never strands Pending on a missing label); placement.constraints adds extras and
+       applies everywhere. $dataConstraints pins the stateful/storage tier; $extraConstraints is
+       for the ephemeral services (memcached, embedded Redis). */ -}}
+{{- $extraConstraints := .Values.placement.constraints }}
+{{- $dataConstraints := list }}
+{{- if and .Values.persistence.enabled .Values.persistence.nodeLabel }}
+{{-   $dataConstraints = append $dataConstraints (printf "node.labels.%s == true" .Values.persistence.nodeLabel) }}
+{{- end }}
+{{- range $extraConstraints }}{{ $dataConstraints = append $dataConstraints . }}{{ end }}
+
+{{- /* Per-role deploy resources block (memory only), rendered only when set. */ -}}
+version: "3.9"
+
+services:
+
+  {{- /* One-shot: create/migrate/seed the database, configure Elasticsearch and (embedded/external
+         + reindex) build the index, then exit. restart on-failure covers a database still starting;
+         a completed task leaves desired-state Shutdown. It serves no HTTP, so no healthcheck. */}}
+  init:
+    image: {{ $image }}
+    networks:
+{{ toYaml $svcNets | indent 6 }}
+    secrets:
+{{- range $appSecrets }}
+      - {{ . }}
+{{- end }}
+{{- if $storageMounts }}
+    volumes:
+{{- range $storageMounts }}
+      - {{ . }}
+{{- end }}
+{{- end }}
+    environment:
+{{ $envYaml | indent 6 }}
+    entrypoint:
+      - /bin/bash
+      - -c
+    command:
+      - |-
+{{ $exportsBlock | indent 8 }}
+        exec /opt/zammad/bin/docker-entrypoint zammad-init
+    healthcheck:
+      disable: true
+    deploy:
+      replicas: 1
+{{- if $dataConstraints }}
+      placement:
+        constraints:
+{{- range $dataConstraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- if or .Values.resources.limits.memory .Values.resources.reservations.memory }}
+      resources:
+{{- with .Values.resources.limits.memory }}
+        limits:
+          memory: {{ . | quote }}
+{{- end }}
+{{- with .Values.resources.reservations.memory }}
+        reservations:
+          memory: {{ . | quote }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 5
+
+  railsserver:
+    image: {{ $image }}
+    networks:
+{{ toYaml $svcNets | indent 6 }}
+    secrets:
+{{- range $appSecrets }}
+      - {{ . }}
+{{- end }}
+{{- if $storageMounts }}
+    volumes:
+{{- range $storageMounts }}
+      - {{ . }}
+{{- end }}
+{{- end }}
+    environment:
+{{ $envYaml | indent 6 }}
+    entrypoint:
+      - /bin/bash
+      - -c
+    command:
+      - |-
+{{ $exportsBlock | indent 8 }}
+        exec /opt/zammad/bin/docker-entrypoint zammad-railsserver
+{{- if .Values.healthcheck.enabled }}
+    {{- /* puma binds railsPort only AFTER check_zammad_ready releases, so an open port is an
+           honest readiness signal. /dev/tcp is a bash builtin (the image ships bash). */}}
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - exec 3<>/dev/tcp/127.0.0.1/{{ .Values.service.railsPort }}
+      interval: {{ .Values.healthcheck.interval }}
+      timeout: {{ .Values.healthcheck.timeout }}
+      retries: {{ .Values.healthcheck.retries }}
+      start_period: {{ .Values.healthcheck.startPeriod }}
+{{- end }}
+    deploy:
+      replicas: {{ .Values.replicas.railsserver }}
+{{- if $dataConstraints }}
+      placement:
+        constraints:
+{{- range $dataConstraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- if or .Values.resources.limits.memory .Values.resources.reservations.memory }}
+      resources:
+{{- with .Values.resources.limits.memory }}
+        limits:
+          memory: {{ . | quote }}
+{{- end }}
+{{- with .Values.resources.reservations.memory }}
+        reservations:
+          memory: {{ . | quote }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+
+  websocket:
+    image: {{ $image }}
+    networks:
+{{ toYaml $svcNets | indent 6 }}
+    secrets:
+{{- range $appSecrets }}
+      - {{ . }}
+{{- end }}
+{{- if $storageMounts }}
+    volumes:
+{{- range $storageMounts }}
+      - {{ . }}
+{{- end }}
+{{- end }}
+    environment:
+{{ $envYaml | indent 6 }}
+    entrypoint:
+      - /bin/bash
+      - -c
+    command:
+      - |-
+{{ $exportsBlock | indent 8 }}
+        exec /opt/zammad/bin/docker-entrypoint zammad-websocket
+{{- if .Values.healthcheck.enabled }}
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - exec 3<>/dev/tcp/127.0.0.1/{{ .Values.service.websocketPort }}
+      interval: {{ .Values.healthcheck.interval }}
+      timeout: {{ .Values.healthcheck.timeout }}
+      retries: {{ .Values.healthcheck.retries }}
+      start_period: {{ .Values.healthcheck.startPeriod }}
+{{- end }}
+    deploy:
+      replicas: {{ .Values.replicas.websocket }}
+{{- if $dataConstraints }}
+      placement:
+        constraints:
+{{- range $dataConstraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- if or .Values.resources.limits.memory .Values.resources.reservations.memory }}
+      resources:
+{{- with .Values.resources.limits.memory }}
+        limits:
+          memory: {{ . | quote }}
+{{- end }}
+{{- with .Values.resources.reservations.memory }}
+        reservations:
+          memory: {{ . | quote }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+
+  {{- /* Background jobs. ALWAYS a single replica — a second scheduler double-runs every job — and
+         rolls stop-first so a deploy never overlaps two. No HTTP, so no healthcheck. */}}
+  scheduler:
+    image: {{ $image }}
+    networks:
+{{ toYaml $svcNets | indent 6 }}
+    secrets:
+{{- range $appSecrets }}
+      - {{ . }}
+{{- end }}
+{{- if $storageMounts }}
+    volumes:
+{{- range $storageMounts }}
+      - {{ . }}
+{{- end }}
+{{- end }}
+    environment:
+{{ $envYaml | indent 6 }}
+    entrypoint:
+      - /bin/bash
+      - -c
+    command:
+      - |-
+{{ $exportsBlock | indent 8 }}
+        exec /opt/zammad/bin/docker-entrypoint zammad-scheduler
+    healthcheck:
+      disable: true
+    deploy:
+      replicas: 1
+      update_config:
+        order: stop-first
+{{- if $dataConstraints }}
+      placement:
+        constraints:
+{{- range $dataConstraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- if or .Values.resources.limits.memory .Values.resources.reservations.memory }}
+      resources:
+{{- with .Values.resources.limits.memory }}
+        limits:
+          memory: {{ . | quote }}
+{{- end }}
+{{- with .Values.resources.reservations.memory }}
+        reservations:
+          memory: {{ . | quote }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+
+  {{- /* The HTTP front door. Rewrites its own nginx config from ZAMMAD_RAILSSERVER_HOST /
+         ZAMMAD_WEBSOCKET_HOST (set in $env to the in-stack service names) and proxies to them. It
+         runs check_zammad_ready first (hence the full env + secrets), so an open nginxPort means
+         the whole stack is ready. */}}
+  nginx:
+    image: {{ $image }}
+    networks:
+{{ toYaml $nginxNets | indent 6 }}
+{{- if eq $mode "published" }}
+    ports:
+      - target: {{ .Values.service.nginxPort }}
+        published: {{ .Values.publish.port }}
+        protocol: tcp
+        mode: {{ .Values.publish.mode }}
+{{- end }}
+    secrets:
+{{- range $appSecrets }}
+      - {{ . }}
+{{- end }}
+{{- if $storageMounts }}
+    volumes:
+{{- range $storageMounts }}
+      - {{ . }}
+{{- end }}
+{{- end }}
+    environment:
+{{ $envYaml | indent 6 }}
+    entrypoint:
+      - /bin/bash
+      - -c
+    command:
+      - |-
+{{ $exportsBlock | indent 8 }}
+        exec /opt/zammad/bin/docker-entrypoint zammad-nginx
+{{- if .Values.healthcheck.enabled }}
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - exec 3<>/dev/tcp/127.0.0.1/{{ .Values.service.nginxPort }}
+      interval: {{ .Values.healthcheck.interval }}
+      timeout: {{ .Values.healthcheck.timeout }}
+      retries: {{ .Values.healthcheck.retries }}
+      start_period: {{ .Values.healthcheck.startPeriod }}
+{{- end }}
+    deploy:
+      replicas: 1
+{{- if $dataConstraints }}
+      placement:
+        constraints:
+{{- range $dataConstraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- if or .Values.resources.limits.memory .Values.resources.reservations.memory }}
+      resources:
+{{- with .Values.resources.limits.memory }}
+        limits:
+          memory: {{ . | quote }}
+{{- end }}
+{{- with .Values.resources.reservations.memory }}
+        reservations:
+          memory: {{ . | quote }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- if eq $mode "traefik" }}
+      labels:
+        - "traefik.enable=true"
+        - "traefik.swarm.network={{ .Values.exposure.network }}"
+        - "traefik.constraint-label={{ .Values.traefik.constraintLabel }}"
+        # HTTP router
+        - "traefik.http.routers.{{ $router }}-http.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ $router }}-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
+{{- if .Values.ingress.tls }}
+        # Redirect plain HTTP to HTTPS, then terminate TLS on the HTTPS router.
+        - "traefik.http.routers.{{ $router }}-http.middlewares={{ .Values.traefik.redirectMiddleware }}"
+        - "traefik.http.routers.{{ $router }}-https.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ $router }}-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
+        - "traefik.http.routers.{{ $router }}-https.tls=true"
+        - "traefik.http.routers.{{ $router }}-https.tls.certresolver={{ .Values.traefik.certResolver }}"
+{{- end }}
+        - "traefik.http.services.{{ $router }}.loadbalancer.server.port={{ .Values.service.nginxPort }}"
+{{- end }}
+
+{{- if $memEmbedded }}
+
+  {{- /* Ephemeral in-stack cache. No volume, no node pin — scheduling anywhere is fine, it is
+         reachable on the internal overlay. No healthcheck: memcached comes up instantly and
+         carries only cache, so Swarm's running-state is a sufficient signal (a portable busybox
+         TCP probe is more trouble than it is worth here). */}}
+  memcached:
+    image: {{ .Values.memcache.image.repository }}:{{ .Values.memcache.image.tag }}
+    networks:
+      - {{ $internal }}
+    command:
+      - memcached
+      - -m
+      - "{{ .Values.memcache.memoryMB }}"
+    deploy:
+      replicas: 1
+{{- if $extraConstraints }}
+      placement:
+        constraints:
+{{- range $extraConstraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- end }}
+
+{{- if $esEmbedded }}
+
+  {{- /* Single-node Elasticsearch this chart runs itself. PERSISTENT (volume + data pin). Security
+         is disabled and it sits on the private internal overlay only. discovery.type=single-node
+         skips the bootstrap checks (vm.max_map_count / memlock), so no host sysctl or cap_add is
+         needed to start — see the README for the production tuning recommendation. */}}
+  elasticsearch:
+    image: {{ .Values.elasticsearch.image.repository }}:{{ .Values.elasticsearch.image.tag }}
+    networks:
+      - {{ $internal }}
+{{- if .Values.persistence.enabled }}
+    volumes:
+{{- if .Values.elasticsearch.persistence.volumePath }}
+      - {{ .Values.elasticsearch.persistence.volumePath }}:/usr/share/elasticsearch/data
+{{- else }}
+      - {{ .Values.elasticsearch.persistence.volumeName }}:/usr/share/elasticsearch/data
+{{- end }}
+{{- end }}
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: {{ .Values.elasticsearch.javaOpts | quote }}
+{{- if .Values.healthcheck.enabled }}
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - exec 3<>/dev/tcp/127.0.0.1/{{ .Values.elasticsearch.port }}
+      interval: {{ .Values.healthcheck.interval }}
+      timeout: {{ .Values.healthcheck.timeout }}
+      retries: {{ .Values.healthcheck.retries }}
+      start_period: {{ .Values.healthcheck.startPeriod }}
+{{- end }}
+    deploy:
+      replicas: 1
+{{- if $dataConstraints }}
+      placement:
+        constraints:
+{{- range $dataConstraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- if or .Values.elasticsearchResources.limits.memory .Values.elasticsearchResources.reservations.memory }}
+      resources:
+{{- with .Values.elasticsearchResources.limits.memory }}
+        limits:
+          memory: {{ . | quote }}
+{{- end }}
+{{- with .Values.elasticsearchResources.reservations.memory }}
+        reservations:
+          memory: {{ . | quote }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- end }}
+
+{{- if $dbEmbedded }}
+
+  {{- /* PostgreSQL this chart runs itself (database.mode: embedded). PERSISTENT — it is Zammad's
+         system of record — so volume + data pin. The password comes from the SAME external secret
+         Zammad reads, via the image's POSTGRES_PASSWORD_FILE convention (plaintext never in the
+         manifest or `docker inspect`). The volume is mounted at the image's default PGDATA
+         (/var/lib/postgresql/data for this pinned 17-alpine tag). */}}
+  postgres:
+    image: {{ .Values.database.embedded.image.repository }}:{{ .Values.database.embedded.image.tag }}
+    networks:
+      - {{ $internal }}
+{{- if .Values.persistence.enabled }}
+    volumes:
+{{- if .Values.database.embedded.volumePath }}
+      - {{ .Values.database.embedded.volumePath }}:/var/lib/postgresql/data
+{{- else }}
+      - {{ .Values.database.embedded.volumeName }}:/var/lib/postgresql/data
+{{- end }}
+{{- end }}
+    secrets:
+      - {{ .Values.database.passwordSecretName }}
+    environment:
+      POSTGRES_USER: {{ .Values.database.username | quote }}
+      POSTGRES_DB: {{ .Values.database.name | quote }}
+      POSTGRES_PASSWORD_FILE: /run/secrets/{{ .Values.database.passwordSecretName }}
+{{- if .Values.healthcheck.enabled }}
+    healthcheck:
+      test:
+        - CMD
+        - pg_isready
+        - -h
+        - 127.0.0.1
+        - -U
+        - {{ .Values.database.username | quote }}
+        - -d
+        - {{ .Values.database.name | quote }}
+      interval: {{ .Values.healthcheck.interval }}
+      timeout: {{ .Values.healthcheck.timeout }}
+      retries: {{ .Values.healthcheck.retries }}
+      start_period: 60s
+{{- end }}
+    deploy:
+      replicas: 1
+{{- if $dataConstraints }}
+      placement:
+        constraints:
+{{- range $dataConstraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- end }}
+
+{{- if $redisEmbedded }}
+
+  {{- /* Redis this chart runs itself (redis.mode: embedded). EPHEMERAL — no volume, no pin: a
+         restart drops queued jobs + websocket sessions, which Zammad tolerates. Same secret-in-
+         command construction as charts/redis (the image has no requirepass-from-file). */}}
+  redis:
+    image: {{ .Values.redis.embedded.image.repository }}:{{ .Values.redis.embedded.image.tag }}
+    networks:
+      - {{ $internal }}
+{{- if .Values.redis.auth.enabled }}
+    secrets:
+      - {{ .Values.redis.auth.secretName }}
+    command:
+      - sh
+      - -c
+      - "test -s /run/secrets/{{ .Values.redis.auth.secretName }} || { echo '{{ .Values.redis.auth.secretName }} secret is empty' >&2; exit 1; }; exec docker-entrypoint.sh redis-server --requirepass \"$$(cat /run/secrets/{{ .Values.redis.auth.secretName }})\""
+{{- end }}
+{{- if .Values.healthcheck.enabled }}
+    healthcheck:
+      test:
+        - CMD-SHELL
+{{- if .Values.redis.auth.enabled }}
+        - REDISCLI_AUTH="$$(cat /run/secrets/{{ .Values.redis.auth.secretName }})" redis-cli ping | grep -q PONG
+{{- else }}
+        - redis-cli ping | grep -q PONG
+{{- end }}
+      interval: {{ .Values.healthcheck.interval }}
+      timeout: {{ .Values.healthcheck.timeout }}
+      retries: {{ .Values.healthcheck.retries }}
+      start_period: 10s
+{{- end }}
+    deploy:
+      replicas: 1
+{{- if $extraConstraints }}
+      placement:
+        constraints:
+{{- range $extraConstraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- end }}
+
+{{- if .Values.backup.enabled }}
+
+  {{- /* Scheduled backup. Runs as root (0:0) to read every file; mounts the storage volume (source)
+         and the backup volume (target, read-write). No HTTP, so no healthcheck. */}}
+  backup:
+    image: {{ $image }}
+    user: "0:0"
+    networks:
+{{ toYaml $svcNets | indent 6 }}
+    secrets:
+{{- range $appSecrets }}
+      - {{ . }}
+{{- end }}
+    volumes:
+{{- if .Values.persistence.enabled }}
+{{- if .Values.persistence.storagePath }}
+      - {{ .Values.persistence.storagePath }}:/opt/zammad/storage
+{{- else }}
+      - {{ .Values.persistence.storageVolumeName }}:/opt/zammad/storage
+{{- end }}
+{{- end }}
+{{- if .Values.backup.volumePath }}
+      - {{ .Values.backup.volumePath }}:/var/tmp/zammad
+{{- else }}
+      - {{ .Values.backup.volumeName }}:/var/tmp/zammad
+{{- end }}
+    environment:
+{{ $envYaml | indent 6 }}
+      BACKUP_TIME: {{ .Values.backup.time | quote }}
+      BACKUP_ON_START: {{ ternary "true" "false" .Values.backup.onStart | quote }}
+      HOLD_DAYS: {{ .Values.backup.holdDays | quote }}
+      TZ: {{ .Values.backup.tz | quote }}
+    entrypoint:
+      - /bin/bash
+      - -c
+    command:
+      - |-
+{{ $exportsBlock | indent 8 }}
+        exec /opt/zammad/bin/docker-entrypoint zammad-backup
+    deploy:
+      replicas: 1
+{{- if $dataConstraints }}
+      placement:
+        constraints:
+{{- range $dataConstraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- end }}
+
+{{- /* Volumes: the attachment store, plus the embedded PostgreSQL / Elasticsearch data and the
+       backup target — each only when it is a MANAGED named volume (host-path mounts declare none). */}}
+{{- $namedVols := list }}
+{{- if and .Values.persistence.enabled (not .Values.persistence.storagePath) }}{{ $namedVols = append $namedVols .Values.persistence.storageVolumeName }}{{ end }}
+{{- if and .Values.persistence.enabled $dbEmbedded (not .Values.database.embedded.volumePath) }}{{ $namedVols = append $namedVols .Values.database.embedded.volumeName }}{{ end }}
+{{- if and .Values.persistence.enabled $esEmbedded (not .Values.elasticsearch.persistence.volumePath) }}{{ $namedVols = append $namedVols .Values.elasticsearch.persistence.volumeName }}{{ end }}
+{{- if and .Values.backup.enabled (not .Values.backup.volumePath) }}{{ $namedVols = append $namedVols .Values.backup.volumeName }}{{ end }}
+{{- if $namedVols }}
+
+volumes:
+{{- range $namedVols }}
+  {{ . }}: {}
+{{- end }}
+{{- end }}
+
+secrets:
+  {{ .Values.database.passwordSecretName }}:
+    external: true
+{{- if .Values.redis.auth.enabled }}
+  {{ .Values.redis.auth.secretName }}:
+    external: true
+{{- end }}
+{{- if $esExtAuth }}
+  {{ .Values.elasticsearch.auth.passwordSecretName }}:
+    external: true
+{{- end }}
+
+{{- /* The internal overlay is CHART-MANAGED (this stack creates it); every other overlay is
+       EXTERNAL (operator/other-chart provisioned; requirements.yaml declares them autoCreate:false). */}}
+networks:
+{{- /* $nginxNets is the superset of every service's networks (nginx joins the ingress overlay on
+       top of what the other roles use), so it is exactly the set to declare here. */}}
+{{- range $nginxNets }}
+  {{ . }}:
+{{- if eq . $internal }}
+    driver: overlay
+    attachable: true
+{{- else }}
+    external: true
+{{- end }}
+{{- end }}

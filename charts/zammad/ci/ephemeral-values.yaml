@@ -1,0 +1,14 @@
+# Ephemeral storage: no volumes, no node pin (attachments/DB/index are lost on reschedule —
+# throwaway evaluation). Embedded backing so the whole stack is self-contained.
+persistence:
+  enabled: false
+database:
+  mode: embedded
+redis:
+  mode: embedded
+  # Zero-secret path: an embedded Redis on a stack-private overlay needs no auth (and Zammad then
+  # needs no zammad_redis_password secret) — exercises the no-auth REDIS_URL-in-environment render.
+  auth:
+    enabled: false
+exposure:
+  mode: published

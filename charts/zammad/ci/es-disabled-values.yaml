@@ -1,0 +1,3 @@
+# Elasticsearch disabled — Zammad runs with database-based search. The lightest deployment.
+elasticsearch:
+  mode: disabled

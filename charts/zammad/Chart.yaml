@@ -1,0 +1,29 @@
+name: zammad
+description: Zammad helpdesk / ticketing on Docker Swarm — external or embedded PostgreSQL & Redis, embedded/external/disabled Elasticsearch, Traefik-routed via its own nginx
+# version is a placeholder — the git tag (zammad/vX.Y.Z) sets the real version at release.
+version: 0.1.0
+# appVersion is the default image tag for ghcr.io/zammad/zammad. It is the immutable
+# version+patchlevel Zammad's own docker-compose pins (the bare `7.1.1` tag floats).
+# renovate: image=ghcr.io/zammad/zammad
+appVersion: "7.1.1-0020"
+maintainers:
+  - name: Eldara
+    url: https://github.com/Eldara-Tech
+keywords:
+  - zammad
+  - helpdesk
+  - ticketing
+  - support
+home: https://github.com/Eldara-Tech/swarmcli-charts
+sources:
+  - https://github.com/zammad/zammad
+  - https://zammad.org/
+# The default render needs no acknowledgment: all state lives on node-local named volumes (no
+# host mount), passwords come from external Swarm secrets, and there is no docker.sock /
+# privileged / host-network / cap_add (the embedded Elasticsearch runs single-node, which skips
+# the bootstrap checks that would otherwise want a cap/sysctl). Only the opt-in host-path
+# persistence (persistence.storagePath, database.embedded.volumePath,
+# elasticsearch.persistence.volumePath, backup.volumePath) introduces a host bind mount, which
+# the security scan flags as host-mount only when configured — acknowledged here:
+annotations:
+  swarmcli-charts/allow: "host-mount"

@@ -1,0 +1,16 @@
+# One-command evaluation: the chart runs its OWN PostgreSQL (persistent), Redis (ephemeral),
+# memcached and Elasticsearch — nothing external to pre-create except the two secrets. Published
+# directly (no proxy). This is the fixture the e2e job converges solo.
+database:
+  mode: embedded
+redis:
+  mode: embedded
+elasticsearch:
+  mode: embedded
+  # Smaller heap: this fixture is the e2e case and seeds only a fresh DB, so a full 1g heap just
+  # adds RAM pressure on the runner. Production keeps the values.yaml default.
+  javaOpts: "-Xms512m -Xmx512m"
+exposure:
+  mode: published
+publish:
+  port: 8080
