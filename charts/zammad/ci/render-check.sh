@@ -147,13 +147,13 @@ if [ "$case" = "backup" ]; then
   [ "$(yq -r '.services.backup.user' "$out")" = "0:0" ] || note "backup service is not user 0:0"
 fi
 
-# ai-backend: the app tier joins the EXTERNAL aiBackend overlay (reachability for a co-located AI
-# provider, e.g. Ollama). The overlay must render external:true and railsserver must attach to it.
-if [ "$case" = "ai-backend" ]; then
+# extra-network: the app tier joins the EXTERNAL extraNetwork overlay (reachability for a co-located,
+# unexposed service, e.g. Ollama). The overlay must render external:true and railsserver must attach.
+if [ "$case" = "extra-network" ]; then
   net_external eldara-ollama_ai-internal \
-    || note "ai-backend: aiBackend.network did not render as an EXTERNAL overlay"
+    || note "extra-network: extraNetwork.network did not render as an EXTERNAL overlay"
   yq -r '.services.railsserver.networks // [] | .[]' "$out" | grep -qx 'eldara-ollama_ai-internal' \
-    || note "ai-backend: railsserver did not join the aiBackend overlay (cannot reach the provider)"
+    || note "extra-network: railsserver did not join the extraNetwork overlay (cannot reach the service)"
 fi
 
 exit "$fail"

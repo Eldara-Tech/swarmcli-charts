@@ -1,0 +1,10 @@
+# extra-network fixture: the Zammad app tier joined to a co-located, port-unexposed backend via the
+# general extraNetwork knob. extraNetwork.enabled attaches every app role to extraNetwork.network (an
+# EXTERNAL overlay), so Zammad can dial services on it BY SERVICE NAME. This is reachability ONLY;
+# pointing Zammad at a provider is a config step (e.g. Admin → System → AI: base URL + token, stored
+# in the DB), never env. Exercised with the real Ollama overlay name from the #82 request as the
+# concrete regression guard. render-check.sh asserts the overlay renders external:true and that
+# railsserver joined it.
+extraNetwork:
+  enabled: true
+  network: eldara-ollama_ai-internal

@@ -132,24 +132,28 @@ attach to).
 > — e.g. `openssl rand -hex 24`. Set `redis.auth.enabled=false` for an unauthenticated Redis on a
 > private overlay (the zero-secret path, natural with `redis.mode=embedded`).
 
-## Connecting a local AI provider (Ollama)
+## Reaching a co-located, unexposed service (e.g. Ollama)
 
-Zammad's AI features (Smart Assist) call an LLM provider you configure in **Admin → System → AI**
-(provider + base URL + token, stored in the database). To use a self-hosted model — e.g. an Ollama
-running in the same swarm whose port is **not** published — the app only needs to be on the same
-overlay so it can reach the service by name. Enable `aiBackend`:
+`extraNetwork` attaches the whole Zammad app tier to one additional **external** overlay, so Zammad
+can reach a co-located, port-unexposed service **by name**. The canonical case is a self-hosted LLM
+for Zammad's AI features (Smart Assist) — an Ollama running in the same swarm with no published port:
 
 ```yaml
-aiBackend:
+extraNetwork:
   enabled: true
   network: eldara-ollama_ai-internal   # the EXTERNAL overlay Ollama is reachable on
 ```
 
-This attaches every Zammad role to that overlay; then point Zammad at it in Admin → System → AI
-(e.g. base URL `http://ollama:11434`). The overlay is external and **not** created here — the AI
-service's own stack/operator provisions it (`requirements.yaml` declares it `autoCreate: false`), and
-its name must differ from `internalNetwork`. Hosted providers reached over the public internet need
-no extra overlay — leave `aiBackend.enabled: false`.
+This attaches every Zammad role to that overlay; then point Zammad at the provider in **Admin →
+System → AI** (e.g. base URL `http://ollama:11434` + token, stored in the DB — the chart only
+provides reachability). The overlay is external and **not** created here — the service's own
+stack/operator provisions it (`requirements.yaml` declares it `autoCreate: false`), and its name must
+differ from `internalNetwork`.
+
+It is general, not AI-specific: for a fully-internal deployment, point it at one shared attachable
+overlay that several unexposed stacks sit on (e.g. Ollama + a mail server + LDAP) and Zammad reaches
+them all by name. Leave `extraNetwork.enabled: false` when every dependency is reached over a routable
+or public network.
 
 ## Storage and scaling
 
@@ -205,8 +209,8 @@ new secret and point the relevant `*SecretName` value at it.
 | `trustedProxies` | `0.0.0.0/0` | `RAILS_TRUSTED_PROXIES` — peers trusted for X-Forwarded-* |
 | `replicas.railsserver` / `.websocket` | `1` / `1` | App-role replicas (scale on the pinned node) |
 | `internalNetwork` | `zammad-internal` | Chart-managed overlay for in-stack traffic |
-| `aiBackend.enabled` | `false` | Join the app tier to an extra external overlay (reach a co-located AI provider) |
-| `aiBackend.network` | `zammad-ai-backend` | External overlay the AI provider (e.g. Ollama) is reachable on |
+| `extraNetwork.enabled` | `false` | Attach the app tier to one extra external overlay (reach a co-located, unexposed service) |
+| `extraNetwork.network` | `zammad-extra` | External overlay to attach to (e.g. an Ollama's, or a shared internal-services overlay) |
 | `persistence.enabled` | `true` | Storage volumes + node pin (false ⇒ ephemeral) |
 | `persistence.nodeLabel` | `zammad-data` | Data-pin node label (`""` skips the pin) |
 | `persistence.storageVolumeName` / `.storagePath` | `zammad-storage` / `""` | Attachment volume (host path via `storagePath`) |

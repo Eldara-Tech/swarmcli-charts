@@ -11,7 +11,7 @@
 #     chart-managed internal overlay, so its external overlay below is never referenced;
 #   * elasticsearch.mode: embedded or disabled -> no external Elasticsearch overlay/secret;
 #   * exposure.mode: published               -> no ingress overlay;
-#   * aiBackend.enabled: false               -> the optional AI-backend overlay is never referenced;
+#   * extraNetwork.enabled: false            -> the optional extra attach-overlay is never referenced;
 #   * redis.auth.enabled: false / elasticsearch.auth.enabled: false -> that password secret unused.
 # The chart-managed internal overlay (internalNetwork) is created by this stack and is NOT listed
 # here. Every overlay below is autoCreate:false — Zammad consumes them, it does not own them.
@@ -36,11 +36,11 @@ networks:
     attachable: true
     autoCreate: false
     description: "elasticsearch.mode: external ONLY — the external overlay the Elasticsearch cluster is on. Inert under mode: embedded or disabled"
-  - name: "{{ .Values.aiBackend.network }}"
+  - name: "{{ .Values.extraNetwork.network }}"
     driver: overlay
     attachable: true
     autoCreate: false
-    description: "aiBackend.enabled ONLY — optional external overlay a co-located AI provider (e.g. an in-swarm Ollama) is reachable on, provisioned by that service's operator/chart. Inert when aiBackend.enabled is false"
+    description: "extraNetwork.enabled ONLY — optional external overlay the app tier attaches to for a co-located, unexposed service (e.g. an in-swarm Ollama, or a shared overlay carrying several stacks), provisioned by that overlay's operator/chart. Inert when extraNetwork.enabled is false"
 secrets:
   - name: "{{ .Values.database.passwordSecretName }}"
     description: "PostgreSQL password for database.username (also mounted into the embedded PostgreSQL). Pre-create: printf 'S3cr3t' | docker secret create zammad_db_password -"
