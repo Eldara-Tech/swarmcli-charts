@@ -12,4 +12,8 @@ for s in zammad_db_password zammad_redis_password zammad_elasticsearch_password;
   docker secret rm "$s" >/dev/null 2>&1 || true
 done
 
+node="$(docker node ls --format '{{.ID}} {{.Self}}' 2>/dev/null | awk '$2=="true"{print $1; exit}')"
+[ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | head -1)"
+[ -n "$node" ] && docker node update --label-rm zammad-data "$node" >/dev/null 2>&1 || true
+
 exit 0

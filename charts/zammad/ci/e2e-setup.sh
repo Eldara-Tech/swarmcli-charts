@@ -25,3 +25,10 @@ PW='test'
 for s in zammad_db_password zammad_redis_password zammad_elasticsearch_password; do
   docker secret inspect "$s" >/dev/null 2>&1 || printf '%s' "$PW" | docker secret create "$s" - >/dev/null
 done
+
+# Pin: label this (single-node) swarm's node so the app tier's node.labels.zammad-data == true
+# constraint schedules (persistence.nodeLabel defaults to zammad-data, which the embedded-backing
+# fixture keeps). Without it every stateful role stays Pending and the case never converges.
+node="$(docker node ls --format '{{.ID}} {{.Self}}' 2>/dev/null | awk '$2=="true"{print $1; exit}')"
+[ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | head -1)"
+[ -n "$node" ] && docker node update --label-add zammad-data=true "$node" >/dev/null
