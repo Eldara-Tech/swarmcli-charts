@@ -73,17 +73,20 @@
 {{- if not $redisEmbedded }}{{ $externalNets = append $externalNets .Values.redis.network }}{{ end }}
 {{- if and $esEnabled (not $esEmbedded) }}{{ $externalNets = append $externalNets .Values.elasticsearch.network }}{{ end }}
 {{- if $proxied }}{{ $externalNets = append $externalNets .Values.exposure.network }}{{ end }}
+{{- if .Values.aiBackend.enabled }}{{ $externalNets = append $externalNets .Values.aiBackend.network }}{{ end }}
 {{- if has $internal $externalNets }}
-{{-   fail (printf "internalNetwork (%q) collides with an EXTERNAL overlay (database.network / redis.network / elasticsearch.network / exposure.network). The internal overlay is chart-managed and created by this stack; give it a name none of the external overlays use." $internal) }}
+{{-   fail (printf "internalNetwork (%q) collides with an EXTERNAL overlay (database.network / redis.network / elasticsearch.network / exposure.network / aiBackend.network). The internal overlay is chart-managed and created by this stack; give it a name none of the external overlays use." $internal) }}
 {{- end }}
 
 {{- /* Networks each Zammad role attaches to: the internal overlay always, plus every backing
-       service that is EXTERNAL, plus (nginx only, in proxied modes) the ingress overlay. nginx
-       needs the DB/Redis overlays too — its readiness gate runs `bundle exec rails r`. */ -}}
+       service that is EXTERNAL, plus the optional aiBackend overlay (reachability for a co-located
+       AI provider), plus (nginx only, in proxied modes) the ingress overlay. nginx needs the
+       DB/Redis overlays too — its readiness gate runs `bundle exec rails r`. */ -}}
 {{- $svcNets := list $internal }}
 {{- if not $dbEmbedded }}{{ $svcNets = append $svcNets .Values.database.network }}{{ end }}
 {{- if not $redisEmbedded }}{{ $svcNets = append $svcNets .Values.redis.network }}{{ end }}
 {{- if and $esEnabled (not $esEmbedded) }}{{ $svcNets = append $svcNets .Values.elasticsearch.network }}{{ end }}
+{{- if .Values.aiBackend.enabled }}{{ $svcNets = append $svcNets .Values.aiBackend.network }}{{ end }}
 {{- $svcNets = $svcNets | uniq }}
 {{- $nginxNets := ternary (append $svcNets .Values.exposure.network | uniq) $svcNets $proxied }}
 

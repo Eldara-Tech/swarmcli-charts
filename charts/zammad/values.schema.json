@@ -105,6 +105,13 @@
         "network": { "type": "string" }
       }
     },
+    "aiBackend": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "network": { "type": "string" }
+      }
+    },
     "backup": {
       "type": "object",
       "properties": {

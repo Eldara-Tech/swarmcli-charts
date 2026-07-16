@@ -132,6 +132,25 @@ attach to).
 > — e.g. `openssl rand -hex 24`. Set `redis.auth.enabled=false` for an unauthenticated Redis on a
 > private overlay (the zero-secret path, natural with `redis.mode=embedded`).
 
+## Connecting a local AI provider (Ollama)
+
+Zammad's AI features (Smart Assist) call an LLM provider you configure in **Admin → System → AI**
+(provider + base URL + token, stored in the database). To use a self-hosted model — e.g. an Ollama
+running in the same swarm whose port is **not** published — the app only needs to be on the same
+overlay so it can reach the service by name. Enable `aiBackend`:
+
+```yaml
+aiBackend:
+  enabled: true
+  network: eldara-ollama_ai-internal   # the EXTERNAL overlay Ollama is reachable on
+```
+
+This attaches every Zammad role to that overlay; then point Zammad at it in Admin → System → AI
+(e.g. base URL `http://ollama:11434`). The overlay is external and **not** created here — the AI
+service's own stack/operator provisions it (`requirements.yaml` declares it `autoCreate: false`), and
+its name must differ from `internalNetwork`. Hosted providers reached over the public internet need
+no extra overlay — leave `aiBackend.enabled: false`.
+
 ## Storage and scaling
 
 The app roles share a node-local named volume for `/opt/zammad/storage`, so by default the whole app
@@ -186,6 +205,8 @@ new secret and point the relevant `*SecretName` value at it.
 | `trustedProxies` | `0.0.0.0/0` | `RAILS_TRUSTED_PROXIES` — peers trusted for X-Forwarded-* |
 | `replicas.railsserver` / `.websocket` | `1` / `1` | App-role replicas (scale on the pinned node) |
 | `internalNetwork` | `zammad-internal` | Chart-managed overlay for in-stack traffic |
+| `aiBackend.enabled` | `false` | Join the app tier to an extra external overlay (reach a co-located AI provider) |
+| `aiBackend.network` | `zammad-ai-backend` | External overlay the AI provider (e.g. Ollama) is reachable on |
 | `persistence.enabled` | `true` | Storage volumes + node pin (false ⇒ ephemeral) |
 | `persistence.nodeLabel` | `zammad-data` | Data-pin node label (`""` skips the pin) |
 | `persistence.storageVolumeName` / `.storagePath` | `zammad-storage` / `""` | Attachment volume (host path via `storagePath`) |

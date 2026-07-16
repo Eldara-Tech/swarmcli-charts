@@ -104,6 +104,20 @@ replicas:
 # the render fails loudly if it does.
 internalNetwork: zammad-internal
 
+# Optional extra EXTERNAL overlay for a co-located, port-unexposed service the Zammad app should
+# reach by service name — typically a self-hosted LLM such as an in-swarm Ollama. enabled:true makes
+# every app role (init/railsserver/websocket/scheduler, nginx, and backup when on) JOIN
+# aiBackend.network so it can dial that service on the overlay. This ONLY provides network
+# reachability; you still point Zammad AT the provider in its own config — Admin → System → AI (base
+# URL such as http://ollama:11434 + token), stored in the database, never through env. Leave disabled
+# for hosted providers reached over the public internet — they need no extra overlay. The overlay is
+# EXTERNAL (provisioned by that service's operator/chart, e.g. the ollama chart — never created here;
+# declared in requirements.yaml with autoCreate:false), and its name must not collide with
+# internalNetwork or any other external overlay (the render fails loudly if it does).
+aiBackend:
+  enabled: false
+  network: zammad-ai-backend
+
 # Storage + placement for the STATEFUL tier (app roles' /opt/zammad/storage, and the embedded
 # postgres / elasticsearch volumes). Swarm named volumes are node-local, so everything that owns a
 # volume is pinned to one node.
