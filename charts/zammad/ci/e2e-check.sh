@@ -23,25 +23,53 @@ release="$1"
 port=8080
 url="http://localhost:${port}/api/v1/getting_started"
 
-# Bound BOTH each probe (-m 10, so a slow/hung nginx→rails upstream cannot stall the loop) and the
-# overall wait (a real wall-clock deadline). The old iteration count assumed every probe returned in
-# ~10s; while the app boots each request sits on a read-timeout, so 90 iterations could run far past
-# the intended budget. This runs AFTER convergence (image pull already paid), so the wall clock here
-# covers only migrations + seed + puma binding.
+# Each probe is bounded (-m 25; a cold first request on a slow CI disk can exceed 10s, so we must not
+# cut a valid-but-slow response), and the whole wait has a wall-clock deadline. rails' puma is already
+# listening by the time convergence completes, so a healthy stack serves almost immediately — 10 min
+# is ample, and a shorter budget gets us to the diagnostics faster. The heartbeat logs the OBSERVED
+# status every ~2 min, so a failing run shows WHAT it got (000 unreachable / 502 / 503 / redirect),
+# instead of the old black-box "never 200".
 ok=0
-deadline=$(( $(date +%s) + 1800 ))   # 30 min wall-clock, hard
+code=""
+deadline=$(( $(date +%s) + 600 ))   # 10 min wall-clock, hard
+next_beat=0
 while [ "$(date +%s)" -lt "$deadline" ]; do
-  code="$(curl -s -o /dev/null -m 10 -w '%{http_code}' "$url" 2>/dev/null || true)"
+  code="$(curl -s -o /dev/null -m 25 -w '%{http_code}' "$url" 2>/dev/null || true)"
   if [ "$code" = "200" ]; then ok=1; break; fi
+  now="$(date +%s)"
+  if [ "$now" -ge "$next_beat" ]; then
+    echo "   … waiting: ${url} -> ${code:-000}  ($(( (deadline - now) / 60 ))m left)"
+    next_beat=$(( now + 120 ))
+  fi
   sleep 10
 done
 
 if [ "$ok" -ne 1 ]; then
-  echo "   FAIL: ${url} never returned 200 (init did not migrate, the app never bound, or nginx's rails upstream is misrouted)"
-  docker service logs --tail 80 "${release}_init"        2>&1 | sed 's/^/      init:   /' || true
-  docker service logs --tail 80 "${release}_railsserver" 2>&1 | sed 's/^/      rails:  /' || true
-  docker service logs --tail 40 "${release}_nginx"       2>&1 | sed 's/^/      nginx:  /' || true
-  docker service logs --tail 20 "${release}_postgres"    2>&1 | sed 's/^/      pg:     /' || true
+  echo "   FAIL: ${url} never returned 200 (last status: ${code:-000})"
+
+  echo "   --- curl -v to the host published port (what does the edge actually answer?) ---"
+  curl -sv -m 25 -o /dev/null "$url" 2>&1 | sed 's/^/      /' | tail -25 || true
+
+  echo "   --- docker service ps: health / restarts / rejection reasons ---"
+  for svc in init railsserver websocket scheduler nginx postgres redis memcached elasticsearch; do
+    docker service ps --no-trunc "${release}_${svc}" 2>/dev/null | sed 's/^/      /' || true
+  done
+
+  # Probe rails DIRECTLY on the internal overlay (a throwaway curl container joins it), bypassing
+  # nginx and the ingress routing mesh — this splits "app is broken" from "nginx/mesh is broken".
+  echo "   --- rails direct on the internal overlay (bypasses nginx + routing mesh) ---"
+  net="$(docker network ls --filter "name=${release}" --format '{{.Name}}' 2>/dev/null | grep -m1 internal || true)"
+  if [ -n "$net" ]; then
+    docker run --rm --network "$net" curlimages/curl:8.11.1 \
+      -s -m 25 -o /dev/null -w 'railsserver:3000 -> %{http_code}\n' \
+      "http://railsserver:3000/api/v1/getting_started" 2>&1 | sed 's/^/      /' || true
+  fi
+
+  echo "   --- service logs ---"
+  for svc in init railsserver nginx elasticsearch postgres redis; do
+    echo "      === ${svc} ==="
+    docker service logs --tail 60 "${release}_${svc}" 2>&1 | sed 's/^/      /' || true
+  done
   exit 1
 fi
 echo "   ok: ${url} -> 200 (nginx -> rails -> migrated database)"
