@@ -23,9 +23,15 @@ release="$1"
 port=8080
 url="http://localhost:${port}/api/v1/getting_started"
 
+# Bound BOTH each probe (-m 10, so a slow/hung nginx→rails upstream cannot stall the loop) and the
+# overall wait (a real wall-clock deadline). The old iteration count assumed every probe returned in
+# ~10s; while the app boots each request sits on a read-timeout, so 90 iterations could run far past
+# the intended budget. This runs AFTER convergence (image pull already paid), so the wall clock here
+# covers only migrations + seed + puma binding.
 ok=0
-for _ in $(seq 1 90); do   # 90 * 10s = 15 min
-  code="$(curl -s -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || true)"
+deadline=$(( $(date +%s) + 1800 ))   # 30 min wall-clock, hard
+while [ "$(date +%s)" -lt "$deadline" ]; do
+  code="$(curl -s -o /dev/null -m 10 -w '%{http_code}' "$url" 2>/dev/null || true)"
   if [ "$code" = "200" ]; then ok=1; break; fi
   sleep 10
 done
