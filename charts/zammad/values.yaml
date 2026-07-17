@@ -104,21 +104,23 @@ replicas:
 # the render fails loudly if it does.
 internalNetwork: zammad-internal
 
-# Optional extra EXTERNAL overlay the Zammad app tier attaches to, so it can reach a co-located,
-# port-unexposed service BY SERVICE NAME. The canonical case is a self-hosted LLM (an in-swarm Ollama
-# for Zammad's AI features), but it is general: point it at any external overlay — including ONE
-# shared attachable overlay that several unexposed stacks sit on (e.g. Ollama + a mail server + LDAP),
-# for a fully-internal deployment. enabled:true makes every app role
-# (init/railsserver/websocket/scheduler, nginx, and backup when on) JOIN extraNetwork.network. This
-# ONLY provides network reachability; you still point Zammad AT each service in its own config (e.g.
-# the AI provider under Admin → System → AI: base URL http://ollama:11434 + token, stored in the
-# database, never through env). Leave disabled when every dependency is reached over a routable/public
-# network. The overlay is EXTERNAL (provisioned by that service's operator/chart — never created here;
-# declared in requirements.yaml with autoCreate:false), and its name must not collide with
-# internalNetwork or any other external overlay (the render fails loudly if it does).
-extraNetwork:
-  enabled: false
-  network: zammad-extra
+# Extra EXTERNAL overlays the Zammad app tier joins, so it can reach co-located, port-unexposed
+# services BY SERVICE NAME — a self-hosted Ollama for Zammad's AI features, an in-swarm mail server,
+# an LDAP, or any mix. Every app role (init/railsserver/websocket/scheduler, nginx, and backup when
+# on) joins EVERY overlay listed here; [] joins none. List as many as you need — each service's own
+# stack owns its overlay, so reaching N of them means joining N overlays:
+#
+#   extraNetworks:
+#     - eldara-ollama_ai-internal
+#     - mail_internal
+#
+# This ONLY provides network reachability; you still point Zammad AT each service in its own config
+# (e.g. the AI provider under Admin → System → AI: base URL http://ollama:11434 + token, stored in the
+# database, never through env). Leave empty when every dependency is reached over a routable/public
+# network. Each overlay is EXTERNAL — provisioned by that service's own stack/operator, never created
+# here, and declared in requirements.yaml with autoCreate:false so install pre-flights that it exists.
+# A name must not collide with internalNetwork (the render fails loudly if it does).
+extraNetworks: []
 
 # Storage + placement for the STATEFUL tier (app roles' /opt/zammad/storage, and the embedded
 # postgres / elasticsearch volumes). Swarm named volumes are node-local, so everything that owns a

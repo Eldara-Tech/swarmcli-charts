@@ -105,12 +105,9 @@
         "network": { "type": "string" }
       }
     },
-    "extraNetwork": {
-      "type": "object",
-      "properties": {
-        "enabled": { "type": "boolean" },
-        "network": { "type": "string" }
-      }
+    "extraNetworks": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
     },
     "backup": {
       "type": "object",

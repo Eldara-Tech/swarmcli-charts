@@ -1,18 +1,26 @@
+# yamllint disable-file
+#
 # External resources this chart needs. Authoritative: every external network/secret the rendered
 # stack references must be listed here (swarmcli pre-flights it; CI enforces it via
 # scripts/requirements-check.sh). swarmcli renders this file with the release's values, so the
 # templated names below track any override.
 #
-# This file is plain YAML with value substitution only (no Go-template control flow like if/range —
-# those non-scalar actions would break yamllint). Entries are therefore declared UNCONDITIONALLY,
-# and swarmcli's pre-flight is MANIFEST-driven: an entry a given configuration does not use is
-# simply never referenced by the rendered stack, so it goes inert. Zammad has several such modes:
+# The fixed entries below are declared UNCONDITIONALLY (value substitution only), and swarmcli's
+# pre-flight is MANIFEST-driven: an entry a given configuration does not use is simply never
+# referenced by the rendered stack, so it goes inert. Zammad has several such modes:
 #   * database.mode / redis.mode: embedded  -> the chart runs that backing service itself, on the
 #     chart-managed internal overlay, so its external overlay below is never referenced;
 #   * elasticsearch.mode: embedded or disabled -> no external Elasticsearch overlay/secret;
 #   * exposure.mode: published               -> no ingress overlay;
-#   * extraNetwork.enabled: false            -> the optional extra attach-overlay is never referenced;
 #   * redis.auth.enabled: false / elasticsearch.auth.enabled: false -> that password secret unused.
+#
+# extraNetworks is a USER-SUPPLIED LIST, so it cannot be expressed by substitution alone — it needs a
+# `range`. A Go-template action on its own line is not parseable YAML, so this file carries
+# `# yamllint disable-file` above (yamllint cannot lint a template with control flow, and the file is
+# a template first, YAML second). Nothing is lost: swarmcli renders this file per release and
+# requirements-check.sh yq-parses the RENDERED result for every ci fixture, so a malformed render
+# still fails CI — which is the form that actually matters.
+#
 # The chart-managed internal overlay (internalNetwork) is created by this stack and is NOT listed
 # here. Every overlay below is autoCreate:false — Zammad consumes them, it does not own them.
 networks:
@@ -36,11 +44,13 @@ networks:
     attachable: true
     autoCreate: false
     description: "elasticsearch.mode: external ONLY — the external overlay the Elasticsearch cluster is on. Inert under mode: embedded or disabled"
-  - name: "{{ .Values.extraNetwork.network }}"
+{{- range .Values.extraNetworks }}
+  - name: "{{ . }}"
     driver: overlay
     attachable: true
     autoCreate: false
-    description: "extraNetwork.enabled ONLY — optional external overlay the app tier attaches to for a co-located, unexposed service (e.g. an in-swarm Ollama, or a shared overlay carrying several stacks), provisioned by that overlay's operator/chart. Inert when extraNetwork.enabled is false"
+    description: "extraNetworks entry — an external overlay the app tier joins to reach a co-located, port-unexposed service (e.g. an in-swarm Ollama). Provisioned by that service's own stack/operator; never created here"
+{{- end }}
 secrets:
   - name: "{{ .Values.database.passwordSecretName }}"
     description: "PostgreSQL password for database.username (also mounted into the embedded PostgreSQL). Pre-create: printf 'S3cr3t' | docker secret create zammad_db_password -"

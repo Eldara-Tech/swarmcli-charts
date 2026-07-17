@@ -147,13 +147,16 @@ if [ "$case" = "backup" ]; then
   [ "$(yq -r '.services.backup.user' "$out")" = "0:0" ] || note "backup service is not user 0:0"
 fi
 
-# extra-network: the app tier joins the EXTERNAL extraNetwork overlay (reachability for a co-located,
-# unexposed service, e.g. Ollama). The overlay must render external:true and railsserver must attach.
-if [ "$case" = "extra-network" ]; then
-  net_external eldara-ollama_ai-internal \
-    || note "extra-network: extraNetwork.network did not render as an EXTERNAL overlay"
-  yq -r '.services.railsserver.networks // [] | .[]' "$out" | grep -qx 'eldara-ollama_ai-internal' \
-    || note "extra-network: railsserver did not join the extraNetwork overlay (cannot reach the service)"
+# extra-networks: the app tier joins EVERY EXTERNAL overlay listed in extraNetworks (reachability for
+# co-located, unexposed services). Each must render external:true and railsserver must attach to ALL
+# of them — a regression here would silently cut Zammad off from one of its backends.
+if [ "$case" = "extra-networks" ]; then
+  rails_nets="$(yq -r '.services.railsserver.networks // [] | .[]' "$out")"
+  for n in eldara-ollama_ai-internal mail_internal; do
+    net_external "$n" || note "extra-networks: $n did not render as an EXTERNAL overlay"
+    grep -qx "$n" <<<"$rails_nets" \
+      || note "extra-networks: railsserver did not join $n (cannot reach that backend)"
+  done
 fi
 
 exit "$fail"

@@ -132,28 +132,36 @@ attach to).
 > — e.g. `openssl rand -hex 24`. Set `redis.auth.enabled=false` for an unauthenticated Redis on a
 > private overlay (the zero-secret path, natural with `redis.mode=embedded`).
 
-## Reaching a co-located, unexposed service (e.g. Ollama)
+## Reaching co-located, unexposed services (e.g. Ollama)
 
-`extraNetwork` attaches the whole Zammad app tier to one additional **external** overlay, so Zammad
-can reach a co-located, port-unexposed service **by name**. The canonical case is a self-hosted LLM
-for Zammad's AI features (Smart Assist) — an Ollama running in the same swarm with no published port:
+`extraNetworks` attaches the whole Zammad app tier to additional **external** overlays, so Zammad can
+reach co-located, port-unexposed services **by name**. The canonical case is a self-hosted LLM for
+Zammad's AI features (Smart Assist) — an Ollama running in the same swarm with no published port:
 
 ```yaml
-extraNetwork:
-  enabled: true
-  network: eldara-ollama_ai-internal   # the EXTERNAL overlay Ollama is reachable on
+extraNetworks:
+  - eldara-ollama_ai-internal   # the EXTERNAL overlay Ollama is reachable on
 ```
 
-This attaches every Zammad role to that overlay; then point Zammad at the provider in **Admin →
-System → AI** (e.g. base URL `http://ollama:11434` + token, stored in the DB — the chart only
-provides reachability). The overlay is external and **not** created here — the service's own
-stack/operator provisions it (`requirements.yaml` declares it `autoCreate: false`), and its name must
-differ from `internalNetwork`.
+Then point Zammad at the provider in **Admin → System → AI** (e.g. base URL `http://ollama:11434` +
+token, stored in the DB — the chart only provides reachability).
 
-It is general, not AI-specific: for a fully-internal deployment, point it at one shared attachable
-overlay that several unexposed stacks sit on (e.g. Ollama + a mail server + LDAP) and Zammad reaches
-them all by name. Leave `extraNetwork.enabled: false` when every dependency is reached over a routable
-or public network.
+**Add as many as you need.** Each service's own stack owns its overlay, so reaching several unexposed
+backends means joining several overlays — list them all:
+
+```yaml
+extraNetworks:
+  - eldara-ollama_ai-internal   # self-hosted LLM
+  - mail_internal               # in-swarm mail server (SMTP/IMAP)
+  - ldap_internal               # in-swarm LDAP
+```
+
+Every Zammad role joins every overlay listed. Each is external and **not** created here — the
+service's own stack/operator provisions it, and `requirements.yaml` declares each `autoCreate: false`
+so install pre-flights that it exists. A name must not collide with `internalNetwork`.
+
+Leave `extraNetworks: []` (the default) when every dependency is reached over a routable or public
+network — hosted AI providers, external mail, or a corporate AD need no extra overlay.
 
 ## Storage and scaling
 
@@ -209,8 +217,7 @@ new secret and point the relevant `*SecretName` value at it.
 | `trustedProxies` | `0.0.0.0/0` | `RAILS_TRUSTED_PROXIES` — peers trusted for X-Forwarded-* |
 | `replicas.railsserver` / `.websocket` | `1` / `1` | App-role replicas (scale on the pinned node) |
 | `internalNetwork` | `zammad-internal` | Chart-managed overlay for in-stack traffic |
-| `extraNetwork.enabled` | `false` | Attach the app tier to one extra external overlay (reach a co-located, unexposed service) |
-| `extraNetwork.network` | `zammad-extra` | External overlay to attach to (e.g. an Ollama's, or a shared internal-services overlay) |
+| `extraNetworks` | `[]` | External overlays the app tier joins, to reach co-located, unexposed services (e.g. an Ollama, mail, LDAP). List as many as needed |
 | `persistence.enabled` | `true` | Storage volumes + node pin (false ⇒ ephemeral) |
 | `persistence.nodeLabel` | `zammad-data` | Data-pin node label (`""` skips the pin) |
 | `persistence.storageVolumeName` / `.storagePath` | `zammad-storage` / `""` | Attachment volume (host path via `storagePath`) |
