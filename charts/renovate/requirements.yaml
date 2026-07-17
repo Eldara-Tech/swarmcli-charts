@@ -3,9 +3,12 @@
 # via scripts/requirements-check.sh). swarmcli renders this file with the release's values,
 # so the templated names below track any override.
 #
-# This file is plain YAML with value substitution only (no Go-template if/range — those
-# non-scalar actions would break yamllint, and the file must parse as YAML unrendered, so
-# every substitution is quoted). Entries are declared unconditionally, with a fallback name
+# This file sticks to plain YAML with value substitution only, every substitution quoted so it
+# parses unrendered — not because control flow is impossible (swarmcli renders this file, and
+# charts/zammad does `range` over a user-supplied list), but because a file that stays
+# parseable unrendered is one yamllint can still check. A chart that genuinely needs `range`
+# opts out with `# yamllint disable-file`; this one does not need it.
+# Entries are declared unconditionally, with a fallback name
 # so none can render empty: an entry a given configuration does not use — the github.com
 # token on the GitHub platform, the config object when configName is unset — is simply never
 # referenced by the manifest, and swarmcli's pre-flight is manifest-driven, so it stays inert.
