@@ -1,0 +1,61 @@
+# yamllint disable-file
+#
+# External resources this chart needs. Authoritative: every external network/secret the rendered
+# stack references must be listed here (swarmcli pre-flights it; CI enforces it via
+# scripts/requirements-check.sh). swarmcli renders this file with the release's values, so the
+# templated names below track any override.
+#
+# The fixed entries below are declared UNCONDITIONALLY (value substitution only), and swarmcli's
+# pre-flight is MANIFEST-driven: an entry a given configuration does not use is simply never
+# referenced by the rendered stack, so it goes inert. Zammad has several such modes:
+#   * database.mode / redis.mode: embedded  -> the chart runs that backing service itself, on the
+#     chart-managed internal overlay, so its external overlay below is never referenced;
+#   * elasticsearch.mode: embedded or disabled -> no external Elasticsearch overlay/secret;
+#   * exposure.mode: published               -> no ingress overlay;
+#   * redis.auth.enabled: false / elasticsearch.auth.enabled: false -> that password secret unused.
+#
+# extraNetworks is a USER-SUPPLIED LIST, so it cannot be expressed by substitution alone — it needs a
+# `range`. A Go-template action on its own line is not parseable YAML, so this file carries
+# `# yamllint disable-file` above (yamllint cannot lint a template with control flow, and the file is
+# a template first, YAML second). Nothing is lost: swarmcli renders this file per release and
+# requirements-check.sh yq-parses the RENDERED result for every ci fixture, so a malformed render
+# still fails CI — which is the form that actually matters.
+#
+# The chart-managed internal overlay (internalNetwork) is created by this stack and is NOT listed
+# here. Every overlay below is autoCreate:false — Zammad consumes them, it does not own them.
+networks:
+  - name: "{{ .Values.exposure.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "Shared ingress overlay the edge proxy publishes routes on (traefik & none modes); provisioned by the traefik chart/operator"
+  - name: "{{ .Values.database.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "database.mode: external ONLY — the external overlay PostgreSQL is reachable on, provisioned by the postgres chart/operator. Inert under database.mode: embedded"
+  - name: "{{ .Values.redis.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "redis.mode: external ONLY — the external overlay Redis is reachable on, provisioned by the redis chart/operator. Inert under redis.mode: embedded"
+  - name: "{{ .Values.elasticsearch.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "elasticsearch.mode: external ONLY — the external overlay the Elasticsearch cluster is on. Inert under mode: embedded or disabled"
+{{- range .Values.extraNetworks }}
+  - name: "{{ . }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "extraNetworks entry — an external overlay the app tier joins to reach a co-located, port-unexposed service (e.g. an in-swarm Ollama). Provisioned by that service's own stack/operator; never created here"
+{{- end }}
+secrets:
+  - name: "{{ .Values.database.passwordSecretName }}"
+    description: "PostgreSQL password for database.username (also mounted into the embedded PostgreSQL). Pre-create: printf 'S3cr3t' | docker secret create zammad_db_password -"
+  - name: "{{ .Values.redis.auth.secretName }}"
+    description: "Redis password (redis.auth.enabled). In embedded mode the chart mounts this SAME secret into the Redis it runs. Pre-create: printf 'S3cr3t' | docker secret create zammad_redis_password -"
+  - name: "{{ .Values.elasticsearch.auth.passwordSecretName }}"
+    description: "Elasticsearch password (elasticsearch.mode: external + auth.enabled). Pre-create: printf 'S3cr3t' | docker secret create zammad_elasticsearch_password -"
+configs: []

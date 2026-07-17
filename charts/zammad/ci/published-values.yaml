@@ -1,0 +1,7 @@
+# Direct port publish, no proxy, no TLS (external PostgreSQL + Redis). Behind your own LB or a
+# private swarm.
+exposure:
+  mode: published
+publish:
+  port: 8080
+  mode: ingress

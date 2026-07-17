@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": { "type": "string" },
+        "tag": { "type": "string" }
+      },
+      "required": ["repository"]
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "host": { "type": "string", "minLength": 1 },
+        "tls": { "type": "boolean" }
+      },
+      "required": ["host"]
+    },
+    "exposure": {
+      "type": "object",
+      "properties": {
+        "mode": { "enum": ["traefik", "published", "none"] },
+        "network": { "type": "string" }
+      }
+    },
+    "publish": {
+      "type": "object",
+      "properties": {
+        "port": { "type": "integer" },
+        "mode": { "enum": ["ingress", "host"] }
+      }
+    },
+    "replicas": {
+      "type": "object",
+      "properties": {
+        "railsserver": { "type": "integer", "minimum": 1 },
+        "websocket": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "internalNetwork": { "type": "string", "minLength": 1 },
+    "persistence": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "nodeLabel": { "type": "string" },
+        "storageVolumeName": { "type": "string" },
+        "storagePath": { "type": "string" }
+      }
+    },
+    "database": {
+      "type": "object",
+      "properties": {
+        "mode": { "enum": ["external", "embedded"] },
+        "host": { "type": "string" },
+        "port": { "type": "integer" },
+        "name": { "type": "string" },
+        "username": { "type": "string" },
+        "passwordSecretName": { "type": "string", "minLength": 1 },
+        "createDb": { "type": "boolean" },
+        "network": { "type": "string" }
+      }
+    },
+    "redis": {
+      "type": "object",
+      "properties": {
+        "mode": { "enum": ["external", "embedded"] },
+        "host": { "type": "string" },
+        "port": { "type": "integer" },
+        "auth": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "secretName": { "type": "string" }
+          }
+        },
+        "network": { "type": "string" }
+      }
+    },
+    "memcache": {
+      "type": "object",
+      "properties": {
+        "servers": { "type": "string" },
+        "memoryMB": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "elasticsearch": {
+      "type": "object",
+      "properties": {
+        "mode": { "enum": ["embedded", "external", "disabled"] },
+        "schema": { "enum": ["http", "https"] },
+        "host": { "type": "string" },
+        "port": { "type": "integer" },
+        "namespace": { "type": "string" },
+        "reindex": { "type": "boolean" },
+        "auth": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "username": { "type": "string" },
+            "passwordSecretName": { "type": "string" }
+          }
+        },
+        "network": { "type": "string" }
+      }
+    },
+    "extraNetworks": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "backup": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "time": { "type": "string" },
+        "holdDays": { "type": "integer", "minimum": 0 },
+        "onStart": { "type": "boolean" },
+        "tz": { "type": "string" }
+      }
+    },
+    "extraEnv": { "type": "object" }
+  }
+}

@@ -1,0 +1,5 @@
+# Scheduled backup service enabled (runs as root; storage volume :ro into the app roles).
+backup:
+  enabled: true
+  time: "02:30"
+  holdDays: 14

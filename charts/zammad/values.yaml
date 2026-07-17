@@ -1,0 +1,318 @@
+# zammad chart default values.
+#
+# Zammad (helpdesk / ticketing) on Docker Swarm. ONE Zammad image runs five roles — a one-shot
+# `init` (DB create/migrate/seed + Elasticsearch settings), `railsserver` (the app), `websocket`,
+# `scheduler` (background jobs) and `nginx` (the HTTP front door that proxies rails + websocket) —
+# plus its backing services. The image SELF-COORDINATES startup: every non-init role blocks on the
+# image's own `check_zammad_ready` until migrations+seeds land, so this chart adds no wait-loops.
+#
+# STATEFUL. Attachments live on a node-local named volume at /opt/zammad/storage shared by every
+# app role, so the app tier is pinned to ONE `persistence.nodeLabel` node (rails stays a single
+# replica against a node-local volume). See the README for the DB-storage-provider / shared-FS
+# scale-out paths.
+#
+# BACKING SERVICES. PostgreSQL and Redis are EXTERNAL by default (run the postgres / redis charts
+# in this repo and point the values below at them); `mode: embedded` runs them in THIS stack for
+# evaluation. Memcached is always in-stack (ephemeral cache). Elasticsearch is embedded by default
+# and can be external or disabled — Zammad runs without it (search degrades to the database).
+#
+# SECRETS are EXTERNAL Swarm secrets the operator pre-creates; the chart never creates a secret or
+# takes a password through values. Zammad has no *_FILE convention, so each role's command reads
+# the mounted /run/secrets/* file and exports the password before exec'ing the image entrypoint —
+# the plaintext never lands in the compose file, in `docker inspect`, or in the environment.
+
+image:
+  repository: ghcr.io/zammad/zammad
+  tag: ""  # defaults to appVersion from Chart.yaml
+
+# Public-facing address. host drives ZAMMAD_FQDN (Zammad builds absolute links from it) and, in
+# traefik mode, the Traefik Host() router rule; tls says whether the PUBLIC endpoint is HTTPS,
+# which selects the forwarded scheme Zammad and nginx advertise (so redirects/links are https://).
+ingress:
+  host: zammad.example.com
+  tls: true
+
+# How the nginx front door is exposed:
+#   traefik   - Traefik deploy labels on exposure.network (default). TLS at the edge; nginx serves
+#               plain HTTP on the backend and Zammad trusts the forwarded scheme.
+#   published - publish nginx's port on the Swarm directly (no proxy, no TLS). Behind your own LB
+#               or for a private swarm.
+#   none      - no published port and no Traefik labels. nginx sits on exposure.network so your OWN
+#               reverse proxy (joined to that overlay) can reach it; forwarded scheme honoured as
+#               in traefik mode.
+exposure:
+  mode: traefik
+  # Shared EXTERNAL overlay the edge proxy lives on (traefik & none modes). Unused in published
+  # mode. Provisioned by the proxy chart/operator (requirements.yaml, autoCreate:false).
+  network: traefik-public
+
+# traefik-mode routing. Defaults match the traefik chart in this repository; adjust to your
+# Traefik install if you run your own (see the README).
+traefik:
+  certResolver: le
+  entrypoints:
+    http: http
+    https: https
+  # Base name for this chart's Traefik router/service objects (`<name>-http` / `<name>-https`
+  # routers + the `<name>` service). Empty => the release name.
+  routerName: ""
+  # Swarm-provider constraint label. The traefik chart runs exposedByDefault=false with a
+  # constraint on this label, so a routed service must carry it to be discovered.
+  constraintLabel: traefik-public
+  # Middleware applied to the HTTP router to redirect to HTTPS (when ingress.tls). The traefik
+  # chart always defines https-redirect in the swarm provider.
+  redirectMiddleware: https-redirect
+
+# published-mode direct port publish. mode: ingress (routing mesh) or host (pinned node only).
+publish:
+  port: 8080
+  mode: ingress
+
+# Container ports. nginxPort is the front door (Traefik LB target / publish target / your own
+# proxy's upstream in none mode); railsPort/websocketPort are the internal upstreams nginx proxies.
+service:
+  nginxPort: 8080
+  railsPort: 3000
+  websocketPort: 6042
+
+# nginx tuning (the image rewrites its own config from these at start).
+#   clientMaxBodySize  the largest attachment upload nginx accepts (NGINX_CLIENT_MAX_BODY_SIZE).
+#   serverName         nginx server_name. "_" (catch-all) is correct behind Traefik, which routes
+#                      by Host; set it to ingress.host if you expose nginx directly and want it to
+#                      answer only for that name.
+nginx:
+  clientMaxBodySize: 50M
+  serverName: "_"
+
+# RAILS_TRUSTED_PROXIES — the peers Zammad trusts to set X-Forwarded-*. Behind Traefik or your own
+# proxy the immediate client IS the proxy (an in-swarm overlay address), so Zammad must trust it to
+# honour the forwarded scheme/host. The default trusts any source; tighten it to your proxy's
+# subnet if you prefer. Matters only when a proxy sits in front (traefik & none modes).
+trustedProxies: "0.0.0.0/0"
+
+# App-role replica counts. railsserver and websocket may scale on the pinned data node (they share
+# the same node-local storage volume there). The scheduler is ALWAYS a single replica (two would
+# double-run background jobs) and rolls stop-first; init and nginx are single by construction.
+replicas:
+  railsserver: 1
+  websocket: 1
+
+# Internal chart-managed overlay carrying service-to-service traffic inside the stack (every role
+# joins it; memcached and the embedded postgres/redis/elasticsearch are reachable ONLY on it). It
+# is created by this stack — nothing to pre-create — so its name must not collide with any EXTERNAL
+# overlay above/below (database.network / redis.network / elasticsearch.network / exposure.network);
+# the render fails loudly if it does.
+internalNetwork: zammad-internal
+
+# Extra EXTERNAL overlays the Zammad app tier joins, so it can reach co-located, port-unexposed
+# services BY SERVICE NAME — a self-hosted Ollama for Zammad's AI features, an in-swarm mail server,
+# an LDAP, or any mix. Every app role (init/railsserver/websocket/scheduler, nginx, and backup when
+# on) joins EVERY overlay listed here; [] joins none. List as many as you need — each service's own
+# stack owns its overlay, so reaching N of them means joining N overlays:
+#
+#   extraNetworks:
+#     - eldara-ollama_ai-internal
+#     - mail_internal
+#
+# This ONLY provides network reachability; you still point Zammad AT each service in its own config
+# (e.g. the AI provider under Admin → System → AI: base URL http://ollama:11434 + token, stored in the
+# database, never through env). Leave empty when every dependency is reached over a routable/public
+# network. Each overlay is EXTERNAL — provisioned by that service's own stack/operator, never created
+# here, and declared in requirements.yaml with autoCreate:false so install pre-flights that it exists.
+# A name must not collide with internalNetwork (the render fails loudly if it does).
+extraNetworks: []
+
+# Storage + placement for the STATEFUL tier (app roles' /opt/zammad/storage, and the embedded
+# postgres / elasticsearch volumes). Swarm named volumes are node-local, so everything that owns a
+# volume is pinned to one node.
+#   enabled     false => ephemeral storage (no volume, no node pin). Attachments are lost on
+#               reschedule — evaluation only. The pin is dropped WITH the volume so a task never
+#               strands Pending on a missing label.
+#   nodeLabel   node label the data pin renders from (`node.labels.<nodeLabel> == true`); pre-label
+#               the node: docker node update --label-add zammad-data=true <node>. "" skips the pin
+#               (single-node swarm).
+#   storageVolumeName / storagePath  the /opt/zammad/storage volume. volumePath bind-mounts an
+#               absolute host path instead (takes precedence, acknowledged via the host-mount
+#               annotation); leave "" for the managed named volume.
+persistence:
+  enabled: true
+  nodeLabel: zammad-data
+  storageVolumeName: zammad-storage
+  storagePath: ""
+
+# Extra scheduling constraints, applied to every service IN ADDITION to the data pin above (never
+# put the data pin here — it must travel with persistence.enabled).
+placement:
+  constraints: []
+
+# PostgreSQL — Zammad's system of record.
+#   mode        external (default) => an operator-provided PostgreSQL on database.network. The
+#               production path: run the postgres chart in this repo and point host/port at it
+#               (the chart's service is <release>_postgres:5432). embedded => this chart runs its
+#               OWN PostgreSQL in the stack — PERSISTENT (its own volume + the data-node pin), so
+#               the data survives a redeploy; convenient for a single-node evaluation, but one
+#               database per stack. Production wants mode: external.
+#   host/port/name/username  connection + the database/role Zammad uses. In embedded mode host is
+#               IGNORED (the in-stack service is always reachable as `postgres`).
+#   passwordSecretName  EXTERNAL Swarm secret holding the password. In embedded mode the chart
+#               mounts this SAME secret into the PostgreSQL it runs (via POSTGRES_PASSWORD_FILE), so
+#               both sides agree by construction. Pre-create:
+#               printf 'S3cr3t' | docker secret create zammad_db_password -
+#   options     appended to the connection (POSTGRESQL_OPTIONS); the default sizes the pool.
+#   createDb    POSTGRESQL_DB_CREATE — let zammad-init create the database on first boot. Set false
+#               when the database already exists and the role may not CREATE DATABASE.
+#   network     EXTERNAL overlay the database is reachable on (external mode only). Ignored in
+#               embedded mode, where PostgreSQL lives on internalNetwork.
+#   embedded.*  the PostgreSQL the chart runs in embedded mode (image + volume). volumePath
+#               bind-mounts a host path (host-mount annotation); "" uses the named volume.
+database:
+  mode: external
+  host: postgres_postgres
+  port: 5432
+  name: zammad_production
+  username: zammad
+  passwordSecretName: zammad_db_password
+  options: "?pool=50"
+  createDb: true
+  network: postgres-net
+  embedded:
+    image:
+      repository: postgres
+      tag: "17.10-alpine"  # pinned; the PostgreSQL major Zammad's own compose tests against
+    volumeName: zammad-postgres-data
+    volumePath: ""
+
+# Redis — Zammad's websocket session store + background job queue.
+#   mode        external (default) => an operator-provided Redis on redis.network (run the redis
+#               chart; its service is <release>_redis:6379). embedded => this chart runs its own
+#               Redis in the stack. Unlike PostgreSQL the embedded Redis is EPHEMERAL (no volume,
+#               no pin): a restart drops queued jobs and websocket sessions, which Zammad tolerates
+#               (jobs re-enqueue, users re-connect). Evaluation / single-node; production wants
+#               external for a Redis that survives a redeploy.
+#   host/port   address on redis.network. IGNORED when mode: embedded (always reachable as `redis`).
+#   auth.enabled  true => authenticate with the password from the EXTERNAL secret (set REDIS_PASSWORD
+#               and, in embedded mode, start the in-stack Redis with --requirepass from the SAME
+#               secret). Pre-create:
+#               printf 'S3cr3t' | docker secret create zammad_redis_password -
+#               false => connect without auth (only sane on a private overlay — which is what
+#               embedded mode renders, so embedded + auth.enabled:false is the zero-Redis-secret
+#               path).
+#   network     EXTERNAL overlay Redis is reachable on (external mode only). Ignored in embedded.
+#   embedded.image  the Redis the chart runs in embedded mode.
+redis:
+  mode: external
+  host: redis_redis
+  port: 6379
+  auth:
+    enabled: true
+    secretName: zammad_redis_password
+  network: redis-net
+  embedded:
+    image:
+      repository: redis
+      tag: "8.2.7"  # pinned; tracks the redis chart's appVersion
+
+# Memcached — Zammad's page/action cache. Always small and ephemeral.
+#   servers   empty (default) => this chart runs an in-stack memcached (`memcached:11211`). Set to
+#             an existing "host:11211" to use an EXTERNAL memcached instead (it must be reachable
+#             on one of the overlays the app roles already attach to — e.g. put it on
+#             database.network); the in-stack one is then not rendered.
+#   memoryMB  the in-stack memcached's cache size (`memcached -m <MB>`).
+memcache:
+  servers: ""
+  memoryMB: 256
+  image:
+    repository: memcached
+    tag: "1.6.44-alpine"  # pinned; matches Zammad's own compose
+
+# Elasticsearch — full-text search over tickets/articles.
+#   mode        embedded (default) => this chart runs its own single-node Elasticsearch, PERSISTENT
+#               (its own volume + the data-node pin). external => point at an operator-provided
+#               cluster on elasticsearch.network. disabled => ELASTICSEARCH_ENABLED=false; Zammad
+#               runs with DATABASE-based search (no full-text on article bodies) — the lightest
+#               deployment, upstream-supported for small teams.
+#   schema/host/port  connection (external mode). host is IGNORED in embedded mode (in-stack
+#               service `elasticsearch`). The embedded node runs with security disabled on a
+#               private overlay, so no credentials.
+#   namespace   ES index prefix (ELASTICSEARCH_NAMESPACE / es_index).
+#   reindex     true => zammad-init builds the search index on first boot if it is missing.
+#   auth        external mode only — set username + the EXTERNAL password secret when your cluster
+#               requires auth. Pre-create:
+#               printf 'S3cr3t' | docker secret create zammad_elasticsearch_password -
+#   javaOpts    embedded node heap (ES_JAVA_OPTS). ~1g min for a real workload.
+#   network     EXTERNAL overlay the cluster is on (external mode only).
+#   image       the Elasticsearch the chart runs in embedded mode.
+#   persistence embedded index storage. volumePath bind-mounts a host path (host-mount annotation).
+elasticsearch:
+  mode: embedded
+  schema: http
+  host: ""
+  port: 9200
+  namespace: zammad
+  reindex: true
+  auth:
+    enabled: false
+    username: elastic
+    passwordSecretName: zammad_elasticsearch_password
+  javaOpts: "-Xms1g -Xmx1g"
+  network: elasticsearch-net
+  image:
+    repository: elasticsearch
+    tag: "9.4.3"  # pinned; the version Zammad's own compose tracks (Docker Hub library/elasticsearch)
+  persistence:
+    volumeName: zammad-elasticsearch-data
+    volumePath: ""
+
+# Scheduled backup (opt-in). The image's `zammad-backup` role dumps the database + storage to a
+# backup volume on a daily schedule and prunes old dumps. Off by default — most operators back up
+# PostgreSQL + the storage volume out of band.
+#   enabled    true => render the backup service (runs as root, 0:0, to read every file) and mount
+#              the backup volume :ro into the app roles (so a running restore blocks their startup).
+#   time       HH:MM daily backup time (BACKUP_TIME).
+#   holdDays   how many days of dumps to keep (HOLD_DAYS).
+#   onStart    run a backup immediately on container start (BACKUP_ON_START).
+#   tz         timezone the schedule is interpreted in (TZ).
+#   volumeName / volumePath  the backup target volume (host path via volumePath, host-mount ack).
+backup:
+  enabled: false
+  time: "03:00"
+  holdDays: 10
+  onStart: true
+  tz: Europe/Berlin
+  volumeName: zammad-backup
+  volumePath: ""
+
+# Arbitrary extra environment variables, injected into every Zammad role verbatim (last word, so
+# they override the chart's). This is how you set the many ZAMMAD_* tuning knobs the chart does not
+# model — e.g. scheduler worker counts (ZAMMAD_PROCESS_DELAYED_JOBS_WORKERS), the puma worker count
+# (ZAMMAD_WEB_CONCURRENCY), GraphQL introspection, HTTP timeouts. See Zammad's env docs.
+extraEnv: {}
+
+# Swarm deploy resources for the Zammad roles (init/railsserver/websocket/scheduler/nginx), applied
+# per service, each rendered only when set. limits.memory caps a container; reservations.memory
+# tells the scheduler to place it on a node with that much free RAM. Elasticsearch is sized
+# separately below (its JVM heap alone is javaOpts).
+resources:
+  limits:
+    memory: ""
+  reservations:
+    memory: ""
+
+# Elasticsearch deploy resources (embedded mode). Size reservations.memory ABOVE the JVM heap in
+# elasticsearch.javaOpts (heap + off-heap + Lucene), e.g. heap 1g => reservation ~2g, limit ~2g.
+elasticsearchResources:
+  limits:
+    memory: ""
+  reservations:
+    memory: ""
+
+# Container healthchecks. railsserver and nginx get an HTTP check; init/scheduler serve no HTTP and
+# get none (an inherited HTTP check would fail them forever); memcached/postgres/redis/elasticsearch
+# get their own protocol checks. startPeriod is generous: first boot is an image pull, then
+# zammad-init's migrate+seed (and, embedded, the Elasticsearch reindex) before the app is ready.
+healthcheck:
+  enabled: true
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  startPeriod: 300s

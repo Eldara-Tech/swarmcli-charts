@@ -1,0 +1,5 @@
+# Default render case: external PostgreSQL + Redis (the postgres/redis charts), embedded
+# Elasticsearch, Traefik exposure. The documented production shape.
+ingress:
+  host: zammad.example.com
+  tls: true

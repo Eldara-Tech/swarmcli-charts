@@ -1,0 +1,7 @@
+# No published port and no Traefik labels: nginx sits on the shared ingress overlay so YOUR own
+# reverse proxy (joined to it) reaches it. Forwarded scheme honoured as in traefik mode.
+exposure:
+  mode: none
+ingress:
+  host: zammad.example.com
+  tls: true

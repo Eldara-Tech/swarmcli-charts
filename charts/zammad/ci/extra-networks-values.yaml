@@ -1,0 +1,11 @@
+# extra-networks fixture: the Zammad app tier joined to SEVERAL co-located, port-unexposed backends.
+# extraNetworks attaches every app role to every overlay listed, so Zammad can dial services on each
+# BY SERVICE NAME. Two entries on purpose — each service's own stack owns its overlay, so reaching a
+# self-hosted Ollama AND an in-swarm mail server means joining both; a single-overlay knob could not
+# express this. Reachability ONLY; pointing Zammad at a provider is a config step (e.g. Admin →
+# System → AI: base URL + token, stored in the DB), never env. Uses the real Ollama overlay name from
+# the #82 request as the concrete regression guard. render-check.sh asserts BOTH overlays render
+# external:true and that railsserver joined BOTH.
+extraNetworks:
+  - eldara-ollama_ai-internal
+  - mail_internal

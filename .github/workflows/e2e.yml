@@ -68,6 +68,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
+    # Hard backstop so a stuck phase self-kills: matrix.timeout only bounds convergence
+    # (E2E_TIMEOUT), not the smoke poll or teardown. Sized above the heaviest chart's
+    # converge (20m) + smoke budget + teardown, well under GitHub's 360m default.
+    timeout-minutes: 75
     name: e2e (${{ matrix.chart }})
     strategy:
       fail-fast: false          # one chart's failure must not cancel its siblings
@@ -116,6 +120,14 @@ jobs:
           # oidc/byo-image/embedded-redis-noauth (render-only: they need a live IdP / a private
           # registry / are a render variant of embedded-redis).
           - { chart: superset,      cases: "default no-celery edge embedded-redis",                                         timeout: 20m }
+          # zammad: the self-contained subset. `embedded-backing` runs the whole stack — its own
+          # PostgreSQL/Redis/memcached/Elasticsearch + the five Zammad roles (init, railsserver,
+          # websocket, scheduler, nginx) — off a large image, so nothing external is provisioned
+          # (ci/e2e-setup.sh only creates the secrets) and the smoke check proves nginx -> rails ->
+          # a migrated DB via /api/v1/getting_started. The ES heap is trimmed in the fixture. The
+          # other fixtures (external backing, exposure/ES variants, host-path, backup) are
+          # render-only here — covered by charts.yml, and still run in local `make e2e`.
+          - { chart: zammad,        cases: "embedded-backing",                                                              timeout: 20m }
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
