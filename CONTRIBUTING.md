@@ -119,6 +119,46 @@ attachable overlays. Use `autoCreate: false` for a network the operator
 pre-provisions (e.g. a shared ingress) — and document such prerequisites in the
 chart `README.md` too.
 
+### It is a template, not static YAML
+
+swarmcli renders `requirements.yaml` as a Go template with the **release's**
+values, so a declaration tracks whatever the operator overrode:
+
+```yaml
+  - name: "{{ .Values.exposure.network }}"   # quote every substitution
+```
+
+Quote substitutions so the file still parses as YAML *unrendered* — that is what
+lets `yamllint` (via `scripts/lint.sh`) check it, and it keeps the declaration
+readable on disk. **Prefer plain YAML with substitution only**: it covers almost
+every chart, because an entry a given configuration never references is simply
+inert (swarmcli's pre-flight is manifest-driven), so you rarely need an `if`.
+
+If you genuinely need control flow — the honest case is a **user-supplied list**,
+which substitution cannot express — use it, and add `# yamllint disable-file` as
+the first line:
+
+```yaml
+# yamllint disable-file
+networks:
+{{- range .Values.extraNetworks }}
+  - name: "{{ . }}"
+    autoCreate: false
+{{- end }}
+```
+
+A template action on its own line is not parseable YAML, and yamllint cannot lint
+a template with control flow — the directive is the opt-out, and it is
+load-bearing, not cruft. Nothing important is lost: swarmcli renders this file per
+release and `scripts/requirements-check.sh` parses the **rendered** result for
+every `ci/*-values.yaml` fixture, which is the form that actually matters. See
+`charts/zammad` for a worked example.
+
+> Control flow here was impossible until swarmcli's chart loader stopped
+> hard-parsing the raw bytes as YAML (Eldara-Tech/swarmcli#457). If you find an
+> older comment claiming `range` "would break yamllint", it is stale — that
+> reasoning once cost a chart a user-facing feature.
+
 ## Testing locally (== CI)
 
 `make test` does, per chart × per `ci/*-values.yaml` fixture:
