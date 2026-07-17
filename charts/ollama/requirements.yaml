@@ -3,8 +3,11 @@
 # scripts/requirements-check.sh). swarmcli renders this file with the release's values, so
 # the templated name below tracks any exposure.network override.
 #
-# Plain YAML with value substitution only (no Go-template control flow like if/range —
-# those non-scalar actions would break yamllint). The ingress overlay is declared
+# Plain YAML with value substitution only — not because control flow is impossible (swarmcli
+# renders this file, and charts/zammad does `range` over a user-supplied list), but because a
+# file that stays parseable unrendered is one yamllint can still check. A chart that genuinely
+# needs `range` opts out with `# yamllint disable-file`; this one does not need it.
+# The ingress overlay is declared
 # unconditionally: the default `published` mode references no external network (so the entry
 # is simply never used), while the traefik / none modes attach the service to it — the
 # used-is-subset-of-declared contract holds either way.
