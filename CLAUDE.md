@@ -85,6 +85,27 @@ Templates use Go `text/template` with sprig (minus `env`/`expandenv`/
 > attachable overlays. Use `autoCreate: false` for a network a chart depends on
 > but must not create (e.g. a shared ingress an operator pre-provisions); document
 > such human prerequisites in the chart README too.
+>
+> **It is a Go template**, rendered with the *release's* values — so
+> `name: "{{ .Values.exposure.network }}"` tracks any override. Quote every
+> substitution so the file also parses unrendered; that is what lets `yamllint`
+> (via `lint.sh`) check it. Prefer plain YAML with substitution only: an entry a
+> given configuration never references is inert (the pre-flight is
+> manifest-driven), so an `if` is almost never needed.
+>
+> Control flow **is** allowed when substitution genuinely cannot express the data —
+> the real case being a **user-supplied list** (`{{- range .Values.extraNetworks }}`,
+> see `charts/zammad`). A template action on its own line is not parseable YAML, so
+> such a file must carry `# yamllint disable-file` as its first line. That directive
+> is load-bearing, not cruft: it is the only way to silence a *syntax* error (rules
+> can be disabled individually; syntax errors cannot). Nothing important is lost —
+> swarmcli renders the file per release and `requirements-check.sh` parses the
+> RENDERED result for every fixture, which is the form that matters.
+>
+> This was impossible until swarmcli's loader stopped hard-parsing the raw bytes as
+> YAML (Eldara-Tech/swarmcli#457). Older chart comments claiming `range` "would
+> break yamllint" are stale — that reasoning once capped a user-facing value at one
+> entry for no reason.
 
 ## Chart design conventions
 
