@@ -33,6 +33,11 @@ description: TODO one-line description of $NAME
 version: 0.1.0
 # renovate: image=nginx
 appVersion: "1.31.2"
+# Oldest swarmcli whose chart engine renders this chart. Raise it when you use a
+# newer feature, and only to a RELEASED version — scripts/floor-check.sh proves
+# this by rendering with a real binary of it, and reports the floor as unverified
+# if the version does not exist yet.
+swarmcliVersion: ">= 1.11.0"
 maintainers:
   - name: Eldara
     url: https://github.com/Eldara-Tech

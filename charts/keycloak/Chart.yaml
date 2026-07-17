@@ -3,6 +3,9 @@ description: Keycloak identity & access management for Docker Swarm — DB-agnos
 version: 0.1.0
 # renovate: image=quay.io/keycloak/keycloak
 appVersion: "26.6.3"
+# Oldest swarmcli whose chart engine renders this chart; verified by
+# scripts/floor-check.sh against a real binary of that version.
+swarmcliVersion: ">= 1.11.0"
 # No swarmcli-charts/allow annotation: no docker.sock, no host bind mount (state
 # lives in an external database, no volume), unprivileged. security-scan.sh finds
 # nothing to acknowledge.

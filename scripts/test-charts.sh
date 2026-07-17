@@ -95,6 +95,15 @@ for chart in "${charts[@]}"; do
       fail=1
       continue
     fi
+    # A render that succeeded can still have said something. `charts template` is
+    # warn-only about a chart whose swarmcliVersion this renderer does not
+    # satisfy: it exits 0 and writes the warning to stderr. Without this the
+    # message dies in $err, which is deleted at the end of a green run — so the
+    # only signal about a compat problem would be silently discarded.
+    if [ -s "$err" ]; then
+      echo "   NOTE: renderer warnings"
+      sed 's/^/      /' "$err"
+    fi
     if grep -nF '<no value>' "$out"; then
       echo "   FAIL: '<no value>' in output — likely a missing-key typo in the template"
       fail=1
