@@ -19,6 +19,11 @@ it is exactly what the `charts.yml` workflow runs.
 Swarm**, waits for the services to converge, optionally smoke-tests them, and
 tears the release back down. It needs a running Swarm and pulls real images.
 
+Both loops render with **one** swarmcli — whatever `install-swarmcli.sh` built,
+which is `main`. Neither proves a chart runs on the *released* swarmcli a user
+actually has. That third, orthogonal question has its own check — see
+[Verifying the swarmcli floor](#verifying-the-swarmcli-floor).
+
 The `e2e.yml` workflow runs this loop **in CI** on a throwaway single-node swarm
 (`E2E_SWARM_INIT=1`), as **one job per chart** (a `strategy.matrix`, so charts run in
 parallel and in isolation). Each job runs a **curated fixture subset** (via `E2E_CASES`,
@@ -310,6 +315,54 @@ swarmcli charts repo remove localrepo
 > too: `SWARMCLI=.swarmcli-bin/swarmcli scripts/local-repo-test.sh`. A Linux runner
 > can't reproduce Docker-Desktop/WSL2 serving quirks, so still smoke `make
 > local-repo` by hand once on macOS/Windows when you touch the serving path.
+
+## Verifying the swarmcli floor
+
+Every `Chart.yaml` declares `swarmcliVersion` — the oldest swarmcli whose chart
+engine renders that chart:
+
+```yaml
+# Chart.yaml
+swarmcliVersion: ">= 1.11.0"
+```
+
+This matters because `make test` and CI render with swarmcli **`main`**, which is
+newer than anything a user has installed. A chart can quietly depend on
+behaviour that only exists on `main` and still pass every render check — and then
+fail on the released swarmcli a user actually runs. That is not hypothetical:
+`charts/zammad` uses template control flow in `requirements.yaml` (a feature on
+`main`, in no release yet), so it renders in CI and fails on *every* release with
+an opaque `parse requirements.yaml: could not find expected ':'`.
+
+**`scripts/floor-check.sh` proves a floor** by building a *real* binary of the
+declared version and rendering the chart with it — the only thing that settles
+whether the chart runs there. It runs in the `Charts` workflow, and locally:
+
+```bash
+scripts/floor-check.sh          # render every chart with a real binary of its floor
+```
+
+Expect one `rendering with real swarmcli vX.Y.Z → OK` block per chart, then a
+summary. It **fails** (exit 1) if a chart does not run on the version it declares.
+
+- **Raise a floor only to a *released* version.** floor-check builds that version
+  to test it, so a floor naming an unreleased tag cannot be proven: it is
+  reported as `NOT verified` (with a `::warning::`) and skipped — visible in the
+  log, never silently passed. `zammad` is in that state today (`>= 1.13.0`, which
+  documents *why* it cannot publish yet) and will verify automatically once that
+  release ships.
+- **Find a floor by measuring, not guessing.** Render the chart against
+  successively older releases (`SWARMCLI_REF=vX.Y.Z scripts/install-swarmcli.sh
+  ./bin` then `make test`); the oldest that still renders is the floor.
+- **`swarmcli charts lint --for-version X`** is the quick check — but know its
+  limit: it tests whether the chart's declared floor *admits* X, i.e. the claim's
+  shape, not whether the chart *runs* on X. A swarmcli carries one engine's
+  behaviour and cannot emulate another's; only floor-check (a real binary)
+  proves runs-on.
+- **The floor protects users going forward, not retroactively.** A swarmcli older
+  than the check itself parses `Chart.yaml` leniently and ignores `swarmcliVersion`
+  entirely; only swarmcli new enough to carry the check enforces it. See the
+  `swarmcli floor` note in [CLAUDE.md](../CLAUDE.md).
 
 ## Troubleshooting
 
