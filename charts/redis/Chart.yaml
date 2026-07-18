@@ -3,6 +3,9 @@ description: Redis in-memory data store for Docker Swarm — persistent, secret-
 version: 0.1.0
 # renovate: image=redis
 appVersion: "8.2.7"
+# Oldest swarmcli whose chart engine renders this chart; verified by
+# scripts/floor-check.sh against a real binary of that version.
+swarmcliVersion: ">= 1.11.0"
 # host-mount is acknowledged because persistence.volumePath can bind-mount the data
 # dir from an operator-chosen host path. The default (named volume) render mounts no
 # host path — no docker.sock, unprivileged — so the annotation is exercised by the

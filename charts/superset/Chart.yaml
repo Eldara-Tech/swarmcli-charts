@@ -5,6 +5,9 @@ version: 0.1.0
 # appVersion is the default image tag for apache/superset.
 # renovate: image=apache/superset
 appVersion: "5.0.0"
+# Oldest swarmcli whose chart engine renders this chart; verified by
+# scripts/floor-check.sh against a real binary of that version.
+swarmcliVersion: ">= 1.11.0"
 maintainers:
   - name: Eldara
     url: https://github.com/Eldara-Tech

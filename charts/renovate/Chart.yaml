@@ -4,6 +4,9 @@ description: Self-hosted Renovate for Docker Swarm — opens dependency-update P
 version: 0.1.0
 # renovate: image=renovate/renovate
 appVersion: "43.262.2"
+# Oldest swarmcli whose chart engine renders this chart; verified by
+# scripts/floor-check.sh against a real binary of that version.
+swarmcliVersion: ">= 1.11.0"
 maintainers:
   - name: Eldara
     url: https://github.com/Eldara-Tech

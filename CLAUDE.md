@@ -31,6 +31,7 @@ the `swarmcli` repo, not from memory.
 charts/<name>/
   Chart.yaml                 # name, version, appVersion, description (all required by CI)
                              #   + `# renovate: image=<repo>` directly above appVersion
+                             #   + swarmcliVersion — the oldest swarmcli that renders it
   values.yaml                # default values
   values.schema.json         # optional JSON Schema — swarmcli validates values against it
   templates/stack.yaml.tmpl  # Go text/template → Swarm stack
@@ -46,6 +47,7 @@ scripts/local-repo.sh        # serve working-tree charts as a local HTTP repo fo
 scripts/local-repo-test.sh   # integration test: repo add/update/search against local-repo.sh (CI, no swarm)
 scripts/security-scan.sh     # flags risky primitives unless Chart.yaml acknowledges them
 scripts/new-chart.sh         # scaffolds a passing chart skeleton
+scripts/floor-check.sh       # renders each chart with a REAL binary of its declared swarmcliVersion
 scripts/lint.sh              # chart structure + yamllint + the Renovate pin gates
 scripts/generate-index.sh    # rebuilds the published index.yaml (release path); needs gh + jq + yq
 .github/workflows/           # charts.yml (validate), ci.yml (machinery), integration.yml (repo-flow), release.yml
@@ -155,6 +157,28 @@ Reference implementations: keycloak (routed, pluggable exposure), mariadb
 - Ship both fixtures: `ci/ephemeral-values.yaml` (persistence off — must render
   no placement block) and `ci/bind-mount-values.yaml` (host path — exercises
   the host-mount acknowledgment).
+
+**swarmcli floor** — every `Chart.yaml` declares `swarmcliVersion`, the oldest
+swarmcli whose chart engine renders it (`>= 1.11.0` for most charts today).
+
+This exists because CI renders with swarmcli **`main`**, which is newer than
+anything a user has installed, so a chart can depend on unreleased behaviour and
+still go green. That is not hypothetical: `charts/zammad` uses template control
+flow in `requirements.yaml` (swarmcli #457, on `main`, in no release), so it
+renders in CI and fails on *every* released swarmcli with an opaque
+`parse requirements.yaml: could not find expected ':'`. It is unpublishable until
+v1.13.0 ships, and nothing told us.
+
+- **Raise the floor only to a RELEASED version.** `scripts/floor-check.sh` proves
+  a floor by building a real binary of it and rendering the chart. A floor naming
+  an unreleased version cannot be proven, so it is reported as unverified and
+  skipped — visible in the log, never silently passed. That is zammad's state.
+- `swarmcli charts lint --for-version X` checks whether a floor *admits* X. Only
+  floor-check proves the chart *runs* on it: a swarmcli binary carries one
+  engine's behaviour and cannot emulate another's.
+- Old swarmcli parses `Chart.yaml` leniently and **ignores `swarmcliVersion`
+  entirely** — only swarmcli ≥ v1.13.0 enforces it. The floor protects users
+  going forward; it cannot retroactively help anyone already on an old build.
 
 **Image pins** — the image a chart deploys is pinned by `Chart.yaml:appVersion`
 (every chart ships `image.tag: ""` and the template falls back to

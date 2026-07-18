@@ -3,6 +3,9 @@ description: Create jobs on a time-based schedule on Docker Swarm using service 
 version: 0.1.0
 # renovate: image=crazymax/swarm-cronjob
 appVersion: "1.16.0"
+# Oldest swarmcli whose chart engine renders this chart; verified by
+# scripts/floor-check.sh against a real binary of that version.
+swarmcliVersion: ">= 1.11.0"
 annotations:
   # swarm-cronjob watches the Docker API to schedule services, so it must mount
   # the Docker socket on a manager node. This is core to the workload, not an
