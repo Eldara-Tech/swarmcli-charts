@@ -172,6 +172,14 @@ jobs:
   update-index:
     needs: release
     runs-on: ubuntu-latest
+    # Serialise Pages deploys so overlapping deploy-pages runs (several chart tags
+    # pushed close together) don't race and drop the loser's index. This does NOT
+    # fix the deeper hazard that Pages keys a deployment by commit SHA, so charts
+    # released at the SAME commit still collide on one pages_build_version and only
+    # the first sticks — release charts across distinct commits. See #89.
+    concurrency:
+      group: pages-deploy
+      cancel-in-progress: false
     permissions:
       pages: write
       id-token: write
