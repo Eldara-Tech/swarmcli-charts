@@ -128,7 +128,7 @@ jobs:
           TAG: ${{ steps.parse.outputs.tag }}
         run: |
           set -euo pipefail
-          PREV=$(git tag --list "${CHART}/v*" --sort=-v:refname | grep -vFx "$TAG" | head -1)
+          PREV=$(git tag --list "${CHART}/v*" --sort=-v:refname | grep -vFx "$TAG" | head -1 || true)
           if [ -n "$PREV" ]; then
             RANGE="${PREV}..HEAD"
             HEADING="Changes since ${PREV#"${CHART}"/}"
