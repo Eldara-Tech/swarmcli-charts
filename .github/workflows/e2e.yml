@@ -57,15 +57,33 @@ jobs:
           fi
           git fetch --no-tags origin "$BASE_REF" >/dev/null 2>&1 || true
           changed=$(git diff --name-only "origin/$BASE_REF...HEAD" 2>/dev/null || git diff --name-only HEAD)
-          if printf '%s\n' "$changed" | grep -qE '^(charts/|scripts/|Makefile|\.github/workflows/e2e\.yml)'; then
+          if printf '%s\n' "$changed" | grep -qE '^(charts/|scripts/|Makefile|\.github/e2e-matrix\.yaml|\.github/workflows/e2e\.yml)'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "No chart/script changes; skipping e2e."
           fi
 
-  e2e:
+  # The per-chart fixture matrix lives in .github/e2e-matrix.yaml (with its
+  # curation rationale) and is SHARED with nightly.yml, so the two never drift.
+  # This job turns that YAML into the JSON the matrix strategy consumes.
+  prepare:
     needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.load.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - id: load
+        name: Load e2e matrix from .github/e2e-matrix.yaml
+        run: |
+          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+          chmod +x /tmp/yq
+          echo "matrix=$(/tmp/yq -o=json -I=0 '.' .github/e2e-matrix.yaml)" >> "$GITHUB_OUTPUT"
+
+  e2e:
+    needs: [changes, prepare]
     if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     # Hard backstop so a stuck phase self-kills: matrix.timeout only bounds convergence
@@ -75,59 +93,7 @@ jobs:
     name: e2e (${{ matrix.chart }})
     strategy:
       fail-fast: false          # one chart's failure must not cancel its siblings
-      matrix:
-        include:
-          # openclaw: ALL fixtures (cases: "" => no filter) — keeps the #60 backend
-          # regression guard and picks up the #63 edge-routing fixture automatically. Its
-          # >=2 GB image + 120s health start period needs the 10m per-fixture budget.
-          - { chart: openclaw,      cases: "",                                                                                timeout: 10m }
-          - { chart: whoami,        cases: "",                                                                                timeout: 5m  }
-          - { chart: swarm-cronjob, cases: "",                                                                                timeout: 5m  }
-          - { chart: redis,         cases: "default no-auth ephemeral bind-mount published-port",                             timeout: 6m  }
-          # bind-mount excluded from CI: MariaDB's healthcheck cannot authenticate on a
-          # host bind-mounted datadir in this Swarm CI environment (it works on a named
-          # volume, so all other fixtures pass); the host-path render is covered by
-          # charts.yml and the fixture still runs in local `make e2e`.
-          - { chart: mariadb,       cases: "default no-appuser ephemeral published-port",                                     timeout: 6m  }
-          # postgres: EVERY fixture (cases: "" => no filter). bind-mount is included, unlike
-          # mariadb's: PGDATA sits one level below the mount (/var/lib/postgresql/<major>/docker),
-          # so initdb never has to chown or empty the bind-mounted mountpoint itself. legacy-major
-          # pulls a second image (postgres:15) — hence the 8m budget.
-          - { chart: postgres,      cases: "",                                                                                timeout: 8m  }
-          # traefik: every CI-friendly fixture EXCEPT loki-logging, which needs the
-          # loki:latest Docker log-driver plugin (absent on stock runners). `routing` (#63)
-          # stands up two whoami backends and proves a request routes THROUGH the edge.
-          - { chart: traefik,       cases: "default dashboard-off extra-entrypoints hsts-off ingress-ports certs-bind-mount routing", timeout: 6m }
-          # keycloak: ci/e2e-setup.sh stands up the backend the fixture asks for — MariaDB for
-          # most, PostgreSQL for `postgres` (#69). jdbc-url and published-tls converge nowhere
-          # and are marked ci/e2e-render-only. `edge` (#63) additionally stands up the traefik
-          # chart and routes through it.
-          - { chart: keycloak,      cases: "default tls-off none db-net-override start-dev published-http postgres edge",    timeout: 8m  }
-          # ollama: published (default) + ephemeral + none + edge. Excludes bind-mount (its
-          # host-path render is covered by charts.yml; still runs in local `make e2e`) and gpu
-          # (a GPU-less runner cannot schedule a generic-resources reservation — the GPU
-          # assertion is a render check in charts.yml via ci/render-check.sh). The large
-          # ollama/ollama image pull needs the 10m budget.
-          - { chart: ollama,        cases: "default ephemeral none edge",                                                    timeout: 10m }
-          # superset: the cheap subset. Every fixture needs the full backend (ci/e2e-setup.sh
-          # stands up postgres + redis + the secrets), and each one deploys FOUR services off a
-          # ~930 MB image that then pip-installs its DB driver and waits for alembic migrations —
-          # hence the large budget. `default` covers init+app+worker+beat; `no-celery` the 2-service
-          # render; `edge` (#63) routes a real request through the traefik chart; `embedded-redis`
-          # gets NO redis from the setup hook and must stand up its own (redis.mode: embedded) —
-          # its celery worker only goes healthy if that Redis really carries the broker. Excludes
-          # published/none/mysql/uri (covered by charts.yml; still run in local `make e2e`) and
-          # oidc/byo-image/embedded-redis-noauth (render-only: they need a live IdP / a private
-          # registry / are a render variant of embedded-redis).
-          - { chart: superset,      cases: "default no-celery edge embedded-redis",                                         timeout: 20m }
-          # zammad: the self-contained subset. `embedded-backing` runs the whole stack — its own
-          # PostgreSQL/Redis/memcached/Elasticsearch + the five Zammad roles (init, railsserver,
-          # websocket, scheduler, nginx) — off a large image, so nothing external is provisioned
-          # (ci/e2e-setup.sh only creates the secrets) and the smoke check proves nginx -> rails ->
-          # a migrated DB via /api/v1/getting_started. The ES heap is trimmed in the fixture. The
-          # other fixtures (external backing, exposure/ES variants, host-path, backup) are
-          # render-only here — covered by charts.yml, and still run in local `make e2e`.
-          - { chart: zammad,        cases: "embedded-backing",                                                              timeout: 20m }
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
@@ -136,8 +102,9 @@ jobs:
           go-version: stable
           cache: false
 
-      # swarmcli is the chart client; its charts CLI is only on main today, so build it
-      # from source (same as the Charts workflow).
+      # swarmcli is the chart client. PR CI builds `main` to catch a renderer
+      # breakage the moment it lands; nightly.yml runs this same e2e suite against
+      # the latest release. Same build as the Charts workflow.
       - name: Build swarmcli
         run: scripts/install-swarmcli.sh "$PWD/.swarmcli-bin"
 

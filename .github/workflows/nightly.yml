@@ -1,0 +1,159 @@
+name: Nightly (latest release)
+
+# The three PR workflows build swarmcli `main` on purpose — they catch a renderer
+# breakage the moment it lands, before any release ships it. This one is the other
+# half: it validates the WHOLE repo against the latest RELEASE (the version users
+# actually have), on a schedule, so it never blocks a PR. Together they cover both
+# ends — "does main still render our charts" and "does the release still run them".
+#
+# It mirrors all three PR flows against the downloaded release binary
+# (scripts/download-swarmcli.sh — no Go toolchain, no compile):
+#   * render      — scripts/test-charts.sh          (the charts.yml render suite)
+#   * integration — scripts/local-repo-test.sh      (the repo add/update/search flow)
+#   * e2e         — scripts/e2e-test.sh, one job per chart, sharing e2e.yml's
+#                   .github/e2e-matrix.yaml so the two matrices never drift.
+#
+# A chart whose declared swarmcliVersion floor is AHEAD of the latest release
+# (today: zammad >=1.13.0 vs stable v1.12.0) cannot run on it — that is a
+# known-good state, not a regression. scripts/floors-runnable-on.sh skips and
+# reports (::warning) those, exactly as floor-check.sh does for unreleased floors,
+# so a red nightly always means a real break. On a scheduled failure the notify
+# job opens (or updates) a single tracking issue.
+
+on:
+  schedule:
+    - cron: '17 4 * * *'   # 04:17 UTC daily — off-peak; avoid the top-of-hour rush.
+  workflow_dispatch: {}     # manual: on-demand release validation / testing this workflow.
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Download latest swarmcli release
+        run: scripts/download-swarmcli.sh "$PWD/.swarmcli-bin"
+
+      # test-charts.sh REFUSES to run without mikefarah yq. Install the static
+      # binary directly so we need no Go toolchain (that is the point of the
+      # release path).
+      - name: Install yq (mikefarah v4)
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL -o "$HOME/.local/bin/yq" https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+          chmod +x "$HOME/.local/bin/yq"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Render every chart the release can run (skip + report ahead-of-release)
+        run: |
+          bin="$PWD/.swarmcli-bin/swarmcli"
+          mapfile -t charts < <(scripts/floors-runnable-on.sh "$bin")
+          SWARMCLI="$bin" scripts/test-charts.sh "${charts[@]}"
+
+      - name: Upload rendered stacks
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rendered-stacks
+          path: .rendered/
+          if-no-files-found: ignore
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Download latest swarmcli release
+        run: scripts/download-swarmcli.sh "$PWD/.swarmcli-bin"
+
+      # repo add -> update -> search never renders a chart (it lists index
+      # metadata), so it runs the full set — floors do not gate it.
+      - name: Local-repo consumer flow (repo add -> update -> search)
+        run: SWARMCLI="$PWD/.swarmcli-bin/swarmcli" scripts/local-repo-test.sh
+
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.load.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - id: load
+        name: Load e2e matrix from .github/e2e-matrix.yaml
+        run: |
+          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+          chmod +x /tmp/yq
+          echo "matrix=$(/tmp/yq -o=json -I=0 '.' .github/e2e-matrix.yaml)" >> "$GITHUB_OUTPUT"
+
+  e2e:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    name: e2e (${{ matrix.chart }})
+    strategy:
+      fail-fast: false          # one chart's failure must not cancel its siblings
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Download latest swarmcli release
+        run: scripts/download-swarmcli.sh "$PWD/.swarmcli-bin"
+
+      # A chart whose floor is ahead of the release cannot run on it — skip this
+      # leg (green, with a warning) instead of failing it.
+      - id: gate
+        name: Gate ${{ matrix.chart }} on the release's version
+        run: |
+          bin="$PWD/.swarmcli-bin/swarmcli"
+          if scripts/floors-runnable-on.sh "$bin" | grep -qx '${{ matrix.chart }}'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::${{ matrix.chart }} floor is ahead of the latest release — skipping its e2e."
+          fi
+
+      # Same invocation as e2e.yml, against the downloaded release binary.
+      - name: Deploy + verify (${{ matrix.chart }})
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          SWARMCLI="$PWD/.swarmcli-bin/swarmcli" \
+          E2E_SWARM_INIT=1 \
+          E2E_CASES="${{ matrix.cases }}" \
+          E2E_TIMEOUT="${{ matrix.timeout }}" \
+          scripts/e2e-test.sh "${{ matrix.chart }}"
+
+  # Surface a scheduled failure as a single tracking issue (updated, not
+  # duplicated). Skipped on manual dispatch so testing this workflow is quiet.
+  notify:
+    needs: [render, integration, prepare, e2e]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open or update the nightly-failure tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Nightly release validation is failing"
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+                        --search "in:title \"$title\"" --json number --jq '.[0].number')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" \
+              --body "Still failing on the latest release — $RUN_URL"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body \
+              "The nightly run against the latest swarmcli release failed: $RUN_URL
+
+          The repo no longer works cleanly on the release users have. Charts whose
+          floor is ahead of the release are skipped, not failed (see the run log),
+          so this is a real break in render, the local-repo flow, or an e2e deploy."
+          fi
