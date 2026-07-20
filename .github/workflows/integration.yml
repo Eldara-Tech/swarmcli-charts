@@ -75,8 +75,9 @@ jobs:
           go-version: stable
           cache: false
 
-      # swarmcli is the chart client; its charts CLI is only on main today, so
-      # build it from source (same as the Charts workflow).
+      # swarmcli is the chart client. PR CI builds `main` to catch a renderer
+      # breakage the moment it lands; nightly.yml runs this same flow against the
+      # latest release. Same build as the Charts workflow.
       - name: Build swarmcli
         run: scripts/install-swarmcli.sh "$PWD/.swarmcli-bin"
 
