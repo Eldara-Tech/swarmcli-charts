@@ -149,7 +149,7 @@ jobs:
 
       - name: Download swarmcli (pinned to the newest v1.13.0 prerelease)
         env:
-          SWARMCLI_REF: v1.13.0-rc3
+          SWARMCLI_REF: v1.13.0-rc4
         run: scripts/download-swarmcli.sh "$PWD/.swarmcli-bin"
 
       # E2E_SWARM_INIT=1 stands up the throwaway swarm; the script runs the swarm-free
