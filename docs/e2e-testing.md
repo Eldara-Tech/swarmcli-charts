@@ -99,17 +99,16 @@ For every chart × `ci/*-values.yaml` fixture, `scripts/e2e-test.sh`:
    it *before* install to provision external prerequisites swarmcli validates but
    never creates (external secrets, node labels, a co-located backend). See
    [Setup / teardown hooks](#setup--teardown-hooks-cie2e-setupsh).
-3. **installs** — `swarmcli charts install <release> ./charts/<chart> -f <fixture>`,
+3. **installs and converges** — `swarmcli charts install <release> ./charts/<chart> -f <fixture> --wait`,
    straight from your local working-tree directory (no packaging or publishing). A
    non-zero exit (rejected manifest, failed pre-flight) fails the case. swarmcli
    auto-creates any external attachable overlay the chart declares in
    `requirements.yaml` (e.g. `traefik-public`).
-4. **waits for convergence** — polls `docker stack ps` until every task whose
-   desired state is `running` actually reads `Running`, up to `$E2E_TIMEOUT`
-   (default `3m`; raise it for slow image pulls). It deliberately does **not** use
-   swarmcli's `--wait`, which reports a service converged as soon as its tasks are
-   *scheduled* (desired-state Running) — not when they are actually running — so on
-   a cold image pull `--wait` returns while tasks are still `Pending`.
+4. **waits for convergence** — the same step: `--wait --timeout $E2E_TIMEOUT`
+   (default `3m`; raise it for slow image pulls). swarmcli holds until every task
+   is actually `Running` on an active node and has survived swarm's own monitor
+   window, and it treats a completed one-shot service as converged rather than
+   waiting for a task that will never come back.
 5. **smoke-tests (optional)** — if `charts/<chart>/ci/e2e-check.sh` is
    executable, runs it (with the case name as `$3`); a non-zero exit fails the case.
 6. **tears down** — `swarmcli charts uninstall <release> --purge-volumes` plus the
@@ -149,11 +148,12 @@ $BIN charts rollback demo 1
 $BIN charts uninstall demo --purge-volumes
 ```
 
-> **On `--wait`.** `swarmcli charts install/upgrade` accept `--wait`, but it
-> reports convergence as soon as the tasks are *scheduled* (their desired state is
-> Running), which on a cold image pull happens while they are still `Pending`. To
-> confirm a release is really up, watch `docker stack ps <release>` until every
-> task reads `Running` — which is what `make e2e` does for you.
+> **On `--wait`.** `swarmcli charts install/upgrade` accept `--wait`, which is
+> what `make e2e` uses to decide a release is up. It needs **swarmcli >=
+> v1.13.0-rc4**: earlier builds counted tasks by *desired* state, so it returned
+> while they were still `Pending` (Eldara-Tech/swarmcli#473), and a one-shot
+> service hung it until the timeout (#443). Against an older binary, watch
+> `docker stack ps <release>` by hand instead.
 
 > Installing from a published repo instead of a local path uses a
 > `<repo>/<chart>` reference, e.g.
