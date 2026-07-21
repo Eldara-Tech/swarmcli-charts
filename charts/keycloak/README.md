@@ -161,6 +161,7 @@ request.
 | `publish.tls.keySecretName` | `keycloak_tls_key` | External Swarm secret — PEM private key |
 | `service.port` | `8080` | Container HTTP port (Traefik LB / own-proxy upstream target) |
 | `healthcheck.*` | see `values.yaml` | bash `/dev/tcp` probe of `/health/ready` on `:9000` |
+| `healthcheck.monitor` | `3m` | Rollout watch window. Must cover `startPeriod + interval x retries` (165s) — see below |
 | `placement.constraints` | `[]` | Optional scheduling constraints (unpinned by default) |
 | `resources.limits.memory` | `""` | Swarm deploy memory limit |
 | `labels` | `{}` | Extra deploy labels |
@@ -186,3 +187,14 @@ builtin), exports `KC_DB_PASSWORD` / `KC_BOOTSTRAP_ADMIN_PASSWORD`, then `exec`s
 compose file or `docker inspect`, which show only the `/run/secrets/...` path. (The
 TLS cert/key are ordinary file paths Keycloak reads natively, so `KC_HTTPS_*_FILE`
 point straight at the mounted secrets.)
+
+### Why `healthcheck.monitor` exists
+
+Swarm watches a task for `update_config.monitor` **after creating it**, and only a
+failure inside that window counts against the rollout. Leave it unset and swarm
+applies a 5s default — so a container that takes longer than that to be declared
+unhealthy never fails the deploy: the rollout is reported complete and the task
+quietly restart-loops. `swarmcli charts lint` warns when `monitor` is shorter
+than `start_period + interval x retries`.
+
+**Raise it if you raise the healthcheck values above**, or the lint will tell you.

@@ -267,6 +267,13 @@ services:
 {{- end }}
     deploy:
       replicas: {{ .Values.replicas.railsserver }}
+{{- if .Values.healthcheck.enabled }}
+      {{- /* Swarm watches a task for `monitor` after CREATING it, and only counts a
+             failure inside that window against the rollout. Shorter than the
+             healthcheck needs to fail and a broken deploy reports success. */}}
+      update_config:
+        monitor: {{ .Values.healthcheck.monitor }}
+{{- end }}
 {{- if $dataConstraints }}
       placement:
         constraints:
@@ -325,6 +332,13 @@ services:
 {{- end }}
     deploy:
       replicas: {{ .Values.replicas.websocket }}
+{{- if .Values.healthcheck.enabled }}
+      {{- /* Swarm watches a task for `monitor` after CREATING it, and only counts a
+             failure inside that window against the rollout. Shorter than the
+             healthcheck needs to fail and a broken deploy reports success. */}}
+      update_config:
+        monitor: {{ .Values.healthcheck.monitor }}
+{{- end }}
 {{- if $dataConstraints }}
       placement:
         constraints:
@@ -446,6 +460,13 @@ services:
 {{- end }}
     deploy:
       replicas: 1
+{{- if .Values.healthcheck.enabled }}
+      {{- /* Swarm watches a task for `monitor` after CREATING it, and only counts a
+             failure inside that window against the rollout. Shorter than the
+             healthcheck needs to fail and a broken deploy reports success. */}}
+      update_config:
+        monitor: {{ .Values.healthcheck.monitor }}
+{{- end }}
 {{- if $dataConstraints }}
       placement:
         constraints:
@@ -548,6 +569,13 @@ services:
 {{- end }}
     deploy:
       replicas: 1
+{{- if .Values.healthcheck.enabled }}
+      {{- /* Swarm watches a task for `monitor` after CREATING it, and only counts a
+             failure inside that window against the rollout. Shorter than the
+             healthcheck needs to fail and a broken deploy reports success. */}}
+      update_config:
+        monitor: {{ .Values.healthcheck.monitor }}
+{{- end }}
 {{- if $dataConstraints }}
       placement:
         constraints:
@@ -613,6 +641,14 @@ services:
 {{- end }}
     deploy:
       replicas: 1
+{{- if .Values.healthcheck.enabled }}
+      {{- /* Sized to this service's own healthcheck: it overrides start_period to 60s,
+             so its worst case is 60s + 30s x 5 = 210s, not the chart-wide one. A longer window here
+             would dominate every `--wait` — the longest OUTSTANDING window across the
+             stack governs, and this service is up long before the slow ones. */}}
+      update_config:
+        monitor: 4m
+{{- end }}
 {{- if $dataConstraints }}
       placement:
         constraints:
@@ -657,6 +693,14 @@ services:
 {{- end }}
     deploy:
       replicas: 1
+{{- if .Values.healthcheck.enabled }}
+      {{- /* Sized to this service's own healthcheck: it overrides start_period to 10s,
+             so its worst case is 10s + 30s x 5 = 160s, not the chart-wide one. A longer window here
+             would dominate every `--wait` — the longest OUTSTANDING window across the
+             stack governs, and this service is up long before the slow ones. */}}
+      update_config:
+        monitor: 3m
+{{- end }}
 {{- if $extraConstraints }}
       placement:
         constraints:

@@ -140,6 +140,11 @@ healthcheck:
   timeout: 5s
   retries: 5
   startPeriod: 90s
+  # How long Swarm counts a task failure against the rollout, measured from
+  # task creation. Must cover the healthcheck's worst case above
+  # (90s start_period + 15s interval x 5 retries = 165s) or a container that goes unhealthy
+  # after the window does not fail the deploy. Raise it if you raise the values above.
+  monitor: 3m
 
 # Optional placement constraints. Keycloak is stateless (no node-local volume), so
 # it is unpinned by default; add constraints to steer scheduling if you want.

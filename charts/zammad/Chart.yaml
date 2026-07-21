@@ -1,7 +1,7 @@
 name: zammad
 description: Zammad helpdesk / ticketing on Docker Swarm — external or embedded PostgreSQL & Redis, embedded/external/disabled Elasticsearch, Traefik-routed via its own nginx
 # version is a placeholder — the git tag (zammad/vX.Y.Z) sets the real version at release.
-version: 0.1.0
+version: 0.2.0
 # appVersion is the default image tag for ghcr.io/zammad/zammad. It is the immutable
 # version+patchlevel Zammad's own docker-compose pins (the bare `7.1.1` tag floats).
 # renovate: image=ghcr.io/zammad/zammad

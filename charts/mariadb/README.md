@@ -71,6 +71,7 @@ to trusted sources — or keep exposure disabled and stay on the overlay.
 | `exposure.port` / `.protocol` / `.mode` | `3306` / `tcp` / `ingress` | Port binding |
 | `resources.limits.memory` | `""` | Swarm deploy memory limit |
 | `healthcheck.*` | see `values.yaml` | `healthcheck.sh --connect --innodb_initialized` |
+| `healthcheck.monitor` | `90s` | Rollout watch window. Must cover `startPeriod + interval x retries` (80s) — see below |
 | `extraArgs` | `[]` | Extra `mariadbd` flags appended verbatim |
 | `labels` | `{}` | Extra deploy labels |
 
@@ -122,3 +123,14 @@ so no password ever appears on a command line either.
   since mid-2023. A data volume first initialized by an older image lacks that user
   and the healthcheck fails permanently; create it once (or re-initialize on a
   current image) to recover.
+
+### Why `healthcheck.monitor` exists
+
+Swarm watches a task for `update_config.monitor` **after creating it**, and only a
+failure inside that window counts against the rollout. Leave it unset and swarm
+applies a 5s default — so a container that takes longer than that to be declared
+unhealthy never fails the deploy: the rollout is reported complete and the task
+quietly restart-loops. `swarmcli charts lint` warns when `monitor` is shorter
+than `start_period + interval x retries`.
+
+**Raise it if you raise the healthcheck values above**, or the lint will tell you.

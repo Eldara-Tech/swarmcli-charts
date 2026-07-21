@@ -364,6 +364,13 @@ services:
 
     deploy:
       replicas: {{ .Values.replicas }}
+{{- if .Values.healthcheck.enabled }}
+      {{- /* Swarm watches a task for `monitor` after CREATING it, and only counts a
+             failure inside that window against the rollout. Shorter than the
+             healthcheck needs to fail and a broken deploy reports success. */}}
+      update_config:
+        monitor: {{ .Values.healthcheck.monitor }}
+{{- end }}
 {{- if .Values.placement.constraints }}
       placement:
         constraints:
@@ -455,6 +462,13 @@ services:
 
     deploy:
       replicas: {{ .Values.celery.worker.replicas }}
+{{- if .Values.healthcheck.enabled }}
+      {{- /* Swarm watches a task for `monitor` after CREATING it, and only counts a
+             failure inside that window against the rollout. Shorter than the
+             healthcheck needs to fail and a broken deploy reports success. */}}
+      update_config:
+        monitor: {{ .Values.healthcheck.monitor }}
+{{- end }}
 {{- if .Values.placement.constraints }}
       placement:
         constraints:
@@ -588,6 +602,12 @@ services:
 
     deploy:
       replicas: 1
+      {{- /* Sized to this service's own healthcheck (10s start_period + 10s x 5 = 60s),
+             not .Values.healthcheck.monitor: that covers Superset's much slower app
+             check, and an over-long window on a fast service would dominate every
+             `--wait` (the longest outstanding window across the stack governs). */}}
+      update_config:
+        monitor: 90s
 {{- if .Values.placement.constraints }}
       placement:
         constraints:

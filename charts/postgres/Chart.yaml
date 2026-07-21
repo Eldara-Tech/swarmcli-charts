@@ -1,6 +1,6 @@
 name: postgres
 description: PostgreSQL relational database for Docker Swarm — persistent, secret-authenticated, single-node pinned
-version: 0.1.0
+version: 0.2.0
 # Quoted: the renderer unmarshals appVersion into a Go string, and the template derives the
 # data directory (/var/lib/postgresql/<major>/docker) from it when image.tag is empty.
 # renovate: image=postgres

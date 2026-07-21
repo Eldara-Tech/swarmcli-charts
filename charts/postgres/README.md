@@ -78,6 +78,7 @@ or keep exposure disabled and stay on the overlay.
 | `exposure.port` / `.protocol` / `.mode` | `5432` / `tcp` / `ingress` | Host port (mapped to the container's 5432), protocol, publish mode |
 | `resources.limits.memory` | `""` | Swarm deploy memory limit |
 | `healthcheck.*` | see `values.yaml` | `pg_isready -h 127.0.0.1 -U <username> -d <database>` |
+| `healthcheck.monitor` | `2m` | Rollout watch window. Must cover `startPeriod + interval x retries` (110s) — see below |
 | `extraArgs` | `[]` | Extra server flags, one argv element per entry (`["-c", "max_connections=200"]`) |
 | `labels` | `{}` | Extra deploy labels |
 
@@ -157,3 +158,14 @@ docker exec -it $(docker ps -q -f label=com.docker.swarm.service.name=postgres_p
   [PostgreSQL versions](../superset/README.md#postgresql-versions). To stay strictly inside that
   matrix, pin `image.tag: "15"`; the mount contract is unchanged, only `PGDATA` moves to
   `/var/lib/postgresql/15/docker`.
+
+### Why `healthcheck.monitor` exists
+
+Swarm watches a task for `update_config.monitor` **after creating it**, and only a
+failure inside that window counts against the rollout. Leave it unset and swarm
+applies a 5s default — so a container that takes longer than that to be declared
+unhealthy never fails the deploy: the rollout is reported complete and the task
+quietly restart-loops. `swarmcli charts lint` warns when `monitor` is shorter
+than `start_period + interval x retries`.
+
+**Raise it if you raise the healthcheck values above**, or the lint will tell you.

@@ -1,7 +1,7 @@
 name: openclaw
 description: OpenClaw — self-hosted personal AI assistant gateway on Docker Swarm
 # version is a placeholder — the git tag (openclaw/vX.Y.Z) sets the real version at release.
-version: 0.1.0
+version: 0.2.0
 # appVersion is the default image tag for ghcr.io/openclaw/openclaw.
 # renovate: image=ghcr.io/openclaw/openclaw
 appVersion: "2026.6.11"
