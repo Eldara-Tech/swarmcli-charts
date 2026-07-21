@@ -137,8 +137,8 @@ jobs:
   # `main`: install whoami FROM a served index, then outdated/upgrade/idempotence.
   #
   # It needs `charts apply` + index digest verification (Eldara-Tech/swarmcli#450,
-  # #447), first shipped in v1.13.0-rc1 and NOT yet in a stable release, so it is
-  # pinned to that tag via SWARMCLI_REF. Drop the pin once v1.13.0 is stable — this
+  # #447), which is NOT yet in a stable release, so it is pinned via SWARMCLI_REF
+  # to the newest v1.13.0 prerelease. Drop the pin once v1.13.0 is stable — this
   # leg then tracks the latest release like the rest of nightly, and repo-apply-
   # test.sh self-skips the deploy phase on any release still too old to have it.
   repo-apply:
@@ -147,9 +147,9 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
-      - name: Download swarmcli (pinned to the first release with charts apply)
+      - name: Download swarmcli (pinned to the newest v1.13.0 prerelease)
         env:
-          SWARMCLI_REF: v1.13.0-rc1
+          SWARMCLI_REF: v1.13.0-rc3
         run: scripts/download-swarmcli.sh "$PWD/.swarmcli-bin"
 
       # E2E_SWARM_INIT=1 stands up the throwaway swarm; the script runs the swarm-free
