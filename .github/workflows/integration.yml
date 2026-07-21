@@ -7,6 +7,11 @@ name: Integration
 # packaging + index generation + serving that the data-only Charts workflow does
 # not, and that `make e2e` (local chart-directory install) never touches.
 #
+# It also runs the swarm-free half of scripts/repo-apply-test.sh: `charts template`
+# resolving a chart FROM a repo index (download + digest-verify + render) and
+# refusing a tampered digest. The deploy half of that flow (apply/outdated/upgrade/
+# idempotence) needs a swarm and runs in e2e.yml.
+#
 # It runs a throwaway nginx container but NO Swarm and deploys NO chart, so it
 # stays fork-safe (public image, read-only token, no secrets). A Linux runner
 # shares the daemon filesystem and forwards ports instantly, so it cannot
@@ -83,3 +88,11 @@ jobs:
 
       - name: Local-repo consumer flow (repo add -> update -> search)
         run: SWARMCLI="$PWD/.swarmcli-bin/swarmcli" scripts/local-repo-test.sh
+
+      # The swarm-free half of the repo-apply flow: `charts template` resolves,
+      # downloads and digest-verifies a chart FROM the served index and renders it,
+      # then asserts a tampered index digest is refused (the swarmcli#447 guard).
+      # `apply` needs a swarm to read deployed releases, so the install/outdated/
+      # upgrade/idempotence half runs in e2e.yml; the script skips it with no swarm.
+      - name: Repo-apply flow (template render + digest-mismatch guard)
+        run: SWARMCLI="$PWD/.swarmcli-bin/swarmcli" scripts/repo-apply-test.sh
