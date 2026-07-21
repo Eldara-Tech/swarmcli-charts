@@ -6,12 +6,16 @@ name: Nightly (latest release)
 # actually have), on a schedule, so it never blocks a PR. Together they cover both
 # ends — "does main still render our charts" and "does the release still run them".
 #
-# It mirrors all three PR flows against the downloaded release binary
+# It mirrors the PR flows against the downloaded release binary
 # (scripts/download-swarmcli.sh — no Go toolchain, no compile):
 #   * render      — scripts/test-charts.sh          (the charts.yml render suite)
 #   * integration — scripts/local-repo-test.sh      (the repo add/update/search flow)
 #   * e2e         — scripts/e2e-test.sh, one job per chart, sharing e2e.yml's
 #                   .github/e2e-matrix.yaml so the two matrices never drift.
+#   * repo-apply  — scripts/repo-apply-test.sh       (install FROM a served index +
+#                   outdated/upgrade/idempotence). Pinned to v1.13.0-rc1 — the first
+#                   release with `charts apply` + digest verification — until v1.13.0
+#                   ships stable; see the repo-apply job for the pin rationale.
 #
 # A chart whose declared swarmcliVersion floor is AHEAD of the latest release
 # (today: zammad >=1.13.0 vs stable v1.12.0) cannot run on it — that is a
@@ -128,10 +132,38 @@ jobs:
           E2E_TIMEOUT="${{ matrix.timeout }}" \
           scripts/e2e-test.sh "${{ matrix.chart }}"
 
+  # Validate the repository-consumer path (scripts/repo-apply-test.sh) against a
+  # RELEASE binary — the half of #79's coverage the PR workflows only run against
+  # `main`: install whoami FROM a served index, then outdated/upgrade/idempotence.
+  #
+  # It needs `charts apply` + index digest verification (Eldara-Tech/swarmcli#450,
+  # #447), first shipped in v1.13.0-rc1 and NOT yet in a stable release, so it is
+  # pinned to that tag via SWARMCLI_REF. Drop the pin once v1.13.0 is stable — this
+  # leg then tracks the latest release like the rest of nightly, and repo-apply-
+  # test.sh self-skips the deploy phase on any release still too old to have it.
+  repo-apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Download swarmcli (pinned to the first release with charts apply)
+        env:
+          SWARMCLI_REF: v1.13.0-rc1
+        run: scripts/download-swarmcli.sh "$PWD/.swarmcli-bin"
+
+      # E2E_SWARM_INIT=1 stands up the throwaway swarm; the script runs the swarm-free
+      # template + digest checks AND the apply/outdated/upgrade/idempotence loop.
+      - name: Repo-apply flow (install + outdated + upgrade + idempotence)
+        run: |
+          SWARMCLI="$PWD/.swarmcli-bin/swarmcli" \
+          E2E_SWARM_INIT=1 \
+          scripts/repo-apply-test.sh
+
   # Surface a scheduled failure as a single tracking issue (updated, not
   # duplicated). Skipped on manual dispatch so testing this workflow is quiet.
   notify:
-    needs: [render, integration, prepare, e2e]
+    needs: [render, integration, prepare, e2e, repo-apply]
     if: failure() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     permissions:
@@ -153,7 +185,8 @@ jobs:
             gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body \
               "The nightly run against the latest swarmcli release failed: $RUN_URL
 
-          The repo no longer works cleanly on the release users have. Charts whose
-          floor is ahead of the release are skipped, not failed (see the run log),
-          so this is a real break in render, the local-repo flow, or an e2e deploy."
+          The repo no longer works cleanly on the latest swarmcli release (or, for
+          the repo-apply leg, the pinned pre-release). Charts whose floor is ahead of
+          the release are skipped, not failed (see the run log), so this is a real
+          break in render, the local-repo flow, an e2e deploy, or the repo-apply flow."
           fi
