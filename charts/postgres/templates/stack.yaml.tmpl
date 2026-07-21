@@ -106,6 +106,13 @@ services:
 
     deploy:
       replicas: {{ .Values.replicas }}
+{{- if .Values.healthcheck.enabled }}
+      {{- /* Swarm watches a task for `monitor` after CREATING it, and only counts a
+             failure inside that window against the rollout. Shorter than the
+             healthcheck needs to fail and a broken deploy reports success. */}}
+      update_config:
+        monitor: {{ .Values.healthcheck.monitor }}
+{{- end }}
 {{- /* The data-volume node pin travels with persistence: it exists only while a volume needs
        pinning, so persistence.enabled:false never leaves a task Pending on a missing node
        label. placement.constraints adds extras. */}}

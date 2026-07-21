@@ -1,7 +1,7 @@
 name: superset
 description: Apache Superset BI/visualization platform on Docker Swarm — external metadata DB, external or embedded Redis, Celery workers, Traefik-routed
 # version is a placeholder — the git tag (superset/vX.Y.Z) sets the real version at release.
-version: 0.1.0
+version: 0.2.0
 # appVersion is the default image tag for apache/superset.
 # renovate: image=apache/superset
 appVersion: "5.0.0"

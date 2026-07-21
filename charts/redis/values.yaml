@@ -85,6 +85,11 @@ healthcheck:
   timeout: 5s
   retries: 5
   startPeriod: 30s
+  # How long Swarm counts a task failure against the rollout, measured from
+  # task creation. Must cover the healthcheck's worst case above
+  # (30s start_period + 10s interval x 5 retries = 80s) or a container that goes unhealthy
+  # after the window does not fail the deploy. Raise it if you raise the values above.
+  monitor: 90s
 
 # Arbitrary extra redis-server flags, appended verbatim. Each entry is a full flag
 # string, e.g. "--save 900 1" or "--tcp-keepalive 60".

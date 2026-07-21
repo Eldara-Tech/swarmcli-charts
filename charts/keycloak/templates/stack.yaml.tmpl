@@ -109,6 +109,13 @@ services:
 
     deploy:
       replicas: {{ .Values.replicas }}
+{{- if .Values.healthcheck.enabled }}
+      {{- /* Swarm watches a task for `monitor` after CREATING it, and only counts a
+             failure inside that window against the rollout. Shorter than the
+             healthcheck needs to fail and a broken deploy reports success. */}}
+      update_config:
+        monitor: {{ .Values.healthcheck.monitor }}
+{{- end }}
 {{- if .Values.placement.constraints }}
       placement:
         constraints:

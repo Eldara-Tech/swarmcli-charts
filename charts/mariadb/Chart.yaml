@@ -1,6 +1,6 @@
 name: mariadb
 description: MariaDB relational database for Docker Swarm — persistent, secret-authenticated, single-node pinned
-version: 0.1.0
+version: 0.2.0
 # renovate: image=mariadb
 appVersion: "11.8"
 # Oldest swarmcli whose chart engine renders this chart; verified by

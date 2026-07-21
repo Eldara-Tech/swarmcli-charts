@@ -155,6 +155,7 @@ co-located Ollama; use the config `baseUrl` above.)
 | `placement.constraints` | `[]` | Extra scheduling constraints (the data pin comes from `persistence.nodeLabel`) |
 | `resources.limits.memory` | `""` | Swarm deploy memory limit (set `2G`) |
 | `healthcheck.*` | see `values.yaml` | `node fetch()` `/healthz` healthcheck |
+| `healthcheck.monitor` | `4m` | Rollout watch window. Must cover `startPeriod + interval x retries` (210s) — see below |
 | `labels` | `{}` | Extra deploy labels |
 
 ## Requirements
@@ -177,3 +178,14 @@ non-root `node` user; the chart adds no `docker.sock`, `privileged`, host networ
 `authPath` (bind-mounting operator-chosen host directories); it is off by default and
 acknowledged via `annotations: { swarmcli-charts/allow: "host-mount" }` in `Chart.yaml`,
 so the security scan flags it only when you configure a host path.
+
+### Why `healthcheck.monitor` exists
+
+Swarm watches a task for `update_config.monitor` **after creating it**, and only a
+failure inside that window counts against the rollout. Leave it unset and swarm
+applies a 5s default — so a container that takes longer than that to be declared
+unhealthy never fails the deploy: the rollout is reported complete and the task
+quietly restart-loops. `swarmcli charts lint` warns when `monitor` is shorter
+than `start_period + interval x retries`.
+
+**Raise it if you raise the healthcheck values above**, or the lint will tell you.
