@@ -4,7 +4,9 @@ name: CI
 # config, and the shell scripts that package charts and build the index. A broken
 # workflow, script, or matchString silently fails releases or silently stops
 # maintaining the image pins, so this guards the parts chart-structure linting
-# (charts.yml) doesn't cover.
+# (charts.yml) doesn't cover. The index generator is not just shellchecked but
+# RUN against a throwaway repo + a mocked gh (scripts/generate-index-test.sh),
+# because its jq/yq assembly is where a silently-broken index would come from.
 #
 # The workflow triggers on every PR (no path filter) but a change-detection job
 # skips the `lint` job when nothing under .github/ or scripts/ changed. A skipped
@@ -71,6 +73,23 @@ jobs:
       # on genuine bugs, not style warnings, so it won't block on existing scripts.
       - name: Lint shell scripts (shellcheck)
         run: shellcheck --severity=error scripts/*.sh scripts/e2e-edge/*.sh
+
+      # generate-index.sh assembles the PUBLISHED index.yaml. A jq/yq regression there
+      # ships a subtly wrong index (a version reparsed as a float, a description that
+      # breaks the doc, a URL that no longer resolves) that only breaks downstream — and
+      # now fails install, since swarmcli verifies the chart digest against this index
+      # (Eldara-Tech/swarmcli#447). generate-index-test.sh runs it against a throwaway
+      # repo + a mocked gh and asserts the output. jq is preinstalled; it also needs
+      # mikefarah yq (installed explicitly, as charts.yml does, so coverage is reproducible).
+      - name: Install yq (mikefarah v4)
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL -o "$HOME/.local/bin/yq" https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+          chmod +x "$HOME/.local/bin/yq"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Test the index generator (scripts/generate-index-test.sh)
+        run: scripts/generate-index-test.sh
 
       # A malformed matchString does not error at run time — Renovate just extracts
       # zero dependencies and opens no PRs, so the pins silently stop being
