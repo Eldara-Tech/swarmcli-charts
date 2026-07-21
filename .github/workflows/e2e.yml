@@ -10,6 +10,11 @@ name: E2E
 # created on the runner by each chart's ci/e2e-setup.sh (E2E_SWARM_INIT=1 stands up the
 # throwaway swarm), never a repo secret, with a read-only token.
 #
+# A separate `repo-apply` job additionally drives the real repository-consumer path
+# (scripts/repo-apply-test.sh): install whoami FROM a served index — resolve, download,
+# digest-verify (swarmcli#447), render, apply — then assert outdated/upgrade/idempotence.
+# e2e-test.sh installs a local chart *directory*, so nothing else here exercises that path.
+#
 # One job PER CHART (strategy.matrix below), so charts run in parallel and in isolation.
 # CI runs a curated fixture SUBSET per chart via E2E_CASES (the cheap "does it deploy and
 # come up" smoke); the full `make e2e` still runs every fixture locally. Add a chart to CI
@@ -119,3 +124,34 @@ jobs:
           E2E_CASES="${{ matrix.cases }}" \
           E2E_TIMEOUT="${{ matrix.timeout }}" \
           scripts/e2e-test.sh "${{ matrix.chart }}"
+
+  # The deploy half of the repo-consumer path: install whoami FROM a served index
+  # (resolve -> download -> digest-verify -> render -> apply), then assert the
+  # GitOps contract on a real swarm — `outdated` flags the older install, a bump
+  # is an `upgrade`, and re-applying is `unchanged`. This is the one flow neither
+  # e2e-test.sh (installs a local directory) nor local-repo-test.sh (stops at
+  # search) drives. One whoami job, not the per-chart matrix: whoami converges solo
+  # and the flow is about the repo/index/apply machinery, not each chart.
+  repo-apply:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Build swarmcli
+        run: scripts/install-swarmcli.sh "$PWD/.swarmcli-bin"
+
+      # E2E_SWARM_INIT=1 stands up the throwaway swarm; the script runs the swarm-free
+      # template + digest checks AND the apply/outdated/upgrade/idempotence loop.
+      - name: Repo-apply flow (install + outdated + upgrade + idempotence)
+        run: |
+          SWARMCLI="$PWD/.swarmcli-bin/swarmcli" \
+          E2E_SWARM_INIT=1 \
+          scripts/repo-apply-test.sh
