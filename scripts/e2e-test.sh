@@ -13,15 +13,20 @@
 # Per chart, per fixture:
 #   0. setup     -> run charts/<chart>/ci/e2e-setup.sh if present (optional) — provision
 #                   external prerequisites swarmcli won't (secrets, node labels, a backend)
-#   1. install   -> swarmcli charts install <release> <chart> (deploy the stack)
-#   2. converge  -> poll until every desired task ACTUALLY reaches Running
-#   3. smoke     -> run charts/<chart>/ci/e2e-check.sh if present (optional)
-#   4. teardown  -> swarmcli uninstall --purge-volumes + ci/e2e-teardown.sh (always)
+#   1. install   -> swarmcli charts install <release> <chart> --wait (deploy AND converge)
+#   2. smoke     -> run charts/<chart>/ci/e2e-check.sh if present (optional)
+#   3. teardown  -> swarmcli uninstall --purge-volumes + ci/e2e-teardown.sh (always)
 #
-# We intentionally do NOT use swarmcli's `--wait`: its convergence check counts
-# tasks whose *desired* state is Running, which Swarm satisfies the instant a
-# service is created — so `--wait` returns while tasks are still Pending/pulling.
-# Step 2 polls the *actual* task state (`docker stack ps`) instead.
+# Convergence is swarmcli's `--wait`, not a hand-rolled `docker stack ps` poll.
+# This script used to avoid it because `--wait` counted tasks by *desired* state,
+# which Swarm satisfies the instant a service is created — so it returned while
+# tasks were still Pending/pulling. That was fixed in Eldara-Tech/swarmcli#473,
+# and a completed one-shot service stopped hanging it in #443, so the poll was
+# reimplementing a working feature and testing nothing.
+#
+# NOTE this needs swarmcli >= v1.13.0-rc4. CI is fine either way (PR workflows
+# build `main`, nightly runs the pinned release), but `make e2e` against an older
+# locally installed binary will not converge one-shot services.
 #
 # Usage: SWARMCLI=/path/to/swarmcli scripts/e2e-test.sh [chart ...]
 #   Defaults to all charts under charts/*.
@@ -51,16 +56,6 @@ TIMEOUT="${E2E_TIMEOUT:-3m}"
 # unset/empty => every fixture runs (the `make e2e` default). CI passes a curated subset
 # per chart (dropping fixtures that need a host plugin or a second DB engine).
 CASES="${E2E_CASES:-}"; CASES="${CASES//,/ }"
-
-# Convert a simple Go-style duration (3m / 90s / 1h / bare seconds) to seconds.
-dur_to_secs() {
-  case "$1" in
-    *h) printf '%s' "$(( ${1%h} * 3600 ))" ;;
-    *m) printf '%s' "$(( ${1%m} * 60 ))" ;;
-    *s) printf '%s' "$(( ${1%s} ))" ;;
-    *)  printf '%s' "$(( $1 ))" ;;
-  esac
-}
 
 # Tear a fixture down: remove the release stack, then run the chart's optional
 # ci/e2e-teardown.sh to clean up whatever ci/e2e-setup.sh provisioned OUTSIDE the
@@ -152,35 +147,15 @@ for chart in "${charts[@]}"; do
       fi
     fi
 
-    # Deploy (no --wait — see header). A non-zero exit means docker stack deploy
-    # itself was rejected (bad manifest, failed pre-flight, …).
-    if ! out="$("$SWARMCLI" charts install "$release" "./$dir" -f "$vf" 2>&1)"; then
-      echo "   FAIL: install was rejected"
+    # Deploy AND converge in one step. A non-zero exit is either a rejected
+    # install (bad manifest, failed pre-flight) or a rollout that never settled;
+    # swarmcli's own message distinguishes them, so it is printed either way.
+    ok=1
+    if ! out="$("$SWARMCLI" charts install "$release" "./$dir" -f "$vf" \
+      --wait --timeout "$TIMEOUT" 2>&1)"; then
+      ok=0
+      echo "   FAIL: install did not succeed within $TIMEOUT"
       printf '%s\n' "$out" | sed 's/^/      /'
-      teardown_case "$release" "$dir" "$case"
-      fail=1
-      continue
-    fi
-
-    ok=0
-
-    # Poll until every task whose desired state is Running ACTUALLY reads
-    # Running (image pulls take time), or the budget runs out.
-    deadline=$(( $(date +%s) + $(dur_to_secs "$TIMEOUT") ))
-    while :; do
-      states="$(docker stack ps "$release" --filter desired-state=running \
-        --format '{{.CurrentState}}' 2>/dev/null || true)"
-      if [ -n "$states" ] && ! printf '%s\n' "$states" | grep -vq '^Running'; then
-        ok=1
-        break
-      fi
-      if [ "$(date +%s)" -ge "$deadline" ]; then
-        break
-      fi
-      sleep 3
-    done
-    if [ "$ok" -ne 1 ]; then
-      echo "   FAIL: services did not all reach Running within $TIMEOUT"
       docker stack ps "$release" --no-trunc 2>/dev/null | sed 's/^/      /' || true
       # Dump each service's recent logs so a non-converging task (crash loop, failed
       # first-boot init, bad config) is diagnosable straight from the CI output.
