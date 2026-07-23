@@ -11,18 +11,26 @@ name: Nightly (latest release)
 #   * render      — scripts/test-charts.sh          (the charts.yml render suite)
 #   * integration — scripts/local-repo-test.sh      (the repo add/update/search flow)
 #   * e2e         — scripts/e2e-test.sh, one job per chart, sharing e2e.yml's
-#                   .github/e2e-matrix.yaml so the two matrices never drift.
+#                   .github/e2e-matrix.yaml so the two matrices never drift. PINNED
+#                   to v1.13.0-rc4 (like repo-apply) until v1.13.0 is stable: the
+#                   harness converges via `swarmcli install --wait`, which only
+#                   settles on ACTUAL Running from swarmcli#473 (released in
+#                   v1.13.0-rc4). On stable v1.12.0 `--wait` returns early and the
+#                   non-retrying DB smoke checks race an unpulled container (#104).
+#                   render + integration still run the latest stable; see the e2e job.
 #   * repo-apply  — scripts/repo-apply-test.sh       (install FROM a served index +
 #                   outdated/upgrade/idempotence). Pinned to v1.13.0-rc1 — the first
 #                   release with `charts apply` + digest verification — until v1.13.0
 #                   ships stable; see the repo-apply job for the pin rationale.
 #
-# A chart whose declared swarmcliVersion floor is AHEAD of the latest release
-# (today: zammad >=1.13.0 vs stable v1.12.0) cannot run on it — that is a
-# known-good state, not a regression. scripts/floors-runnable-on.sh skips and
-# reports (::warning) those, exactly as floor-check.sh does for unreleased floors,
-# so a red nightly always means a real break. On a scheduled failure the notify
-# job opens (or updates) a single tracking issue.
+# A chart whose declared swarmcliVersion floor is AHEAD of the binary a leg runs
+# cannot run on it — that is a known-good state, not a regression.
+# scripts/floors-runnable-on.sh skips and reports (::warning) those, exactly as
+# floor-check.sh does for unreleased floors, so a red nightly always means a real
+# break. The stable-release legs (render, integration) still skip zammad
+# (floor >=1.13.0 vs stable v1.12.0); the e2e leg is pinned to v1.13.0-rc4 and the
+# floor comparison strips the prerelease suffix to 1.13.0, so zammad DOES run there.
+# On a scheduled failure the notify job opens (or updates) a single tracking issue.
 
 on:
   schedule:
@@ -106,7 +114,18 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
-      - name: Download latest swarmcli release
+      # PINNED to the newest v1.13.0 prerelease, NOT the latest stable. e2e-test.sh
+      # converges via `swarmcli charts install --wait`, which only counts a task as
+      # up once it ACTUALLY reaches Running from Eldara-Tech/swarmcli#473 on — first
+      # released in v1.13.0-rc4. On stable v1.12.0 `--wait` returns the instant the
+      # service is created (desired-state), so the non-retrying DB smoke checks race
+      # an unpulled container and fail "container not found" (#104). Same pin and
+      # same drop-when-v1.13.0-is-stable rationale as the repo-apply job. NOTE the
+      # gate below then sees a "1.13.0" binary (floors-runnable-on strips the -rc4
+      # suffix), so zammad (floor >=1.13.0) runs here instead of being skipped.
+      - name: Download swarmcli (pinned to the newest v1.13.0 prerelease)
+        env:
+          SWARMCLI_REF: v1.13.0-rc4
         run: scripts/download-swarmcli.sh "$PWD/.swarmcli-bin"
 
       # A chart whose floor is ahead of the release cannot run on it — skip this
