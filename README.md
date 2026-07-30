@@ -89,6 +89,11 @@ Then extend this repository's Renovate preset — that is the whole configuratio
 Renovate opens a PR whenever a chart you pin gets a new version, with the chart's
 release notes attached. Merge it, and `swarmcli charts apply` in CI rolls it out.
 
+**[docs/gitops.md](docs/gitops.md) is that CI job, worked end to end**: reaching
+the swarm over an `ssh://` context, installing the binary, a plan-on-PR /
+apply-on-merge workflow for GitHub Actions and GitLab CI, and the Renovate
+settings that are easy to get wrong.
+
 The file's key names match Helmfile's on purpose, so Renovate's **built-in**
 `helmfile` manager reads it — there is no custom regex to maintain, and the chart
 registry is resolved from the `repositories` block, so the preset works for any
