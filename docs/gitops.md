@@ -40,6 +40,12 @@ environment needs two things: the `docker` CLI on `PATH`, and a **named** Docker
 context pointing at the swarm. `DOCKER_HOST` alone is not the supported path —
 create a context and select it.
 
+Selecting it means either `docker context use <name>`, or setting
+`DOCKER_CONTEXT=<name>` in the environment, which takes precedence and leaves
+the runner's Docker config untouched. The examples below use `context use`
+because it is the more familiar of the two; in a job that does anything else
+with Docker, prefer the variable.
+
 ### Over SSH (recommended)
 
 Nothing is exposed: the daemon keeps listening only on its local socket, and the
