@@ -51,6 +51,14 @@ chart_name() {
 STATE="$(mktemp -d)"
 export XDG_STATE_HOME="$STATE"
 
+# swarmcli refuses a plain-http repository by default (Eldara-Tech/swarmcli#531):
+# a repository serves the tarball that becomes the deployed workload, and the index
+# digest travels the same connection. This one is a throwaway nginx container on
+# loopback, which is the case the documented opt-out exists for. Exported rather
+# than prefixed onto `repo add`, because the scheme is re-checked on every fetch
+# including the chart download — a per-command opt-in would only move the refusal.
+export SWARMCLI_CHARTS_ALLOW_PLAINTEXT=1
+
 server_pid=""
 cleanup() {
   # Remove the container first: that unblocks the server's `docker logs -f` so it

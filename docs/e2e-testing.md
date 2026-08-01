@@ -290,6 +290,10 @@ on `http://localhost:8879`. It **blocks** — leave it running and, in another
 terminal:
 
 ```bash
+# swarmcli refuses plaintext repositories by default; this one is a throwaway
+# container on loopback. Export it — the scheme is re-checked on every fetch, so
+# opting in on `repo add` alone would only move the refusal to `install`.
+export SWARMCLI_CHARTS_ALLOW_PLAINTEXT=1
 swarmcli charts repo add localrepo http://localhost:8879
 swarmcli charts repo update
 swarmcli charts search                                   # lists localrepo/<chart>
@@ -307,6 +311,13 @@ swarmcli charts repo remove localrepo
 > served over `http://localhost`. Override the port with `LOCALREPO_PORT`. This is
 > only for trying the repo UX locally; real distribution goes through a tagged
 > release (see the [README](../README.md#releasing-a-new-chart-version)).
+
+> **Why the opt-in?** A repository serves the tarball that *becomes* the deployed
+> workload, and the index digest that would attest it travels the same connection —
+> so swarmcli refuses plain `http://` unless `SWARMCLI_CHARTS_ALLOW_PLAINTEXT=1`
+> (Eldara-Tech/swarmcli#531). A throwaway container on loopback is exactly the
+> "internal registry on a network you already trust" the escape hatch names. Never
+> set it for a repository reached over a real network.
 
 > **Regression-tested in CI.** The `Integration` workflow runs
 > `scripts/local-repo-test.sh`, which stands this server up and asserts
