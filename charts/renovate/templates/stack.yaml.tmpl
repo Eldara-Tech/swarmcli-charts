@@ -3,11 +3,23 @@
 {{- if and (not .Values.autodiscover) (not .Values.repositories) (not .Values.configName) }}
 {{-   fail "set repositories: [owner/repo, ...], autodiscover: true, or supply them in the config file named by configName — Renovate would otherwise have nothing to do" }}
 {{- end }}
+{{- if and .Values.configVersion (not .Values.configName) }}
+{{-   fail "configVersion names a version OF configName — set configName as well, or drop configVersion" }}
+{{- end }}
 {{- /* Renovate picks its config parser from the file's EXTENSION and exits
        `FATAL: Unsupported file type` on anything else, so configFormat — not the Docker
        config's name — is what makes the mount readable at all. One variable, so the env
        var and the mount target can never drift apart. */ -}}
 {{- $configPath := printf "/run/configs/renovate-config.%s" .Values.configFormat }}
+{{- /* A Swarm config is IMMUTABLE: `docker stack deploy` answers changed contents under an
+       existing name by calling ConfigUpdate, which the daemon refuses with "only updates to
+       Labels are allowed". Rotation — new contents under a new name — is the only mechanism
+       Swarm offers, so configVersion is a suffix on the name rather than anything the
+       running service sees. One variable again, so the mount and the declaration agree. */ -}}
+{{- $configName := .Values.configName }}
+{{- if and .Values.configName .Values.configVersion }}
+{{-   $configName = printf "%s_%s" .Values.configName .Values.configVersion }}
+{{- end }}
 version: "3.9"
 
 services:
@@ -61,7 +73,7 @@ services:
 {{- end }}
 {{- if .Values.configName }}
     configs:
-      - source: {{ .Values.configName }}
+      - source: {{ $configName }}
         target: {{ $configPath }}
 {{- end }}
     deploy:
@@ -120,6 +132,6 @@ secrets:
 {{- if .Values.configName }}
 
 configs:
-  {{ .Values.configName }}:
+  {{ $configName }}:
     external: true
 {{- end }}

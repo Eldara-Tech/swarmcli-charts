@@ -43,6 +43,7 @@
       "required": ["tokenSecret"]
     },
     "configName": { "type": "string" },
+    "configVersion": { "type": "string" },
     "configFormat": {
       "enum": ["json", "json5", "jsonc", "yaml", "yml", "js", "cjs", "mjs"]
     },
