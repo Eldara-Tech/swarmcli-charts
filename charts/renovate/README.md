@@ -95,7 +95,8 @@ needs no permissions whatsoever; it exists purely to lift the anonymous rate lim
 | `autodiscoverFilter` | `""` | Narrow autodiscovery, e.g. `infra/*` |
 | `auth.tokenSecret` | `renovate_token` | **External** Swarm secret holding the platform token |
 | `auth.githubComTokenSecret` | `""` | **External** secret with a read-only github.com token. Non-GitHub platforms only |
-| `configName` | `""` | **External** Docker config holding a Renovate `config.js` / `config.json` |
+| `configName` | `""` | **External** Docker config holding a Renovate config file |
+| `configFormat` | `json` | Format of that file — `json`, `json5`, `jsonc`, `yaml`, `yml`, `js`, `cjs`, `mjs`. Renovate parses by file extension, so this must match its contents |
 | `logLevel` | `info` | `trace`–`fatal` |
 | `dryRun` | `""` | `extract`, `lookup` or `full` — writes nothing to your repositories |
 | `extraEnv` | `{}` | Extra environment variables, injected verbatim |
@@ -104,10 +105,10 @@ needs no permissions whatsoever; it exists purely to lift the anonymous rate lim
 | `placement.constraints` | `[]` | Extra scheduling constraints |
 | `labels` | `{}` | Extra deploy labels |
 
-You must set `repositories` **or** `autodiscover` — the chart fails to render otherwise,
-rather than deploying a Renovate with nothing to do. Autodiscovery with a broadly-scoped
-token is how people open pull requests across an entire org by accident, so it is off by
-default.
+You must set `repositories` **or** `autodiscover` — or supply them in the config file named
+by `configName`. The chart fails to render otherwise, rather than deploying a Renovate with
+nothing to do. Autodiscovery with a broadly-scoped token is how people open pull requests
+across an entire org by accident, so it is off by default.
 
 ## Anything the values don't cover
 
@@ -115,11 +116,29 @@ Renovate's configuration surface is enormous (`packageRules`, `hostRules`, onboa
 Mount its own config file as an external Docker config:
 
 ```bash
-docker config create renovate_config ./config.js
+docker config create renovate_config ./config.json
 swarmcli charts upgrade renovate swarmcli-charts/renovate --set configName=renovate_config
 ```
 
-It lands at `/run/configs/renovate-config`, with `RENOVATE_CONFIG_FILE` pointing at it.
+It lands at `/run/configs/renovate-config.<configFormat>`, with `RENOVATE_CONFIG_FILE`
+pointing at it.
+
+**`configFormat` must match the file's contents.** Renovate decides how to parse its config
+purely from the *extension*, and a name it does not recognise is a startup
+`FATAL: Unsupported file type` — it never looks inside the file. The default is `json`; for a
+dynamic JavaScript config:
+
+```bash
+docker config create renovate_config ./config.js
+swarmcli charts upgrade renovate swarmcli-charts/renovate \
+  --set configName=renovate_config --set configFormat=js
+```
+
+**Values win over this file.** Renovate merges config file < environment < CLI, and the
+chart renders the values above as environment: `platform.type` and `logLevel` always, and
+`platform.endpoint`, `repositories`, `autodiscover`, `autodiscoverFilter` and `dryRun`
+whenever they are set. Setting one of those in both places silently uses the chart value.
+Leave the value empty to let the config file own that key.
 
 ## Notes
 
