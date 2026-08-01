@@ -2,3 +2,4 @@ default
 cronjob
 gitlab
 config-file
+config-file-js

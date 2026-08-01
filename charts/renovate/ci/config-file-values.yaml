@@ -1,4 +1,5 @@
-# The escape hatch: Renovate's own config.js as an external Docker config.
+# The escape hatch: Renovate's own config.json as an external Docker config, at the
+# default configFormat.
 configName: renovate_config
 dryRun: full
 logLevel: debug

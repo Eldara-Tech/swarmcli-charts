@@ -66,8 +66,20 @@ auth:
 # Renovate's own config file, as an external Docker config you pre-create. The escape
 # hatch for anything the values above do not cover (onboarding, packageRules, hostRules).
 # Empty = configure entirely through the values here.
-#   docker config create renovate_config ./config.js
+#   docker config create renovate_config ./config.json
+#
+# Renovate merges config file < RENOVATE_* environment < CLI, and the values above are
+# rendered as environment — so platform.type and logLevel (always emitted) and
+# platform.endpoint, repositories, autodiscover, autodiscoverFilter and dryRun (emitted
+# only when set) WIN over the same keys in this file. Leave one empty to let the config
+# file own that key.
 configName: ""
+
+# The mounted file's format. Renovate dispatches on its EXTENSION and nothing else — an
+# extension it does not recognise is a startup `FATAL: Unsupported file type` — so this
+# must match what you put in the Docker config.
+#   json | json5 | jsonc | yaml | yml | js | cjs | mjs
+configFormat: json
 
 logLevel: info
 
