@@ -120,9 +120,9 @@ git tag whoami/v0.2.0
 git push origin whoami/v0.2.0
 ```
 
-`release.yml` stamps that version into the chart's `Chart.yaml` at package time,
-publishes a GitHub Release with the `.tgz`, and rebuilds the `index.yaml` on
-GitHub Pages as the final step. The `version:` field committed in `Chart.yaml` is
+`release.yml` stamps that version into the chart's `Chart.yaml` at package time
+and publishes a GitHub Release with the `.tgz`; `pages-index.yml` then rebuilds
+the `index.yaml` on GitHub Pages. The `version:` field committed in `Chart.yaml` is
 only a placeholder — the tag wins.
 
 The published chart version is plain SemVer (`0.2.0`); install it with

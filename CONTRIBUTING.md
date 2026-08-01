@@ -242,8 +242,9 @@ git tag whoami/v0.2.0
 git push origin whoami/v0.2.0
 ```
 
-`release.yml` stamps the SemVer into `Chart.yaml`, packages the `.tgz`, publishes
-a GitHub Release, and rebuilds `index.yaml` on GitHub Pages. The `version:` in
+`release.yml` stamps the SemVer into `Chart.yaml`, packages the `.tgz` and
+publishes a GitHub Release; `pages-index.yml` then rebuilds `index.yaml` on
+GitHub Pages. The `version:` in
 `Chart.yaml` is only a placeholder — the tag wins. Published versions are plain
 SemVer (`0.2.0`); the leading `v` belongs to the git tag.
 
