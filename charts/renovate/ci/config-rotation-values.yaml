@@ -1,0 +1,10 @@
+# Config rotation (#109): configVersion suffixes the config's name, so changed contents get
+# a new Swarm config object instead of colliding with the immutable existing one. The mount,
+# the external declaration and the requirements.yaml pre-flight must all name the SAME
+# versioned config — that agreement is what ci/render-check.sh asserts.
+configName: renovate_config
+configVersion: 9f2a1c4e8b70
+configFormat: js
+dryRun: full
+repositories:
+  - Eldara-Tech/swarmcli-charts
