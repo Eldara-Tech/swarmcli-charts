@@ -20,11 +20,17 @@ on:
   workflow_run:
     workflows: ["Release Chart"]
     types: [completed]
+  # Rebuilding the index needs no release to hang off — it is generated from the
+  # published releases. Without this there is no way to repair a stale index
+  # except by releasing another chart, which is how #114's freeze had to sit
+  # until something happened to be released.
+  workflow_dispatch:
 
 jobs:
   update-index:
-    # A release that did not publish has nothing to add to the index.
-    if: github.event.workflow_run.conclusion == 'success'
+    # A release that did not publish has nothing to add to the index. A manual
+    # run has no triggering workflow, so it carries no conclusion to check.
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     # Serialise index deploys so overlapping runs don't churn the Pages API. Losing
     # a race no longer matters: each deploy carries a per-run pages_build_version
