@@ -3,6 +3,7 @@
 # Serve the working-tree charts as a LOCAL chart repository so a contributor can
 # exercise the real consumer flow against charts they have NOT published:
 #
+#   export SWARMCLI_CHARTS_ALLOW_PLAINTEXT=1
 #   swarmcli charts repo add localrepo http://localhost:8879
 #   swarmcli charts repo update
 #   swarmcli charts search
@@ -13,7 +14,10 @@
 # over HTTP with a throwaway nginx container.
 #
 # swarmcli requires repo URLs to be http(s) — file:// and bare paths are rejected
-# by design — which is why this serves over localhost rather than a path.
+# by design — which is why this serves over localhost rather than a path. It also
+# refuses plain http unless SWARMCLI_CHARTS_ALLOW_PLAINTEXT=1, since a repository
+# serves the tarball that becomes the deployed workload; a throwaway container on
+# loopback is what that opt-out is for.
 #
 # Usage: scripts/local-repo.sh [chart ...]   (defaults to all charts under charts/*)
 #   Env: LOCALREPO_PORT   host port to serve on (default 8879)
@@ -126,6 +130,8 @@ cat <<EOF
 Local chart repo ready at http://localhost:${PORT}
 Run these in another terminal:
 
+  # this repo is plain http on loopback; swarmcli refuses plaintext repos by default
+  export SWARMCLI_CHARTS_ALLOW_PLAINTEXT=1
   swarmcli charts repo add localrepo http://localhost:${PORT}
   swarmcli charts repo update
   swarmcli charts search

@@ -83,6 +83,11 @@ STATE="$(mktemp -d)"      # isolates swarmcli's repo state (XDG_STATE_HOME) — 
 WORK="$(mktemp -d)"       # chart staging + the served docroot
 DOCROOT="$WORK/docroot"
 export XDG_STATE_HOME="$STATE"
+# Same opt-in as local-repo-test.sh: swarmcli refuses a plain-http repository by
+# default (Eldara-Tech/swarmcli#531) and this one is a throwaway container on
+# loopback. Needed for the whole run, not just `repo add` — `apply` downloads the
+# tarball, and the scheme is re-checked there too.
+export SWARMCLI_CHARTS_ALLOW_PLAINTEXT=1
 mkdir -p "$DOCROOT"
 
 cleanup() {
