@@ -93,7 +93,16 @@
 {{- /* Shared environment. Non-secret only (passwords are exported by each role's command wrapper,
        never here — the `environment:` map shows up in `docker inspect`). Healthchecks run in a
        fresh shell that sees only this map, but the checks here are port-open probes that need no
-       credentials, so that is fine. */ -}}
+       credentials, so that is fine.
+
+       PGDATABASE / PGUSER are the libpq fallbacks for the image's OWN readiness probe: the init and
+       backup roles run `pg_isready -q -h <host> -p <port>` with neither -U nor -d, so without them
+       libpq defaults the user to the container's OS user (`zammad`, uid 1000) and the database to
+       that user name — and the server logs a failed connection to a database `zammad` that does not
+       exist (#119). The probe itself still succeeds (pg_isready reports the SERVER's status, not the
+       connection's), so this is misleading noise rather than a failure, and Zammad's real connection
+       is unaffected either way: DATABASE_URL is built from POSTGRESQL_* explicitly, as is the backup
+       role's `pg_dump --dbname`. Setting the fallbacks makes the probe say what it means. */ -}}
 {{- $env := dict
       "POSTGRESQL_HOST" $dbHost
       "POSTGRESQL_PORT" (printf "%v" .Values.database.port)
@@ -101,6 +110,8 @@
       "POSTGRESQL_USER" .Values.database.username
       "POSTGRESQL_OPTIONS" .Values.database.options
       "POSTGRESQL_DB_CREATE" (ternary "true" "false" .Values.database.createDb)
+      "PGDATABASE" .Values.database.name
+      "PGUSER" .Values.database.username
       "MEMCACHE_SERVERS" $memServers
       "ELASTICSEARCH_ENABLED" (ternary "true" "false" $esEnabled)
       "ZAMMAD_FQDN" .Values.ingress.host
