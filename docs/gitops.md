@@ -297,4 +297,14 @@ To ask the same question outside a PR — "is anything I am running behind?" —
 `swarmcli charts outdated` compares every deployed release against the
 repository indexes.
 
+## Pulling instead of pushing
+
+Everything above pushes: CI holds the credential, reaches the swarm, and applies.
+The other shape is a controller running *on* the swarm that watches the
+repositories itself — nothing outside needs swarm access, and drift a
+`docker service update` introduced behind your back is noticed rather than
+waited out until the next merge. That is
+[swarmcli-cd](https://github.com/Eldara-Tech/swarmcli-cd), and the
+[swarmcli-cd chart](../charts/swarmcli-cd) deploys it.
+
 [actions/runner#801]: https://github.com/actions/runner/issues/801

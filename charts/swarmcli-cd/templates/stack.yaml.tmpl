@@ -1,0 +1,352 @@
+{{- /* appset.mode and exposure.mode are enum-checked by values.schema.json; what follows
+       are the cross-field rules a schema states far less legibly than they read here. */ -}}
+{{- $mode := .Values.appset.mode }}
+{{- $syncing := eq $mode "git-sync" }}
+{{- $fromDir := or $syncing (eq $mode "dir") }}
+{{- if or (eq $mode "git") $syncing }}
+{{-   if not .Values.appset.repo.url }}
+{{-     fail (printf "appset.mode: %s needs appset.repo.url — which repository holds the app set?" $mode) }}
+{{-   end }}
+{{-   if not .Values.appset.repo.revision }}
+{{-     fail "appset.repo.revision is required: an unpinned app set follows whatever the default branch points at, and the app set defines every deployment" }}
+{{-   end }}
+{{-   if not .Values.appset.path }}
+{{-     fail (printf "appset.mode: %s needs appset.path — a file inside somebody else's repository layout has no name this end can guess" $mode) }}
+{{-   end }}
+{{- end }}
+{{- /* The two git modes differ by transport, and each refuses the other's URLs: the
+       controller's own client rejects ssh remotes outright (swarmcli-cd git/git.go), and
+       the sidecar exists only to carry the ssh case the controller cannot. Saying so here
+       beats a CrashLoop whose log says "ssh remotes are not supported yet". */}}
+{{- $ssh := or (hasPrefix "ssh://" .Values.appset.repo.url) (regexMatch "^[^/]+@[^/]+:" .Values.appset.repo.url) }}
+{{- if and (eq $mode "git") $ssh }}
+{{-   fail "appset.mode: git polls the repository from the controller, which supports HTTPS only — use an https:// URL, or appset.mode: git-sync for an SSH remote" }}
+{{- end }}
+{{- if and $syncing (not $ssh) }}
+{{-   fail "appset.mode: git-sync is the SSH path — give an ssh:// or git@host: URL, or use appset.mode: git, which polls an HTTPS repository from the controller itself with no sidecar" }}
+{{- end }}
+{{- if $syncing }}
+{{-   if not .Values.appset.sync.sshKeySecret }}
+{{-     fail "appset.sync.sshKeySecret is required in git-sync mode: name the external Swarm secret holding the deploy key" }}
+{{-   end }}
+{{-   if not .Values.appset.sync.knownHostsSecret }}
+{{-     fail "appset.sync.knownHostsSecret is required in git-sync mode: without pinned host keys the first connection trusts whatever answers on the port" }}
+{{-   end }}
+{{- end }}
+{{- if and .Values.appset.configVersion (ne $mode "static") }}
+{{-   fail (printf "appset.configVersion rotates the static mode's Docker config, which appset.mode: %s does not mount — drop it" $mode) }}
+{{- end }}
+{{- if and .Values.git.username (not .Values.git.tokenSecret) }}
+{{-   fail "git.username without git.tokenSecret authenticates nothing: the controller reads the password from the secret, and a username alone is dropped" }}
+{{- end }}
+{{- if and .Values.prune.volumes (not .Values.prune.enabled) }}
+{{-   fail "prune.volumes needs prune.enabled: deleting an application's volumes is an extension of pruning it, and volumes are the one part nothing can restore" }}
+{{- end }}
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) (contains "/" .Values.persistence.volumeName) }}
+{{-   fail "persistence.volumeName is a Swarm volume name and must not contain '/' — use persistence.volumePath for a host path" }}
+{{- end }}
+{{- /* Where each piece lands in the container. The app set's directory is deliberately
+       NOT under the data directory: in git mode the controller keeps its own app-set
+       clone at <data>/appset, and a volume mounted over that would be read as one. */}}
+{{- $configTarget := "/etc/swarmcli-cd/applications.yaml" }}
+{{- $appsetDir := "/etc/swarmcli-cd/appset" }}
+{{- $dataDir := "/var/lib/swarmcli-cd" }}
+{{- /* git-sync publishes under one fixed name, so appset.path stays "the path in the
+       repository" in both git modes rather than meaning two things. */}}
+{{- $syncedFile := "applications.yaml" }}
+{{- $appsetFile := ternary $syncedFile (default $syncedFile .Values.appset.path) $syncing }}
+{{- $configName := .Values.appset.configName }}
+{{- if and (eq $mode "static") .Values.appset.configVersion }}
+{{-   $configName = printf "%s_%s" .Values.appset.configName .Values.appset.configVersion }}
+{{- end }}
+{{- $appsetVolume := ternary .Values.appset.sync.volumeName .Values.appset.dirVolumeName $syncing }}
+{{- $expose := .Values.exposure.mode }}
+{{- $namedData := and .Values.persistence.enabled (not .Values.persistence.volumePath) }}
+{{- /* The node pin travels with whichever node-local volume exists. persistence.enabled:
+       false still leaves the app-set volume in git-sync and dir modes, and both ends of it
+       must land on the same node — so the pin is not persistence's alone. */}}
+{{- $pinned := and .Values.persistence.nodeLabel (or .Values.persistence.enabled $fromDir) }}
+version: "3.9"
+
+services:
+
+  controller:
+    image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
+
+    # Which app-set selector is passed IS the mode; passing two, or either alongside an
+    # explicit --config, is refused at startup rather than resolved by a precedence rule.
+    command:
+      - controller
+{{- if eq $mode "static" }}
+      - --config
+      - {{ $configTarget }}
+{{- else if eq $mode "git" }}
+      - --appset-repo
+      - {{ .Values.appset.repo.url | quote }}
+      - --appset-revision
+      - {{ .Values.appset.repo.revision | quote }}
+      - --appset-path
+      - {{ .Values.appset.path | quote }}
+{{- else }}
+      - --appset-dir
+      - {{ $appsetDir }}
+      - --appset-path
+      - {{ $appsetFile | quote }}
+{{- end }}
+{{- if ne $mode "static" }}
+      - --appset-interval
+      - {{ .Values.appset.interval | quote }}
+{{- end }}
+{{- if .Values.prune.enabled }}
+      - --prune
+{{- if .Values.prune.volumes }}
+      - --prune-volumes
+{{- end }}
+{{- end }}
+      - --controller-id
+      - {{ .Values.controllerId | quote }}
+      - --log-level
+      - {{ .Values.log.level | quote }}
+      - --log-format
+      - {{ .Values.log.format | quote }}
+
+{{- if eq $expose "traefik" }}
+
+    networks:
+      - {{ .Values.exposure.network }}
+{{- end }}
+
+{{- if eq $expose "published" }}
+
+    ports:
+      - target: 8080
+        published: {{ .Values.publish.port }}
+        protocol: tcp
+        mode: {{ .Values.publish.mode }}
+{{- end }}
+
+    # File paths, never values: a Docker secret is encrypted at rest in the raft log,
+    # delivered in memory, and never appears in `docker service inspect`.
+    environment:
+      SWARMCLI_CD_ADMIN_TOKEN_FILE: /run/secrets/{{ .Values.auth.adminTokenSecret }}
+{{- if .Values.git.tokenSecret }}
+      SWARMCLI_CD_GIT_USERNAME: {{ .Values.git.username | quote }}
+      SWARMCLI_CD_GIT_TOKEN_FILE: /run/secrets/{{ .Values.git.tokenSecret }}
+{{- end }}
+
+    secrets:
+      - {{ .Values.auth.adminTokenSecret }}
+{{- if .Values.git.tokenSecret }}
+      - {{ .Values.git.tokenSecret }}
+{{- end }}
+{{- range .Values.registryAuthSecrets }}
+      - {{ . }}
+{{- end }}
+
+{{- if eq $mode "static" }}
+
+    configs:
+      - source: {{ $configName }}
+        target: {{ $configTarget }}
+{{- end }}
+
+    volumes:
+      # :ro applies to the socket file, not to the API reached through it — this
+      # controller creates and updates services, and must. It only stops the file itself
+      # being replaced.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+{{- if .Values.persistence.enabled }}
+{{- if .Values.persistence.volumePath }}
+      - {{ .Values.persistence.volumePath }}:{{ $dataDir }}
+{{- else }}
+      - {{ .Values.persistence.volumeName }}:{{ $dataDir }}
+{{- end }}
+{{- end }}
+{{- if $fromDir }}
+      # Read-only: the controller consumes this set, it never writes one.
+      - {{ $appsetVolume }}:{{ $appsetDir }}:ro
+{{- end }}
+
+{{- if .Values.healthcheck.enabled }}
+
+    healthcheck:
+      # The image carries no curl and needs none: the binary probes itself.
+      test: ["CMD", "/swarmcli-cd", "healthcheck"]
+      interval: {{ .Values.healthcheck.interval }}
+      timeout: {{ .Values.healthcheck.timeout }}
+      retries: {{ .Values.healthcheck.retries }}
+      start_period: {{ .Values.healthcheck.startPeriod }}
+{{- end }}
+
+    deploy:
+      # One. Two controllers reconciling one app set would race each other applying it.
+      replicas: 1
+{{- if .Values.healthcheck.enabled }}
+      {{- /* Swarm watches a task for `monitor` after CREATING it, and only counts a
+             failure inside that window against the rollout. Shorter than the
+             healthcheck needs to fail and a broken deploy reports success. */}}
+      update_config:
+        monitor: {{ .Values.healthcheck.monitor }}
+{{- end }}
+      placement:
+        constraints:
+          # The controller talks to the swarm's own API, which only a manager serves. A
+          # worker would fail every apply, so this is not a value.
+          - node.role == manager
+{{- if $pinned }}
+          - node.labels.{{ .Values.persistence.nodeLabel }} == true
+{{- end }}
+{{- range .Values.placement.constraints }}
+          - {{ . }}
+{{- end }}
+{{- if or .Values.resources.limits.memory .Values.resources.reservations.memory }}
+      resources:
+{{- with .Values.resources.limits.memory }}
+        limits:
+          memory: {{ . | quote }}
+{{- end }}
+{{- with .Values.resources.reservations.memory }}
+        reservations:
+          memory: {{ . | quote }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- if or (eq $expose "traefik") .Values.labels }}
+      labels:
+{{- if eq $expose "traefik" }}
+        - "traefik.enable=true"
+        - "traefik.swarm.network={{ .Values.exposure.network }}"
+        - "traefik.constraint-label={{ .Values.traefik.constraintLabel }}"
+        # HTTP router
+        - "traefik.http.routers.{{ .Release.Name }}-http.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ .Release.Name }}-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
+{{- if .Values.ingress.tls }}
+        # Redirect plain HTTP to HTTPS, then terminate TLS on the HTTPS router.
+        - "traefik.http.routers.{{ .Release.Name }}-http.middlewares={{ .Values.traefik.redirectMiddleware }}"
+        - "traefik.http.routers.{{ .Release.Name }}-https.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ .Release.Name }}-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
+        - "traefik.http.routers.{{ .Release.Name }}-https.tls=true"
+        - "traefik.http.routers.{{ .Release.Name }}-https.tls.certresolver={{ .Values.traefik.certResolver }}"
+{{- with .Values.traefik.middlewares }}
+        - "traefik.http.routers.{{ $.Release.Name }}-https.middlewares={{ join "," . }}"
+{{- end }}
+{{- else }}
+{{- with .Values.traefik.middlewares }}
+        - "traefik.http.routers.{{ $.Release.Name }}-http.middlewares={{ join "," . }}"
+{{- end }}
+{{- end }}
+        - "traefik.http.services.{{ .Release.Name }}.loadbalancer.server.port=8080"
+{{- end }}
+{{- range $key, $val := .Values.labels }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+{{- end }}
+
+{{- if $syncing }}
+
+  # The SSH half of app-of-apps. The controller's own git client is HTTPS-only, so for a
+  # repository reachable over SSH something else has to fetch it; this is that something,
+  # and it publishes the file the controller reads.
+  git-sync:
+    image: {{ .Values.appset.sync.image.repository }}:{{ .Values.appset.sync.image.tag }}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      # `git init` on an existing repository is a no-op, and fetching an explicit revision
+      # (rather than cloning a branch) is what makes a tag or a SHA work like a branch.
+      #
+      # The publish is a rename, and must be: rename is atomic, so the controller reads one
+      # whole version of the set or the other. A file rewritten in place can be read
+      # half-written — that read fails to parse, which is safe, but a truncation that is
+      # still valid YAML cannot be told from a set you meant to shrink.
+      - |
+        mkdir -p /root/.ssh /work/repo /out
+        chmod 700 /root/.ssh
+        cp /run/secrets/{{ .Values.appset.sync.sshKeySecret }} /root/.ssh/id_deploy
+        chmod 600 /root/.ssh/id_deploy
+        cp /run/secrets/{{ .Values.appset.sync.knownHostsSecret }} /root/.ssh/known_hosts
+        chmod 644 /root/.ssh/known_hosts
+        export GIT_SSH_COMMAND="ssh -i /root/.ssh/id_deploy -o IdentitiesOnly=yes -o UserKnownHostsFile=/root/.ssh/known_hosts -o StrictHostKeyChecking=yes"
+        git init -q /work/repo
+        git -C /work/repo remote add origin {{ .Values.appset.repo.url | quote }} 2>/dev/null \
+          || git -C /work/repo remote set-url origin {{ .Values.appset.repo.url | quote }}
+        while true; do
+          git -C /work/repo fetch -q --depth 1 origin {{ .Values.appset.repo.revision | quote }}
+          git -C /work/repo checkout -q -f FETCH_HEAD
+          cp /work/repo/{{ .Values.appset.path }} /out/.{{ $syncedFile }}.tmp
+          mv -f /out/.{{ $syncedFile }}.tmp /out/{{ $syncedFile }}
+          sleep {{ .Values.appset.sync.intervalSeconds }}
+        done
+
+    secrets:
+      - {{ .Values.appset.sync.sshKeySecret }}
+      - {{ .Values.appset.sync.knownHostsSecret }}
+
+    volumes:
+      - {{ $appsetVolume }}:/out
+
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+{{- if $pinned }}
+          # The same pin the controller carries: the volume between them is node-local, so
+          # a sidecar scheduled elsewhere publishes the app set where nothing reads it.
+          - node.labels.{{ .Values.persistence.nodeLabel }} == true
+{{- else }}
+          # persistence.nodeLabel is empty, which is only correct on a single-node swarm.
+          # Following the controller onto a manager is the closest thing to a pin left.
+          - node.role == manager
+{{- end }}
+{{- range .Values.placement.constraints }}
+          - {{ . }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- end }}
+
+secrets:
+  {{ .Values.auth.adminTokenSecret }}:
+    external: true
+{{- if .Values.git.tokenSecret }}
+  {{ .Values.git.tokenSecret }}:
+    external: true
+{{- end }}
+{{- range .Values.registryAuthSecrets }}
+  {{ . }}:
+    external: true
+{{- end }}
+{{- if $syncing }}
+  {{ .Values.appset.sync.sshKeySecret }}:
+    external: true
+  {{ .Values.appset.sync.knownHostsSecret }}:
+    external: true
+{{- end }}
+{{- if eq $mode "static" }}
+
+configs:
+  {{ $configName }}:
+    external: true
+{{- end }}
+{{- if or $namedData $fromDir }}
+
+volumes:
+{{- if $namedData }}
+  {{ .Values.persistence.volumeName }}: {}
+{{- end }}
+{{- if $syncing }}
+  {{ $appsetVolume }}: {}
+{{- end }}
+{{- if eq $mode "dir" }}
+  # External: the writer that keeps this file current lives in another stack, and a
+  # stack-scoped volume is not a name it can reach.
+  {{ $appsetVolume }}:
+    external: true
+{{- end }}
+{{- end }}
+{{- if eq $expose "traefik" }}
+
+networks:
+  {{ .Values.exposure.network }}:
+    external: true
+{{- end }}

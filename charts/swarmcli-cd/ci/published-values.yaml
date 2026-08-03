@@ -1,0 +1,8 @@
+# The API published directly on the swarm — no TLS, one shared bearer token. Only ever
+# right on a private network. Exercises the ports branch and a non-default published port
+# mapped onto the fixed 8080 the controller listens on inside the container.
+exposure:
+  mode: published
+publish:
+  port: 18080
+  mode: host

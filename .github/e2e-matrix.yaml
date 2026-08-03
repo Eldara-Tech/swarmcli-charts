@@ -15,6 +15,14 @@ include:
   - { chart: openclaw,      cases: "",                                                                                timeout: 10m }
   - { chart: whoami,        cases: "",                                                                                timeout: 5m  }
   - { chart: swarm-cronjob, cases: "",                                                                                timeout: 5m  }
+  # swarmcli-cd: the four fixtures that can converge without a forge to clone from.
+  # ci/e2e-setup.sh creates the admin-token secret, the applications config (one MANUAL
+  # application — the controller refuses to start on an empty set) and the data node label;
+  # `dir` additionally gets the external app-set volume, deliberately left EMPTY so the
+  # "app set has not arrived, retry rather than crash-loop" path is what converges; `edge`
+  # stands up the traefik chart and ci/e2e-check.sh routes /healthz through it. The other
+  # fixtures are ci/e2e-render-only (an SSH forge, a real app-set repo, ACME, host paths).
+  - { chart: swarmcli-cd,   cases: "default ephemeral published dir edge",                                            timeout: 6m  }
   - { chart: redis,         cases: "default no-auth ephemeral bind-mount published-port",                             timeout: 6m  }
   # bind-mount excluded from CI: MariaDB's healthcheck cannot authenticate on a
   # host bind-mounted datadir in this Swarm CI environment (it works on a named

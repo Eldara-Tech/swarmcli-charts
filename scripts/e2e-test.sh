@@ -106,6 +106,18 @@ for chart in "${charts[@]}"; do
     continue
   fi
 
+  # Every hook below is invoked behind `[ -x ]`, so one committed without its execute
+  # bit is not run and nothing says so. For e2e-check.sh that is the worst shape a
+  # check can take: the fixture converges, no smoke test runs, and the case reports OK.
+  # A hook that is present is meant to run, so refuse instead of skipping it.
+  for hook in e2e-setup.sh e2e-check.sh e2e-teardown.sh; do
+    if [ -f "$dir/ci/$hook" ] && [ ! -x "$dir/ci/$hook" ]; then
+      echo "ERROR: $chart ci/$hook is not executable and would be silently skipped — chmod +x it"
+      fail=1
+      continue 2
+    fi
+  done
+
   matched=0
   for vf in "${fixtures[@]}"; do
     case="$(basename "$vf" -values.yaml)"
