@@ -1,0 +1,11 @@
+# Bring-your-own writer: the app set arrives on an EXTERNAL volume something outside this
+# stack keeps current. Exercises the external-volume declaration (as opposed to git-sync's
+# stack-scoped one), the --appset-path default within the directory, and the node pin
+# surviving persistence.enabled:false — the app-set volume is node-local too, so both ends
+# of it must still land on the same node.
+appset:
+  mode: dir
+  path: applications.yaml
+  dirVolumeName: gitops-appset
+persistence:
+  enabled: false

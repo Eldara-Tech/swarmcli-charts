@@ -1,0 +1,44 @@
+# External resources this chart needs. Authoritative: every external network/secret/config
+# the rendered stack references must be declared here (swarmcli pre-flights it — an
+# undeclared one is a chart-authoring error, charts/release.go — and CI enforces the same
+# via scripts/requirements-check.sh). swarmcli renders this file with the release's values,
+# so the templated names below track any override.
+#
+# registryAuthSecrets is a user-supplied LIST, which substitution alone cannot express — and
+# a range action on a line of its own leaves this file unparseable as raw YAML. swarmcli
+# only stopped hard-parsing those raw bytes in v1.13.0 (Eldara-Tech/swarmcli#457), so a
+# chart that needs one has a floor of v1.13.0 and cannot be published until that ships. The
+# range below therefore rides in a COMMENT: the raw file parses (the actions sit inside `#`
+# lines), the rendered file parses (they become blank comments), yamllint still checks it,
+# and the chart keeps a v1.11.0 floor that scripts/floor-check.sh can prove against a real
+# binary. Do not "tidy" the `#` away — and note that this whole header is template input
+# too, so a brace pair written in prose here is an action the engine tries to execute.
+#
+# Entries are declared unconditionally, each with a fallback name so none can render empty.
+# swarmcli's pre-flight is manifest-driven, so an entry a given configuration never
+# references — the git token on a public repository, the SSH pair outside git-sync mode,
+# the Docker config outside static mode — is simply inert.
+networks:
+  - name: "{{ .Values.exposure.network | default `traefik-public` }}"
+    driver: overlay
+    attachable: true
+    # The edge proxy owns this overlay; a controller that created it would create one the
+    # proxy is not on, and the route would 404 rather than fail loudly.
+    autoCreate: false
+    description: "traefik mode only (exposure.mode). The shared overlay the Traefik chart already runs on — pre-provisioned by that chart or by the operator."
+secrets:
+  - name: "{{ .Values.auth.adminTokenSecret | default `swarmcli-cd-token` }}"
+    description: "The API admin token. The controller REFUSES TO START without one. Pre-create: printf '%s' \"$(openssl rand -hex 32)\" | docker secret create swarmcli-cd-token -"
+  - name: "{{ .Values.git.tokenSecret | default `swarmcli-cd-git-token` }}"
+    description: "PRIVATE repositories only (git.tokenSecret) — the password/token for the application repositories, and in appset.mode git for the app-set repository too. Pre-create: printf '%s' \"$YOUR_TOKEN\" | docker secret create swarmcli-cd-git-token -"
+  - name: "{{ .Values.appset.sync.sshKeySecret | default `swarmcli-cd-appset-ssh-key` }}"
+    description: "appset.mode git-sync only. The private deploy key the sidecar authenticates to the app-set repository with. Pre-create: docker secret create swarmcli-cd-appset-ssh-key ./id_ed25519"
+  - name: "{{ .Values.appset.sync.knownHostsSecret | default `swarmcli-cd-appset-known-hosts` }}"
+    description: "appset.mode git-sync only. The host keys the sidecar will accept, so the first connection is not a blind trust of whatever answers. Take it once from a host you trust: ssh-keyscan -p <port> <host> > known_hosts && docker secret create swarmcli-cd-appset-known-hosts ./known_hosts"
+  # {{ range .Values.registryAuthSecrets }}
+  - name: "{{ . }}"
+    description: "Image-pull credentials for the applications naming it in registryAuth. A docker config.json with STATIC credentials — the image ships no credential helpers. Pre-create: docker --config /tmp/rc login <registry> -u <user> -p <pat> && docker secret create {{ . }} /tmp/rc/config.json"
+  # {{ end }}
+configs:
+  - name: "{{ .Values.appset.configName | default `swarmcli-cd-applications` }}{{ with .Values.appset.configVersion }}_{{ . }}{{ end }}"
+    description: "appset.mode static only. The applications file, mounted at /etc/swarmcli-cd/applications.yaml. A Swarm config is immutable, so changed contents need a new appset.configVersion and a new object. Pre-create: docker config create <the name above> ./applications.yaml"

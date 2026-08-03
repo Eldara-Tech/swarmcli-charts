@@ -23,7 +23,7 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Chart.yaml appVersion is the real image pin: every chart ships image.tag: '' and the template falls back to .Chart.AppVersion. The built-in helm-values manager separately covers the values.yaml that DO pin a concrete tag: superset's embedded redis and zammad's embedded postgres/redis/memcached/elasticsearch (image: {repository, tag} blocks), plus ollama's model-preload init image (a bare `modelInitImage:` scalar, caught because helm-values' inline heuristic matches any key ending /image$/i). Charts with tag: '' extract a dep with no currentValue, which is non-actionable, so the default helm-values pattern needs no narrowing.",
+      "description": "Chart.yaml appVersion is the real image pin: every chart ships image.tag: '' and the template falls back to .Chart.AppVersion. The built-in helm-values manager separately covers the values.yaml that DO pin a concrete tag: superset's embedded redis, zammad's embedded postgres/redis/memcached/elasticsearch and swarmcli-cd's git-sync sidecar (image: {repository, tag} blocks), plus ollama's model-preload init image (a bare `modelInitImage:` scalar, caught because helm-values' inline heuristic matches any key ending /image$/i). Charts with tag: '' extract a dep with no currentValue, which is non-actionable, so the default helm-values pattern needs no narrowing.",
       "managerFilePatterns": ["/(^|/)Chart\\.yaml$/"],
       "matchStrings": [
         "#\\s*renovate:\\s*image=(?<depName>\\S+)[^\\S\\n]*\\n\\s*appVersion:\\s*[\"']?(?<currentValue>[^\"'\\s]+)[\"']?"
@@ -84,6 +84,7 @@
     { "matchFileNames": ["charts/renovate/**"], "semanticCommitScope": "renovate" },
     { "matchFileNames": ["charts/superset/**"], "semanticCommitScope": "superset" },
     { "matchFileNames": ["charts/swarm-cronjob/**"], "semanticCommitScope": "swarm-cronjob" },
+    { "matchFileNames": ["charts/swarmcli-cd/**"], "semanticCommitScope": "swarmcli-cd" },
     { "matchFileNames": ["charts/traefik/**"], "semanticCommitScope": "traefik" },
     { "matchFileNames": ["charts/whoami/**"], "semanticCommitScope": "whoami" },
     { "matchFileNames": ["charts/zammad/**"], "semanticCommitScope": "zammad" },

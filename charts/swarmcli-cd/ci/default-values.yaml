@@ -1,0 +1,4 @@
+# Default render: static app set (the applications file as an immutable Docker config),
+# API published nowhere, prune off, named data volume with the node pin, healthcheck on.
+# The canonical case — and the one e2e deploys, since it needs nothing but a secret and a
+# config to converge.

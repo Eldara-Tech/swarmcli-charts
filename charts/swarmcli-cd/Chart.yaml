@@ -1,0 +1,28 @@
+name: swarmcli-cd
+description: SwarmCLI CD — GitOps continuous delivery for Docker Swarm, reconciling a git repository onto the swarm it runs in
+# version is a placeholder — the git tag (swarmcli-cd/vX.Y.Z) sets the real version at release.
+version: 0.1.0
+# renovate: image=eldaratech/swarmcli-cd
+appVersion: "1.0.0-rc5"
+# Oldest swarmcli whose chart engine renders this chart; verified by
+# scripts/floor-check.sh against a real binary of that version.
+swarmcliVersion: ">= 1.11.0"
+annotations:
+  # docker-socket: the controller IS a Swarm applier — it creates and updates services
+  #   through the daemon API, so the socket is the whole workload, not an accident.
+  # host-mount: only persistence.volumePath, the opt-in host-path form of the data
+  #   directory. The default named-volume render mounts no host path.
+  swarmcli-charts/allow: "docker-socket,host-mount"
+maintainers:
+  - name: Eldara
+    url: https://github.com/Eldara-Tech
+keywords:
+  - gitops
+  - continuous-delivery
+  - cd
+  - swarmcli
+  - swarm
+home: https://github.com/Eldara-Tech/swarmcli-cd
+sources:
+  - https://github.com/Eldara-Tech/swarmcli-charts
+  - https://github.com/Eldara-Tech/swarmcli-cd

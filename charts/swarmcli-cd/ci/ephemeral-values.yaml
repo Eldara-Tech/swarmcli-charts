@@ -1,0 +1,6 @@
+# No data volume: the clones and the chart cache live in the container's filesystem and a
+# restart re-fetches everything. Exercises the no-volume branch (no top-level volumes
+# block) and that the node pin is dropped together with persistence — the only placement
+# constraint left must be `node.role == manager`, which is not persistence's to drop.
+persistence:
+  enabled: false

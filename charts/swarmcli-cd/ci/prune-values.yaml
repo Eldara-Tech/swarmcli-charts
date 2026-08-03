@@ -1,0 +1,29 @@
+# A second controller on the same swarm, sweeping what leaves its app set. Exercises the
+# --prune/--prune-volumes/--controller-id command branch, config rotation (the mounted
+# config is <configName>_<configVersion>), per-application registry credentials as extra
+# mounted secrets, and json logs.
+#
+# controllerId is NOT decorative here: two controllers left on the default id each see the
+# other's applications as departed, and with prune on they delete each other's deployments.
+appset:
+  configVersion: a1b2c3d4e5f6
+prune:
+  enabled: true
+  volumes: true
+controllerId: edge
+registryAuthSecrets:
+  - swarmcli-cd-regauth-edge
+  - swarmcli-cd-regauth-internal
+log:
+  level: debug
+  format: json
+resources:
+  limits:
+    memory: 1G
+  reservations:
+    memory: 256M
+placement:
+  constraints:
+    - node.labels.zone == eu
+labels:
+  com.example.team: platform

@@ -1,0 +1,258 @@
+# swarmcli-cd chart default values.
+#
+# swarmcli-cd is the GitOps controller for Docker Swarm: it reconciles the applications
+# declared in an app set onto the swarm it runs in, through the mounted Docker socket.
+# It therefore holds root-equivalent access to the cluster — everything below that looks
+# over-cautious (the API published nowhere by default, prune off, one admin token that
+# only ever arrives as an external secret) is that fact showing through.
+#
+# It must run on a MANAGER node: only a manager serves the swarm API a worker would fail
+# every apply against. `node.role == manager` is therefore rendered unconditionally and is
+# not a value — placement.constraints is for constraints of your own.
+
+image:
+  repository: eldaratech/swarmcli-cd
+  tag: ""  # defaults to appVersion from Chart.yaml
+
+# ─────────────────────────────────────────────────────────────────────────────────────
+# The app set — the list of applications the controller reconciles. Four shapes:
+#
+#   static    (default) the file arrives as an EXTERNAL Docker config. A Docker config is
+#             immutable, so changing the set means creating a new config object and
+#             redeploying — nothing can change under the controller. For an air-gapped or
+#             tightly-controlled deployment that is the feature.
+#   git       the controller polls the repository itself. Adding an application becomes a
+#             commit. HTTPS ONLY: swarmcli-cd refuses ssh:// and git@ remotes.
+#   git-sync  the same, over SSH: a sidecar in this stack clones the repository and
+#             publishes the file onto a shared volume, and the controller reads the
+#             directory. This is the only way to track a repository reachable only over
+#             SSH (a self-hosted forge, a non-standard port, a deploy key).
+#   dir       the controller reads a directory an EXTERNAL volume gives it, and something
+#             you deploy yourself keeps that file current (a git-sync of your own, the
+#             Flux source-controller pattern). That writer MUST publish atomically —
+#             write a temp file and rename it over the target — or the controller can
+#             read a half-written set.
+#
+# Whoever can commit to the tracked repository defines every application, destination and
+# policy this controller applies with the Docker socket. Protect it accordingly.
+appset:
+  mode: static  # static | git | git-sync | dir
+
+  # The set's path. Within the repository for `git` and `git-sync`; within the mounted
+  # directory for `dir` (empty => applications.yaml). Unused by `static`, whose file is
+  # mounted at a fixed path.
+  path: ""
+
+  # How often the set is re-read. Ignored by `static`, where nothing can change without a
+  # redeploy. This is the app-set poll, not the per-application reconcile interval — that
+  # one is `syncPolicy.interval` in the set itself.
+  interval: 3m
+
+  # static mode: the applications file as an EXTERNAL Docker config you pre-create.
+  #   docker config create swarmcli-cd-applications ./applications.yaml
+  # A Swarm config is IMMUTABLE — redeploying changed contents under an existing name is
+  # refused by the daemon with "only updates to Labels are allowed" — so rotation is a NEW
+  # object under a NEW name, and configVersion is the seam for it: the chart mounts
+  # `<configName>_<configVersion>`. Derive it from the file and rotation takes care of
+  # itself; an unchanged file resolves to the same name and deploys nothing:
+  #   V=$(sha256sum applications.yaml | cut -c1-12)
+  #   docker config inspect swarmcli-cd-applications_$V >/dev/null 2>&1 \
+  #     || docker config create swarmcli-cd-applications_$V ./applications.yaml
+  #   swarmcli charts upgrade cd swarmcli-charts/swarmcli-cd --set appset.configVersion=$V
+  # Empty configVersion mounts configName unversioned, and you rotate by editing the name.
+  configName: swarmcli-cd-applications
+  configVersion: ""
+
+  # git and git-sync modes: which repository, and which commit-ish.
+  #   revision is required and should be pinned — an unpinned app set follows whatever the
+  #   default branch happens to point at, and the app set is what defines every deployment.
+  repo:
+    url: ""
+    revision: main
+
+  # git-sync mode only: the sidecar that clones over SSH.
+  sync:
+    image:
+      repository: alpine/git
+      tag: "2.47.2"  # pinned; any image carrying git and an ssh client works
+    # Seconds between fetches. The controller re-reads the published file every
+    # appset.interval independently, so the end-to-end lag is the sum of the two.
+    intervalSeconds: 120
+    # EXTERNAL Swarm secrets. The private key the sidecar authenticates with:
+    #   docker secret create swarmcli-cd-appset-ssh-key ./id_ed25519
+    sshKeySecret: swarmcli-cd-appset-ssh-key
+    # And the host keys it will accept. REQUIRED, and deliberately not an ssh-keyscan at
+    # startup: keyscan trusts whatever answers on the port, which is precisely the thing
+    # StrictHostKeyChecking exists to refuse. Take it once, from a host you trust:
+    #   ssh-keyscan -p 10022 gitlab.example.com > known_hosts
+    #   docker secret create swarmcli-cd-appset-known-hosts ./known_hosts
+    # For a non-standard port the entry's host field must be `[host]:port` — which is what
+    # ssh-keyscan -p writes, so take it with the command above rather than by hand.
+    knownHostsSecret: swarmcli-cd-appset-known-hosts
+    # The volume the sidecar publishes onto and the controller reads. Stack-scoped
+    # (`<release>_<name>`): both ends are services of this stack.
+    volumeName: swarmcli-cd-appset
+
+  # dir mode only: the EXTERNAL volume your own writer publishes onto. External because
+  # the writer lives in another stack, and a stack-scoped volume is not a name it can
+  # reach. It is node-local, so that writer must run on the same node as the controller —
+  # see persistence.nodeLabel.
+  dirVolumeName: swarmcli-cd-appset
+
+# ─────────────────────────────────────────────────────────────────────────────────────
+# The HTTP API — what `swarmcli-cd app list`, `status` and any UI talk to. It carries
+# ROOT-EQUIVALENT access to the swarm behind a single shared bearer token, in plaintext.
+#
+#   none      (default) published nowhere. Reach it from inside the swarm, or over an SSH
+#             tunnel to the node: ssh -L 8080:127.0.0.1:8080 manager
+#   traefik   Traefik deploy labels on exposure.network. TLS terminated at the edge, which
+#             makes this the only mode that does not put the token on the wire in clear.
+#   published publish the port on the swarm. NO TLS and NO second factor: on a node with a
+#             public address this puts the swarm on the internet. Use it on a private
+#             network, or put your own TLS in front.
+#
+# The API always listens on 8080 inside the container; nothing outside sees that unless
+# one of the two modes below is on.
+exposure:
+  mode: none
+  # traefik mode: the shared EXTERNAL overlay the edge proxy lives on. It attaches here to
+  # reach the controller by service name. Provisioned by the proxy chart or by the
+  # operator (declared in requirements.yaml with autoCreate:false).
+  network: traefik-public
+
+# Public-facing address, used by the traefik mode's router rule.
+ingress:
+  host: swarmcli-cd.example.com
+  tls: true
+
+# traefik-mode routing. The defaults match the traefik chart in this repository; adjust
+# certResolver / entrypoints / constraintLabel / redirectMiddleware if you run your own.
+traefik:
+  certResolver: le
+  entrypoints:
+    http: http
+    https: https
+  # Swarm-provider constraint label. The traefik chart runs with
+  # --providers.swarm.exposedByDefault=false and a constraint on this label, so a routed
+  # service must carry it to be discovered at all.
+  constraintLabel: traefik-public
+  # Middleware applied to the HTTP router to redirect to HTTPS (when ingress.tls). No
+  # provider suffix => resolved in the swarm provider (https-redirect@swarm), which the
+  # traefik chart always defines.
+  redirectMiddleware: https-redirect
+  # Extra middlewares on the HTTPS router, applied in order — a basic-auth or IP-allowlist
+  # middleware you have defined, in front of an API whose only other credential is one
+  # shared token. Entries are Traefik middleware names, e.g. ["cd-auth@file"].
+  middlewares: []
+
+# published mode: the port on the swarm, and how it is published.
+#   ingress => the routing mesh, reachable on EVERY node. host => only on the node the
+#   task runs on, which with the node pin below is one machine.
+publish:
+  port: 8080
+  mode: ingress
+
+# ─────────────────────────────────────────────────────────────────────────────────────
+# Credentials. Always EXTERNAL Swarm secrets you pre-create; the chart never takes a
+# secret value through values.yaml, and the controller reads every one of them from its
+# mounted file so no plaintext lands in the compose file or in `docker service inspect`.
+auth:
+  # The API admin token. The controller REFUSES TO START without one — an authorizer that
+  # merely rejected every request is indistinguishable, from outside, from a wrong token.
+  #   printf '%s' "$(openssl rand -hex 32)" | docker secret create swarmcli-cd-token -
+  adminTokenSecret: swarmcli-cd-token
+
+# The credential for PRIVATE application repositories — and, in `git` mode, for the app-set
+# repository too. One credential for the controller, not one per repository. Leave
+# tokenSecret empty for public repositories.
+#   printf '%s' "$YOUR_TOKEN" | docker secret create swarmcli-cd-git-token -
+# Forges often ignore the username; GitHub wants it non-empty (`x-access-token`).
+git:
+  username: ""
+  tokenSecret: ""
+
+# Image-pull credentials, per application rather than per controller: an application's
+# `registryAuth:` in the app set names one of these secrets, and it can use only the one
+# it names. Each holds a docker config.json with STATIC credentials — the image ships no
+# credential helpers, so a config.json using credsStore/credHelpers is refused at startup.
+#   docker --config /tmp/rc login ghcr.io -u <user> -p <pat>
+#   docker secret create swarmcli-cd-regauth-edge /tmp/rc/config.json
+# List every secret any application names; each is mounted at /run/secrets/<name>.
+registryAuthSecrets: []
+
+# ─────────────────────────────────────────────────────────────────────────────────────
+# Prune. By default an application that leaves the app set stops being reconciled and its
+# stack is LEFT RUNNING, reported as orphaned. Prune deletes it instead — so with prune on,
+# removing an entry to park something is an outage rather than a pause.
+#   volumes extends that to named volumes, the one part nothing can restore. It needs
+#   enabled, and reaches only the node the controller talks to.
+prune:
+  enabled: false
+  volumes: false
+
+# This controller's identity, stamped on every release it installs (cd/<id>/<application>).
+# TWO CONTROLLERS ON ONE SWARM MUST BE GIVEN DIFFERENT IDS: the prune sweep only considers
+# releases stamped for itself, so two sharing an id each see the other's applications as
+# departed and, with prune on, delete each other's deployments. The controller cannot
+# detect this from the inside.
+controllerId: default
+
+# Everything the controller writes goes to stderr through one handler.
+#   level  debug | info | warn | error
+#   format text (logfmt, for an operator reading `docker service logs`) | json
+log:
+  level: info
+  format: text
+
+# ─────────────────────────────────────────────────────────────────────────────────────
+# The data directory: repository clones and the chart cache. It is a CACHE — release
+# history lives in the swarm, not here — so losing it costs a re-clone, not state. It is
+# still worth a volume: without one every restart re-clones every application.
+#
+#   enabled     false => no volume; the container's filesystem, and the node pin is not
+#               rendered (a pin outliving its volume strands the task Pending on a label
+#               nothing carries).
+#   volumeName  stack-scoped named volume (`<release>_<name>`). No slashes.
+#   volumePath  an ABSOLUTE host path to bind-mount instead. Takes precedence over
+#               volumeName and suppresses the named-volume declaration.
+#   nodeLabel   which node the volume — and so the controller — lives on, rendered as
+#               `node.labels.<label> == true`. Swarm volumes are node-local, so this is
+#               what keeps the controller with its data. It is ALSO what keeps the
+#               controller on the same node as the app-set volume in `git-sync` and `dir`
+#               modes, and is rendered for those regardless of `enabled`. Empty skips the
+#               pin — correct on a single-node swarm and nowhere else.
+#               Label the node once: docker node update --label-add swarmcli-cd-data=true <node>
+persistence:
+  enabled: true
+  volumeName: swarmcli-cd-data
+  volumePath: ""
+  nodeLabel: swarmcli-cd-data
+
+# Container healthcheck. The image carries no curl and needs none: the binary probes its
+# own /healthz, which is unauthenticated by design.
+healthcheck:
+  enabled: true
+  interval: 10s
+  timeout: 5s
+  retries: 3
+  startPeriod: 15s
+  # How long Swarm counts a task failure against the rollout, measured from task creation.
+  # Must cover the healthcheck's worst case above (15s + 10s x 3 = 45s) or a container
+  # that goes unhealthy after the window does not fail the deploy.
+  monitor: 60s
+
+# EXTRA scheduling constraints. `node.role == manager` and the node pin above are rendered
+# for you; this is for constraints of your own.
+placement:
+  constraints: []
+
+# Swarm deploy resources (each rendered only when set). The controller clones repositories
+# and renders charts; a few hundred MB is typical.
+resources:
+  limits:
+    memory: ""
+  reservations:
+    memory: ""
+
+# Extra deploy labels (key: value), merged after any Traefik labels.
+labels: {}

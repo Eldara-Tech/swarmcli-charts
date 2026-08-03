@@ -1,0 +1,16 @@
+# The traefik mode as an operator would actually run it: TLS at the edge, so the HTTP
+# router redirects and the HTTPS router terminates and resolves a certificate. Exercises
+# the ingress.tls branch and traefik.middlewares — an API whose only other credential is
+# one shared bearer token is exactly the thing to put a basic-auth or allowlist middleware
+# in front of.
+#
+# Render-only: there is no ACME in CI. The edge fixture covers routing at runtime.
+exposure:
+  mode: traefik
+ingress:
+  host: cd.example.com
+  tls: true
+traefik:
+  middlewares:
+    - cd-auth@file
+    - cd-allowlist@file
