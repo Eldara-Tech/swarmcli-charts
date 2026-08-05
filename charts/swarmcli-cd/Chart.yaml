@@ -3,7 +3,7 @@ description: SwarmCLI CD — GitOps continuous delivery for Docker Swarm, reconc
 # version is a placeholder — the git tag (swarmcli-cd/vX.Y.Z) sets the real version at release.
 version: 0.1.0
 # renovate: image=eldaratech/swarmcli-cd
-appVersion: "1.0.0"
+appVersion: "1.1.0"
 # Oldest swarmcli whose chart engine renders this chart; verified by
 # scripts/floor-check.sh against a real binary of that version.
 swarmcliVersion: ">= 1.11.0"
