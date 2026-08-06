@@ -82,6 +82,24 @@ repository's — from github.com. Unauthenticated, those calls are rate-limited:
 go missing from the PRs, and a `github>` preset can fail to resolve outright. The token
 needs no permissions whatsoever; it exists purely to lift the anonymous rate limit.
 
+## Commit identity
+
+Renovate's default `gitAuthor` is `renovate@whitesourcesoftware.com` — on github.com that is a
+real account owned by Mend, used by the hosted `forking-renovate[bot]` App. Leave it and every
+commit your bot pushes is attributed to a user you do not control, with Mend's Vigilant Mode
+flagging it `Unverified`. Renovate warns about this on every run.
+
+Point it at the account whose token you gave the chart:
+
+```yaml
+extraEnv:
+  RENOVATE_GIT_AUTHOR: "Renovate Bot <12345678+my-bot@users.noreply.github.com>"
+```
+
+The numeric id is `gh api users/<login> --jq .id`. The commits stay unsigned — there is no
+signing key in the container — but they are attributed to an account you own, and an unsigned
+commit from an account without Vigilant Mode carries no badge at all.
+
 ## Values
 
 | Key | Default | Description |
@@ -104,7 +122,7 @@ needs no permissions whatsoever; it exists purely to lift the anonymous rate lim
 | `configFormat` | `json` | Format of that file — `json`, `json5`, `jsonc`, `yaml`, `yml`, `js`, `cjs`, `mjs`. Renovate parses by file extension, so this must match its contents |
 | `logLevel` | `info` | `trace`–`fatal` |
 | `dryRun` | `""` | `extract`, `lookup` or `full` — writes nothing to your repositories |
-| `extraEnv` | `{}` | Extra environment variables, injected verbatim |
+| `extraEnv` | `{}` | Extra environment variables, injected verbatim. On GitHub, set `RENOVATE_GIT_AUTHOR` here — see [Commit identity](#commit-identity) |
 | `resources.limits.memory` | `""` | e.g. `2G`. Renovate clones repos and runs package managers |
 | `resources.reservations.memory` | `""` | Scheduler hint |
 | `placement.constraints` | `[]` | Extra scheduling constraints |
