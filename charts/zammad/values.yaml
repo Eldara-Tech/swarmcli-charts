@@ -210,7 +210,7 @@ redis:
   embedded:
     image:
       repository: redis
-      tag: "8.2.7"  # pinned; tracks the redis chart's appVersion
+      tag: "8.8.0"  # pinned; tracks the redis chart's appVersion
 
 # Memcached — Zammad's page/action cache. Always small and ephemeral.
 #   servers   empty (default) => this chart runs an in-stack memcached (`memcached:11211`). Set to
