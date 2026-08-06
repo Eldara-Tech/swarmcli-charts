@@ -100,6 +100,10 @@ The file's key names match Helmfile's on purpose, so Renovate's **built-in**
 registry is resolved from the `repositories` block, so the preset works for any
 chart repository you add, not just this one.
 
+> **Running the bot yourself?** To self-host Renovate on your own Swarm with the
+> [`renovate`](charts/renovate) chart — including pointing it at this repository — see
+> [docs/renovate-self-hosting.md](docs/renovate-self-hosting.md).
+
 ## Releasing a New Chart Version
 
 The **git tag is the source of truth** for the version. The easiest way to cut one
