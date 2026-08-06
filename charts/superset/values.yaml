@@ -111,7 +111,7 @@ redis:
   port: 6379
   image:
     repository: redis
-    tag: "8.2.7"  # pinned; tracks the redis chart's appVersion
+    tag: "8.8.0"  # pinned; tracks the redis chart's appVersion
   auth:
     enabled: true
     secretName: superset_redis_password
