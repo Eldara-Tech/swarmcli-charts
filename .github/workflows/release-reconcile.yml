@@ -1,0 +1,97 @@
+name: Release Reconcile
+
+# Publishes what `main` has already proven but nobody has released yet.
+#
+# Merging a Renovate pin changes a chart's default image; it does not publish the
+# chart. That gap used to be closed by hand. scripts/release-reconcile.sh closes it
+# by comparing each chart's tree against what its newest tag published, and
+# dispatching release.yml for anything behind — see that script for why the
+# comparison is a plain `git diff` against the tag rather than a path filter.
+#
+# LEVEL-TRIGGERED ON PURPOSE, which is why this is a schedule and not a push trigger.
+# A merge-triggered release would inherit two failure modes this repository has
+# actually hit: main's E2E cancelled mid-flight by the next merge
+# (`concurrency: cancel-in-progress`), which would silently skip a release keyed on
+# it; and GitHub dropping tag-push events past three per push. Reconciling ignores
+# both — it only asks whether published state matches committed state, so a missed
+# or failed pass is simply retried tomorrow.
+#
+# It dispatches release.yml rather than pushing tags because a tag pushed with
+# GITHUB_TOKEN does not start a workflow (GitHub suppresses that to avoid recursion);
+# workflow_dispatch is the documented exception and works with the default token.
+
+on:
+  schedule:
+    - cron: '43 5 * * *'   # 05:43 UTC — after nightly (04:17) has had its say.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Report what would be released, dispatch nothing
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  actions: write          # `gh workflow run` dispatching release.yml
+
+concurrency:
+  group: release-reconcile
+  cancel-in-progress: false   # never cancel a pass that may be mid-dispatch
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: main
+          # The comparison diffs each chart against its newest tag, so the job needs
+          # full history and every tag.
+          fetch-depth: 0
+          fetch-tags: true
+
+      # Publish only what main has rendered cleanly. Charts is the workflow that
+      # renders every chart x fixture, compose-validates and security-scans it; if it
+      # did not succeed for this exact commit, report and dispatch nothing.
+      - name: Require a green Charts run for this commit
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          runs=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?branch=main&per_page=50" \
+            --jq '.workflow_runs[] | select(.name=="Charts") | "\(.head_sha) \(.status) \(.conclusion)"')
+          line=$(grep -m1 "^${GITHUB_SHA} " <<<"$runs" || true)
+          if [ -z "$line" ]; then
+            echo "::warning::No Charts run found for ${GITHUB_SHA}; reporting only."
+            echo "green=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          read -r _ status conclusion <<<"$line"
+          echo "Charts run for ${GITHUB_SHA}: ${status}/${conclusion}"
+          if [ "$status" = "completed" ] && [ "$conclusion" = "success" ]; then
+            echo "green=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Charts is ${status}/${conclusion} for ${GITHUB_SHA}; reporting only."
+            echo "green=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Reconcile
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run || steps.gate.outputs.green != 'true' }}
+        run: |
+          set -euo pipefail
+          if [ "$DRY_RUN" = "true" ]; then
+            scripts/release-reconcile.sh --dry-run | tee "$RUNNER_TEMP/reconcile.log"
+          else
+            scripts/release-reconcile.sh | tee "$RUNNER_TEMP/reconcile.log"
+          fi
+          {
+            echo '## Release reconcile'
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/reconcile.log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
