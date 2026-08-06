@@ -66,6 +66,14 @@
     },
 
     {
+      "description": "The image of the bot that opens every other PR here. A Renovate major can drop config options and change defaults — including the ones this file relies on — and a broken bot fails silently, by simply not maintaining the pins any more. Majors get a deliberate click; minor/patch flow as normal PRs.",
+      "matchDepNames": ["renovate/renovate"],
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true,
+      "labels": ["dependencies", "major-upgrade"]
+    },
+
+    {
       "description": "openclaw ships calver (2026.6.11), so docker versioning reports a new YEAR as a major. That is not a breaking-change signal — exempt it from the major gate above and let CI + e2e + minimumReleaseAge carry the risk.",
       "matchDepNames": ["ghcr.io/openclaw/openclaw"],
       "labels": ["dependencies", "calver"]
