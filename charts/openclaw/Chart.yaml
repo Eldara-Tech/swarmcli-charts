@@ -4,7 +4,7 @@ description: OpenClaw — self-hosted personal AI assistant gateway on Docker Sw
 version: 0.2.0
 # appVersion is the default image tag for ghcr.io/openclaw/openclaw.
 # renovate: image=ghcr.io/openclaw/openclaw
-appVersion: "2026.6.11"
+appVersion: "2026.7.1"
 # Oldest swarmcli whose chart engine renders this chart; verified by
 # scripts/floor-check.sh against a real binary of that version.
 swarmcliVersion: ">= 1.11.0"
