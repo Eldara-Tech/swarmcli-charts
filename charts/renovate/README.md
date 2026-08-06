@@ -8,6 +8,10 @@ the loop: your Swarm keeps its own chart versions up to date.
 No SaaS, no CI minutes, and **no Docker socket** — the only chart in this repository with
 no risky primitive to acknowledge.
 
+[docs/renovate-self-hosting.md](../../docs/renovate-self-hosting.md) is this chart deployed
+end to end against this repository: minting the token, proving it with a dry run, going live,
+and what to watch afterwards. The rest of this page is the reference.
+
 ## How it runs
 
 Renovate is a **one-shot process**: it scans, opens PRs, and exits. It is not a server. So

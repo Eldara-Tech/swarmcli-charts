@@ -201,6 +201,23 @@ Every change below is an edit to `renovate-values.yaml` followed by
 - **Bump the Renovate version:** the chart pins `renovate/renovate` via its own
   `Chart.yaml:appVersion` (maintained by Renovate itself). Take the update through a normal
   `renovate` chart release, then `swarmcli charts upgrade` to the new chart version.
+  **Majors don't arrive on their own** — `renovate/renovate` sits behind
+  `dependencyDashboardApproval`, so a new major waits for a click on the Dependency Dashboard.
+  A Renovate major can drop config options and change defaults, and a bot that no longer
+  understands `.github/renovate.json` fails *silently*: it simply stops maintaining the pins,
+  with everything still green. Read the release notes, then approve it deliberately.
+- **Change a mounted config file:** only relevant if you outgrow values and adopt
+  `configName`. A Swarm config is **immutable**, so new bytes need a **new config object** —
+  `configVersion` is the seam, and the chart mounts `<configName>_<configVersion>`. Derive it
+  from the contents and rotation looks after itself:
+  ```bash
+  V=$(sha256sum config.json | cut -c1-12)
+  docker config inspect renovate_config_$V >/dev/null 2>&1 \
+    || docker config create renovate_config_$V ./config.json
+  ```
+  then set `configVersion: <V>` in `renovate-values.yaml` and `upgrade -f`. This setup needs
+  none of it: the rules live in the repository's own `.github/renovate.json`, which Renovate
+  reads on every run.
 - **Give it more memory** (only if runs get OOM-killed on a large clone): set
   `resources.limits.memory: 2G`.
 
