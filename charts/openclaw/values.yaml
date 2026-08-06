@@ -157,6 +157,11 @@ healthcheck:
   timeout: 10s
   retries: 3
   startPeriod: 120s
+  # How long Swarm counts a task failure against the rollout, measured from
+  # task creation. Must cover the healthcheck's worst case above
+  # (120s start_period + 30s interval x 3 retries = 210s) or a container that goes unhealthy
+  # after the window does not fail the deploy. Raise it if you raise the values above.
+  monitor: 4m
 
 # Extra deploy labels (key: value), merged after any Traefik router labels.
 labels: {}

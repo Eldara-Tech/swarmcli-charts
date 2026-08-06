@@ -4,7 +4,9 @@ name: CI
 # config, and the shell scripts that package charts and build the index. A broken
 # workflow, script, or matchString silently fails releases or silently stops
 # maintaining the image pins, so this guards the parts chart-structure linting
-# (charts.yml) doesn't cover.
+# (charts.yml) doesn't cover. The index generator is not just shellchecked but
+# RUN against a throwaway repo + a mocked gh (scripts/generate-index-test.sh),
+# because its jq/yq assembly is where a silently-broken index would come from.
 #
 # The workflow triggers on every PR (no path filter) but a change-detection job
 # skips the `lint` job when nothing under .github/ or scripts/ changed. A skipped
@@ -31,7 +33,7 @@ jobs:
     outputs:
       run: ${{ steps.detect.outputs.run }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
       - id: detect
@@ -57,7 +59,7 @@ jobs:
     if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # actionlint validates workflow syntax and ${{ }} expressions. Its embedded
       # shellcheck pass is disabled here (-shellcheck=) so run-block style nits
@@ -72,10 +74,57 @@ jobs:
       - name: Lint shell scripts (shellcheck)
         run: shellcheck --severity=error scripts/*.sh scripts/e2e-edge/*.sh
 
+      # generate-index.sh assembles the PUBLISHED index.yaml. A jq/yq regression there
+      # ships a subtly wrong index (a version reparsed as a float, a description that
+      # breaks the doc, a URL that no longer resolves) that only breaks downstream — and
+      # now fails install, since swarmcli verifies the chart digest against this index
+      # (Eldara-Tech/swarmcli#447). generate-index-test.sh runs it against a throwaway
+      # repo + a mocked gh and asserts the output. jq is preinstalled; it also needs
+      # mikefarah yq (installed explicitly, as charts.yml does, so coverage is reproducible).
+      - name: Install yq (mikefarah v4)
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL -o "$HOME/.local/bin/yq" https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+          chmod +x "$HOME/.local/bin/yq"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Test the index generator (scripts/generate-index-test.sh)
+        run: scripts/generate-index-test.sh
+
       # A malformed matchString does not error at run time — Renovate just extracts
       # zero dependencies and opens no PRs, so the pins silently stop being
       # maintained. The validator is the only thing that turns that into a failure.
       # default.json is the shareable preset downstream users extend, so breaking
       # it breaks *their* updates, not ours: validate it too.
+      #
+      # Run it from the official image, not `npx --package renovate`: npm resolves
+      # renovate against the runner's Node, which is older than `engines.node` on
+      # current releases, so npx quietly installed a two-major-old 42.x that npm
+      # itself flags as unsupported (#118). The image carries its own Node, and the
+      # tag is the version charts/renovate ships — so CI validates against the
+      # Renovate this repo publishes, and there is only one renovate version in the
+      # tree to keep fresh. Pulled from ghcr.io rather than Docker Hub: runners
+      # share IPs and hit Hub's anonymous pull limit.
+      #
+      # --no-global: a filename argument is treated as GLOBAL self-hosted config
+      # unless told otherwise, and global config accepts options (binarySource,
+      # allowedCommands, …) that the real bot rejects in a repo config.
+      #
+      # The RE2 check guards the whole point of the step. Renovate validates
+      # matchStrings with RE2; when that native module is missing the validator
+      # falls back to JS RegExp, says so, and then PASSES patterns RE2 rejects
+      # (lookaheads, backreferences) — green, and blind to what we came to catch.
       - name: Validate Renovate config
-        run: npx --yes --package renovate -- renovate-config-validator --strict .github/renovate.json default.json
+        run: |
+          ver=$(yq '.appVersion' charts/renovate/Chart.yaml)
+          image="ghcr.io/renovatebot/renovate:$ver"
+          docker pull -q "$image"
+          docker run --rm -v "$PWD:/w" -w /w "$image" \
+            renovate-config-validator --strict --no-global \
+            .github/renovate.json default.json 2>&1 | tee "$RUNNER_TEMP/validator.log"
+          rc=${PIPESTATUS[0]}
+          if grep -q 'RE2 not usable' "$RUNNER_TEMP/validator.log"; then
+            echo "::error::renovate-config-validator fell back to JS RegExp; matchString validation is unreliable."
+            exit 1
+          fi
+          exit "$rc"

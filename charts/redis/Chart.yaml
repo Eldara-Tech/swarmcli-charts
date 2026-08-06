@@ -1,6 +1,6 @@
 name: redis
 description: Redis in-memory data store for Docker Swarm — persistent, secret-authenticated, single-node pinned
-version: 0.1.0
+version: 0.2.0
 # renovate: image=redis
 appVersion: "8.2.7"
 # Oldest swarmcli whose chart engine renders this chart; verified by

@@ -40,7 +40,8 @@ charts/<name>/
   ci/e2e-check.sh            # optional executable smoke check for `make e2e`
   README.md
 Makefile                     # make new-chart / lint / test / render / e2e / package
-scripts/install-swarmcli.sh  # builds the swarmcli renderer from source
+scripts/install-swarmcli.sh  # builds the swarmcli renderer from `main` (PR CI)
+scripts/download-swarmcli.sh # downloads a RELEASED swarmcli renderer (nightly + floor-check)
 scripts/test-charts.sh       # render + compose-validate + no-value + security (== CI)
 scripts/e2e-test.sh          # deploy to a live swarm + setup/converge/smoke/teardown (local + e2e.yml CI)
 scripts/local-repo.sh        # serve working-tree charts as a local HTTP repo for `repo add` (local-only)
@@ -48,9 +49,11 @@ scripts/local-repo-test.sh   # integration test: repo add/update/search against 
 scripts/security-scan.sh     # flags risky primitives unless Chart.yaml acknowledges them
 scripts/new-chart.sh         # scaffolds a passing chart skeleton
 scripts/floor-check.sh       # renders each chart with a REAL binary of its declared swarmcliVersion
+scripts/floors-runnable-on.sh # lists charts a given swarmcli can run; warns on ahead-of-release (nightly)
 scripts/lint.sh              # chart structure + yamllint + the Renovate pin gates
 scripts/generate-index.sh    # rebuilds the published index.yaml (release path); needs gh + jq + yq
-.github/workflows/           # charts.yml (validate), ci.yml (machinery), integration.yml (repo-flow), release.yml
+.github/workflows/           # charts.yml (validate), ci.yml (machinery), integration.yml (repo-flow), nightly.yml (release check), release.yml, pages-index.yml (index deploy)
+.github/e2e-matrix.yaml      # per-chart e2e fixture subsets shared by e2e.yml + nightly.yml
 .github/renovate.json        # Renovate config for THIS repo (maintains the chart image pins)
 default.json                 # shareable Renovate preset DOWNSTREAM users extend
 ```
@@ -170,7 +173,7 @@ renders in CI and fails on *every* released swarmcli with an opaque
 v1.13.0 ships, and nothing told us.
 
 - **Raise the floor only to a RELEASED version.** `scripts/floor-check.sh` proves
-  a floor by building a real binary of it and rendering the chart. A floor naming
+  a floor by downloading a real binary of it and rendering the chart. A floor naming
   an unreleased version cannot be proven, so it is reported as unverified and
   skipped — visible in the log, never silently passed. That is zammad's state.
 - `swarmcli charts lint --for-version X` checks whether a floor *admits* X. Only
@@ -208,8 +211,9 @@ lands in the compose file or `docker inspect`. Document the
 ## Releasing
 
 The **git tag is the source of truth** for the version, and `release.yml` stamps it
-into `Chart.yaml` at package time, publishes a GitHub Release with the `.tgz`, and
-rebuilds `index.yaml` on GitHub Pages. The `version:` in `Chart.yaml` is a
+into `Chart.yaml` at package time and publishes a GitHub Release with the `.tgz`;
+`pages-index.yml` then rebuilds `index.yaml` on GitHub Pages. The `version:` in
+`Chart.yaml` is a
 placeholder — the tag wins. Published chart version is plain SemVer; the leading
 `v` belongs only to the git tag.
 
@@ -261,12 +265,16 @@ the openclaw/keycloak `edge` fixtures (`edge_up` → `edge_assert_routed`/`edge_
 → `edge_down`) and traefik's `routing` fixture (a labelled-vs-unlabelled `whoami` proving the
 constraint-label discovery gate). HTTP routing + label discovery only — no ACME/TLS in CI.
 
-**Renderer source.** swarmcli is the renderer. `charts template` has shipped since
-swarmcli v1.10.0, but the newer subcommands (`charts apply`, `charts outdated`) are
-on `main` and unreleased, and swarmcli's module path is `swarmcli` (so `go install`
-of the GitHub path fails). `scripts/install-swarmcli.sh` therefore clones+builds
-`main` (`SWARMCLI_REF` overrides). Once a release ships those subcommands, switch to
-the release asset — faster, and it pins CI to a version users actually have.
+**Renderer source.** swarmcli is the renderer. The PR workflows build swarmcli
+`main` from source ON PURPOSE — it renders with the newest engine, so a change that
+breaks a chart shows up the moment it lands, before any release ships it.
+`scripts/install-swarmcli.sh` clones+builds `main` (`SWARMCLI_REF` overrides); a
+source build rather than `go install` because swarmcli's module path is `swarmcli`,
+not its GitHub path, so `go install github.com/Eldara-Tech/swarmcli@...` fails. The
+release counterpart is `scripts/download-swarmcli.sh` (download the
+`swarmcli_<OS>_<ARCH>.tar.gz` asset + verify `checksums.txt`): `nightly.yml` runs the
+whole suite against the latest release on a schedule, and `floor-check.sh` uses it to
+render each chart with the exact release its `Chart.yaml` declares.
 
 **Security acknowledgments.** Risky primitives in a rendered stack (docker.sock,
 host mounts, `privileged`, host network/PID, `cap_add`) fail CI unless the chart

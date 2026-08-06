@@ -9,6 +9,8 @@
 /swarmcli-bin/
 .swarmcli-bin/
 /.rendered/
+# Real released binaries downloaded by scripts/floor-check.sh to prove each chart's floor
+/.floor-bin/
 
 # Local chart repo packaged + served by scripts/local-repo.sh
 /.localrepo/

@@ -93,7 +93,16 @@
 {{- /* Shared environment. Non-secret only (passwords are exported by each role's command wrapper,
        never here — the `environment:` map shows up in `docker inspect`). Healthchecks run in a
        fresh shell that sees only this map, but the checks here are port-open probes that need no
-       credentials, so that is fine. */ -}}
+       credentials, so that is fine.
+
+       PGDATABASE / PGUSER are the libpq fallbacks for the image's OWN readiness probe: the init and
+       backup roles run `pg_isready -q -h <host> -p <port>` with neither -U nor -d, so without them
+       libpq defaults the user to the container's OS user (`zammad`, uid 1000) and the database to
+       that user name — and the server logs a failed connection to a database `zammad` that does not
+       exist (#119). The probe itself still succeeds (pg_isready reports the SERVER's status, not the
+       connection's), so this is misleading noise rather than a failure, and Zammad's real connection
+       is unaffected either way: DATABASE_URL is built from POSTGRESQL_* explicitly, as is the backup
+       role's `pg_dump --dbname`. Setting the fallbacks makes the probe say what it means. */ -}}
 {{- $env := dict
       "POSTGRESQL_HOST" $dbHost
       "POSTGRESQL_PORT" (printf "%v" .Values.database.port)
@@ -101,6 +110,8 @@
       "POSTGRESQL_USER" .Values.database.username
       "POSTGRESQL_OPTIONS" .Values.database.options
       "POSTGRESQL_DB_CREATE" (ternary "true" "false" .Values.database.createDb)
+      "PGDATABASE" .Values.database.name
+      "PGUSER" .Values.database.username
       "MEMCACHE_SERVERS" $memServers
       "ELASTICSEARCH_ENABLED" (ternary "true" "false" $esEnabled)
       "ZAMMAD_FQDN" .Values.ingress.host
@@ -267,6 +278,13 @@ services:
 {{- end }}
     deploy:
       replicas: {{ .Values.replicas.railsserver }}
+{{- if .Values.healthcheck.enabled }}
+      {{- /* Swarm watches a task for `monitor` after CREATING it, and only counts a
+             failure inside that window against the rollout. Shorter than the
+             healthcheck needs to fail and a broken deploy reports success. */}}
+      update_config:
+        monitor: {{ .Values.healthcheck.monitor }}
+{{- end }}
 {{- if $dataConstraints }}
       placement:
         constraints:
@@ -325,6 +343,13 @@ services:
 {{- end }}
     deploy:
       replicas: {{ .Values.replicas.websocket }}
+{{- if .Values.healthcheck.enabled }}
+      {{- /* Swarm watches a task for `monitor` after CREATING it, and only counts a
+             failure inside that window against the rollout. Shorter than the
+             healthcheck needs to fail and a broken deploy reports success. */}}
+      update_config:
+        monitor: {{ .Values.healthcheck.monitor }}
+{{- end }}
 {{- if $dataConstraints }}
       placement:
         constraints:
@@ -446,6 +471,13 @@ services:
 {{- end }}
     deploy:
       replicas: 1
+{{- if .Values.healthcheck.enabled }}
+      {{- /* Swarm watches a task for `monitor` after CREATING it, and only counts a
+             failure inside that window against the rollout. Shorter than the
+             healthcheck needs to fail and a broken deploy reports success. */}}
+      update_config:
+        monitor: {{ .Values.healthcheck.monitor }}
+{{- end }}
 {{- if $dataConstraints }}
       placement:
         constraints:
@@ -548,6 +580,13 @@ services:
 {{- end }}
     deploy:
       replicas: 1
+{{- if .Values.healthcheck.enabled }}
+      {{- /* Swarm watches a task for `monitor` after CREATING it, and only counts a
+             failure inside that window against the rollout. Shorter than the
+             healthcheck needs to fail and a broken deploy reports success. */}}
+      update_config:
+        monitor: {{ .Values.healthcheck.monitor }}
+{{- end }}
 {{- if $dataConstraints }}
       placement:
         constraints:
@@ -613,6 +652,14 @@ services:
 {{- end }}
     deploy:
       replicas: 1
+{{- if .Values.healthcheck.enabled }}
+      {{- /* Sized to this service's own healthcheck: it overrides start_period to 60s,
+             so its worst case is 60s + 30s x 5 = 210s, not the chart-wide one. A longer window here
+             would dominate every `--wait` — the longest OUTSTANDING window across the
+             stack governs, and this service is up long before the slow ones. */}}
+      update_config:
+        monitor: 4m
+{{- end }}
 {{- if $dataConstraints }}
       placement:
         constraints:
@@ -657,6 +704,14 @@ services:
 {{- end }}
     deploy:
       replicas: 1
+{{- if .Values.healthcheck.enabled }}
+      {{- /* Sized to this service's own healthcheck: it overrides start_period to 10s,
+             so its worst case is 10s + 30s x 5 = 160s, not the chart-wide one. A longer window here
+             would dominate every `--wait` — the longest OUTSTANDING window across the
+             stack governs, and this service is up long before the slow ones. */}}
+      update_config:
+        monitor: 3m
+{{- end }}
 {{- if $extraConstraints }}
       placement:
         constraints:

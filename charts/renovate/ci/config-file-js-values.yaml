@@ -1,0 +1,7 @@
+# The escape hatch in JS form, with the repository list coming from the config file rather
+# than from values — both halves of #110. configFormat drives the mount target's extension,
+# which is the only thing telling Renovate how to parse the file, and a mounted config is
+# an accepted source of repositories, so the render must not fail for the lack of them.
+configName: renovate_config
+configFormat: js
+dryRun: full

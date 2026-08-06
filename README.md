@@ -21,6 +21,7 @@ Community charts for [SwarmCLI](https://github.com/Eldara-Tech/swarmcli) — a k
 | [ollama](charts/ollama) | [![Version](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Feldara-tech.github.io%2Fswarmcli-charts%2Findex.yaml&query=%24.entries.ollama%5B0%5D.version&label=&color=blue)](https://github.com/Eldara-Tech/swarmcli-charts/releases) | ![App Version](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Feldara-tech.github.io%2Fswarmcli-charts%2Findex.yaml&query=%24.entries.ollama%5B0%5D.appVersion&label=&color=informational) | Ollama self-hosted LLM server for Docker Swarm — offline models, stateful, single-node pinned, optional GPU |
 | [renovate](charts/renovate) | [![Version](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Feldara-tech.github.io%2Fswarmcli-charts%2Findex.yaml&query=%24.entries.renovate%5B0%5D.version&label=&color=blue)](https://github.com/Eldara-Tech/swarmcli-charts/releases) | ![App Version](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Feldara-tech.github.io%2Fswarmcli-charts%2Findex.yaml&query=%24.entries.renovate%5B0%5D.appVersion&label=&color=informational) | Self-hosted Renovate — opens dependency-update PRs, including for your swarmcli-release.yaml |
 | [zammad](charts/zammad) | [![Version](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Feldara-tech.github.io%2Fswarmcli-charts%2Findex.yaml&query=%24.entries.zammad%5B0%5D.version&label=&color=blue)](https://github.com/Eldara-Tech/swarmcli-charts/releases) | ![App Version](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Feldara-tech.github.io%2Fswarmcli-charts%2Findex.yaml&query=%24.entries.zammad%5B0%5D.appVersion&label=&color=informational) | Zammad helpdesk / ticketing for Docker Swarm — external or embedded PostgreSQL & Redis, embedded Elasticsearch, Traefik-routed via its own nginx |
+| [swarmcli-cd](charts/swarmcli-cd) | [![Version](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Feldara-tech.github.io%2Fswarmcli-charts%2Findex.yaml&query=%24.entries.swarmcli-cd%5B0%5D.version&label=&color=blue)](https://github.com/Eldara-Tech/swarmcli-charts/releases) | ![App Version](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Feldara-tech.github.io%2Fswarmcli-charts%2Findex.yaml&query=%24.entries.swarmcli-cd%5B0%5D.appVersion&label=&color=informational) | SwarmCLI CD — GitOps continuous delivery for Docker Swarm, pulling from git instead of pushing from CI |
 
 
 > The Version/App Version badges read the live published
@@ -89,6 +90,11 @@ Then extend this repository's Renovate preset — that is the whole configuratio
 Renovate opens a PR whenever a chart you pin gets a new version, with the chart's
 release notes attached. Merge it, and `swarmcli charts apply` in CI rolls it out.
 
+**[docs/gitops.md](docs/gitops.md) is that CI job, worked end to end**: reaching
+the swarm over an `ssh://` context, installing the binary, a plan-on-PR /
+apply-on-merge workflow for GitHub Actions and GitLab CI, and the Renovate
+settings that are easy to get wrong.
+
 The file's key names match Helmfile's on purpose, so Renovate's **built-in**
 `helmfile` manager reads it — there is no custom regex to maintain, and the chart
 registry is resolved from the `repositories` block, so the preset works for any
@@ -119,9 +125,9 @@ git tag whoami/v0.2.0
 git push origin whoami/v0.2.0
 ```
 
-`release.yml` stamps that version into the chart's `Chart.yaml` at package time,
-publishes a GitHub Release with the `.tgz`, and rebuilds the `index.yaml` on
-GitHub Pages as the final step. The `version:` field committed in `Chart.yaml` is
+`release.yml` stamps that version into the chart's `Chart.yaml` at package time
+and publishes a GitHub Release with the `.tgz`; `pages-index.yml` then rebuilds
+the `index.yaml` on GitHub Pages. The `version:` field committed in `Chart.yaml` is
 only a placeholder — the tag wins.
 
 The published chart version is plain SemVer (`0.2.0`); install it with

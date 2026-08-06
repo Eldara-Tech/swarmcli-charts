@@ -1,0 +1,14 @@
+# App-of-apps over HTTPS: the controller polls the repository itself, so no Docker config
+# is mounted and no sidecar is rendered. Exercises the --appset-repo/--appset-revision/
+# --appset-path/--appset-interval command branch, and the private-repository credential
+# (git.tokenSecret => SWARMCLI_CD_GIT_* env + a second external secret).
+appset:
+  mode: git
+  path: gitops/swarmcli-cd/applications.yaml
+  interval: 1m
+  repo:
+    url: https://github.com/your-org/apps.git
+    revision: main
+git:
+  username: x-access-token
+  tokenSecret: swarmcli-cd-git-token

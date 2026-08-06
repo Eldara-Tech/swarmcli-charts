@@ -1,0 +1,8 @@
+# Host-path persistence: the data directory bind-mounted from an operator-chosen host
+# directory instead of a Docker-managed named volume. volumePath takes precedence over
+# volumeName, so no top-level volumes block is rendered and the service mounts the absolute
+# host path — which the security scan flags as host-mount, acknowledged in Chart.yaml
+# alongside the docker-socket the controller cannot work without.
+persistence:
+  enabled: true
+  volumePath: /opt/swarmcli-cd-data

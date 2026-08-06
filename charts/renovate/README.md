@@ -95,7 +95,9 @@ needs no permissions whatsoever; it exists purely to lift the anonymous rate lim
 | `autodiscoverFilter` | `""` | Narrow autodiscovery, e.g. `infra/*` |
 | `auth.tokenSecret` | `renovate_token` | **External** Swarm secret holding the platform token |
 | `auth.githubComTokenSecret` | `""` | **External** secret with a read-only github.com token. Non-GitHub platforms only |
-| `configName` | `""` | **External** Docker config holding a Renovate `config.js` / `config.json` |
+| `configName` | `""` | **External** Docker config holding a Renovate config file |
+| `configVersion` | `""` | Rotation key. The chart mounts `<configName>_<configVersion>`, so new contents get a new config object |
+| `configFormat` | `json` | Format of that file — `json`, `json5`, `jsonc`, `yaml`, `yml`, `js`, `cjs`, `mjs`. Renovate parses by file extension, so this must match its contents |
 | `logLevel` | `info` | `trace`–`fatal` |
 | `dryRun` | `""` | `extract`, `lookup` or `full` — writes nothing to your repositories |
 | `extraEnv` | `{}` | Extra environment variables, injected verbatim |
@@ -104,10 +106,10 @@ needs no permissions whatsoever; it exists purely to lift the anonymous rate lim
 | `placement.constraints` | `[]` | Extra scheduling constraints |
 | `labels` | `{}` | Extra deploy labels |
 
-You must set `repositories` **or** `autodiscover` — the chart fails to render otherwise,
-rather than deploying a Renovate with nothing to do. Autodiscovery with a broadly-scoped
-token is how people open pull requests across an entire org by accident, so it is off by
-default.
+You must set `repositories` **or** `autodiscover` — or supply them in the config file named
+by `configName`. The chart fails to render otherwise, rather than deploying a Renovate with
+nothing to do. Autodiscovery with a broadly-scoped token is how people open pull requests
+across an entire org by accident, so it is off by default.
 
 ## Anything the values don't cover
 
@@ -115,11 +117,70 @@ Renovate's configuration surface is enormous (`packageRules`, `hostRules`, onboa
 Mount its own config file as an external Docker config:
 
 ```bash
-docker config create renovate_config ./config.js
+docker config create renovate_config ./config.json
 swarmcli charts upgrade renovate swarmcli-charts/renovate --set configName=renovate_config
 ```
 
-It lands at `/run/configs/renovate-config`, with `RENOVATE_CONFIG_FILE` pointing at it.
+It lands at `/run/configs/renovate-config.<configFormat>`, with `RENOVATE_CONFIG_FILE`
+pointing at it.
+
+**`configFormat` must match the file's contents.** Renovate decides how to parse its config
+purely from the *extension*, and a name it does not recognise is a startup
+`FATAL: Unsupported file type` — it never looks inside the file. The default is `json`; for a
+dynamic JavaScript config:
+
+```bash
+docker config create renovate_config ./config.js
+swarmcli charts upgrade renovate swarmcli-charts/renovate \
+  --set configName=renovate_config --set configFormat=js
+```
+
+**Values win over this file.** Renovate merges config file < environment < CLI, and the
+chart renders the values above as environment: `platform.type` and `logLevel` always, and
+`platform.endpoint`, `repositories`, `autodiscover`, `autodiscoverFilter` and `dryRun`
+whenever they are set. Setting one of those in both places silently uses the chart value.
+Leave the value empty to let the config file own that key.
+
+## Changing the config: rotation
+
+A Swarm config is **immutable**. `docker config create` is the only way to put new bytes in
+front of Renovate, and redeploying changed contents under an existing name does not update
+it — `docker stack deploy` calls `ConfigUpdate` and the daemon refuses with
+`only updates to Labels are allowed`. New contents therefore need a **new config object**,
+and `configVersion` is the seam: the chart mounts `<configName>_<configVersion>`.
+
+Derive the version from the file's contents and rotation looks after itself. Keep
+`config.js` next to your `values.yaml` in git, and after editing it run:
+
+```bash
+V=$(sha256sum config.js | cut -c1-12)
+docker config inspect renovate_config_$V >/dev/null 2>&1 \
+  || docker config create renovate_config_$V ./config.js
+swarmcli charts upgrade renovate swarmcli-charts/renovate -f values.yaml --set configVersion=$V
+```
+
+That is the whole loop, and it is idempotent: an unchanged file hashes to the same `$V`, the
+config already exists, and the upgrade changes nothing. A changed file produces a new hash, a
+new config object, and a service update onto it. Any string works as a version if you would
+rather track it yourself — a git SHA, a date, a counter.
+
+On the `swarmcli charts apply` path, put `configVersion` in your release file instead of
+`--set`; it is then the one line that changes per rotation, which reads far better in a diff
+than renaming `configName` each time. Have your CI job run the `docker config create` step
+before `apply`, exactly as above.
+
+Superseded configs stay until you remove them. Swarm refuses to delete a config that is
+still in use, so nothing can be pulled out from under a running task — `docker config ls`
+shows what has accumulated, and `docker config rm` clears the old ones once the service has
+moved on.
+
+> **Why the chart cannot just read your file.** Compose can source a config from a path
+> (`configs.<x>.file`), but swarmcli refuses any path outside the chart's own `files/`
+> directory (`charts/files.go`). The docker CLI reads that path **client-side, as you**, and
+> uploads the bytes into a config that anyone with Docker access can read — so a chart able
+> to name an arbitrary path is a chart able to exfiltrate any file you can read. Creating the
+> config object is deliberately yours to do; `configVersion` is what makes doing it a
+> one-liner.
 
 ## Notes
 

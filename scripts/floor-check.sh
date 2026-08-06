@@ -70,8 +70,8 @@ for dir in "$ROOT"/charts/*/; do
 
   bin="$BINDIR/v$floor"
   if [ ! -x "$bin/swarmcli" ]; then
-    echo "── building swarmcli v$floor"
-    SWARMCLI_REF="v$floor" "$ROOT/scripts/install-swarmcli.sh" "$bin" >/dev/null
+    echo "── downloading swarmcli v$floor"
+    SWARMCLI_REF="v$floor" "$ROOT/scripts/download-swarmcli.sh" "$bin" >/dev/null
   fi
 
   echo "── $chart: rendering with real swarmcli v$floor"

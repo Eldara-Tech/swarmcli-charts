@@ -33,7 +33,7 @@ jobs:
     outputs:
       run: ${{ steps.detect.outputs.run }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
       - id: detect
@@ -62,7 +62,7 @@ jobs:
     if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install yamllint
         run: pipx install yamllint
@@ -70,13 +70,14 @@ jobs:
       - name: Lint charts (structure + YAML)
         run: scripts/lint.sh
 
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: stable
           cache: false
 
-      # swarmcli is the renderer. The charts CLI is only on swarmcli's main
-      # branch today, so we build from source (see scripts/install-swarmcli.sh).
+      # swarmcli is the renderer. PR CI builds `main` so a renderer change that
+      # breaks a chart is caught the moment it lands; nightly.yml validates the
+      # latest release. See scripts/install-swarmcli.sh.
       - name: Build swarmcli renderer
         run: scripts/install-swarmcli.sh "$PWD/.swarmcli-bin"
 

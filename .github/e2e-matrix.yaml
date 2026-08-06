@@ -1,0 +1,70 @@
+# Curated per-chart e2e fixture subsets — the SINGLE SOURCE shared by two
+# workflows, so the curation below lives in exactly one place:
+#   * .github/workflows/e2e.yml     — every PR; builds swarmcli `main`; gates merges.
+#   * .github/workflows/nightly.yml — scheduled; downloads the latest RELEASE; non-blocking.
+# Both load it via a `prepare` job (yq -> fromJSON). Extending CI to a new chart
+# is a single entry here and both workflows pick it up.
+#
+# Each entry is { chart, cases, timeout }: `cases` is the E2E_CASES subset
+# (empty "" => every fixture, the `make e2e` default); `timeout` is the
+# per-fixture convergence budget (E2E_TIMEOUT).
+include:
+  # openclaw: ALL fixtures (cases: "" => no filter) — keeps the #60 backend
+  # regression guard and picks up the #63 edge-routing fixture automatically. Its
+  # >=2 GB image + 120s health start period needs the 10m per-fixture budget.
+  - { chart: openclaw,      cases: "",                                                                                timeout: 10m }
+  - { chart: whoami,        cases: "",                                                                                timeout: 5m  }
+  - { chart: swarm-cronjob, cases: "",                                                                                timeout: 5m  }
+  # swarmcli-cd: the four fixtures that can converge without a forge to clone from.
+  # ci/e2e-setup.sh creates the admin-token secret, the applications config (one MANUAL
+  # application — the controller refuses to start on an empty set) and the data node label;
+  # `dir` additionally gets the external app-set volume, deliberately left EMPTY so the
+  # "app set has not arrived, retry rather than crash-loop" path is what converges; `edge`
+  # stands up the traefik chart and ci/e2e-check.sh routes /healthz through it. The other
+  # fixtures are ci/e2e-render-only (an SSH forge, a real app-set repo, ACME, host paths).
+  - { chart: swarmcli-cd,   cases: "default ephemeral published dir edge",                                            timeout: 6m  }
+  - { chart: redis,         cases: "default no-auth ephemeral bind-mount published-port",                             timeout: 6m  }
+  # bind-mount excluded from CI: MariaDB's healthcheck cannot authenticate on a
+  # host bind-mounted datadir in this Swarm CI environment (it works on a named
+  # volume, so all other fixtures pass); the host-path render is covered by
+  # charts.yml and the fixture still runs in local `make e2e`.
+  - { chart: mariadb,       cases: "default no-appuser ephemeral published-port",                                     timeout: 6m  }
+  # postgres: EVERY fixture (cases: "" => no filter). bind-mount is included, unlike
+  # mariadb's: PGDATA sits one level below the mount (/var/lib/postgresql/<major>/docker),
+  # so initdb never has to chown or empty the bind-mounted mountpoint itself. legacy-major
+  # pulls a second image (postgres:15) — hence the 8m budget.
+  - { chart: postgres,      cases: "",                                                                                timeout: 8m  }
+  # traefik: every CI-friendly fixture EXCEPT loki-logging, which needs the
+  # loki:latest Docker log-driver plugin (absent on stock runners). `routing` (#63)
+  # stands up two whoami backends and proves a request routes THROUGH the edge.
+  - { chart: traefik,       cases: "default dashboard-off extra-entrypoints hsts-off ingress-ports certs-bind-mount routing", timeout: 6m }
+  # keycloak: ci/e2e-setup.sh stands up the backend the fixture asks for — MariaDB for
+  # most, PostgreSQL for `postgres` (#69). jdbc-url and published-tls converge nowhere
+  # and are marked ci/e2e-render-only. `edge` (#63) additionally stands up the traefik
+  # chart and routes through it.
+  - { chart: keycloak,      cases: "default tls-off none db-net-override start-dev published-http postgres edge",    timeout: 8m  }
+  # ollama: published (default) + ephemeral + none + edge. Excludes bind-mount (its
+  # host-path render is covered by charts.yml; still runs in local `make e2e`) and gpu
+  # (a GPU-less runner cannot schedule a generic-resources reservation — the GPU
+  # assertion is a render check in charts.yml via ci/render-check.sh). The large
+  # ollama/ollama image pull needs the 10m budget.
+  - { chart: ollama,        cases: "default ephemeral none edge",                                                    timeout: 10m }
+  # superset: the cheap subset. Every fixture needs the full backend (ci/e2e-setup.sh
+  # stands up postgres + redis + the secrets), and each one deploys FOUR services off a
+  # ~930 MB image that then pip-installs its DB driver and waits for alembic migrations —
+  # hence the large budget. `default` covers init+app+worker+beat; `no-celery` the 2-service
+  # render; `edge` (#63) routes a real request through the traefik chart; `embedded-redis`
+  # gets NO redis from the setup hook and must stand up its own (redis.mode: embedded) —
+  # its celery worker only goes healthy if that Redis really carries the broker. Excludes
+  # published/none/mysql/uri (covered by charts.yml; still run in local `make e2e`) and
+  # oidc/byo-image/embedded-redis-noauth (render-only: they need a live IdP / a private
+  # registry / are a render variant of embedded-redis).
+  - { chart: superset,      cases: "default no-celery edge embedded-redis",                                         timeout: 20m }
+  # zammad: the self-contained subset. `embedded-backing` runs the whole stack — its own
+  # PostgreSQL/Redis/memcached/Elasticsearch + the five Zammad roles (init, railsserver,
+  # websocket, scheduler, nginx) — off a large image, so nothing external is provisioned
+  # (ci/e2e-setup.sh only creates the secrets) and the smoke check proves nginx -> rails ->
+  # a migrated DB via /api/v1/getting_started. The ES heap is trimmed in the fixture. The
+  # other fixtures (external backing, exposure/ES variants, host-path, backup) are
+  # render-only here — covered by charts.yml, and still run in local `make e2e`.
+  - { chart: zammad,        cases: "embedded-backing",                                                              timeout: 20m }

@@ -1,0 +1,92 @@
+name: Pages Index
+
+# Publish the regenerated index to the live GitHub Pages site. Pages on this
+# repo is configured with build_type=workflow, so it serves the artifact
+# uploaded here — NOT the gh-pages branch. A prior revision pushed to the
+# gh-pages branch instead, which is inert under this Pages config and silently
+# froze the served index.
+#
+# It lives in its own workflow rather than as a job in `Release Chart` because
+# the `github-pages` environment admits `main` only, and `Release Chart` runs on
+# a TAG ref; a `workflow_run` workflow always executes against the default
+# branch ref. That was not the cause of the freeze below — the deploy failed
+# from `main` too — but it is a constraint this has to satisfy either way, and
+# it decouples the index from any single chart's tag.
+#
+# The freeze itself: from 2026-07-20 to 2026-08-01 no release reached
+# index.yaml, because #91's hand-rolled REST deploy answered 404 on every
+# attempt and `gh api` reported only that status. Charts published their .tgz
+# the whole time and none of them was installable. Restored by going back to
+# actions/deploy-pages; see the deploy step.
+on:
+  workflow_run:
+    workflows: ["Release Chart"]
+    types: [completed]
+  # Rebuilding the index needs no release to hang off — it is generated from the
+  # published releases. Without this there is no way to repair a stale index
+  # except by releasing another chart, which is how #114's freeze had to sit
+  # until something happened to be released.
+  workflow_dispatch:
+
+jobs:
+  update-index:
+    # A release that did not publish has nothing to add to the index. A manual
+    # run has no triggering workflow, so it carries no conclusion to check.
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    # A Pages deployment belongs to the `github-pages` environment. Declaring it
+    # is also what actions/deploy-pages expects, and it is what makes the
+    # environment's branch policy apply to this job.
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    # Serialise index deploys so overlapping runs don't race on the Pages API and
+    # drop the loser's index. This matters again: see the deploy step on #89.
+    concurrency:
+      group: pages-deploy
+      cancel-in-progress: false
+    permissions:
+      pages: write        # create the Pages deployment
+      id-token: write     # mint the OIDC token the deployment API requires
+      actions: read       # look up the uploaded artifact's id via the REST API
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # The index is generated from the published releases plus `git show
+          # <tag>:path` for each chart's metadata, so this needs every tag. Naming
+          # the branch keeps it independent of whatever ref triggered the release.
+          ref: main
+          fetch-depth: 0
+
+      - name: Generate index.yaml
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          chmod +x scripts/generate-index.sh
+          mkdir -p public
+          ./scripts/generate-index.sh "${{ github.repository }}" > public/index.yaml
+          echo "=== Generated index.yaml ==="
+          cat public/index.yaml
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
+        with:
+          path: public
+
+      # Back to actions/deploy-pages. The hand-rolled REST POST that replaced it in
+      # #91 sends the same path, the same three body fields and the same
+      # GITHUB_TOKEN auth, from the same environment and an admitted ref — and it
+      # has never once succeeded, answering 404 every time. Whatever the remaining
+      # difference is, it is not one this repository can see, and the index has
+      # been frozen since 2026-07-20 while we looked for it.
+      #
+      # This reopens #89: deploy-pages sends pages_build_version=GITHUB_SHA, Pages
+      # keeps only the FIRST deployment for a build version, and charts released at
+      # one commit therefore collide — a partial index can win. Two things blunt it
+      # now that did not exist then. The index deploy is no longer per-chart-tag but
+      # one run behind the whole `Release Chart` fan-out, and #115's
+      # workflow_dispatch repairs a stale index on demand without waiting for a
+      # release. Reopen #89 rather than trade a live index for it.
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5

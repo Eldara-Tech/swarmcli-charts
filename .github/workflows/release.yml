@@ -34,7 +34,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Release notes are derived from the commits touching this chart since
           # its previous tag, so the job needs full history and every tag.
@@ -128,7 +128,7 @@ jobs:
           TAG: ${{ steps.parse.outputs.tag }}
         run: |
           set -euo pipefail
-          PREV=$(git tag --list "${CHART}/v*" --sort=-v:refname | grep -vFx "$TAG" | head -1)
+          PREV=$(git tag --list "${CHART}/v*" --sort=-v:refname | grep -vFx "$TAG" | head -1 || true)
           if [ -n "$PREV" ]; then
             RANGE="${PREV}..HEAD"
             HEADING="Changes since ${PREV#"${CHART}"/}"
@@ -147,7 +147,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           tag_name: ${{ steps.parse.outputs.tag }}
           name: "${{ steps.parse.outputs.chart }} ${{ steps.parse.outputs.version }}"
@@ -163,38 +163,3 @@ jobs:
           files: |
             ${{ steps.package.outputs.filename }}
             ${{ steps.package.outputs.filename }}.sha256
-
-  # Publish the regenerated index to the live GitHub Pages site. Pages on this
-  # repo is configured with build_type=workflow, so it serves the artifact
-  # uploaded here — NOT the gh-pages branch. A prior revision pushed to the
-  # gh-pages branch instead, which is inert under this Pages config and silently
-  # froze the served index. Keep using deploy-pages so releases actually go live.
-  update-index:
-    needs: release
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-        with:
-          fetch-depth: 0  # need full history/tags so `git show <tag>:path` works
-
-      - name: Generate index.yaml
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          chmod +x scripts/generate-index.sh
-          mkdir -p public
-          ./scripts/generate-index.sh "${{ github.repository }}" > public/index.yaml
-          echo "=== Generated index.yaml ==="
-          cat public/index.yaml
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
-        with:
-          path: public
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5

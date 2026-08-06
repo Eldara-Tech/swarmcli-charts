@@ -7,6 +7,11 @@ name: Integration
 # packaging + index generation + serving that the data-only Charts workflow does
 # not, and that `make e2e` (local chart-directory install) never touches.
 #
+# It also runs the swarm-free half of scripts/repo-apply-test.sh: `charts template`
+# resolving a chart FROM a repo index (download + digest-verify + render) and
+# refusing a tampered digest. The deploy half of that flow (apply/outdated/upgrade/
+# idempotence) needs a swarm and runs in e2e.yml.
+#
 # It runs a throwaway nginx container but NO Swarm and deploys NO chart, so it
 # stays fork-safe (public image, read-only token, no secrets). A Linux runner
 # shares the daemon filesystem and forwards ports instantly, so it cannot
@@ -39,7 +44,7 @@ jobs:
     outputs:
       run: ${{ steps.detect.outputs.run }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
       - id: detect
@@ -68,17 +73,26 @@ jobs:
     if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: stable
           cache: false
 
-      # swarmcli is the chart client; its charts CLI is only on main today, so
-      # build it from source (same as the Charts workflow).
+      # swarmcli is the chart client. PR CI builds `main` to catch a renderer
+      # breakage the moment it lands; nightly.yml runs this same flow against the
+      # latest release. Same build as the Charts workflow.
       - name: Build swarmcli
         run: scripts/install-swarmcli.sh "$PWD/.swarmcli-bin"
 
       - name: Local-repo consumer flow (repo add -> update -> search)
         run: SWARMCLI="$PWD/.swarmcli-bin/swarmcli" scripts/local-repo-test.sh
+
+      # The swarm-free half of the repo-apply flow: `charts template` resolves,
+      # downloads and digest-verifies a chart FROM the served index and renders it,
+      # then asserts a tampered index digest is refused (the swarmcli#447 guard).
+      # `apply` needs a swarm to read deployed releases, so the install/outdated/
+      # upgrade/idempotence half runs in e2e.yml; the script skips it with no swarm.
+      - name: Repo-apply flow (template render + digest-mismatch guard)
+        run: SWARMCLI="$PWD/.swarmcli-bin/swarmcli" scripts/repo-apply-test.sh

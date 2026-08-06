@@ -359,6 +359,7 @@ database:
 | `placement.constraints` | `[]` | Extra scheduling constraints. |
 | `resources.limits.memory` / `.reservations.memory` | `""` | Per-service Swarm resources. |
 | `healthcheck.*` | enabled, 180s start period | Web-app healthcheck (`/health`). |
+| `healthcheck.monitor` | `5m` | Rollout watch window for app/worker. Must cover `startPeriod + interval x retries` (270s) — see below |
 | `labels` | `{}` | Extra deploy labels on the web app. |
 
 ## Single sign-on (OIDC)
@@ -439,3 +440,20 @@ task.
 The rendered stack mounts no host path, needs no Docker socket, and runs unprivileged as the
 image's non-root `superset` user — which is why this chart carries no `swarmcli-charts/allow`
 annotation.
+
+### Why `healthcheck.monitor` exists
+
+Swarm watches a task for `update_config.monitor` **after creating it**, and only a
+failure inside that window counts against the rollout. Leave it unset and swarm
+applies a 5s default — so a container that takes longer than that to be declared
+unhealthy never fails the deploy: the rollout is reported complete and the task
+quietly restart-loops. `swarmcli charts lint` warns when `monitor` is shorter
+than `start_period + interval x retries`.
+
+**Raise it if you raise the healthcheck values above**, or the lint will tell you.
+
+The bundled `redis` hardcodes a much faster healthcheck, so it carries its own
+`monitor: 90s` rather than this value. That is deliberate: `--wait` holds until the
+longest *outstanding* window across the stack closes, so giving a fast service the
+slow service's window would dominate every deploy. `init` and `beat` disable their
+healthcheck entirely and take no monitor.

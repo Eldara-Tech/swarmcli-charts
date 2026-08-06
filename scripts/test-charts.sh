@@ -83,6 +83,16 @@ for chart in "${charts[@]}"; do
     continue
   fi
 
+  # Step 6 is invoked behind `[ -x ]`, so a render-check committed without its execute
+  # bit does not run and nothing says so — every fixture then reports OK while asserting
+  # nothing, which is the same failure as a skipped requirements check above. A file that
+  # is present is meant to run.
+  if [ -f "$dir/ci/render-check.sh" ] && [ ! -x "$dir/ci/render-check.sh" ]; then
+    echo "ERROR: $chart ci/render-check.sh is not executable and would be silently skipped — chmod +x it"
+    fail=1
+    continue
+  fi
+
   for vf in "${fixtures[@]}"; do
     case="$(basename "$vf" -values.yaml)"
     out="$OUT/${chart}__${case}.yaml"
