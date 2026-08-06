@@ -46,7 +46,7 @@ jobs:
   render:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download latest swarmcli release
         run: scripts/download-swarmcli.sh "$PWD/.swarmcli-bin"
@@ -78,7 +78,7 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download latest swarmcli release
         run: scripts/download-swarmcli.sh "$PWD/.swarmcli-bin"
@@ -93,7 +93,7 @@ jobs:
     outputs:
       matrix: ${{ steps.load.outputs.matrix }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - id: load
         name: Load e2e matrix from .github/e2e-matrix.yaml
         run: |
@@ -110,7 +110,7 @@ jobs:
       fail-fast: false          # one chart's failure must not cancel its siblings
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # The latest release, which since v1.13.0 is enough. This leg was pinned to a
       # v1.13.0 prerelease because e2e-test.sh converges via `swarmcli charts install
@@ -159,7 +159,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download swarmcli (latest release)
         run: scripts/download-swarmcli.sh "$PWD/.swarmcli-bin"
