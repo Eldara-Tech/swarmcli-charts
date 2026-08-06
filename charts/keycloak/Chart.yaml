@@ -2,7 +2,7 @@ name: keycloak
 description: Keycloak identity & access management for Docker Swarm — DB-agnostic, secret-authenticated, Traefik-routed
 version: 0.2.0
 # renovate: image=quay.io/keycloak/keycloak
-appVersion: "26.6.3"
+appVersion: "26.7.1"
 # Oldest swarmcli whose chart engine renders this chart; verified by
 # scripts/floor-check.sh against a real binary of that version.
 swarmcliVersion: ">= 1.11.0"
