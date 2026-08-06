@@ -74,7 +74,7 @@ appset:
   sync:
     image:
       repository: alpine/git
-      tag: "2.47.2"  # pinned; any image carrying git and an ssh client works
+      tag: "v2.52.0"  # pinned; any image carrying git and an ssh client works
     # Seconds between fetches. The controller re-reads the published file every
     # appset.interval independently, so the end-to-end lag is the sum of the two.
     intervalSeconds: 120
