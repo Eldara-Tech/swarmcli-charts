@@ -72,6 +72,7 @@ Signed in as **eldara-cruncher**, create a **fine-grained** PAT
   | Issues          | Read and write | Create and maintain the Dependency Dashboard issue.           |
   | Workflows       | Read and write | The `github-actions` manager edits files under `.github/workflows/`; GitHub blocks writing those without this. |
   | Commit statuses | Read and write | Read/report CI status for `internalChecksFilter` / automerge. |
+  | Dependabot alerts | Read-only    | Raise security updates ahead of schedule. Omit it and every run WARNs `Cannot access vulnerability alerts`, which Renovate then reproduces as a **Repository Problems** banner at the top of the Dependency Dashboard issue. |
   | Metadata        | Read-only      | Mandatory baseline for every fine-grained PAT.                |
 
 > A **classic** PAT works too — scopes `repo` + `workflow` — but it can't be pinned to a
@@ -129,7 +130,18 @@ dropped:
 repositories:
   - Eldara-Tech/swarmcli-charts
 logLevel: info
+extraEnv:
+  RENOVATE_GIT_AUTHOR: "Renovate Bot <262318423+eldara-cruncher@users.noreply.github.com>"
 ```
+
+**`RENOVATE_GIT_AUTHOR` is not optional on github.com.** Renovate's default `gitAuthor` is
+`renovate@whitesourcesoftware.com`, a real account owned by Mend and used by the hosted
+`forking-renovate[bot]` App — leave it and every pin bump in this repo's history is attributed
+to a user we do not control, flagged `Unverified` by Mend's Vigilant Mode, and Renovate WARNs
+about it on every run. The address format is `<id>+<login>@users.noreply.github.com`; the
+numeric id is `gh api users/<login> --jq .id` (`262318423` for `eldara-cruncher`). The commits
+stay unsigned — there is no signing key in the container — but they belong to our own bot, and
+an unsigned commit from an account without Vigilant Mode carries no badge at all.
 
 Then drop the dry-run and go live:
 
@@ -146,7 +158,8 @@ inside the Monday-before-6am window, Renovate:
 - creates the **Dependency Dashboard** issue (from `:dependencyDashboard` in the config), and
 - opens dependency PRs, respecting the config's gates — `minimumReleaseAge: 5 days`,
   `prConcurrentLimit: 5`, `prHourlyLimit: 2`, the `postgres`/`mariadb` data-migration
-  dashboard-approval hold, and the major-upgrade gates on keycloak/superset/traefik/redis.
+  dashboard-approval hold, and the major-upgrade gates on keycloak/superset/traefik/redis and
+  on `renovate/renovate` itself.
 
 ## Step 5 — Verify & operate
 
@@ -156,6 +169,16 @@ inside the Monday-before-6am window, Renovate:
   in `Eldara-Tech/swarmcli-charts`. Each chart PR carries the `prBodyNote` reminding you that
   merging a pin does **not** publish the chart — release it explicitly afterwards
   (`gh workflow run release.yml -f chart=<chart> -f bump=patch`).
+- **Leave the dashboard checkboxes alone.** *Create all awaiting schedule PRs*, and each
+  individual *pending status checks* box, are manual overrides that bypass **every** gate at
+  once: the `schedule`, the `minimumReleaseAge: 5 days` soak, and `prConcurrentLimit: 5` /
+  `prHourlyLimit: 2`. Ticking them on the first dashboard opened 13 PRs in one go
+  (#128–#140), each firing Charts + CI + Integration + E2E — and E2E is one job per chart, so
+  the runner queue saturates and nothing reports for a long time. The limits exist to make
+  updates arrive in reviewable batches; let the Monday run trickle them.
+- **Don't close a PR you mean to postpone.** Closing a Renovate PR is a *never offer this
+  again* signal: the update won't be recreated on the next run, it returns to the dashboard
+  under the ignored list and needs re-approving by hand.
 - **Logs:** `docker service logs renovate_renovate`.
 
 ### Common operations
@@ -190,6 +213,12 @@ Every change below is an edit to `renovate-values.yaml` followed by
   and paste the PAT.
 - **Missing changelogs / a `github>` preset fails to resolve** → only happens on non-GitHub
   platforms; set `auth.githubComTokenSecret`. Not applicable to this setup.
+- **`WARN: Cannot access vulnerability alerts`** (and the matching Repository Problems banner
+  on the dashboard issue) → the PAT is missing *Dependabot alerts: Read-only*. Add it in the
+  token's settings; nothing in the chart or in `.github/renovate.json` changes.
+- **`WARN: Using the default gitAuthor email address … is not recommended on GitHub.com`** →
+  `RENOVATE_GIT_AUTHOR` is unset; see Step 4. Commits already pushed keep the old author —
+  the fix applies to new ones.
 
 ### Optional: cronjob mode instead of interval
 
