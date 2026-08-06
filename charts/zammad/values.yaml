@@ -223,7 +223,7 @@ memcache:
   memoryMB: 256
   image:
     repository: memcached
-    tag: "1.6.44-alpine"  # pinned; matches Zammad's own compose
+    tag: "1.6.45-alpine"  # pinned; matches Zammad's own compose
 
 # Elasticsearch — full-text search over tickets/articles.
 #   mode        embedded (default) => this chart runs its own single-node Elasticsearch, PERSISTENT
