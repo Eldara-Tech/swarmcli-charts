@@ -272,7 +272,9 @@ breaks a chart shows up the moment it lands, before any release ships it.
 source build rather than `go install` because swarmcli's module path is `swarmcli`,
 not its GitHub path, so `go install github.com/Eldara-Tech/swarmcli@...` fails. The
 release counterpart is `scripts/download-swarmcli.sh` (download the
-`swarmcli_<OS>_<ARCH>.tar.gz` asset + verify `checksums.txt`): `nightly.yml` runs the
+`swarmcli-oss_<OS>_<ARCH>.tar.gz` asset + verify `checksums-oss.txt`, falling back to
+the pre-editions `swarmcli_*` / `checksums.txt` names for tags that predate the split —
+which is every tag a chart floor currently declares): `nightly.yml` runs the
 whole suite against the latest release on a schedule, and `floor-check.sh` uses it to
 render each chart with the exact release its `Chart.yaml` declares.
 

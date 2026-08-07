@@ -108,6 +108,16 @@ assets are public, so this needs no token:
     sudo install swarmcli /usr/local/bin/
 ```
 
+> **Which artefact.** From the release after v1.13.0, one swarmcli tag publishes
+> two builds. `swarmcli_<OS>_<ARCH>.tar.gz` and `eldaratech/swarmcli:<tag>` are
+> the Business Edition build, carrying licensed code that is inert without a
+> licence; `swarmcli-oss_<OS>_<ARCH>.tar.gz` and `eldaratech/swarmcli:<tag>-oss`
+> are wholly Apache-2.0, with `checksums-oss.txt` covering them. Rendering and
+> applying charts needs nothing licensed, so a CI job should take the `-oss`
+> one — substitute both names in the snippets below when you bump the pin past
+> v1.13.0. The executable inside is `swarmcli` either way, so nothing else in
+> these examples changes. See [editions](https://github.com/Eldara-Tech/swarmcli/blob/main/docs/editions.md).
+
 > **Not the container image, here.** `eldaratech/swarmcli` is built `FROM docker`,
 > so it is Alpine-based. Alpine is not among the distributions the Actions runner
 > supports ([actions/runner#801]), and JavaScript actions such as
