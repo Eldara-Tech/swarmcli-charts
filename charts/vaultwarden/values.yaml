@@ -80,6 +80,8 @@ database:
     network: mariadb-net
 
 # Optional admin token via external secret.
+# IMPORTANT: secret content must be an Argon2id PHC hash string, not plaintext.
+# Generate with: docker run --rm -it --entrypoint /vaultwarden vaultwarden/server:1.37.1 hash
 auth:
   adminToken:
     enabled: false

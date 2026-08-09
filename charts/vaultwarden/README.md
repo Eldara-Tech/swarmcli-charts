@@ -21,7 +21,10 @@ can switch to **external PostgreSQL or MySQL/MariaDB** without exposing database
 	 ```bash
 	 printf 'S3cr3t' | docker secret create vaultwarden_postgres_password -
 	 printf 'S3cr3t' | docker secret create vaultwarden_mysql_password -
-	 printf 'S3cr3t' | docker secret create vaultwarden_admin_token -
+	 # ADMIN_TOKEN must be an Argon2id PHC hash, not plaintext.
+	 # Run this interactively, then copy the resulting PHC string.
+	 docker run --rm -it --entrypoint /vaultwarden vaultwarden/server:1.37.1 hash
+	 printf '%s' '<paste-argon2-phc-here>' | docker secret create vaultwarden_admin_token -
 	 printf 'S3cr3t' | docker secret create vaultwarden_smtp_password -
 	 ```
 
@@ -62,6 +65,7 @@ swarmcli charts install vaultwarden swarmcli-charts/vaultwarden \
 - For `database.type=postgres` or `database.type=mysql`, `DATABASE_URL` is assembled at runtime from
 	values plus password secret content.
 - `auth.adminToken.enabled=true` reads `ADMIN_TOKEN` from an external secret.
+- The `auth.adminToken.secretName` secret content must be an Argon2id PHC string (Vaultwarden rejects plaintext admin tokens as insecure).
 - SMTP password can be secret-backed with `smtp.password.enabled=true`.
 - `service.port` drives `ROCKET_PORT`, the Traefik loadbalancer port, the published target
 	and the healthcheck together, so changing it moves all four.
@@ -94,7 +98,7 @@ swarmcli charts install vaultwarden swarmcli-charts/vaultwarden \
 | `database.postgres.*` | see `values.yaml` | External PostgreSQL connection + secret + network |
 | `database.mysql.*` | see `values.yaml` | External MySQL/MariaDB connection + secret + network |
 | `auth.adminToken.enabled` | `false` | Read `ADMIN_TOKEN` from secret |
-| `auth.adminToken.secretName` | `vaultwarden_admin_token` | External admin token secret |
+| `auth.adminToken.secretName` | `vaultwarden_admin_token` | External secret containing Argon2id PHC for `ADMIN_TOKEN` |
 | `smtp.enabled` | `false` | Enable SMTP env configuration |
 | `smtp.password.enabled` | `false` | Read SMTP password from secret |
 | `smtp.password.secretName` | `vaultwarden_smtp_password` | External SMTP password secret |

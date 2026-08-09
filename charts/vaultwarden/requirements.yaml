@@ -26,7 +26,7 @@ secrets:
   - name: "{{ .Values.database.mysql.passwordSecretName }}"
     description: "database.type=mysql only - password for database.mysql.username"
   - name: "{{ .Values.auth.adminToken.secretName }}"
-    description: "auth.adminToken.enabled=true only - admin token secret"
+    description: "auth.adminToken.enabled=true only - ADMIN_TOKEN Argon2id PHC secret"
   - name: "{{ .Values.smtp.password.secretName }}"
     description: "smtp.enabled=true and smtp.password.enabled=true only - SMTP password secret"
 configs: []
