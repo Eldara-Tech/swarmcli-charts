@@ -246,3 +246,21 @@ new secret and point the relevant `*SecretName` value at it.
 | `extraEnv` | `{}` | Extra env injected into every Zammad role |
 | `resources.*` / `elasticsearchResources.*` | `""` | Per-service memory limits/reservations |
 | `healthcheck.*` | see `values.yaml` | Container healthchecks (generous `startPeriod` for first boot) |
+| `healthcheck.monitor` | `8m` | Rollout watch window. Must cover `startPeriod + interval x retries` (450s) — see below |
+
+### Why `healthcheck.monitor` exists
+
+Swarm watches a task for `update_config.monitor` **after creating it**, and only a
+failure inside that window counts against the rollout. Leave it unset and swarm
+applies a 5s default — so a container that takes longer than that to be declared
+unhealthy never fails the deploy: the rollout is reported complete and the task
+quietly restart-loops. `swarmcli charts lint` warns when `monitor` is shorter
+than `start_period + interval x retries`.
+
+**Raise it if you raise the healthcheck values above**, or the lint will tell you.
+
+`postgres` and `redis` override `start_period` (60s and 10s), so they carry their own
+shorter monitors (`4m` and `3m`) rather than this value. That is deliberate: `--wait`
+holds until the longest *outstanding* window across the stack closes, so giving a fast
+service the slow service's window would dominate every deploy. `init` and `scheduler`
+disable their healthcheck entirely and take no monitor.

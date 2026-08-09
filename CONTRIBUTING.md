@@ -74,7 +74,10 @@ in short:
   directly above `appVersion`, naming the same image as `values.yaml`
   `image.repository`. No `:latest`, and never repeat the version in a comment or in
   the README values table — Renovate edits `Chart.yaml` and touches neither, so it
-  drifts. `make new-chart` gets all of this right; `make test` enforces it.
+  drifts. `make new-chart` gets all of this right; `make test` enforces it. The bot doing
+  the maintaining is our own, run from the [`renovate`](charts/renovate) chart — see
+  [docs/renovate-self-hosting.md](docs/renovate-self-hosting.md) for how it is configured
+  and which updates it holds back.
 - **Traefik-routed** services carry `traefik.enable=true`,
   `traefik.constraint-label` and `traefik.swarm.network` deploy labels (the
   swarm provider discovers nothing without the constraint label), and default
@@ -242,8 +245,9 @@ git tag whoami/v0.2.0
 git push origin whoami/v0.2.0
 ```
 
-`release.yml` stamps the SemVer into `Chart.yaml`, packages the `.tgz`, publishes
-a GitHub Release, and rebuilds `index.yaml` on GitHub Pages. The `version:` in
+`release.yml` stamps the SemVer into `Chart.yaml`, packages the `.tgz` and
+publishes a GitHub Release; `pages-index.yml` then rebuilds `index.yaml` on
+GitHub Pages. The `version:` in
 `Chart.yaml` is only a placeholder — the tag wins. Published versions are plain
 SemVer (`0.2.0`); the leading `v` belongs to the git tag.
 

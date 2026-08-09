@@ -75,7 +75,8 @@
         "interval": { "type": "string" },
         "timeout": { "type": "string" },
         "retries": { "type": "integer", "minimum": 1 },
-        "startPeriod": { "type": "string" }
+        "startPeriod": { "type": "string" },
+        "monitor": { "type": "string" }
       }
     },
     "extraArgs": { "type": "array", "items": { "type": "string" } },

@@ -2,7 +2,10 @@ name: traefik
 description: Traefik v3 edge proxy / ingress for Docker Swarm with Let's Encrypt TLS and a secured dashboard
 version: 0.1.0
 # renovate: image=traefik
-appVersion: "v3.7.1"
+appVersion: "v3.7.9"
+# Oldest swarmcli whose chart engine renders this chart; verified by
+# scripts/floor-check.sh against a real binary of that version.
+swarmcliVersion: ">= 1.11.0"
 annotations:
   # Traefik is a Docker-provider proxy: it watches the swarm API for routing
   # labels, so it must mount the Docker socket (read-only) on a manager node.

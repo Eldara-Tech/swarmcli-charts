@@ -19,6 +19,11 @@ it is exactly what the `charts.yml` workflow runs.
 Swarm**, waits for the services to converge, optionally smoke-tests them, and
 tears the release back down. It needs a running Swarm and pulls real images.
 
+Both loops render with **one** swarmcli — whatever `install-swarmcli.sh` built,
+which is `main`. Neither proves a chart runs on the *released* swarmcli a user
+actually has. That third, orthogonal question has its own check — see
+[Verifying the swarmcli floor](#verifying-the-swarmcli-floor).
+
 The `e2e.yml` workflow runs this loop **in CI** on a throwaway single-node swarm
 (`E2E_SWARM_INIT=1`), as **one job per chart** (a `strategy.matrix`, so charts run in
 parallel and in isolation). Each job runs a **curated fixture subset** (via `E2E_CASES`,
@@ -94,17 +99,16 @@ For every chart × `ci/*-values.yaml` fixture, `scripts/e2e-test.sh`:
    it *before* install to provision external prerequisites swarmcli validates but
    never creates (external secrets, node labels, a co-located backend). See
    [Setup / teardown hooks](#setup--teardown-hooks-cie2e-setupsh).
-3. **installs** — `swarmcli charts install <release> ./charts/<chart> -f <fixture>`,
+3. **installs and converges** — `swarmcli charts install <release> ./charts/<chart> -f <fixture> --wait`,
    straight from your local working-tree directory (no packaging or publishing). A
    non-zero exit (rejected manifest, failed pre-flight) fails the case. swarmcli
    auto-creates any external attachable overlay the chart declares in
    `requirements.yaml` (e.g. `traefik-public`).
-4. **waits for convergence** — polls `docker stack ps` until every task whose
-   desired state is `running` actually reads `Running`, up to `$E2E_TIMEOUT`
-   (default `3m`; raise it for slow image pulls). It deliberately does **not** use
-   swarmcli's `--wait`, which reports a service converged as soon as its tasks are
-   *scheduled* (desired-state Running) — not when they are actually running — so on
-   a cold image pull `--wait` returns while tasks are still `Pending`.
+4. **waits for convergence** — the same step: `--wait --timeout $E2E_TIMEOUT`
+   (default `3m`; raise it for slow image pulls). swarmcli holds until every task
+   is actually `Running` on an active node and has survived swarm's own monitor
+   window, and it treats a completed one-shot service as converged rather than
+   waiting for a task that will never come back.
 5. **smoke-tests (optional)** — if `charts/<chart>/ci/e2e-check.sh` is
    executable, runs it (with the case name as `$3`); a non-zero exit fails the case.
 6. **tears down** — `swarmcli charts uninstall <release> --purge-volumes` plus the
@@ -144,11 +148,12 @@ $BIN charts rollback demo 1
 $BIN charts uninstall demo --purge-volumes
 ```
 
-> **On `--wait`.** `swarmcli charts install/upgrade` accept `--wait`, but it
-> reports convergence as soon as the tasks are *scheduled* (their desired state is
-> Running), which on a cold image pull happens while they are still `Pending`. To
-> confirm a release is really up, watch `docker stack ps <release>` until every
-> task reads `Running` — which is what `make e2e` does for you.
+> **On `--wait`.** `swarmcli charts install/upgrade` accept `--wait`, which is
+> what `make e2e` uses to decide a release is up. It needs **swarmcli >=
+> v1.13.0-rc4**: earlier builds counted tasks by *desired* state, so it returned
+> while they were still `Pending` (Eldara-Tech/swarmcli#473), and a one-shot
+> service hung it until the timeout (#443). Against an older binary, watch
+> `docker stack ps <release>` by hand instead.
 
 > Installing from a published repo instead of a local path uses a
 > `<repo>/<chart>` reference, e.g.
@@ -285,6 +290,10 @@ on `http://localhost:8879`. It **blocks** — leave it running and, in another
 terminal:
 
 ```bash
+# swarmcli refuses plaintext repositories by default; this one is a throwaway
+# container on loopback. Export it — the scheme is re-checked on every fetch, so
+# opting in on `repo add` alone would only move the refusal to `install`.
+export SWARMCLI_CHARTS_ALLOW_PLAINTEXT=1
 swarmcli charts repo add localrepo http://localhost:8879
 swarmcli charts repo update
 swarmcli charts search                                   # lists localrepo/<chart>
@@ -303,6 +312,13 @@ swarmcli charts repo remove localrepo
 > only for trying the repo UX locally; real distribution goes through a tagged
 > release (see the [README](../README.md#releasing-a-new-chart-version)).
 
+> **Why the opt-in?** A repository serves the tarball that *becomes* the deployed
+> workload, and the index digest that would attest it travels the same connection —
+> so swarmcli refuses plain `http://` unless `SWARMCLI_CHARTS_ALLOW_PLAINTEXT=1`
+> (Eldara-Tech/swarmcli#531). A throwaway container on loopback is exactly the
+> "internal registry on a network you already trust" the escape hatch names. Never
+> set it for a repository reached over a real network.
+
 > **Regression-tested in CI.** The `Integration` workflow runs
 > `scripts/local-repo-test.sh`, which stands this server up and asserts
 > `repo add` → `update` → `search` lists every chart — so the packaging + index +
@@ -310,6 +326,54 @@ swarmcli charts repo remove localrepo
 > too: `SWARMCLI=.swarmcli-bin/swarmcli scripts/local-repo-test.sh`. A Linux runner
 > can't reproduce Docker-Desktop/WSL2 serving quirks, so still smoke `make
 > local-repo` by hand once on macOS/Windows when you touch the serving path.
+
+## Verifying the swarmcli floor
+
+Every `Chart.yaml` declares `swarmcliVersion` — the oldest swarmcli whose chart
+engine renders that chart:
+
+```yaml
+# Chart.yaml
+swarmcliVersion: ">= 1.11.0"
+```
+
+This matters because `make test` and CI render with swarmcli **`main`**, which is
+newer than anything a user has installed. A chart can quietly depend on
+behaviour that only exists on `main` and still pass every render check — and then
+fail on the released swarmcli a user actually runs. That is not hypothetical:
+`charts/zammad` uses template control flow in `requirements.yaml` (a feature on
+`main`, in no release yet), so it renders in CI and fails on *every* release with
+an opaque `parse requirements.yaml: could not find expected ':'`.
+
+**`scripts/floor-check.sh` proves a floor** by building a *real* binary of the
+declared version and rendering the chart with it — the only thing that settles
+whether the chart runs there. It runs in the `Charts` workflow, and locally:
+
+```bash
+scripts/floor-check.sh          # render every chart with a real binary of its floor
+```
+
+Expect one `rendering with real swarmcli vX.Y.Z → OK` block per chart, then a
+summary. It **fails** (exit 1) if a chart does not run on the version it declares.
+
+- **Raise a floor only to a *released* version.** floor-check builds that version
+  to test it, so a floor naming an unreleased tag cannot be proven: it is
+  reported as `NOT verified` (with a `::warning::`) and skipped — visible in the
+  log, never silently passed. `zammad` is in that state today (`>= 1.13.0`, which
+  documents *why* it cannot publish yet) and will verify automatically once that
+  release ships.
+- **Find a floor by measuring, not guessing.** Render the chart against
+  successively older releases (`SWARMCLI_REF=vX.Y.Z scripts/install-swarmcli.sh
+  ./bin` then `make test`); the oldest that still renders is the floor.
+- **`swarmcli charts lint --for-version X`** is the quick check — but know its
+  limit: it tests whether the chart's declared floor *admits* X, i.e. the claim's
+  shape, not whether the chart *runs* on X. A swarmcli carries one engine's
+  behaviour and cannot emulate another's; only floor-check (a real binary)
+  proves runs-on.
+- **The floor protects users going forward, not retroactively.** A swarmcli older
+  than the check itself parses `Chart.yaml` leniently and ignores `swarmcliVersion`
+  entirely; only swarmcli new enough to carry the check enforces it. See the
+  `swarmcli floor` note in [CLAUDE.md](../CLAUDE.md).
 
 ## Troubleshooting
 

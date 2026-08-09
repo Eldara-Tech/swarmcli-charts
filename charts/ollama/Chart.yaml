@@ -1,10 +1,13 @@
 name: ollama
 description: Ollama self-hosted LLM server for Docker Swarm — offline models, stateful, single-node pinned, optional GPU
 # version is a placeholder — the git tag (ollama/vX.Y.Z) sets the real version at release.
-version: 0.1.0
+version: 0.2.0
 # appVersion is the default image tag for ollama/ollama.
 # renovate: image=ollama/ollama
-appVersion: "0.30.11"
+appVersion: "0.32.5"
+# Oldest swarmcli whose chart engine renders this chart; verified by
+# scripts/floor-check.sh against a real binary of that version.
+swarmcliVersion: ">= 1.11.0"
 maintainers:
   - name: Eldara
     url: https://github.com/Eldara-Tech

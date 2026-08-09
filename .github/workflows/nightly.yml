@@ -1,0 +1,204 @@
+name: Nightly (latest release)
+
+# The three PR workflows build swarmcli `main` on purpose — they catch a renderer
+# breakage the moment it lands, before any release ships it. This one is the other
+# half: it validates the WHOLE repo against the latest RELEASE (the version users
+# actually have), on a schedule, so it never blocks a PR. Together they cover both
+# ends — "does main still render our charts" and "does the release still run them".
+#
+# It mirrors the PR flows against the downloaded release binary
+# (scripts/download-swarmcli.sh — no Go toolchain, no compile):
+#   * render      — scripts/test-charts.sh          (the charts.yml render suite)
+#   * integration — scripts/local-repo-test.sh      (the repo add/update/search flow)
+#   * e2e         — scripts/e2e-test.sh, one job per chart, sharing e2e.yml's
+#                   .github/e2e-matrix.yaml so the two matrices never drift.
+#   * repo-apply  — scripts/repo-apply-test.sh       (install FROM a served index +
+#                   outdated/upgrade/idempotence).
+#
+# Every leg runs the latest release. The e2e and repo-apply legs used to be pinned to
+# a v1.13.0 prerelease — e2e for the `--wait` semantics of swarmcli#473, repo-apply for
+# `charts apply` + index digest verification (swarmcli#450, #447) — because neither was
+# in a stable release. v1.13.0 shipped stable, so both pins are gone and each job's
+# comment records what it was waiting for.
+#
+# A chart whose declared swarmcliVersion floor is AHEAD of the binary a leg runs
+# cannot run on it — that is a known-good state, not a regression.
+# scripts/floors-runnable-on.sh skips and reports (::warning) those, exactly as
+# floor-check.sh does for unreleased floors, so a red nightly always means a real
+# break. With v1.13.0 stable no chart's floor is ahead of the latest release any
+# more: zammad (floor >=1.13.0) was the only one, skipped on the stable legs while
+# running on the pinned e2e leg, and every leg now runs it.
+# On a scheduled failure the notify job opens (or updates) a single tracking issue.
+
+on:
+  schedule:
+    - cron: '17 4 * * *'   # 04:17 UTC daily — off-peak; avoid the top-of-hour rush.
+  workflow_dispatch: {}     # manual: on-demand release validation / testing this workflow.
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Download latest swarmcli release
+        run: scripts/download-swarmcli.sh "$PWD/.swarmcli-bin"
+
+      # test-charts.sh REFUSES to run without mikefarah yq. Install the static
+      # binary directly so we need no Go toolchain (that is the point of the
+      # release path).
+      - name: Install yq (mikefarah v4)
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL -o "$HOME/.local/bin/yq" https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+          chmod +x "$HOME/.local/bin/yq"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Render every chart the release can run (skip + report ahead-of-release)
+        run: |
+          bin="$PWD/.swarmcli-bin/swarmcli"
+          mapfile -t charts < <(scripts/floors-runnable-on.sh "$bin")
+          SWARMCLI="$bin" scripts/test-charts.sh "${charts[@]}"
+
+      - name: Upload rendered stacks
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rendered-stacks
+          path: .rendered/
+          if-no-files-found: ignore
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Download latest swarmcli release
+        run: scripts/download-swarmcli.sh "$PWD/.swarmcli-bin"
+
+      # repo add -> update -> search never renders a chart (it lists index
+      # metadata), so it runs the full set — floors do not gate it.
+      - name: Local-repo consumer flow (repo add -> update -> search)
+        run: SWARMCLI="$PWD/.swarmcli-bin/swarmcli" scripts/local-repo-test.sh
+
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.load.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - id: load
+        name: Load e2e matrix from .github/e2e-matrix.yaml
+        run: |
+          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+          chmod +x /tmp/yq
+          echo "matrix=$(/tmp/yq -o=json -I=0 '.' .github/e2e-matrix.yaml)" >> "$GITHUB_OUTPUT"
+
+  e2e:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    name: e2e (${{ matrix.chart }})
+    strategy:
+      fail-fast: false          # one chart's failure must not cancel its siblings
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # The latest release, which since v1.13.0 is enough. This leg was pinned to a
+      # v1.13.0 prerelease because e2e-test.sh converges via `swarmcli charts install
+      # --wait`, which only counts a task as up once it ACTUALLY reaches Running
+      # (Eldara-Tech/swarmcli#473, first released in v1.13.0-rc4); on stable v1.12.0
+      # `--wait` returned the instant the service was created (desired-state), so the
+      # non-retrying DB smoke checks raced an unpulled container and failed
+      # "container not found" (#104). The gate below sees a 1.13.0 binary either way,
+      # so zammad (floor >=1.13.0) still runs here.
+      - name: Download swarmcli (latest release)
+        run: scripts/download-swarmcli.sh "$PWD/.swarmcli-bin"
+
+      # A chart whose floor is ahead of the release cannot run on it — skip this
+      # leg (green, with a warning) instead of failing it.
+      - id: gate
+        name: Gate ${{ matrix.chart }} on the release's version
+        run: |
+          bin="$PWD/.swarmcli-bin/swarmcli"
+          if scripts/floors-runnable-on.sh "$bin" | grep -qx '${{ matrix.chart }}'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::${{ matrix.chart }} floor is ahead of the latest release — skipping its e2e."
+          fi
+
+      # Same invocation as e2e.yml, against the downloaded release binary.
+      - name: Deploy + verify (${{ matrix.chart }})
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          SWARMCLI="$PWD/.swarmcli-bin/swarmcli" \
+          E2E_SWARM_INIT=1 \
+          E2E_CASES="${{ matrix.cases }}" \
+          E2E_TIMEOUT="${{ matrix.timeout }}" \
+          scripts/e2e-test.sh "${{ matrix.chart }}"
+
+  # Validate the repository-consumer path (scripts/repo-apply-test.sh) against a
+  # RELEASE binary — the half of #79's coverage the PR workflows only run against
+  # `main`: install whoami FROM a served index, then outdated/upgrade/idempotence.
+  #
+  # It needs `charts apply` + index digest verification (Eldara-Tech/swarmcli#450,
+  # #447), which was in no stable release until v1.13.0 — so this leg was pinned via
+  # SWARMCLI_REF to a v1.13.0 prerelease. It now tracks the latest release like the
+  # rest of nightly, and repo-apply-test.sh self-skips the deploy phase on any
+  # release still too old to have it.
+  repo-apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Download swarmcli (latest release)
+        run: scripts/download-swarmcli.sh "$PWD/.swarmcli-bin"
+
+      # E2E_SWARM_INIT=1 stands up the throwaway swarm; the script runs the swarm-free
+      # template + digest checks AND the apply/outdated/upgrade/idempotence loop.
+      - name: Repo-apply flow (install + outdated + upgrade + idempotence)
+        run: |
+          SWARMCLI="$PWD/.swarmcli-bin/swarmcli" \
+          E2E_SWARM_INIT=1 \
+          scripts/repo-apply-test.sh
+
+  # Surface a scheduled failure as a single tracking issue (updated, not
+  # duplicated). Skipped on manual dispatch so testing this workflow is quiet.
+  notify:
+    needs: [render, integration, prepare, e2e, repo-apply]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open or update the nightly-failure tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Nightly release validation is failing"
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+                        --search "in:title \"$title\"" --json number --jq '.[0].number')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" \
+              --body "Still failing on the latest release — $RUN_URL"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body \
+              "The nightly run against the latest swarmcli release failed: $RUN_URL
+
+          The repo no longer works cleanly on the latest swarmcli release (or, for
+          the repo-apply leg, the pinned pre-release). Charts whose floor is ahead of
+          the release are skipped, not failed (see the run log), so this is a real
+          break in render, the local-repo flow, an e2e deploy, or the repo-apply flow."
+          fi

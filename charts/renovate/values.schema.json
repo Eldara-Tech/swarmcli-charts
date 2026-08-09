@@ -43,6 +43,10 @@
       "required": ["tokenSecret"]
     },
     "configName": { "type": "string" },
+    "configVersion": { "type": "string" },
+    "configFormat": {
+      "enum": ["json", "json5", "jsonc", "yaml", "yml", "js", "cjs", "mjs"]
+    },
     "logLevel": { "enum": ["trace", "debug", "info", "warn", "error", "fatal"] },
     "dryRun": { "enum": ["", "extract", "lookup", "full"] },
     "extraEnv": { "type": "object" },

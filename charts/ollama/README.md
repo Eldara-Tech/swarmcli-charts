@@ -139,4 +139,16 @@ default) renders no sidecar.
 | `modelInitImage` | pinned in values.yaml | Image for the preload sidecar (needs curl). Kept fresh by Renovate. |
 | `extraEnv` | `{}` | Extra env vars, e.g. `OLLAMA_KEEP_ALIVE` (`OLLAMA_HOST` is bound to `0.0.0.0:<service.port>` automatically; override here) |
 | `healthcheck.enabled` | `true` | `ollama list` liveness probe |
+| `healthcheck.monitor` | `3m` | Rollout watch window. Must cover `startPeriod + interval x retries` (150s) — see below |
 | `labels` | `{}` | Extra deploy labels |
+
+### Why `healthcheck.monitor` exists
+
+Swarm watches a task for `update_config.monitor` **after creating it**, and only a
+failure inside that window counts against the rollout. Leave it unset and swarm
+applies a 5s default — so a container that takes longer than that to be declared
+unhealthy never fails the deploy: the rollout is reported complete and the task
+quietly restart-loops. `swarmcli charts lint` warns when `monitor` is shorter
+than `start_period + interval x retries`.
+
+**Raise it if you raise the healthcheck values above**, or the lint will tell you.

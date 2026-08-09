@@ -111,7 +111,7 @@ redis:
   port: 6379
   image:
     repository: redis
-    tag: "8.2.7"  # pinned; tracks the redis chart's appVersion
+    tag: "8.8.0"  # pinned; tracks the redis chart's appVersion
   auth:
     enabled: true
     secretName: superset_redis_password
@@ -304,6 +304,12 @@ healthcheck:
   timeout: 10s
   retries: 3
   startPeriod: 180s
+  # How long Swarm counts a task failure against the rollout, measured from task
+  # creation. Must cover the healthcheck's worst case above (180s start_period +
+  # 30s interval x 3 retries = 270s) or a container that goes unhealthy after the
+  # window does not fail the deploy. Applies to app and worker; the bundled redis
+  # hardcodes a shorter healthcheck and a matching shorter monitor of its own.
+  monitor: 5m
 
 # Extra deploy labels (key: value), merged after any Traefik router labels. Applied to the web
 # app only.

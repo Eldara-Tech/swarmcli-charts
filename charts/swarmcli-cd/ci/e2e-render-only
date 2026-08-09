@@ -1,0 +1,20 @@
+# Fixtures that render and validate in scripts/test-charts.sh but cannot converge here.
+# One case name per line; scripts/e2e-test.sh skips them in the default sweep and still
+# runs them when E2E_CASES names them explicitly.
+
+# Needs an SSH forge, a deploy key and pinned host keys. Nothing in CI provides one, and a
+# sidecar pointed at an unreachable remote crash-loops rather than converging.
+git-sync
+# Needs a reachable app-set repository with an applications.yaml in it. The controller
+# would come up and retry forever, which asserts nothing the `dir` fixture does not.
+git-appset
+# ACME cannot be exercised in CI (no public DNS, no cert issuance). `edge` covers the
+# routing contract over plain HTTP.
+traefik-tls
+# The rotated config name (swarmcli-cd-applications_<version>) and the two registry-auth
+# secrets would all have to be provisioned to assert what the `default` fixture already
+# asserts about a running controller.
+prune
+# Host-path persistence writes to /opt/swarmcli-cd-data on the runner. The bind render is
+# covered by charts.yml; still runs in local `make e2e` when named explicitly.
+bind-mount

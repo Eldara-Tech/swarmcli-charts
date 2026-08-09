@@ -1,0 +1,17 @@
+# App-of-apps over SSH, which the controller's own git client cannot do: the sidecar
+# clones the repository and publishes applications.yaml onto a shared stack-scoped volume,
+# and the controller reads that directory. Exercises the two-service render, the SSH
+# key/known-hosts secret pair, the atomic-publish loop, and the --appset-dir branch with a
+# non-standard port carried in the URL.
+#
+# The node pin is what keeps both ends of the shared volume on one node; persistence stays
+# on here, so one label does both jobs.
+appset:
+  mode: git-sync
+  path: gitops/swarmcli-cd/applications.yaml
+  interval: 1m
+  repo:
+    url: ssh://git@gitlab.example.com:10022/infra/apps.git
+    revision: main
+  sync:
+    intervalSeconds: 60

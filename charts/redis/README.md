@@ -63,6 +63,7 @@ the cluster-wide routing mesh or `mode: host` for the pinned node only).
 | `maxmemoryPolicy` | `noeviction` | Eviction policy (applied when `maxmemory` set) |
 | `resources.limits.memory` | `""` | Swarm deploy memory limit |
 | `healthcheck.*` | see `values.yaml` | redis-cli PING healthcheck |
+| `healthcheck.monitor` | `90s` | Rollout watch window. Must cover `startPeriod + interval x retries` (80s) — see below |
 | `extraConfig` | `[]` | Extra `redis-server` flags appended verbatim |
 | `labels` | `{}` | Extra deploy labels |
 
@@ -98,3 +99,14 @@ process args — never in the compose file or `docker inspect` (which show the
 unresolved `$(cat /run/secrets/redis_password)` literal). The healthcheck reads the
 same secret via `REDISCLI_AUTH`, so the password never appears on a `redis-cli`
 command line either.
+
+### Why `healthcheck.monitor` exists
+
+Swarm watches a task for `update_config.monitor` **after creating it**, and only a
+failure inside that window counts against the rollout. Leave it unset and swarm
+applies a 5s default — so a container that takes longer than that to be declared
+unhealthy never fails the deploy: the rollout is reported complete and the task
+quietly restart-loops. `swarmcli charts lint` warns when `monitor` is shorter
+than `start_period + interval x retries`.
+
+**Raise it if you raise the healthcheck values above**, or the lint will tell you.

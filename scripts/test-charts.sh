@@ -83,6 +83,16 @@ for chart in "${charts[@]}"; do
     continue
   fi
 
+  # Step 6 is invoked behind `[ -x ]`, so a render-check committed without its execute
+  # bit does not run and nothing says so — every fixture then reports OK while asserting
+  # nothing, which is the same failure as a skipped requirements check above. A file that
+  # is present is meant to run.
+  if [ -f "$dir/ci/render-check.sh" ] && [ ! -x "$dir/ci/render-check.sh" ]; then
+    echo "ERROR: $chart ci/render-check.sh is not executable and would be silently skipped — chmod +x it"
+    fail=1
+    continue
+  fi
+
   for vf in "${fixtures[@]}"; do
     case="$(basename "$vf" -values.yaml)"
     out="$OUT/${chart}__${case}.yaml"
@@ -94,6 +104,15 @@ for chart in "${charts[@]}"; do
       sed 's/^/      /' "$err"
       fail=1
       continue
+    fi
+    # A render that succeeded can still have said something. `charts template` is
+    # warn-only about a chart whose swarmcliVersion this renderer does not
+    # satisfy: it exits 0 and writes the warning to stderr. Without this the
+    # message dies in $err, which is deleted at the end of a green run — so the
+    # only signal about a compat problem would be silently discarded.
+    if [ -s "$err" ]; then
+      echo "   NOTE: renderer warnings"
+      sed 's/^/      /' "$err"
     fi
     if grep -nF '<no value>' "$out"; then
       echo "   FAIL: '<no value>' in output — likely a missing-key typo in the template"

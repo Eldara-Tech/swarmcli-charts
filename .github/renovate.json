@@ -23,7 +23,7 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Chart.yaml appVersion is the real image pin: every chart ships image.tag: '' and the template falls back to .Chart.AppVersion. helm-values covers the two values.yaml that do pin a tag (superset's embedded redis, ollama's model-preload init image); charts with tag: '' extract a dep with no currentValue, which is non-actionable, so the default helm-values pattern needs no narrowing.",
+      "description": "Chart.yaml appVersion is the real image pin: every chart ships image.tag: '' and the template falls back to .Chart.AppVersion. The built-in helm-values manager separately covers the values.yaml that DO pin a concrete tag: superset's embedded redis, zammad's embedded postgres/redis/memcached/elasticsearch and swarmcli-cd's git-sync sidecar (image: {repository, tag} blocks), plus ollama's model-preload init image (a bare `modelInitImage:` scalar, caught because helm-values' inline heuristic matches any key ending /image$/i). Charts with tag: '' extract a dep with no currentValue, which is non-actionable, so the default helm-values pattern needs no narrowing.",
       "managerFilePatterns": ["/(^|/)Chart\\.yaml$/"],
       "matchStrings": [
         "#\\s*renovate:\\s*image=(?<depName>\\S+)[^\\S\\n]*\\n\\s*appVersion:\\s*[\"']?(?<currentValue>[^\"'\\s]+)[\"']?"
@@ -66,6 +66,14 @@
     },
 
     {
+      "description": "The image of the bot that opens every other PR here. A Renovate major can drop config options and change defaults — including the ones this file relies on — and a broken bot fails silently, by simply not maintaining the pins any more. Majors get a deliberate click; minor/patch flow as normal PRs.",
+      "matchDepNames": ["renovate/renovate"],
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true,
+      "labels": ["dependencies", "major-upgrade"]
+    },
+
+    {
       "description": "openclaw ships calver (2026.6.11), so docker versioning reports a new YEAR as a major. That is not a breaking-change signal — exempt it from the major gate above and let CI + e2e + minimumReleaseAge carry the risk.",
       "matchDepNames": ["ghcr.io/openclaw/openclaw"],
       "labels": ["dependencies", "calver"]
@@ -81,10 +89,13 @@
     { "matchFileNames": ["charts/openclaw/**"], "semanticCommitScope": "openclaw" },
     { "matchFileNames": ["charts/postgres/**"], "semanticCommitScope": "postgres" },
     { "matchFileNames": ["charts/redis/**"], "semanticCommitScope": "redis" },
+    { "matchFileNames": ["charts/renovate/**"], "semanticCommitScope": "renovate" },
     { "matchFileNames": ["charts/superset/**"], "semanticCommitScope": "superset" },
     { "matchFileNames": ["charts/swarm-cronjob/**"], "semanticCommitScope": "swarm-cronjob" },
+    { "matchFileNames": ["charts/swarmcli-cd/**"], "semanticCommitScope": "swarmcli-cd" },
     { "matchFileNames": ["charts/traefik/**"], "semanticCommitScope": "traefik" },
     { "matchFileNames": ["charts/whoami/**"], "semanticCommitScope": "whoami" },
+    { "matchFileNames": ["charts/zammad/**"], "semanticCommitScope": "zammad" },
 
     {
       "description": "Merging a pin does not publish a chart — the chart version is a human judgement (an image patch can still warrant a chart minor), so releasing stays an explicit step.",

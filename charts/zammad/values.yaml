@@ -210,7 +210,7 @@ redis:
   embedded:
     image:
       repository: redis
-      tag: "8.2.7"  # pinned; tracks the redis chart's appVersion
+      tag: "8.8.0"  # pinned; tracks the redis chart's appVersion
 
 # Memcached — Zammad's page/action cache. Always small and ephemeral.
 #   servers   empty (default) => this chart runs an in-stack memcached (`memcached:11211`). Set to
@@ -223,7 +223,7 @@ memcache:
   memoryMB: 256
   image:
     repository: memcached
-    tag: "1.6.44-alpine"  # pinned; matches Zammad's own compose
+    tag: "1.6.45-alpine"  # pinned; matches Zammad's own compose
 
 # Elasticsearch — full-text search over tickets/articles.
 #   mode        embedded (default) => this chart runs its own single-node Elasticsearch, PERSISTENT
@@ -258,7 +258,7 @@ elasticsearch:
   network: elasticsearch-net
   image:
     repository: elasticsearch
-    tag: "9.4.3"  # pinned; the version Zammad's own compose tracks (Docker Hub library/elasticsearch)
+    tag: "9.4.4"  # pinned; the version Zammad's own compose tracks (Docker Hub library/elasticsearch)
   persistence:
     volumeName: zammad-elasticsearch-data
     volumePath: ""
@@ -316,3 +316,9 @@ healthcheck:
   timeout: 10s
   retries: 5
   startPeriod: 300s
+  # How long Swarm counts a task failure against the rollout, measured from task
+  # creation. Must cover the healthcheck's worst case above (300s start_period +
+  # 30s interval x 5 retries = 450s) or a container that goes unhealthy after the
+  # window does not fail the deploy. Applies to the services using the full block
+  # above; postgres and redis override start_period and carry matching monitors.
+  monitor: 8m

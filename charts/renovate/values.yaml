@@ -66,8 +66,44 @@ auth:
 # Renovate's own config file, as an external Docker config you pre-create. The escape
 # hatch for anything the values above do not cover (onboarding, packageRules, hostRules).
 # Empty = configure entirely through the values here.
-#   docker config create renovate_config ./config.js
+#   docker config create renovate_config ./config.json
+#
+# Renovate merges config file < RENOVATE_* environment < CLI, and the values above are
+# rendered as environment — so platform.type and logLevel (always emitted) and
+# platform.endpoint, repositories, autodiscover, autodiscoverFilter and dryRun (emitted
+# only when set) WIN over the same keys in this file. Leave one empty to let the config
+# file own that key.
 configName: ""
+
+# Rotation. A Swarm config is IMMUTABLE — `docker config create` is the only way to put new
+# bytes in front of Renovate, and redeploying changed contents under an existing name makes
+# the daemon refuse with "only updates to Labels are allowed". So changing the config means
+# a NEW config object, and this is the seam for it: the chart mounts
+# `<configName>_<configVersion>` rather than `<configName>`.
+#
+# Derive it from the file's contents and rotation takes care of itself — an unchanged file
+# resolves to the same name and deploys nothing, a changed one moves the service to the new
+# config. From the directory holding your config:
+#
+#   V=$(sha256sum config.js | cut -c1-12)
+#   docker config inspect renovate_config_$V >/dev/null 2>&1 \
+#     || docker config create renovate_config_$V ./config.js
+#   swarmcli charts upgrade renovate swarmcli-charts/renovate -f values.yaml --set configVersion=$V
+#
+# Any string works if you would rather track it yourself (a git SHA, a date, a counter).
+# Empty = mount configName unversioned, and rotate by editing configName by hand.
+#
+# The chart cannot read the file for you: swarmcli refuses a chart-supplied path outside the
+# chart's own files/ (charts/files.go), because the docker CLI reads it client-side AS YOU
+# and uploads it into a config anyone with Docker access can read. Creating the config is
+# therefore yours to do — which is what the one-liner above is.
+configVersion: ""
+
+# The mounted file's format. Renovate dispatches on its EXTENSION and nothing else — an
+# extension it does not recognise is a startup `FATAL: Unsupported file type` — so this
+# must match what you put in the Docker config.
+#   json | json5 | jsonc | yaml | yml | js | cjs | mjs
+configFormat: json
 
 logLevel: info
 
