@@ -94,6 +94,13 @@ version: "3.9"
 {{- $env = mergeOverwrite $env (dict "SMTP_USERNAME" .Values.smtp.username) }}
 {{- end }}
 {{- end }}
+{{- /* Vaultwarden REFUSES to boot when /data is not a mount — it prints "No persistent
+       volume!" and exits 1, so persistence.enabled:false would ship a documented mode that
+       cannot start (caught by the ephemeral edge fixture in e2e, never by a render check).
+       Accepting data loss is precisely what that mode means, so declare it. */}}
+{{- if not .Values.persistence.enabled }}
+{{- $env = mergeOverwrite $env (dict "I_REALLY_WANT_VOLATILE_STORAGE" "true") }}
+{{- end }}
 {{- $env = mergeOverwrite $env .Values.extraEnv }}
 
 services:

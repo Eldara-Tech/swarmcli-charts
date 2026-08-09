@@ -31,10 +31,13 @@ for s in vaultwarden_postgres_password vaultwarden_mysql_password vaultwarden_sm
   docker secret inspect "$s" >/dev/null 2>&1 \
     || printf '%s' "$DBPW" | docker secret create "$s" - >/dev/null
 done
-# The admin token is a distinct value so ci/e2e-check.sh can prove the ADMIN_TOKEN
-# export wrapper carried THIS secret's content and not a neighbouring one.
+# The admin token is an Argon2id PHC string, which is what the README tells operators to
+# use — and the interesting case: it contains five `$`, so it also proves a credential full
+# of shell metacharacters survives the secret -> `$$(cat …)` export path unmangled. Single
+# quotes so this shell does not expand it. Must match ci/e2e-check.sh.
+ADMIN_PHC='$argon2id$v=19$m=65540,t=3,p=4$MmeKRnGK5RW5mJS7h3TOv90eOu7wJ3Ry6xGRW0ycHco$kSJqYRV3Fu2AjjM/dvbFyoIUt74BsAoWXqYIVXaQ+/8'
 docker secret inspect vaultwarden_admin_token >/dev/null 2>&1 \
-  || printf 'e2e-admin-token' | docker secret create vaultwarden_admin_token - >/dev/null
+  || printf '%s' "$ADMIN_PHC" | docker secret create vaultwarden_admin_token - >/dev/null
 
 # --- persistence pin -------------------------------------------------------------
 # Label this (single-node) swarm's node so the persistence.nodeLabel constraint

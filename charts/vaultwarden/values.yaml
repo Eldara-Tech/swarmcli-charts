@@ -12,6 +12,9 @@ image:
 replicas: 1
 
 persistence:
+  # false renders no volume and no node pin, and sets I_REALLY_WANT_VOLATILE_STORAGE
+  # (Vaultwarden refuses to boot on an unmounted /data without it). The vault is then
+  # lost whenever the task is replaced — for demos and CI only.
   enabled: true
   volumeName: vaultwarden-data
   # Absolute host path bind-mount for /data. When set, this takes precedence
@@ -79,9 +82,9 @@ database:
     passwordSecretName: vaultwarden_mysql_password
     network: mariadb-net
 
-# Optional admin token via external secret.
-# IMPORTANT: secret content must be an Argon2id PHC hash string, not plaintext.
-# Generate with: docker run --rm -it --entrypoint /vaultwarden vaultwarden/server:1.37.1 hash
+# Optional admin token via external secret. The secret should hold an Argon2id PHC
+# string rather than plaintext (plaintext works, but Vaultwarden warns on every start).
+# Generate one with the image this chart deploys — see the chart README.
 auth:
   adminToken:
     enabled: false

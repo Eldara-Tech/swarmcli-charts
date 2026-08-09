@@ -21,7 +21,11 @@ set -euo pipefail
 
 release="$1"
 case="${3:-}"
-DBPW='test'   # must match ci/e2e-setup.sh
+# Both must match ci/e2e-setup.sh. The admin token is an Argon2id PHC string on purpose:
+# its five `$` are what turn "the wrapper exported something" into "the wrapper exported
+# the credential byte-for-byte". Single-quoted so this shell does not expand it.
+DBPW='test'
+ADMIN_PHC='$argon2id$v=19$m=65540,t=3,p=4$MmeKRnGK5RW5mJS7h3TOv90eOu7wJ3Ry6xGRW0ycHco$kSJqYRV3Fu2AjjM/dvbFyoIUt74BsAoWXqYIVXaQ+/8'
 
 vw_cid() { docker ps -q -f "label=com.docker.swarm.service.name=${release}_vaultwarden" | head -1; }
 
@@ -74,8 +78,8 @@ fi
 
 # --- secrets fixture: both secret-backed exports carry their secret's real content. -----
 if [ "$case" = "secrets" ]; then
-  assert_env "$cid" "ADMIN_TOKEN=e2e-admin-token"  "ADMIN_TOKEN"   || exit 1
-  assert_env "$cid" "SMTP_PASSWORD=${DBPW}"        "SMTP_PASSWORD" || exit 1
+  assert_env "$cid" "ADMIN_TOKEN=${ADMIN_PHC}" "ADMIN_TOKEN (Argon2id PHC)" || exit 1
+  assert_env "$cid" "SMTP_PASSWORD=${DBPW}"    "SMTP_PASSWORD"               || exit 1
 fi
 
 # --- bind-mount fixture: confirm /data is a mount (persistence actually took effect),

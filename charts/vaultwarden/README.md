@@ -21,9 +21,11 @@ can switch to **external PostgreSQL or MySQL/MariaDB** without exposing database
 	 ```bash
 	 printf 'S3cr3t' | docker secret create vaultwarden_postgres_password -
 	 printf 'S3cr3t' | docker secret create vaultwarden_mysql_password -
-	 # ADMIN_TOKEN must be an Argon2id PHC hash, not plaintext.
-	 # Run this interactively, then copy the resulting PHC string.
-	 docker run --rm -it --entrypoint /vaultwarden vaultwarden/server:1.37.1 hash
+	 # ADMIN_TOKEN should be an Argon2id PHC string, not plaintext. Generate one with the
+	 # image this chart deploys — its tag is `appVersion` in Chart.yaml. Run interactively
+	 # (it prompts for the password), then copy the resulting PHC string.
+	 docker run --rm -it vaultwarden/server:<appVersion> /vaultwarden hash
+	 # Single-quote it: a PHC string contains five `$` your shell would otherwise expand.
 	 printf '%s' '<paste-argon2-phc-here>' | docker secret create vaultwarden_admin_token -
 	 printf 'S3cr3t' | docker secret create vaultwarden_smtp_password -
 	 ```
@@ -65,7 +67,10 @@ swarmcli charts install vaultwarden swarmcli-charts/vaultwarden \
 - For `database.type=postgres` or `database.type=mysql`, `DATABASE_URL` is assembled at runtime from
 	values plus password secret content.
 - `auth.adminToken.enabled=true` reads `ADMIN_TOKEN` from an external secret.
-- The `auth.adminToken.secretName` secret content must be an Argon2id PHC string (Vaultwarden rejects plaintext admin tokens as insecure).
+- The `auth.adminToken.secretName` secret should hold an Argon2id PHC string. A plaintext
+	token still works, but Vaultwarden logs `You are using a plain text ADMIN_TOKEN which is
+	insecure` on every start. The chart reads the secret file at runtime, so the `$` in a PHC
+	string never reaches the compose file — no `$$` escaping needed, unlike a hand-written stack.
 - SMTP password can be secret-backed with `smtp.password.enabled=true`.
 - `service.port` drives `ROCKET_PORT`, the Traefik loadbalancer port, the published target
 	and the healthcheck together, so changing it moves all four.
@@ -82,7 +87,7 @@ swarmcli charts install vaultwarden swarmcli-charts/vaultwarden \
 | `image.repository` | `vaultwarden/server` | Container image |
 | `image.tag` | `""` | Image tag, defaults to `appVersion` in Chart.yaml |
 | `replicas` | `1` | Vaultwarden replicas (stateful single replica) |
-| `persistence.enabled` | `true` | Persist `/data` and enable node pin logic |
+| `persistence.enabled` | `true` | Persist `/data` and enable node pin logic; `false` sets `I_REALLY_WANT_VOLATILE_STORAGE` and loses the vault on every task replacement |
 | `persistence.volumeName` | `vaultwarden-data` | Named volume for `/data` |
 | `persistence.volumePath` | `""` | Absolute host path for `/data` (takes precedence) |
 | `persistence.nodeLabel` | `vaultwarden-data` | Node label used for persistent data pin |
