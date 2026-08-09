@@ -1,0 +1,3 @@
+# Use external PostgreSQL (DATABASE_URL from secret at runtime).
+database:
+  type: postgres

@@ -1,0 +1,32 @@
+# External requirements for Vaultwarden.
+#
+# This file is authoritative when present: any external network/secret used by
+# the rendered stack must be declared here. Entries are declared
+# unconditionally and become inert when not referenced by the selected mode
+# (manifest-driven pre-flight).
+networks:
+  - name: "{{ .Values.exposure.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "Ingress overlay for traefik/none exposure modes; provided by the edge proxy stack/operator"
+  - name: "{{ .Values.database.postgres.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "database.type=postgres only - overlay the external PostgreSQL service is reachable on"
+  - name: "{{ .Values.database.mysql.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "database.type=mysql only - overlay the external MySQL/MariaDB service is reachable on"
+secrets:
+  - name: "{{ .Values.database.postgres.passwordSecretName }}"
+    description: "database.type=postgres only - password for database.postgres.username"
+  - name: "{{ .Values.database.mysql.passwordSecretName }}"
+    description: "database.type=mysql only - password for database.mysql.username"
+  - name: "{{ .Values.auth.adminToken.secretName }}"
+    description: "auth.adminToken.enabled=true only - admin token secret"
+  - name: "{{ .Values.smtp.password.secretName }}"
+    description: "smtp.enabled=true and smtp.password.enabled=true only - SMTP password secret"
+configs: []

@@ -1,0 +1,22 @@
+name: vaultwarden
+description: Vaultwarden password manager on Docker Swarm - sqlite by default, optional external PostgreSQL/MySQL, Traefik-routed or directly published
+version: 0.1.0
+# renovate: image=vaultwarden/server
+appVersion: "1.37.1"
+# host-mount is acknowledged because persistence.volumePath can bind-mount /data
+# from an operator-selected host directory. The default render uses a named volume.
+annotations:
+  swarmcli-charts/allow: "host-mount"
+maintainers:
+  - name: Eldara
+    url: https://github.com/Eldara-Tech
+keywords:
+  - vaultwarden
+  - password-manager
+  - bitwarden
+  - security
+  - stateful
+home: https://github.com/dani-garcia/vaultwarden
+sources:
+  - https://github.com/dani-garcia/vaultwarden
+  - https://github.com/Eldara-Tech/swarmcli-charts

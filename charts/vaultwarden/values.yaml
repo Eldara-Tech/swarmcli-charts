@@ -1,0 +1,123 @@
+# vaultwarden chart default values.
+#
+# Vaultwarden is stateful and stores its SQLite database plus attachments under
+# /data. This chart defaults to SQLite on a node-local volume and supports
+# optional external PostgreSQL/MySQL with password-from-secret wiring.
+
+image:
+  repository: vaultwarden/server
+  tag: ""  # defaults to appVersion from Chart.yaml
+
+# Stateful storage under /data means one replica.
+replicas: 1
+
+persistence:
+  enabled: true
+  volumeName: vaultwarden-data
+  # Absolute host path bind-mount for /data. When set, this takes precedence
+  # over volumeName.
+  volumePath: ""
+  # Label exactly one node first:
+  #   docker node update --label-add vaultwarden-data=true <node>
+  # Set "" to skip pinning (single-node swarm).
+  nodeLabel: vaultwarden-data
+
+# How Vaultwarden is exposed:
+#   traefik   - Traefik deploy labels on exposure.network (default)
+#   published - publish service.port directly on the Swarm
+#   none      - no labels and no published port
+exposure:
+  mode: traefik
+  network: traefik-public
+
+ingress:
+  host: vault.example.com
+  # Public endpoint scheme used by DOMAIN when domain is empty.
+  tls: true
+
+# Optional explicit DOMAIN value. Empty => derived as
+# <http|https>://<ingress.host> from ingress.tls.
+domain: ""
+
+traefik:
+  certResolver: le
+  entrypoints:
+    http: http
+    https: https
+  routerName: ""
+  constraintLabel: traefik-public
+  redirectMiddleware: https-redirect
+
+publish:
+  port: 8080
+  mode: ingress
+
+service:
+  port: 80
+
+# Database backend:
+#   sqlite   - default, persisted in /data/db.sqlite3
+#   postgres - DATABASE_URL assembled at runtime from values + secret
+#   mysql    - DATABASE_URL assembled at runtime from values + secret
+database:
+  type: sqlite
+  postgres:
+    host: postgres_postgres
+    port: 5432
+    name: vaultwarden
+    username: vaultwarden
+    passwordSecretName: vaultwarden_postgres_password
+    network: postgres-net
+    sslMode: disable
+  mysql:
+    host: mariadb_mariadb
+    port: 3306
+    name: vaultwarden
+    username: vaultwarden
+    passwordSecretName: vaultwarden_mysql_password
+    network: mariadb-net
+
+# Optional admin token via external secret.
+auth:
+  adminToken:
+    enabled: false
+    secretName: vaultwarden_admin_token
+
+smtp:
+  enabled: false
+  host: smtp.example.com
+  port: 587
+  from: vaultwarden@example.com
+  fromName: Vaultwarden
+  username: ""
+  security: starttls
+  timeout: 15
+  password:
+    enabled: false
+    secretName: vaultwarden_smtp_password
+
+app:
+  websocketsEnabled: true
+  signupsAllowed: false
+  rocketWorkers: 10
+  logLevel: info
+
+# Arbitrary extra environment variables injected verbatim.
+extraEnv: {}
+
+placement:
+  constraints: []
+
+resources:
+  limits:
+    memory: ""
+
+healthcheck:
+  enabled: true
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  startPeriod: 60s
+
+# Extra deploy labels (key: value), merged after Traefik labels.
+labels: {}

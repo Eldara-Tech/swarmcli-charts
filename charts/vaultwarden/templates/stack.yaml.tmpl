@@ -1,0 +1,180 @@
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) (contains "/" .Values.persistence.volumeName) -}}
+{{- fail "persistence.volumeName is a Docker named-volume name and cannot contain '/'. To store data under a host directory, set persistence.volumePath instead." -}}
+{{- end -}}
+{{- $dbType := .Values.database.type -}}
+{{- if and (eq $dbType "postgres") (not .Values.database.postgres.passwordSecretName) -}}
+{{- fail "database.postgres.passwordSecretName is required when database.type=postgres" -}}
+{{- end -}}
+{{- if and (eq $dbType "mysql") (not .Values.database.mysql.passwordSecretName) -}}
+{{- fail "database.mysql.passwordSecretName is required when database.type=mysql" -}}
+{{- end -}}
+{{- if and .Values.auth.adminToken.enabled (not .Values.auth.adminToken.secretName) -}}
+{{- fail "auth.adminToken.secretName is required when auth.adminToken.enabled=true" -}}
+{{- end -}}
+{{- if and .Values.smtp.password.enabled (not .Values.smtp.password.secretName) -}}
+{{- fail "smtp.password.secretName is required when smtp.password.enabled=true" -}}
+{{- end -}}
+version: "3.9"
+
+{{- $mode := .Values.exposure.mode }}
+{{- $proxied := or (eq $mode "traefik") (eq $mode "none") }}
+{{- $publicTLS := .Values.ingress.tls }}
+{{- $scheme := ternary "https" "http" $publicTLS }}
+{{- $router := .Values.traefik.routerName | default .Release.Name }}
+{{- $domain := .Values.domain | default (printf "%s://%s" $scheme .Values.ingress.host) }}
+{{- $networks := list }}
+{{- if $proxied }}{{ $networks = append $networks .Values.exposure.network }}{{- end }}
+{{- if eq $dbType "postgres" }}{{ $networks = append $networks .Values.database.postgres.network }}{{- end }}
+{{- if eq $dbType "mysql" }}{{ $networks = append $networks .Values.database.mysql.network }}{{- end }}
+{{- $networks = $networks | uniq }}
+
+{{- $secrets := list }}
+{{- if eq $dbType "postgres" }}{{ $secrets = append $secrets .Values.database.postgres.passwordSecretName }}{{- end }}
+{{- if eq $dbType "mysql" }}{{ $secrets = append $secrets .Values.database.mysql.passwordSecretName }}{{- end }}
+{{- if .Values.auth.adminToken.enabled }}{{ $secrets = append $secrets .Values.auth.adminToken.secretName }}{{- end }}
+{{- if .Values.smtp.password.enabled }}{{ $secrets = append $secrets .Values.smtp.password.secretName }}{{- end }}
+{{- $secrets = $secrets | uniq }}
+
+{{- $startup := list }}
+{{- if eq $dbType "postgres" }}
+{{- $startup = append $startup (printf "export DATABASE_URL=\"postgresql://%s:$$(cat /run/secrets/%s)@%s:%v/%s?sslmode=%s\"" .Values.database.postgres.username .Values.database.postgres.passwordSecretName .Values.database.postgres.host (.Values.database.postgres.port | int) .Values.database.postgres.name .Values.database.postgres.sslMode) }}
+{{- else if eq $dbType "mysql" }}
+{{- $startup = append $startup (printf "export DATABASE_URL=\"mysql://%s:$$(cat /run/secrets/%s)@%s:%v/%s\"" .Values.database.mysql.username .Values.database.mysql.passwordSecretName .Values.database.mysql.host (.Values.database.mysql.port | int) .Values.database.mysql.name) }}
+{{- end }}
+{{- if .Values.auth.adminToken.enabled }}
+{{- $startup = append $startup (printf "export ADMIN_TOKEN=\"$$(cat /run/secrets/%s)\"" .Values.auth.adminToken.secretName) }}
+{{- end }}
+{{- if .Values.smtp.password.enabled }}
+{{- $startup = append $startup (printf "export SMTP_PASSWORD=\"$$(cat /run/secrets/%s)\"" .Values.smtp.password.secretName) }}
+{{- end }}
+{{- $startup = append $startup "exec /start.sh" }}
+{{- $startupScript := join "; " $startup }}
+
+services:
+  vaultwarden:
+    image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
+{{- if $networks }}
+    networks:
+{{- range $networks }}
+      - {{ . }}
+{{- end }}
+{{- end }}
+{{- if eq $mode "published" }}
+    ports:
+      - target: {{ .Values.service.port }}
+        published: {{ .Values.publish.port }}
+        protocol: tcp
+        mode: {{ .Values.publish.mode }}
+{{- end }}
+{{- if .Values.persistence.enabled }}
+    volumes:
+      - {{ .Values.persistence.volumePath | default .Values.persistence.volumeName }}:/data
+{{- end }}
+{{- if $secrets }}
+    secrets:
+{{- range $secrets }}
+      - {{ . }}
+{{- end }}
+{{- end }}
+    environment:
+      DOMAIN: {{ $domain | quote }}
+      WEBSOCKET_ENABLED: {{ ternary "true" "false" .Values.app.websocketsEnabled | quote }}
+      SIGNUPS_ALLOWED: {{ ternary "true" "false" .Values.app.signupsAllowed | quote }}
+      ROCKET_WORKERS: {{ .Values.app.rocketWorkers | quote }}
+      LOG_LEVEL: {{ .Values.app.logLevel | quote }}
+{{- if .Values.smtp.enabled }}
+      SMTP_HOST: {{ .Values.smtp.host | quote }}
+      SMTP_FROM: {{ .Values.smtp.from | quote }}
+      SMTP_FROM_NAME: {{ .Values.smtp.fromName | quote }}
+      SMTP_PORT: {{ .Values.smtp.port | quote }}
+      SMTP_SECURITY: {{ .Values.smtp.security | quote }}
+      SMTP_TIMEOUT: {{ .Values.smtp.timeout | quote }}
+{{- if .Values.smtp.username }}
+      SMTP_USERNAME: {{ .Values.smtp.username | quote }}
+{{- end }}
+{{- end }}
+{{- range $key, $val := .Values.extraEnv }}
+      {{ $key }}: {{ $val | quote }}
+{{- end }}
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - {{ $startupScript | quote }}
+{{- if .Values.healthcheck.enabled }}
+    healthcheck:
+      test:
+        - CMD
+        - /bin/sh
+        - -c
+        - "wget -q -O /dev/null http://127.0.0.1:{{ .Values.service.port }}/alive || exit 1"
+      interval: {{ .Values.healthcheck.interval }}
+      timeout: {{ .Values.healthcheck.timeout }}
+      retries: {{ .Values.healthcheck.retries }}
+      start_period: {{ .Values.healthcheck.startPeriod }}
+{{- end }}
+    deploy:
+      replicas: {{ .Values.replicas }}
+{{- $constraints := list }}
+{{- if and .Values.persistence.enabled .Values.persistence.nodeLabel }}
+{{-   $constraints = append $constraints (printf "node.labels.%s == true" .Values.persistence.nodeLabel) }}
+{{- end }}
+{{- range .Values.placement.constraints }}
+{{-   $constraints = append $constraints . }}
+{{- end }}
+{{- if $constraints }}
+      placement:
+        constraints:
+{{- range $constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- with .Values.resources.limits.memory }}
+      resources:
+        limits:
+          memory: {{ . | quote }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- if or (eq $mode "traefik") .Values.labels }}
+      labels:
+{{- if eq $mode "traefik" }}
+        - "traefik.enable=true"
+        - "traefik.swarm.network={{ .Values.exposure.network }}"
+        - "traefik.constraint-label={{ .Values.traefik.constraintLabel }}"
+        - "traefik.http.routers.{{ $router }}-http.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ $router }}-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
+{{- if .Values.ingress.tls }}
+        - "traefik.http.routers.{{ $router }}-http.middlewares={{ .Values.traefik.redirectMiddleware }}"
+        - "traefik.http.routers.{{ $router }}-https.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ $router }}-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
+        - "traefik.http.routers.{{ $router }}-https.tls=true"
+        - "traefik.http.routers.{{ $router }}-https.tls.certresolver={{ .Values.traefik.certResolver }}"
+{{- end }}
+        - "traefik.http.services.{{ $router }}.loadbalancer.server.port={{ .Values.service.port }}"
+{{- end }}
+{{- range $key, $val := .Values.labels }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+{{- end }}
+
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) }}
+volumes:
+  {{ .Values.persistence.volumeName }}: {}
+{{- end }}
+
+{{- if $secrets }}
+secrets:
+{{- range $secrets }}
+  {{ . }}:
+    external: true
+{{- end }}
+{{- end }}
+
+{{- if $networks }}
+networks:
+{{- range $networks }}
+  {{ . }}:
+    external: true
+{{- end }}
+{{- end }}
