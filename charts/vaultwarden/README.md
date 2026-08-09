@@ -63,6 +63,13 @@ swarmcli charts install vaultwarden swarmcli-charts/vaultwarden \
 	values plus password secret content.
 - `auth.adminToken.enabled=true` reads `ADMIN_TOKEN` from an external secret.
 - SMTP password can be secret-backed with `smtp.password.enabled=true`.
+- `service.port` drives `ROCKET_PORT`, the Traefik loadbalancer port, the published target
+	and the healthcheck together, so changing it moves all four.
+- `DOMAIN` is what Vaultwarden uses for its WebAuthn/2FA origin and admin redirects. It is
+	derived from `ingress.host` and `ingress.tls` (and, in `exposure.mode=published`, from a
+	non-default `publish.port`); set `domain` explicitly to override.
+- Vaultwarden has far more settings than this chart surfaces. `extraEnv` is merged **last**,
+	so it can override any variable the chart sets — including `DOMAIN` or `SIGNUPS_ALLOWED`.
 
 ## Values
 
@@ -82,7 +89,7 @@ swarmcli charts install vaultwarden swarmcli-charts/vaultwarden \
 | `domain` | `""` | Explicit Vaultwarden `DOMAIN`; empty derives from ingress |
 | `traefik.*` | see `values.yaml` | Traefik router/entrypoint/cert settings |
 | `publish.port` / `.mode` | `8080` / `ingress` | Published host port and publish mode |
-| `service.port` | `80` | Vaultwarden container port |
+| `service.port` | `80` | Vaultwarden container port (also sets `ROCKET_PORT`) |
 | `database.type` | `sqlite` | `sqlite` \| `postgres` \| `mysql` |
 | `database.postgres.*` | see `values.yaml` | External PostgreSQL connection + secret + network |
 | `database.mysql.*` | see `values.yaml` | External MySQL/MariaDB connection + secret + network |
@@ -91,12 +98,12 @@ swarmcli charts install vaultwarden swarmcli-charts/vaultwarden \
 | `smtp.enabled` | `false` | Enable SMTP env configuration |
 | `smtp.password.enabled` | `false` | Read SMTP password from secret |
 | `smtp.password.secretName` | `vaultwarden_smtp_password` | External SMTP password secret |
-| `app.websocketsEnabled` | `true` | `WEBSOCKET_ENABLED` |
+| `app.websocketsEnabled` | `true` | `ENABLE_WEBSOCKET` |
 | `app.signupsAllowed` | `false` | `SIGNUPS_ALLOWED` |
 | `app.rocketWorkers` | `10` | `ROCKET_WORKERS` |
 | `app.logLevel` | `info` | `LOG_LEVEL` |
-| `extraEnv` | `{}` | Extra environment variables |
+| `extraEnv` | `{}` | Extra environment variables; merged last, overrides the above |
 | `placement.constraints` | `[]` | Extra scheduler constraints |
 | `resources.limits.memory` | `""` | Optional memory limit |
-| `healthcheck.*` | see `values.yaml` | Container healthcheck settings |
+| `healthcheck.*` | see `values.yaml` | Runs the image's `/healthcheck.sh`; `monitor` is Swarm's rollout window |
 | `labels` | `{}` | Extra deploy labels |

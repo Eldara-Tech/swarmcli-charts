@@ -52,6 +52,8 @@ publish:
   port: 8080
   mode: ingress
 
+# Port Vaultwarden listens on inside the container. Drives ROCKET_PORT, the Traefik
+# loadbalancer port, the published target and the healthcheck together.
 service:
   port: 80
 
@@ -97,12 +99,15 @@ smtp:
     secretName: vaultwarden_smtp_password
 
 app:
+  # Rendered as ENABLE_WEBSOCKET. (The older WEBSOCKET_ENABLED has been ignored
+  # since Vaultwarden 1.29 — websockets share the main HTTP port now.)
   websocketsEnabled: true
   signupsAllowed: false
   rocketWorkers: 10
   logLevel: info
 
-# Arbitrary extra environment variables injected verbatim.
+# Extra environment variables. Vaultwarden has far more settings than this chart
+# surfaces, so these are merged LAST and override any variable set above.
 extraEnv: {}
 
 placement:
@@ -112,12 +117,17 @@ resources:
   limits:
     memory: ""
 
+# Runs the image's own /healthcheck.sh. Disabling it renders `disable: true` — the
+# image bakes a HEALTHCHECK, so leaving the block out would not turn it off.
 healthcheck:
   enabled: true
   interval: 30s
   timeout: 10s
   retries: 3
   startPeriod: 60s
+  # Swarm's rollout monitor window. Must outlast the worst-case first failure
+  # (startPeriod + retries x interval = 2m30s here), or a broken deploy reports success.
+  monitor: 3m
 
 # Extra deploy labels (key: value), merged after Traefik labels.
 labels: {}

@@ -21,7 +21,19 @@ version: "3.9"
 {{- $publicTLS := .Values.ingress.tls }}
 {{- $scheme := ternary "https" "http" $publicTLS }}
 {{- $router := .Values.traefik.routerName | default .Release.Name }}
-{{- $domain := .Values.domain | default (printf "%s://%s" $scheme .Values.ingress.host) }}
+{{- /* DOMAIN must be the URL users actually reach, including a non-default port:
+       Vaultwarden derives its WebAuthn/2FA origin and every admin redirect from it.
+       In published mode the service answers on publish.port, so fold that into the
+       authority — but omit the scheme's default port, since a browser normalises
+       http://h:80 to http://h and a mismatched origin breaks WebAuthn. */}}
+{{- $authority := .Values.ingress.host }}
+{{- if eq $mode "published" }}
+{{-   $publishedPort := .Values.publish.port | int }}
+{{-   if ne $publishedPort (ternary 443 80 $publicTLS) }}
+{{-     $authority = printf "%s:%d" .Values.ingress.host $publishedPort }}
+{{-   end }}
+{{- end }}
+{{- $domain := .Values.domain | default (printf "%s://%s" $scheme $authority) }}
 {{- $networks := list }}
 {{- if $proxied }}{{ $networks = append $networks .Values.exposure.network }}{{- end }}
 {{- if eq $dbType "postgres" }}{{ $networks = append $networks .Values.database.postgres.network }}{{- end }}
@@ -50,6 +62,40 @@ version: "3.9"
 {{- $startup = append $startup "exec /start.sh" }}
 {{- $startupScript := join "; " $startup }}
 
+{{- /* Environment as a dict so extraEnv can OVERRIDE a chart-managed key instead of
+       emitting a duplicate YAML mapping key, which swarmcli rejects outright
+       ("mapping key DOMAIN already defined"). Vaultwarden exposes ~150 settings and
+       this chart surfaces a handful, so extraEnv is the escape hatch for the rest —
+       it has to be able to win. mergeOverwrite: later sources take precedence.
+
+       ROCKET_PORT is the listener. service.port already drives the Traefik loadbalancer
+       port, the published target and the healthcheck, so it must drive the listener too
+       — otherwise any value but the image's default 80 routes to a port nothing is bound
+       to. ENABLE_WEBSOCKET, not the WEBSOCKET_ENABLED of pre-1.29 examples: that one has
+       been ignored since websockets moved onto the main HTTP port. */}}
+{{- $env := dict
+      "DOMAIN" $domain
+      "ROCKET_PORT" (.Values.service.port | int)
+      "ENABLE_WEBSOCKET" (ternary "true" "false" .Values.app.websocketsEnabled)
+      "SIGNUPS_ALLOWED" (ternary "true" "false" .Values.app.signupsAllowed)
+      "ROCKET_WORKERS" .Values.app.rocketWorkers
+      "LOG_LEVEL" .Values.app.logLevel
+}}
+{{- if .Values.smtp.enabled }}
+{{- $env = mergeOverwrite $env (dict
+      "SMTP_HOST" .Values.smtp.host
+      "SMTP_FROM" .Values.smtp.from
+      "SMTP_FROM_NAME" .Values.smtp.fromName
+      "SMTP_PORT" (.Values.smtp.port | int)
+      "SMTP_SECURITY" .Values.smtp.security
+      "SMTP_TIMEOUT" (.Values.smtp.timeout | int)
+) }}
+{{- if .Values.smtp.username }}
+{{- $env = mergeOverwrite $env (dict "SMTP_USERNAME" .Values.smtp.username) }}
+{{- end }}
+{{- end }}
+{{- $env = mergeOverwrite $env .Values.extraEnv }}
+
 services:
   vaultwarden:
     image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
@@ -77,23 +123,7 @@ services:
 {{- end }}
 {{- end }}
     environment:
-      DOMAIN: {{ $domain | quote }}
-      WEBSOCKET_ENABLED: {{ ternary "true" "false" .Values.app.websocketsEnabled | quote }}
-      SIGNUPS_ALLOWED: {{ ternary "true" "false" .Values.app.signupsAllowed | quote }}
-      ROCKET_WORKERS: {{ .Values.app.rocketWorkers | quote }}
-      LOG_LEVEL: {{ .Values.app.logLevel | quote }}
-{{- if .Values.smtp.enabled }}
-      SMTP_HOST: {{ .Values.smtp.host | quote }}
-      SMTP_FROM: {{ .Values.smtp.from | quote }}
-      SMTP_FROM_NAME: {{ .Values.smtp.fromName | quote }}
-      SMTP_PORT: {{ .Values.smtp.port | quote }}
-      SMTP_SECURITY: {{ .Values.smtp.security | quote }}
-      SMTP_TIMEOUT: {{ .Values.smtp.timeout | quote }}
-{{- if .Values.smtp.username }}
-      SMTP_USERNAME: {{ .Values.smtp.username | quote }}
-{{- end }}
-{{- end }}
-{{- range $key, $val := .Values.extraEnv }}
+{{- range $key, $val := $env }}
       {{ $key }}: {{ $val | quote }}
 {{- end }}
     entrypoint:
@@ -102,19 +132,32 @@ services:
     command:
       - {{ $startupScript | quote }}
 {{- if .Values.healthcheck.enabled }}
+    {{- /* The image's own probe, not a hand-rolled one: it is curl-based (the image
+           ships curl and NOT wget), and it already resolves ROCKET_PORT, ROCKET_ADDRESS
+           and the base path out of DOMAIN. */}}
     healthcheck:
       test:
         - CMD
-        - /bin/sh
-        - -c
-        - "wget -q -O /dev/null http://127.0.0.1:{{ .Values.service.port }}/alive || exit 1"
+        - /healthcheck.sh
       interval: {{ .Values.healthcheck.interval }}
       timeout: {{ .Values.healthcheck.timeout }}
       retries: {{ .Values.healthcheck.retries }}
       start_period: {{ .Values.healthcheck.startPeriod }}
+{{- else }}
+    {{- /* The image bakes a HEALTHCHECK, so omitting the block would leave it running;
+           `disable: true` is what actually turns it off. */}}
+    healthcheck:
+      disable: true
 {{- end }}
     deploy:
       replicas: {{ .Values.replicas }}
+{{- if .Values.healthcheck.enabled }}
+      {{- /* Swarm watches a task for `monitor` after CREATING it, and only counts a
+             failure inside that window against the rollout. Shorter than the
+             healthcheck needs to fail and a broken deploy reports success. */}}
+      update_config:
+        monitor: {{ .Values.healthcheck.monitor }}
+{{- end }}
 {{- $constraints := list }}
 {{- if and .Values.persistence.enabled .Values.persistence.nodeLabel }}
 {{-   $constraints = append $constraints (printf "node.labels.%s == true" .Values.persistence.nodeLabel) }}

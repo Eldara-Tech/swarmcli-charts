@@ -180,9 +180,10 @@
         "interval": { "type": "string" },
         "timeout": { "type": "string" },
         "retries": { "type": "integer", "minimum": 1 },
-        "startPeriod": { "type": "string" }
+        "startPeriod": { "type": "string" },
+        "monitor": { "type": "string" }
       },
-      "required": ["enabled", "interval", "timeout", "retries", "startPeriod"]
+      "required": ["enabled", "interval", "timeout", "retries", "startPeriod", "monitor"]
     },
     "labels": { "type": "object" }
   }

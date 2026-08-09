@@ -1,3 +1,9 @@
-# Use external PostgreSQL (DATABASE_URL from secret at runtime).
+# Use external PostgreSQL (DATABASE_URL assembled from values + secret at runtime).
+#
+# host points at the throwaway backend ci/e2e-setup.sh stands up on postgres-net,
+# not the default postgres_postgres (the in-repo postgres chart deployed as stack
+# "postgres"), so this fixture actually connects in e2e instead of only rendering.
 database:
   type: postgres
+  postgres:
+    host: vw-postgres
