@@ -62,7 +62,7 @@ jobs:
           fi
           git fetch --no-tags origin "$BASE_REF" >/dev/null 2>&1 || true
           changed=$(git diff --name-only "origin/$BASE_REF...HEAD" 2>/dev/null || git diff --name-only HEAD)
-          if printf '%s\n' "$changed" | grep -qE '^(charts/|scripts/|Makefile|\.github/e2e-matrix\.yaml|\.github/workflows/e2e\.yml)'; then
+          if printf '%s\n' "$changed" | grep -E '^(charts/|scripts/|Makefile|\.github/e2e-matrix\.yaml|\.github/workflows/e2e\.yml)' >/dev/null; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"

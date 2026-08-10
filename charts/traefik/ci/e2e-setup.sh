@@ -16,7 +16,7 @@ set -euo pipefail
 case="$3"
 
 node="$(docker node ls --format '{{.ID}} {{.Self}}' 2>/dev/null | awk '$2=="true"{print $1; exit}')"
-[ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | head -1)"
+[ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | sed -n 1p)"
 [ -n "$node" ] && docker node update --label-add traefik-certs=true "$node" >/dev/null
 
 # certs-bind-mount fixture only: pre-create the host ACME store dir (0700 is the

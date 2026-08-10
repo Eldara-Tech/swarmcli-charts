@@ -31,7 +31,7 @@ case="${3:-}"
 
 cid=""
 for _ in $(seq 1 20); do
-  cid="$(docker ps -q -f "label=com.docker.swarm.service.name=${release}_controller" | head -1)"
+  cid="$(docker ps -q -f "label=com.docker.swarm.service.name=${release}_controller" | sed -n 1p)"
   [ -n "$cid" ] && break
   sleep 3
 done
@@ -59,11 +59,11 @@ printf '%s\n' "$status" | sed 's/^/    /'
 # path mode is what --appset-dir reports; every other fixture here is static.
 want_mode=static
 [ "$case" = "dir" ] && want_mode=path
-printf '%s\n' "$status" | grep -qE "^Mode +${want_mode}\b" \
+printf '%s\n' "$status" | grep -E "^Mode +${want_mode}\b" >/dev/null \
   || { echo "  FAIL: expected the app set to load in ${want_mode} mode"; exit 1; }
 
 if [ "$want_mode" = "static" ]; then
-  printf '%s\n' "$status" | grep -qE '^Applications +1$' \
+  printf '%s\n' "$status" | grep -E '^Applications +1$' >/dev/null \
     || { echo "  FAIL: the mounted applications config declares 1 application, the controller sees another number"; exit 1; }
 fi
 

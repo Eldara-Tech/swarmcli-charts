@@ -18,7 +18,7 @@
 set -euo pipefail
 
 release="$1"
-cid="$(docker ps -q -f "label=com.docker.swarm.service.name=${release}_redis" | head -1)"
+cid="$(docker ps -q -f "label=com.docker.swarm.service.name=${release}_redis" | sed -n 1p)"
 [ -n "$cid" ] || { echo "  ${release}_redis container not found"; exit 1; }
 
 # Build the redis-cli auth prefix only if a secret is actually mounted (auth on).
@@ -32,12 +32,12 @@ else
 fi
 
 # Connectivity (+ auth).
-docker exec "$cid" sh -c "${pre}redis-cli ping" | grep -q PONG
+docker exec "$cid" sh -c "${pre}redis-cli ping" | grep PONG >/dev/null
 
 # Round-trip: SET then GET via the same auth.
 docker exec "$cid" sh -c \
   "${pre}redis-cli set e2e:smoke ok >/dev/null && ${pre}redis-cli get e2e:smoke" \
-  | grep -q '^ok$'
+  | grep '^ok$' >/dev/null
 
 # Persistence: assert AOF on disk only when this fixture enabled it.
 if docker exec "$cid" sh -c 'ls /data/appendonly* >/dev/null 2>&1'; then

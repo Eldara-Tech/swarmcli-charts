@@ -21,15 +21,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="${1:?usage: floors-runnable-on.sh <swarmcli-binary>}"
 
-installed="$("$BIN" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+installed="$("$BIN" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sed -n 1p)"
 [ -n "$installed" ] || { echo "floors-runnable-on: could not read '$BIN' version" >&2; exit 1; }
 
 # First X.Y.Z in a constraint (">= 1.11.0" -> "1.11.0"); same rule as floor-check.
-floor_of() { printf '%s' "$1" | sed -nE 's/.*?([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -1; }
+floor_of() { printf '%s' "$1" | sed -nE 's/.*?([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | sed -n 1p; }
 
 for dir in "$ROOT"/charts/*/; do
   chart="$(basename "$dir")"
-  constraint="$(sed -n 's/^swarmcliVersion:[[:space:]]*//p' "$dir/Chart.yaml" | head -1 | tr -d '"'\'' ')"
+  constraint="$(sed -n 's/^swarmcliVersion:[[:space:]]*//p' "$dir/Chart.yaml" | sed -n 1p | tr -d '"'\'' ')"
   floor="$(floor_of "$constraint")"
 
   if [ -z "$floor" ]; then
@@ -38,7 +38,7 @@ for dir in "$ROOT"/charts/*/; do
   fi
 
   # Runnable iff floor <= installed, i.e. floor sorts first (or equal).
-  if [ "$(printf '%s\n%s\n' "$floor" "$installed" | sort -V | head -1)" = "$floor" ]; then
+  if [ "$(printf '%s\n%s\n' "$floor" "$installed" | sort -V | sed -n 1p)" = "$floor" ]; then
     echo "$chart"
   else
     echo "::warning title=Ahead of release::$chart declares swarmcliVersion '$constraint' (floor v$floor) > installed v$installed — skipped in the release run." >&2

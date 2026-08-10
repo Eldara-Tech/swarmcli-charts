@@ -22,7 +22,7 @@
 set -euo pipefail
 
 release="$1"
-cid="$(docker ps -q -f "label=com.docker.swarm.service.name=${release}_mariadb" | head -1)"
+cid="$(docker ps -q -f "label=com.docker.swarm.service.name=${release}_mariadb" | sed -n 1p)"
 [ -n "$cid" ] || { echo "  ${release}_mariadb container not found"; exit 1; }
 
 # Run a query as root, reading the password from the mounted secret via MYSQL_PWD
@@ -33,7 +33,7 @@ docker exec "$cid" sh -c \
      CREATE TABLE IF NOT EXISTS e2e_smoke.t (id INT PRIMARY KEY, v VARCHAR(16));
      REPLACE INTO e2e_smoke.t VALUES (1, \"ok\");
      SELECT v FROM e2e_smoke.t WHERE id = 1;"' \
-  | grep -q '^ok$'
+  | grep '^ok$' >/dev/null
 
 # Persistence: a named volume shows up as a distinct mount at the data dir; an
 # ephemeral instance keeps the data dir on the container rootfs (no mount entry).

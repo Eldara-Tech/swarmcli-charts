@@ -22,7 +22,7 @@ docker secret inspect redis_password >/dev/null 2>&1 \
 # Pin: label this (single-node) swarm's node so the persistence.nodeLabel constraint
 # (node.labels.redis-data == true) schedules. Harmless for the ephemeral fixture (no pin).
 node="$(docker node ls --format '{{.ID}} {{.Self}}' 2>/dev/null | awk '$2=="true"{print $1; exit}')"
-[ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | head -1)"
+[ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | sed -n 1p)"
 [ -n "$node" ] && docker node update --label-add redis-data=true "$node" >/dev/null
 
 # bind-mount fixture only: pre-create /opt/redis-data owned by the container's redis uid

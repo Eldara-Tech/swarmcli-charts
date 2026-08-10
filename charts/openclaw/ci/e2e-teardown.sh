@@ -35,7 +35,7 @@ fi
 docker secret rm openclaw_gateway_token >/dev/null 2>&1 || true
 
 node="$(docker node ls --format '{{.ID}} {{.Self}}' 2>/dev/null | awk '$2=="true"{print $1; exit}')"
-[ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | head -1)"
+[ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | sed -n 1p)"
 [ -n "$node" ] && docker node update --label-rm openclaw-data "$node" >/dev/null 2>&1 || true
 
 exit 0

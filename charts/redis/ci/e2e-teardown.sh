@@ -14,7 +14,7 @@ case="$3"
 docker secret rm redis_password >/dev/null 2>&1 || true
 
 node="$(docker node ls --format '{{.ID}} {{.Self}}' 2>/dev/null | awk '$2=="true"{print $1; exit}')"
-[ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | head -1)"
+[ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | sed -n 1p)"
 [ -n "$node" ] && docker node update --label-rm redis-data "$node" >/dev/null 2>&1 || true
 
 if [ "$case" = "bind-mount" ]; then

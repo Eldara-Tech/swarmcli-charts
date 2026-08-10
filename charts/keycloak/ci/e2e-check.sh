@@ -29,7 +29,7 @@ release="$1"
 # health-replaced task changes container id). Silent; returns 0 only on a 200 status.
 probe() {
   local cid
-  cid="$(docker ps -q -f "label=com.docker.swarm.service.name=${release}_keycloak" | head -1)"
+  cid="$(docker ps -q -f "label=com.docker.swarm.service.name=${release}_keycloak" | sed -n 1p)"
   [ -n "$cid" ] || return 1
   docker exec "$cid" /bin/bash -c '
     exec 3<>/dev/tcp/127.0.0.1/9000 || exit 1

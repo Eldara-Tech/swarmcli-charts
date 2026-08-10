@@ -21,7 +21,7 @@ docker secret inspect openclaw_gateway_token >/dev/null 2>&1 \
 # Pin: label this (single-node) swarm's node so the persistence.nodeLabel constraint
 # schedules. Harmless for the ephemeral fixture (no pin rendered).
 node="$(docker node ls --format '{{.ID}} {{.Self}}' 2>/dev/null | awk '$2=="true"{print $1; exit}')"
-[ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | head -1)"
+[ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | sed -n 1p)"
 [ -n "$node" ] && docker node update --label-add openclaw-data=true "$node" >/dev/null
 
 # Shared ingress overlay the traefik/none exposure modes attach to (autoCreate:false in
@@ -51,7 +51,7 @@ if [ "$case" = "backend" ]; then
   # Wait for the mock task to actually run before the chart installs (image pull).
   for _ in $(seq 1 40); do
     state="$(docker service ps mock-ollama --filter desired-state=running \
-      --format '{{.CurrentState}}' 2>/dev/null | head -1)"
+      --format '{{.CurrentState}}' 2>/dev/null | sed -n 1p)"
     case "$state" in Running*) break ;; esac
     sleep 3
   done

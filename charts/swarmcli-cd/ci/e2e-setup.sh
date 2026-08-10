@@ -45,7 +45,7 @@ docker config inspect swarmcli-cd-applications >/dev/null 2>&1 || \
 # Pin: label this (single-node) swarm's node so node.labels.swarmcli-cd-data == true
 # schedules. Harmless for the ephemeral fixture (no pin rendered).
 node="$(docker node ls --format '{{.ID}} {{.Self}}' 2>/dev/null | awk '$2=="true"{print $1; exit}')"
-[ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | head -1)"
+[ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | sed -n 1p)"
 [ -n "$node" ] && docker node update --label-add swarmcli-cd-data=true "$node" >/dev/null
 
 case "$case" in

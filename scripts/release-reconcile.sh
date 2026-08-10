@@ -51,7 +51,7 @@ for dir in charts/*/; do
   chart="$(basename "$dir")"
 
   # Same ordering as release.yml's dispatch path, so both agree on "newest".
-  tag="$(git tag --list "$chart/v*" --sort=-v:refname | head -1)"
+  tag="$(git tag --list "$chart/v*" --sort=-v:refname | sed -n 1p)"
 
   if [ -z "$tag" ]; then
     echo "$chart: never released — reporting only"

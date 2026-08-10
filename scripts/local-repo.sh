@@ -33,7 +33,7 @@ command -v docker >/dev/null 2>&1 \
 
 # First value of a top-level Chart.yaml scalar key, surrounding quotes stripped.
 field() {
-  sed -n "s/^$1:[[:space:]]*//p" "$2" | head -1 | sed 's/^"//; s/"$//' | tr -d '\r'
+  sed -n "s/^$1:[[:space:]]*//p" "$2" | sed -n 1p | sed 's/^"//; s/"$//' | tr -d '\r'
 }
 
 # sha256 of a file's contents — GNU coreutils, BSD/macOS, or openssl, whichever exists.
