@@ -64,6 +64,36 @@ for dir in charts/*/; do
   fi
 done
 
+# A consumer that exits early kills the producer, and pipefail keeps the corpse.
+#
+# `producer | grep -q PATTERN` under `set -o pipefail` reports a MATCH as no match:
+# grep -q exits the instant it matches, the producer's next write gets SIGPIPE (yq
+# dies with 141), and pipefail promotes that 141 to the pipeline's status. It is a
+# scheduling race — green on an idle laptop, red on a loaded runner — and on
+# 2026-08-10 it took out both charts.yml runs on assertions that were true
+# (zammad "rendered no host-path mount", swarmcli-cd "carries no node.role ==
+# manager"). Written the other way round, `producer | grep -q X && flag_risk`, the
+# same race silently drops the risk instead.
+#
+# Write `| grep PATTERN >/dev/null` (reads to EOF, same exit status, and a real
+# producer failure is still caught) and `| sed -n 1p` for `| head -1`. Enforced over
+# the render/validate harness — the scripts `make test` runs. grep against a FILE is
+# unaffected: no pipe, no SIGPIPE. The e2e scripts and workflows still carry the
+# pattern — #149 tracks them; widen `harness` below as they are cleaned up.
+harness=(scripts/lint.sh scripts/test-charts.sh scripts/security-scan.sh
+         scripts/requirements-check.sh scripts/floor-check.sh charts/*/ci/render-check.sh)
+for f in "${harness[@]}"; do
+  [ -f "$f" ] || continue
+  # The trailing filter drops comment lines, so the paragraphs above (and their
+  # counterparts in each render-check) can name the pattern they forbid.
+  if grep -nE '\|[[:space:]]*(grep[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*-[a-zA-Z]*q[a-zA-Z]*([[:space:]]|$)|head([[:space:]]|$))' "$f" \
+       | grep -vE '^[0-9]+:[[:space:]]*#'; then
+    echo "ERROR: $f pipes into an early-exiting consumer (see above) — under pipefail that"
+    echo "       turns a match into a false negative. Use '| grep P >/dev/null' or '| sed -n 1p'."
+    fail=1
+  fi
+done
+
 if command -v yamllint >/dev/null 2>&1; then
   yamllint charts/ || fail=1
 else

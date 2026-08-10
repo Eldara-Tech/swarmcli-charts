@@ -36,7 +36,7 @@ if [ -n "$rendered_req" ] && [ -f "$rendered_req" ]; then
   reqsrc="$rendered_req"
 fi
 
-if ! command -v yq >/dev/null 2>&1 || ! yq --version 2>/dev/null | grep -qi mikefarah; then
+if ! command -v yq >/dev/null 2>&1 || ! yq --version 2>/dev/null | grep -i mikefarah >/dev/null; then
   echo "   FAIL: mikefarah yq v4 is required by requirements-check.sh but was not found" >&2
   echo "         (scripts/test-charts.sh pre-flights this — see its message for install hints)" >&2
   exit 1

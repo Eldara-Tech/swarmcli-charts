@@ -31,10 +31,14 @@ note() { echo "   FAIL: $1"; fail=1; }
 # degrading to `exit 0` here would let `make test` report success while asserting nothing about
 # the config blob below. scripts/test-charts.sh pre-flights yq (#74) so this should be
 # unreachable — it stays as a backstop for a standalone invocation.
-if ! command -v yq >/dev/null 2>&1 || ! yq --version 2>/dev/null | grep -qi mikefarah; then
+if ! command -v yq >/dev/null 2>&1 || ! yq --version 2>/dev/null | grep -i mikefarah >/dev/null; then
   echo "   FAIL: mikefarah yq v4 is required by the superset render checks but was not found" >&2
   exit 1
 fi
+
+# No check below pipes into `grep -q`: under the `pipefail` above that makes a check
+# that DID match report "no match". Match with `| grep … >/dev/null`; a here-string
+# (`grep -q … <<<"$x"`) is fine — no pipe, no SIGPIPE. scripts/lint.sh has the why.
 
 cfg="$(yq -r '.services.app.environment.SUPERSET_CONFIG_B64' "$out" | base64 -d)"
 
@@ -104,7 +108,7 @@ else
   grep -q "_R_PW = _secret(" <<<"$cfg" || note "the Redis password is not read from a mounted secret"
 fi
 if [ "$case" = "embedded-redis" ]; then
-  yq -r '.services.redis.command[]' "$out" | grep -q 'cat /run/secrets/' \
+  yq -r '.services.redis.command[]' "$out" | grep 'cat /run/secrets/' >/dev/null \
     || note "the embedded Redis does not take its requirepass from the mounted secret"
 fi
 

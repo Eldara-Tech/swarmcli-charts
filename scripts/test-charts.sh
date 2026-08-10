@@ -37,7 +37,7 @@ OUT="$ROOT/.rendered"
 # indistinguishable from a passing one, so the harness now refuses to run without it.
 # (GitHub-hosted runners ship it; charts.yml also installs it explicitly so CI never
 # depends on the runner image's contents.)
-if ! command -v yq >/dev/null 2>&1 || ! yq --version 2>/dev/null | grep -qi mikefarah; then
+if ! command -v yq >/dev/null 2>&1 || ! yq --version 2>/dev/null | grep -i mikefarah >/dev/null; then
   cat >&2 <<'EOF'
 ERROR: mikefarah yq v4 not found — refusing to run.
 

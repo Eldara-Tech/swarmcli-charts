@@ -24,7 +24,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BINDIR="${1:-$ROOT/.floor-bin}"
 REPO_URL="${SWARMCLI_REPO:-https://github.com/Eldara-Tech/swarmcli.git}"
 
-if ! command -v yq >/dev/null 2>&1 || ! yq --version 2>/dev/null | grep -qi mikefarah; then
+if ! command -v yq >/dev/null 2>&1 || ! yq --version 2>/dev/null | grep -i mikefarah >/dev/null; then
   echo "ERROR: mikefarah yq v4 is required (https://github.com/mikefarah/yq)" >&2
   exit 2
 fi
@@ -37,7 +37,7 @@ checked=()
 # Deliberately simple: every floor this repo declares is a lower bound, and a
 # constraint fancy enough to defeat this should not be a chart's floor.
 floor_of() {
-  printf '%s' "$1" | sed -nE 's/.*?([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -1
+  printf '%s' "$1" | sed -nE 's/.*?([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | sed -n 1p
 }
 
 released() {
