@@ -18,8 +18,11 @@ RENDERED="${1:?usage: security-scan.sh <rendered.yaml> <chart-dir>}"
 CHARTDIR="${2:?usage: security-scan.sh <rendered.yaml> <chart-dir>}"
 
 # Acknowledged risk keys from the Chart.yaml annotation (comma-separated list).
+# `sed -n 1p` rather than `head -1`: head exits at the first line and the SIGPIPE
+# that lands on tr fails the whole pipeline under the `pipefail` above. Same reason
+# the greps below never use -q on a pipe — scripts/lint.sh explains and enforces it.
 allow="$(sed -n 's#.*swarmcli-charts/allow:[[:space:]]*##p' "$CHARTDIR/Chart.yaml" 2>/dev/null \
-  | tr -d '"'\'' ' | head -1)"
+  | tr -d '"'\'' ' | sed -n 1p)"
 is_allowed() { case ",${allow}," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 
 risks=()
@@ -29,7 +32,10 @@ grep -Eq '^[[:space:]]*network_mode:[[:space:]]*"?'\''?host' "$RENDERED" && risk
 grep -Eq '^[[:space:]]*pid:[[:space:]]*"?'\''?host' "$RENDERED" && risks+=("host-pid")
 grep -Eq '^[[:space:]]*cap_add:' "$RENDERED" && risks+=("cap-add")
 # Absolute-path bind mounts other than the docker socket (host filesystem access).
-if grep -E '^[[:space:]]*-[[:space:]]*/[^:]+:' "$RENDERED" | grep -vq '/var/run/docker\.sock'; then
+# The -v grep must read to EOF: with -vq it exits at the first non-socket line, the
+# producing grep dies of SIGPIPE, and pipefail turns "host mount found" into a clean
+# scan — the one failure mode this gate must not have.
+if grep -E '^[[:space:]]*-[[:space:]]*/[^:]+:' "$RENDERED" | grep -v '/var/run/docker\.sock' >/dev/null; then
   risks+=("host-mount")
 fi
 

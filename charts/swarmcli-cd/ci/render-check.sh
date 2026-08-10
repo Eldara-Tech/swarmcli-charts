@@ -17,10 +17,14 @@ bad() { echo "  FAIL: $*"; fail=1; }
 constraints() { yq -r "(.services.$1.deploy.placement.constraints // [])[]" "$out"; }
 nodelabels() { constraints "$1" | grep -E '^node\.labels\.' || true; }
 
+# No check below pipes into `grep -q`: under the `pipefail` above that makes a check
+# that DID match report "no match". Match with `| grep … >/dev/null`; a here-string
+# (`grep -q … <<<"$x"`) is fine — no pipe, no SIGPIPE. scripts/lint.sh has the why.
+
 # 1. The manager pin is not a value. The controller talks to the swarm's own API, which
 #    only a manager serves; on a worker every apply fails, and the task itself looks
 #    healthy while it does.
-constraints controller | grep -qx 'node.role == manager' \
+constraints controller | grep -x 'node.role == manager' >/dev/null \
   || bad "the controller carries no 'node.role == manager' constraint — on a worker every apply fails"
 
 # 2. The node pin must never outlive the volume it exists for (#55). With no node-local
@@ -41,7 +45,7 @@ if [ "$(yq -r '.services | has("git-sync")' "$out")" = "true" ]; then
     || bad "controller and git-sync are pinned differently — they can be scheduled onto different nodes and the shared volume is node-local"
 
   # 4. The sidecar clones a repository. It has no business reaching the daemon.
-  yq -r '(.services.git-sync.volumes // [])[]' "$out" | grep -q 'docker\.sock' \
+  yq -r '(.services.git-sync.volumes // [])[]' "$out" | grep 'docker\.sock' >/dev/null \
     && bad "the git-sync sidecar mounts the Docker socket"
 
   # 5. The controller reads the file the sidecar writes — by the name it writes it under.
@@ -67,7 +71,7 @@ fi
 
 # 7. The admin token only ever arrives as a file path. A token in the environment is a
 #    token in `docker service inspect`.
-yq -r '(.services.controller.environment // {}) | keys | .[]' "$out" | grep -qx 'SWARMCLI_CD_ADMIN_TOKEN' \
+yq -r '(.services.controller.environment // {}) | keys | .[]' "$out" | grep -x 'SWARMCLI_CD_ADMIN_TOKEN' >/dev/null \
   && bad "the admin token is passed as a value — it must be SWARMCLI_CD_ADMIN_TOKEN_FILE"
 
 [ "$fail" -eq 0 ] || exit 1

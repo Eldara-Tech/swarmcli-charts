@@ -24,10 +24,14 @@ fail=0
 note() { echo "   FAIL: $1"; fail=1; }
 
 # Hard failure, never a skip (a skipped check is indistinguishable from a passing one).
-if ! command -v yq >/dev/null 2>&1 || ! yq --version 2>/dev/null | grep -qi mikefarah; then
+if ! command -v yq >/dev/null 2>&1 || ! yq --version 2>/dev/null | grep -i mikefarah >/dev/null; then
   echo "   FAIL: mikefarah yq v4 is required by the zammad render checks but was not found" >&2
   exit 1
 fi
+
+# No check below pipes into `grep -q`: under the `pipefail` above that makes a check
+# that DID match report "no match". Match with `| grep … >/dev/null`; a here-string
+# (`grep -q … <<<"$x"`) is fine — no pipe, no SIGPIPE. scripts/lint.sh has the why.
 
 has_svc() { [ "$(yq -r ".services | has(\"$1\")" "$out")" = "true" ]; }
 net_external() { [ "$(yq -r ".networks.\"$1\".external // false" "$out")" = "true" ]; }
@@ -35,12 +39,18 @@ net_external() { [ "$(yq -r ".networks.\"$1\".external // false" "$out")" = "tru
 # 1. No password in any service's environment map. The only vars that carry a secret
 #    (POSTGRESQL_PASS / REDIS_PASSWORD / ELASTICSEARCH_PASS) must appear ONLY inside command
 #    wrappers as `$(cat /run/secrets/...)`, never as an environment key.
-if yq -r '.services[].environment | keys | .[]' "$out" 2>/dev/null \
-     | grep -Eq '^(POSTGRESQL_PASS|REDIS_PASSWORD|ELASTICSEARCH_PASS)$'; then
+#    `// {}` and the separate assignment are both load-bearing. Written as
+#    `yq '.services[].environment | keys | .[]' 2>/dev/null | grep -q …`, memcached —
+#    the one service with no environment: map — made `keys` abort with "Cannot get
+#    keys of !!null", 2>/dev/null ate the message, and pipefail turned the whole `if`
+#    false: the check reported a clean stack without ever looking at a key. Collecting
+#    first means a yq that cannot answer kills the script under `set -e` instead.
+env_keys="$(yq -r '(.services[].environment // {}) | keys | .[]' "$out")"
+if grep -E '^(POSTGRESQL_PASS|REDIS_PASSWORD|ELASTICSEARCH_PASS)$' <<<"$env_keys" >/dev/null; then
   note "a password variable is set in an environment: map (it must be read from /run/secrets in the command wrapper)"
 fi
 # The DB password wrapper is on every Zammad role.
-yq -r '.services.railsserver.command[0]' "$out" | grep -q 'cat /run/secrets/' \
+yq -r '.services.railsserver.command[0]' "$out" | grep 'cat /run/secrets/' >/dev/null \
   || note "railsserver command does not read the DB password from a mounted secret"
 
 # 2. Every Zammad role exists, and nginx dials the rendered rails/websocket services.
@@ -148,7 +158,7 @@ esac
 
 # bind-mount: at least one absolute host path is mounted (this is what the host-mount ack covers).
 if [ "$case" = "bind-mount" ]; then
-  yq -r '.services[].volumes // [] | .[]' "$out" | grep -Eq '^/[^:]+:' \
+  yq -r '.services[].volumes // [] | .[]' "$out" | grep -E '^/[^:]+:' >/dev/null \
     || note "bind-mount fixture rendered no host-path mount"
 fi
 
