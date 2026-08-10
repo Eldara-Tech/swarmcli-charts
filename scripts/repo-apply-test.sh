@@ -61,7 +61,7 @@ command -v docker >/dev/null 2>&1 \
 
 # First value of a top-level Chart.yaml scalar key, surrounding quotes stripped —
 # same reader as scripts/local-repo.sh so it sees the version the way the index does.
-field() { sed -n "s/^$1:[[:space:]]*//p" "$2" | head -1 | sed 's/^"//; s/"$//' | tr -d '\r'; }
+field() { sed -n "s/^$1:[[:space:]]*//p" "$2" | sed -n 1p | sed 's/^"//; s/"$//' | tr -d '\r'; }
 
 # The newer version is whatever the working tree declares; the older one is a
 # synthetic floor guaranteed to sort below it, so `outdated` and the upgrade both
@@ -168,7 +168,7 @@ echo "== repo-apply against ${URL} (whoami ${OLDVER} -> ${CURVER}) =="
 # install does, but needs no swarm, so it guards the index/digest/tarball contract
 # even on the swarm-free integration runner.
 if out="$("$SWARMCLI" charts template "$RELEASE" localrepo/whoami --version "$CURVER" 2>&1)"; then
-  if printf '%s\n' "$out" | grep -q 'services:'; then
+  if printf '%s\n' "$out" | grep 'services:' >/dev/null; then
     note PASS "template resolves + digest-verifies + renders whoami ${CURVER} from the repo"
   else
     note FAIL "template rendered no manifest"
@@ -191,7 +191,7 @@ if out="$("$SWARMCLI" charts template "$RELEASE" localrepo/whoami --version "$CU
   note FAIL "template accepted a tampered digest (the #447 guard is not firing)"
   printf '%s\n' "$out" | sed 's/^/    /'
 else
-  if printf '%s\n' "$out" | grep -qi 'digest mismatch'; then
+  if printf '%s\n' "$out" | grep -i 'digest mismatch' >/dev/null; then
     note PASS "template rejects a digest that does not match its asset"
   else
     note FAIL "template failed but not on a digest mismatch"
@@ -216,7 +216,7 @@ fi
 apply_probe="$("$SWARMCLI" charts apply 2>&1 || true)"
 if [ "$swarm_state" != "active" ]; then
   echo "-- no active swarm; skipping the deploy phase (apply/outdated/upgrade/idempotence) --"
-elif printf '%s\n' "$apply_probe" | grep -q 'unknown charts command'; then
+elif printf '%s\n' "$apply_probe" | grep 'unknown charts command' >/dev/null; then
   echo "-- this swarmcli build has no 'charts apply' (needs a release from swarmcli#450); skipping the deploy phase --"
 else
   # The declarative manifest a real GitOps user commits: the repo it pulls from
@@ -241,7 +241,7 @@ EOF
     local states
     while :; do
       states="$(docker stack ps "$RELEASE" --filter desired-state=running --format '{{.CurrentState}}' 2>/dev/null || true)"
-      if [ -n "$states" ] && ! printf '%s\n' "$states" | grep -vq '^Running'; then return 0; fi
+      if [ -n "$states" ] && ! printf '%s\n' "$states" | grep -v '^Running' >/dev/null; then return 0; fi
       [ "$(date +%s)" -ge "$1" ] && return 1
       sleep 3
     done
@@ -250,8 +250,8 @@ EOF
   # B1: plan-only apply asserts an install and deploys nothing.
   write_release "$CURVER"
   if out="$("$SWARMCLI" charts apply -f "$RELFILE" --diff 2>&1)"; then
-    if printf '%s\n' "$out" | grep -q '1 to install' \
-       && ! docker stack ls --format '{{.Name}}' 2>/dev/null | grep -qx "$RELEASE"; then
+    if printf '%s\n' "$out" | grep '1 to install' >/dev/null \
+       && ! docker stack ls --format '{{.Name}}' 2>/dev/null | grep -x "$RELEASE" >/dev/null; then
       note PASS "apply --diff plans an install and deploys nothing"
     else
       note FAIL "apply --diff did not plan a no-deploy install"
@@ -277,9 +277,9 @@ EOF
   fi
 
   out="$("$SWARMCLI" charts outdated 2>&1 || true)"
-  if printf '%s\n' "$out" | grep -q "$RELEASE" \
-     && printf '%s\n' "$out" | grep -q "$OLDVER" \
-     && printf '%s\n' "$out" | grep -q "$CURVER"; then
+  if printf '%s\n' "$out" | grep "$RELEASE" >/dev/null \
+     && printf '%s\n' "$out" | grep "$OLDVER" >/dev/null \
+     && printf '%s\n' "$out" | grep "$CURVER" >/dev/null; then
     note PASS "outdated reports ${RELEASE} (${OLDVER} -> ${CURVER})"
   else
     note FAIL "outdated did not report ${RELEASE} as ${OLDVER} -> ${CURVER}"
@@ -290,7 +290,7 @@ EOF
   # version) — then re-apply the same file and assert it is a no-op.
   write_release "$CURVER"
   if out="$("$SWARMCLI" charts apply -f "$RELFILE" 2>&1)"; then
-    if printf '%s\n' "$out" | grep -q '1 to upgrade'; then
+    if printf '%s\n' "$out" | grep '1 to upgrade' >/dev/null; then
       note PASS "apply upgrades ${OLDVER} -> ${CURVER}"
     else
       note FAIL "apply did not report an upgrade to ${CURVER}"
@@ -303,7 +303,7 @@ EOF
   fi
 
   if out="$("$SWARMCLI" charts apply -f "$RELFILE" 2>&1)"; then
-    if printf '%s\n' "$out" | grep -q '1 unchanged' && printf '%s\n' "$out" | grep -q '0 to upgrade'; then
+    if printf '%s\n' "$out" | grep '1 unchanged' >/dev/null && printf '%s\n' "$out" | grep '0 to upgrade' >/dev/null; then
       note PASS "re-apply is unchanged (idempotent)"
     else
       note FAIL "re-apply was not a no-op"

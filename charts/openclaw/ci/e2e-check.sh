@@ -24,7 +24,7 @@ set -euo pipefail
 release="$1"
 case="${3:-}"
 
-gateway_cid() { docker ps -q -f "label=com.docker.swarm.service.name=${release}_gateway" | head -1; }
+gateway_cid() { docker ps -q -f "label=com.docker.swarm.service.name=${release}_gateway" | sed -n 1p; }
 
 # Wait for the gateway HTTP to actually serve. Task "Running" != serving (the image's
 # healthcheck has a 120s start period), and an unhealthy task may be replaced under it, so
@@ -93,9 +93,9 @@ docker exec "$cid" openclaw infer model run --model ollama/mockllama:latest \
 # (d) Assert the mock recorded an OpenClaw-originated Ollama API call (NOT the /probe above).
 for _ in $(seq 1 15); do
   if docker service logs mock-ollama 2>/dev/null \
-      | grep -Eq 'MOCK-OLLAMA (GET|POST) /api/(tags|show|chat|generate)'; then
+      | grep -E 'MOCK-OLLAMA (GET|POST) /api/(tags|show|chat|generate)' >/dev/null; then
     hit="$(docker service logs mock-ollama 2>/dev/null \
-      | grep -E 'MOCK-OLLAMA (GET|POST) /api/' | head -1)"
+      | grep -E 'MOCK-OLLAMA (GET|POST) /api/' | sed -n 1p)"
     echo "  backend: OpenClaw dialed the configured backend (${hit#*MOCK-OLLAMA })"
     exit 0
   fi

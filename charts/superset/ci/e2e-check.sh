@@ -26,7 +26,7 @@ case="$3"
 # container each call: a crash-looping or health-replaced task changes container id.
 probe() {
   local path="$1" cid code
-  cid="$(docker ps -q -f "label=com.docker.swarm.service.name=${release}_app" | head -1)"
+  cid="$(docker ps -q -f "label=com.docker.swarm.service.name=${release}_app" | sed -n 1p)"
   [ -n "$cid" ] || return 1
   code="$(docker exec "$cid" curl -s -o /dev/null -w '%{http_code}' "http://localhost:8088${path}" 2>/dev/null)" || return 1
   [ "$code" = "200" ]
@@ -55,7 +55,7 @@ done
 if [ "$case" = "embedded-redis" ]; then
   ok=0
   for _ in $(seq 1 60); do
-    cid="$(docker ps -q -f "label=com.docker.swarm.service.name=${release}_worker" | head -1)"
+    cid="$(docker ps -q -f "label=com.docker.swarm.service.name=${release}_worker" | sed -n 1p)"
     if [ -n "$cid" ] &&
        [ "$(docker inspect -f '{{ .State.Health.Status }}' "$cid" 2>/dev/null)" = "healthy" ]; then
       ok=1; break

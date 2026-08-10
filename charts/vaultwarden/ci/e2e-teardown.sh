@@ -38,7 +38,7 @@ fi
 
 # Drop the persistence pin label.
 node="$(docker node ls --format '{{.ID}} {{.Self}}' 2>/dev/null | awk '$2=="true"{print $1; exit}')"
-[ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | head -1)"
+[ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | sed -n 1p)"
 [ -n "$node" ] && docker node update --label-rm vaultwarden-data "$node" >/dev/null 2>&1 || true
 
 # bind-mount fixture: remove the host dir (root-owned, so from a throwaway root container).

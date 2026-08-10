@@ -15,7 +15,7 @@ case="$3"
 # Pin: label this (single-node) swarm's node so the persistence.nodeLabel constraint
 # schedules. Harmless for the ephemeral/edge fixtures (no pin rendered).
 node="$(docker node ls --format '{{.ID}} {{.Self}}' 2>/dev/null | awk '$2=="true"{print $1; exit}')"
-[ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | head -1)"
+[ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | sed -n 1p)"
 [ -n "$node" ] && docker node update --label-add ollama-data=true "$node" >/dev/null
 
 # Shared ingress overlay the traefik/none/edge exposure modes attach to (autoCreate:false in

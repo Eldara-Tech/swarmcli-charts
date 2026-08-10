@@ -25,7 +25,7 @@ up=0
 for _ in $(seq 1 30); do
   state="$(docker service ps "$service" \
     --filter desired-state=running \
-    --format '{{.CurrentState}}' 2>/dev/null | head -1)"
+    --format '{{.CurrentState}}' 2>/dev/null | sed -n 1p)"
   case "$state" in
     Running*) echo "  $service is Running"; up=1; break ;;
     Failed*|Rejected*) echo "  $service task failed: $state"; exit 1 ;;

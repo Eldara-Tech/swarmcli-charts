@@ -42,7 +42,7 @@ fi
 # field() so the assertion matches what the server actually published.
 chart_name() {
   local n
-  n="$(sed -n 's/^name:[[:space:]]*//p' "charts/$1/Chart.yaml" | head -1 | sed 's/^"//; s/"$//' | tr -d '\r')"
+  n="$(sed -n 's/^name:[[:space:]]*//p' "charts/$1/Chart.yaml" | sed -n 1p | sed 's/^"//; s/"$//' | tr -d '\r')"
   printf '%s' "${n:-$1}"
 }
 
@@ -105,7 +105,7 @@ for chart in "${charts[@]}"; do
   name="$(chart_name "$chart")"
   # Match `localrepo/<name>` bounded by whitespace or end-of-line (POSIX, so it
   # works with BSD grep too) — avoids a prefix matching `localrepo/<name>2`.
-  if printf '%s\n' "$search_out" | grep -qE "localrepo/${name}([[:space:]]|\$)"; then
+  if printf '%s\n' "$search_out" | grep -E "localrepo/${name}([[:space:]]|\$)" >/dev/null; then
     note PASS "search lists localrepo/${name}"
   else
     note FAIL "search did not list localrepo/${name}"

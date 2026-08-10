@@ -76,18 +76,24 @@ done
 # same race silently drops the risk instead.
 #
 # Write `| grep PATTERN >/dev/null` (reads to EOF, same exit status, and a real
-# producer failure is still caught) and `| sed -n 1p` for `| head -1`. Enforced over
-# the render/validate harness — the scripts `make test` runs. grep against a FILE is
-# unaffected: no pipe, no SIGPIPE. The e2e scripts and workflows still carry the
-# pattern — #149 tracks them; widen `harness` below as they are cleaned up.
-harness=(scripts/lint.sh scripts/test-charts.sh scripts/security-scan.sh
-         scripts/requirements-check.sh scripts/floor-check.sh charts/*/ci/render-check.sh)
-for f in "${harness[@]}"; do
+# producer failure is still caught) and `| sed -n 1p` for `| head -1`. Unaffected and
+# deliberately still allowed: `grep -q P <file>` (no pipe, no SIGPIPE) and
+# `grep -q P <<<"$var"` (here-string).
+#
+# Single-quoted spans are stripped before matching, so a pipeline handed to a
+# container — `sh -c 'ls /run/secrets/ | head -1'` — does not trip this. That shell
+# is not ours and has no pipefail. A host-side consumer still trips even when the
+# container command sits on the same line, because that command is double-quoted:
+# `docker exec "$c" sh -c "$pre redis-cli ping" | grep -q PONG` is caught.
+guarded=(scripts/*.sh scripts/e2e-edge/*.sh charts/*/ci/*.sh .github/workflows/*.yml)
+pipe_re='\|[[:space:]]*(grep[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*-[a-zA-Z]*q[a-zA-Z]*([[:space:]]|$)|head([[:space:]]|$))'
+for f in "${guarded[@]}"; do
   [ -f "$f" ] || continue
-  # The trailing filter drops comment lines, so the paragraphs above (and their
-  # counterparts in each render-check) can name the pattern they forbid.
-  if grep -nE '\|[[:space:]]*(grep[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*-[a-zA-Z]*q[a-zA-Z]*([[:space:]]|$)|head([[:space:]]|$))' "$f" \
-       | grep -vE '^[0-9]+:[[:space:]]*#'; then
+  # Line numbers come from the quote-stripped copy; the offending line is printed
+  # from the original. The comment filter lets these paragraphs name what they forbid.
+  hits="$(sed -E "s/'[^']*'//g" "$f" | grep -nE "$pipe_re" | grep -vE '^[0-9]+:[[:space:]]*#' | cut -d: -f1 || true)"
+  if [ -n "$hits" ]; then
+    for n in $hits; do echo "  $f:$n: $(sed -n "${n}p" "$f")"; done
     echo "ERROR: $f pipes into an early-exiting consumer (see above) — under pipefail that"
     echo "       turns a match into a false negative. Use '| grep P >/dev/null' or '| sed -n 1p'."
     fail=1

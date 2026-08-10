@@ -27,7 +27,7 @@ case="${3:-}"
 DBPW='test'
 ADMIN_PHC='$argon2id$v=19$m=65540,t=3,p=4$MmeKRnGK5RW5mJS7h3TOv90eOu7wJ3Ry6xGRW0ycHco$kSJqYRV3Fu2AjjM/dvbFyoIUt74BsAoWXqYIVXaQ+/8'
 
-vw_cid() { docker ps -q -f "label=com.docker.swarm.service.name=${release}_vaultwarden" | head -1; }
+vw_cid() { docker ps -q -f "label=com.docker.swarm.service.name=${release}_vaultwarden" | sed -n 1p; }
 
 # PID 1's environment, one NUL-separated entry per line.
 pid1_env() { docker exec "$1" sh -c "tr '\\0' '\\n' < /proc/1/environ" 2>/dev/null; }
@@ -35,7 +35,7 @@ pid1_env() { docker exec "$1" sh -c "tr '\\0' '\\n' < /proc/1/environ" 2>/dev/nu
 # Assert PID 1 carries exactly this VAR=value. Never echoes the value (dummy here, but the
 # same check on a real deployment would leak a credential into the log).
 assert_env() { # $1 cid  $2 VAR=value  $3 human description
-  if pid1_env "$1" | grep -qxF "$2"; then
+  if pid1_env "$1" | grep -xF "$2" >/dev/null; then
     echo "  ${3}: exported to PID 1 as expected"
     return 0
   fi

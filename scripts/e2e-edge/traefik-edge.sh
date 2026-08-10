@@ -60,7 +60,7 @@ _edge_swarmcli() {
 _edge_node() {
   local n
   n="$(docker node ls --format '{{.ID}} {{.Self}}' 2>/dev/null | awk '$2=="true"{print $1; exit}')"
-  [ -n "$n" ] || n="$(docker node ls -q 2>/dev/null | head -1)"
+  [ -n "$n" ] || n="$(docker node ls -q 2>/dev/null | sed -n 1p)"
   printf '%s' "$n"
 }
 
@@ -105,7 +105,7 @@ edge_up() {
 
   for _ in $(seq 1 40); do
     state="$(docker service ps "${EDGE_RELEASE}_traefik" --filter desired-state=running \
-      --format '{{.CurrentState}}' 2>/dev/null | head -1)"
+      --format '{{.CurrentState}}' 2>/dev/null | sed -n 1p)"
     case "$state" in
       Running*)
         # Any non-000 code means the entrypoint is serving (a 404 for this unknown host
@@ -191,7 +191,7 @@ edge_whoami_up() {
 
   for _ in $(seq 1 40); do
     state="$(docker service ps "$name" --filter desired-state=running \
-      --format '{{.CurrentState}}' 2>/dev/null | head -1)"
+      --format '{{.CurrentState}}' 2>/dev/null | sed -n 1p)"
     case "$state" in
       Running*) echo "   edge: backend '$name' Running (constraint-label: $want_constraint)"; return 0 ;;
       Failed*|Rejected*) echo "   FAIL: backend '$name' task failed: $state"; return 1 ;;

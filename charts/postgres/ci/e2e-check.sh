@@ -19,7 +19,7 @@ set -euo pipefail
 release="$1"
 case="$3"
 
-cid="$(docker ps -q -f "label=com.docker.swarm.service.name=${release}_postgres" | head -1)"
+cid="$(docker ps -q -f "label=com.docker.swarm.service.name=${release}_postgres" | sed -n 1p)"
 [ -n "$cid" ] || { echo "  ${release}_postgres container not found"; exit 1; }
 
 # Query over TCP with the password read from the MOUNTED SECRET — deliberately not the
@@ -39,7 +39,7 @@ docker exec "$cid" sh -c "
     CREATE TABLE IF NOT EXISTS e2e_smoke (id int PRIMARY KEY, v text);
     INSERT INTO e2e_smoke VALUES (1, 'ok') ON CONFLICT (id) DO UPDATE SET v = EXCLUDED.v;
     SELECT v FROM e2e_smoke WHERE id = 1;\"" \
-  | grep -q '^ok$'
+  | grep '^ok$' >/dev/null
 
 # Persistence. The data mount is the PARENT dir /var/lib/postgresql (PGDATA lives one level
 # below it), so assert on the mount's TYPE and NAME — not on its mere presence: the image

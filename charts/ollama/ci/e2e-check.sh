@@ -15,7 +15,7 @@ set -euo pipefail
 release="$1"
 case="${3:-}"
 
-ollama_cid() { docker ps -q -f "label=com.docker.swarm.service.name=${release}_ollama" | head -1; }
+ollama_cid() { docker ps -q -f "label=com.docker.swarm.service.name=${release}_ollama" | sed -n 1p; }
 
 # Wait for the API to actually serve. Task "Running" != serving (the image may take a moment
 # to start the server), and an unhealthy task may be replaced under us, so re-resolve the

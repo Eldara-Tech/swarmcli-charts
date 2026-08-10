@@ -13,7 +13,7 @@ if [ -z "$NAME" ]; then
   echo "usage: scripts/new-chart.sh <name>" >&2
   exit 2
 fi
-if ! printf '%s' "$NAME" | grep -Eq '^[a-z][a-z0-9-]*$'; then
+if ! printf '%s' "$NAME" | grep -E '^[a-z][a-z0-9-]*$' >/dev/null; then
   echo "ERROR: chart name must be lowercase alphanumeric with dashes (got: $NAME)" >&2
   exit 2
 fi

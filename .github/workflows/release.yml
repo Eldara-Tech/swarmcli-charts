@@ -54,7 +54,7 @@ jobs:
             VERSION=${TAG#*/}
           else
             CHART="$IN_CHART"
-            PREV=$(git tag --list "${CHART}/v*" --sort=-v:refname | head -1)
+            PREV=$(git tag --list "${CHART}/v*" --sort=-v:refname | sed -n 1p)
             if [ -z "$PREV" ]; then
               # First release of a chart: start the series rather than bumping nothing.
               NEXT="0.1.0"
@@ -128,7 +128,7 @@ jobs:
           TAG: ${{ steps.parse.outputs.tag }}
         run: |
           set -euo pipefail
-          PREV=$(git tag --list "${CHART}/v*" --sort=-v:refname | grep -vFx "$TAG" | head -1 || true)
+          PREV=$(git tag --list "${CHART}/v*" --sort=-v:refname | grep -vFx "$TAG" | sed -n 1p || true)
           if [ -n "$PREV" ]; then
             RANGE="${PREV}..HEAD"
             HEADING="Changes since ${PREV#"${CHART}"/}"

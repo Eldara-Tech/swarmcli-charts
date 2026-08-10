@@ -14,7 +14,7 @@ docker secret rm mariadb_root_password >/dev/null 2>&1 || true
 docker secret rm mariadb_password      >/dev/null 2>&1 || true
 
 node="$(docker node ls --format '{{.ID}} {{.Self}}' 2>/dev/null | awk '$2=="true"{print $1; exit}')"
-[ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | head -1)"
+[ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | sed -n 1p)"
 [ -n "$node" ] && docker node update --label-rm mariadb-data "$node" >/dev/null 2>&1 || true
 
 # Empty the host datadir via a throwaway root container (matches e2e-setup.sh): a host
