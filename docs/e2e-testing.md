@@ -218,8 +218,23 @@ dir); **traefik** (the `traefik-certs` node-label pin + the certs-bind-mount hos
 and **keycloak** (the two operator secrets + the DB/ingress overlays + a throwaway
 co-located backend on `keycloak-db-net` — MariaDB, or PostgreSQL for the `postgres` fixture —
 because Keycloak attaches its DB overlay unconditionally and `/health/ready` only passes once
-it has connected and migrated, so every keycloak fixture needs a reachable database).
+it has connected and migrated, so every keycloak fixture needs a reachable database); and
+**vaultwarden** (the four dummy secrets + the data node label for every fixture, plus a
+throwaway PostgreSQL/MariaDB named `vw-postgres`/`vw-mariadb` for the `postgres`/`mysql`
+fixtures — deliberately *not* the plain `postgres`/`mariadb` names the keycloak and superset
+hooks use, so the two never collide).
 `whoami` and `swarm-cronjob` converge solo and ship no hooks.
+
+> **Asserting what the secret wrapper actually produced.** Several charts export a
+> credential from an `sh -c` wrapper that reads `/run/secrets/…` with a compose-escaped
+> `$$(cat …)`. If that escape is ever eaten, the shell expands `$$` to its own pid and the
+> app runs holding the literal `1(cat /run/secrets/…)` — and still converges, because the
+> value only fails later, inside the application. `docker exec` shows the image + service
+> environment, **not** the wrapper's exports, so the only place the real value is visible is
+> PID 1's environment. `charts/vaultwarden/ci/e2e-check.sh` reads
+> `/proc/1/environ` and asserts the exact expected `DATABASE_URL` / `ADMIN_TOKEN` /
+> `SMTP_PASSWORD`, which is what turns "it came up" into "it came up on the configured
+> backend". Do the same in a new chart's check rather than trusting convergence alone.
 
 ### Proving Traefik actually routes (the shared edge helper)
 

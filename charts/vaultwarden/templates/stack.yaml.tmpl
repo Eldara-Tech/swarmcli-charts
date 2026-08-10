@@ -1,0 +1,230 @@
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) (contains "/" .Values.persistence.volumeName) -}}
+{{- fail "persistence.volumeName is a Docker named-volume name and cannot contain '/'. To store data under a host directory, set persistence.volumePath instead." -}}
+{{- end -}}
+{{- $dbType := .Values.database.type -}}
+{{- if and (eq $dbType "postgres") (not .Values.database.postgres.passwordSecretName) -}}
+{{- fail "database.postgres.passwordSecretName is required when database.type=postgres" -}}
+{{- end -}}
+{{- if and (eq $dbType "mysql") (not .Values.database.mysql.passwordSecretName) -}}
+{{- fail "database.mysql.passwordSecretName is required when database.type=mysql" -}}
+{{- end -}}
+{{- if and .Values.auth.adminToken.enabled (not .Values.auth.adminToken.secretName) -}}
+{{- fail "auth.adminToken.secretName is required when auth.adminToken.enabled=true" -}}
+{{- end -}}
+{{- if and .Values.smtp.password.enabled (not .Values.smtp.password.secretName) -}}
+{{- fail "smtp.password.secretName is required when smtp.password.enabled=true" -}}
+{{- end -}}
+version: "3.9"
+
+{{- $mode := .Values.exposure.mode }}
+{{- $proxied := or (eq $mode "traefik") (eq $mode "none") }}
+{{- $publicTLS := .Values.ingress.tls }}
+{{- $scheme := ternary "https" "http" $publicTLS }}
+{{- $router := .Values.traefik.routerName | default .Release.Name }}
+{{- /* DOMAIN must be the URL users actually reach, including a non-default port:
+       Vaultwarden derives its WebAuthn/2FA origin and every admin redirect from it.
+       In published mode the service answers on publish.port, so fold that into the
+       authority — but omit the scheme's default port, since a browser normalises
+       http://h:80 to http://h and a mismatched origin breaks WebAuthn. */}}
+{{- $authority := .Values.ingress.host }}
+{{- if eq $mode "published" }}
+{{-   $publishedPort := .Values.publish.port | int }}
+{{-   if ne $publishedPort (ternary 443 80 $publicTLS) }}
+{{-     $authority = printf "%s:%d" .Values.ingress.host $publishedPort }}
+{{-   end }}
+{{- end }}
+{{- $domain := .Values.domain | default (printf "%s://%s" $scheme $authority) }}
+{{- $networks := list }}
+{{- if $proxied }}{{ $networks = append $networks .Values.exposure.network }}{{- end }}
+{{- if eq $dbType "postgres" }}{{ $networks = append $networks .Values.database.postgres.network }}{{- end }}
+{{- if eq $dbType "mysql" }}{{ $networks = append $networks .Values.database.mysql.network }}{{- end }}
+{{- $networks = $networks | uniq }}
+
+{{- $secrets := list }}
+{{- if eq $dbType "postgres" }}{{ $secrets = append $secrets .Values.database.postgres.passwordSecretName }}{{- end }}
+{{- if eq $dbType "mysql" }}{{ $secrets = append $secrets .Values.database.mysql.passwordSecretName }}{{- end }}
+{{- if .Values.auth.adminToken.enabled }}{{ $secrets = append $secrets .Values.auth.adminToken.secretName }}{{- end }}
+{{- if .Values.smtp.password.enabled }}{{ $secrets = append $secrets .Values.smtp.password.secretName }}{{- end }}
+{{- $secrets = $secrets | uniq }}
+
+{{- $startup := list }}
+{{- if eq $dbType "postgres" }}
+{{- $startup = append $startup (printf "export DATABASE_URL=\"postgresql://%s:$$(cat /run/secrets/%s)@%s:%v/%s?sslmode=%s\"" .Values.database.postgres.username .Values.database.postgres.passwordSecretName .Values.database.postgres.host (.Values.database.postgres.port | int) .Values.database.postgres.name .Values.database.postgres.sslMode) }}
+{{- else if eq $dbType "mysql" }}
+{{- $startup = append $startup (printf "export DATABASE_URL=\"mysql://%s:$$(cat /run/secrets/%s)@%s:%v/%s\"" .Values.database.mysql.username .Values.database.mysql.passwordSecretName .Values.database.mysql.host (.Values.database.mysql.port | int) .Values.database.mysql.name) }}
+{{- end }}
+{{- if .Values.auth.adminToken.enabled }}
+{{- $startup = append $startup (printf "export ADMIN_TOKEN=\"$$(cat /run/secrets/%s)\"" .Values.auth.adminToken.secretName) }}
+{{- end }}
+{{- if .Values.smtp.password.enabled }}
+{{- $startup = append $startup (printf "export SMTP_PASSWORD=\"$$(cat /run/secrets/%s)\"" .Values.smtp.password.secretName) }}
+{{- end }}
+{{- $startup = append $startup "exec /start.sh" }}
+{{- $startupScript := join "; " $startup }}
+
+{{- /* Environment as a dict so extraEnv can OVERRIDE a chart-managed key instead of
+       emitting a duplicate YAML mapping key, which swarmcli rejects outright
+       ("mapping key DOMAIN already defined"). Vaultwarden exposes ~150 settings and
+       this chart surfaces a handful, so extraEnv is the escape hatch for the rest —
+       it has to be able to win. mergeOverwrite: later sources take precedence.
+
+       ROCKET_PORT is the listener. service.port already drives the Traefik loadbalancer
+       port, the published target and the healthcheck, so it must drive the listener too
+       — otherwise any value but the image's default 80 routes to a port nothing is bound
+       to. ENABLE_WEBSOCKET, not the WEBSOCKET_ENABLED of pre-1.29 examples: that one has
+       been ignored since websockets moved onto the main HTTP port. */}}
+{{- $env := dict
+      "DOMAIN" $domain
+      "ROCKET_PORT" (.Values.service.port | int)
+      "ENABLE_WEBSOCKET" (ternary "true" "false" .Values.app.websocketsEnabled)
+      "SIGNUPS_ALLOWED" (ternary "true" "false" .Values.app.signupsAllowed)
+      "ROCKET_WORKERS" .Values.app.rocketWorkers
+      "LOG_LEVEL" .Values.app.logLevel
+}}
+{{- if .Values.smtp.enabled }}
+{{- $env = mergeOverwrite $env (dict
+      "SMTP_HOST" .Values.smtp.host
+      "SMTP_FROM" .Values.smtp.from
+      "SMTP_FROM_NAME" .Values.smtp.fromName
+      "SMTP_PORT" (.Values.smtp.port | int)
+      "SMTP_SECURITY" .Values.smtp.security
+      "SMTP_TIMEOUT" (.Values.smtp.timeout | int)
+) }}
+{{- if .Values.smtp.username }}
+{{- $env = mergeOverwrite $env (dict "SMTP_USERNAME" .Values.smtp.username) }}
+{{- end }}
+{{- end }}
+{{- /* Vaultwarden REFUSES to boot when /data is not a mount — it prints "No persistent
+       volume!" and exits 1, so persistence.enabled:false would ship a documented mode that
+       cannot start (caught by the ephemeral edge fixture in e2e, never by a render check).
+       Accepting data loss is precisely what that mode means, so declare it. */}}
+{{- if not .Values.persistence.enabled }}
+{{- $env = mergeOverwrite $env (dict "I_REALLY_WANT_VOLATILE_STORAGE" "true") }}
+{{- end }}
+{{- $env = mergeOverwrite $env .Values.extraEnv }}
+
+services:
+  vaultwarden:
+    image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
+{{- if $networks }}
+    networks:
+{{- range $networks }}
+      - {{ . }}
+{{- end }}
+{{- end }}
+{{- if eq $mode "published" }}
+    ports:
+      - target: {{ .Values.service.port }}
+        published: {{ .Values.publish.port }}
+        protocol: tcp
+        mode: {{ .Values.publish.mode }}
+{{- end }}
+{{- if .Values.persistence.enabled }}
+    volumes:
+      - {{ .Values.persistence.volumePath | default .Values.persistence.volumeName }}:/data
+{{- end }}
+{{- if $secrets }}
+    secrets:
+{{- range $secrets }}
+      - {{ . }}
+{{- end }}
+{{- end }}
+    environment:
+{{- range $key, $val := $env }}
+      {{ $key }}: {{ $val | quote }}
+{{- end }}
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - {{ $startupScript | quote }}
+{{- if .Values.healthcheck.enabled }}
+    {{- /* The image's own probe, not a hand-rolled one: it is curl-based (the image
+           ships curl and NOT wget), and it already resolves ROCKET_PORT, ROCKET_ADDRESS
+           and the base path out of DOMAIN. */}}
+    healthcheck:
+      test:
+        - CMD
+        - /healthcheck.sh
+      interval: {{ .Values.healthcheck.interval }}
+      timeout: {{ .Values.healthcheck.timeout }}
+      retries: {{ .Values.healthcheck.retries }}
+      start_period: {{ .Values.healthcheck.startPeriod }}
+{{- else }}
+    {{- /* The image bakes a HEALTHCHECK, so omitting the block would leave it running;
+           `disable: true` is what actually turns it off. */}}
+    healthcheck:
+      disable: true
+{{- end }}
+    deploy:
+      replicas: {{ .Values.replicas }}
+{{- if .Values.healthcheck.enabled }}
+      {{- /* Swarm watches a task for `monitor` after CREATING it, and only counts a
+             failure inside that window against the rollout. Shorter than the
+             healthcheck needs to fail and a broken deploy reports success. */}}
+      update_config:
+        monitor: {{ .Values.healthcheck.monitor }}
+{{- end }}
+{{- $constraints := list }}
+{{- if and .Values.persistence.enabled .Values.persistence.nodeLabel }}
+{{-   $constraints = append $constraints (printf "node.labels.%s == true" .Values.persistence.nodeLabel) }}
+{{- end }}
+{{- range .Values.placement.constraints }}
+{{-   $constraints = append $constraints . }}
+{{- end }}
+{{- if $constraints }}
+      placement:
+        constraints:
+{{- range $constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- with .Values.resources.limits.memory }}
+      resources:
+        limits:
+          memory: {{ . | quote }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- if or (eq $mode "traefik") .Values.labels }}
+      labels:
+{{- if eq $mode "traefik" }}
+        - "traefik.enable=true"
+        - "traefik.swarm.network={{ .Values.exposure.network }}"
+        - "traefik.constraint-label={{ .Values.traefik.constraintLabel }}"
+        - "traefik.http.routers.{{ $router }}-http.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ $router }}-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
+{{- if .Values.ingress.tls }}
+        - "traefik.http.routers.{{ $router }}-http.middlewares={{ .Values.traefik.redirectMiddleware }}"
+        - "traefik.http.routers.{{ $router }}-https.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ $router }}-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
+        - "traefik.http.routers.{{ $router }}-https.tls=true"
+        - "traefik.http.routers.{{ $router }}-https.tls.certresolver={{ .Values.traefik.certResolver }}"
+{{- end }}
+        - "traefik.http.services.{{ $router }}.loadbalancer.server.port={{ .Values.service.port }}"
+{{- end }}
+{{- range $key, $val := .Values.labels }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+{{- end }}
+
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) }}
+volumes:
+  {{ .Values.persistence.volumeName }}: {}
+{{- end }}
+
+{{- if $secrets }}
+secrets:
+{{- range $secrets }}
+  {{ . }}:
+    external: true
+{{- end }}
+{{- end }}
+
+{{- if $networks }}
+networks:
+{{- range $networks }}
+  {{ . }}:
+    external: true
+{{- end }}
+{{- end }}

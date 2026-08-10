@@ -1,0 +1,10 @@
+# Use external MySQL/MariaDB (DATABASE_URL assembled from values + secret at runtime).
+#
+# The mysql branch renders a different DATABASE_URL wrapper, secret and overlay than
+# the postgres one, so it needs its own fixture — without it the whole branch ships
+# unrendered. host points at the throwaway MariaDB ci/e2e-setup.sh stands up on
+# mariadb-net rather than the default mariadb_mariadb.
+database:
+  type: mysql
+  mysql:
+    host: vw-mariadb

@@ -1,0 +1,3 @@
+# Exercise host-path persistence.
+persistence:
+  volumePath: /srv/vaultwarden

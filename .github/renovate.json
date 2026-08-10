@@ -94,6 +94,7 @@
     { "matchFileNames": ["charts/swarm-cronjob/**"], "semanticCommitScope": "swarm-cronjob" },
     { "matchFileNames": ["charts/swarmcli-cd/**"], "semanticCommitScope": "swarmcli-cd" },
     { "matchFileNames": ["charts/traefik/**"], "semanticCommitScope": "traefik" },
+    { "matchFileNames": ["charts/vaultwarden/**"], "semanticCommitScope": "vaultwarden" },
     { "matchFileNames": ["charts/whoami/**"], "semanticCommitScope": "whoami" },
     { "matchFileNames": ["charts/zammad/**"], "semanticCommitScope": "zammad" },
 

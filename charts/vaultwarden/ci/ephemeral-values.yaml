@@ -1,0 +1,3 @@
+# Render an ephemeral deployment (no volume, no node pin).
+persistence:
+  enabled: false

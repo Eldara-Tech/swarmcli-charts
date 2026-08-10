@@ -1,0 +1,5 @@
+# Publish directly instead of routing with Traefik.
+exposure:
+  mode: published
+ingress:
+  tls: false

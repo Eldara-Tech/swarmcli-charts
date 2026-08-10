@@ -1,0 +1,3 @@
+# No labels and no published port; attach only to the ingress overlay.
+exposure:
+  mode: none

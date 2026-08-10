@@ -68,3 +68,11 @@ include:
   # other fixtures (external backing, exposure/ES variants, host-path, backup) are
   # render-only here — covered by charts.yml, and still run in local `make e2e`.
   - { chart: zammad,        cases: "embedded-backing",                                                              timeout: 20m }
+  # vaultwarden: the two exposure shapes (default traefik-labelled + published), both
+  # external-DB branches, and edge. ci/e2e-setup.sh creates the dummy secrets and the data
+  # node label for every fixture, and for postgres/mysql stands up a throwaway PostgreSQL /
+  # MariaDB whose credentials match those secrets; ci/e2e-check.sh reads PID 1's environ to
+  # prove the `$$(cat /run/secrets/…)` wrapper produced a real DATABASE_URL rather than the
+  # SQLite fallback. Excludes bind-mount, ephemeral, none and secrets — all render-covered by
+  # charts.yml and still run in a full local `make e2e`.
+  - { chart: vaultwarden,   cases: "default published postgres mysql edge",                                         timeout: 6m  }
