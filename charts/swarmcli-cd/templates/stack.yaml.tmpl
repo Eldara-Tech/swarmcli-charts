@@ -167,6 +167,14 @@ services:
       - {{ $appsetVolume }}:{{ $appsetDir }}:ro
 {{- end }}
 
+{{- if .Values.extraHosts }}
+
+    extra_hosts:
+{{- range .Values.extraHosts }}
+      - {{ . | quote }}
+{{- end }}
+{{- end }}
+
 {{- if .Values.healthcheck.enabled }}
 
     healthcheck:
