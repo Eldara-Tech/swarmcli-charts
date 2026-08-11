@@ -33,9 +33,16 @@ ROOT_PW='sw4rm-r00t-e2e-pw'
 # best-effort, since a parse miss only costs us the head start.
 repo="$(sed -n '/^image:/,/^[^ ]/p' "$dir/values.yaml" | sed -n 's|^  repository: *||p')"
 tag="$(sed -n 's/^appVersion: *"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$dir/Chart.yaml")"
+#
+# The elapsed time is REPORTED, not just spent: e2e-test.sh's output reaches the Actions log
+# in one flush, so a run shows a single timestamp for the whole fixture and the pull/converge
+# split is otherwise unrecoverable. Without this number there is no way to tell a comfortable
+# convergence from one sitting just under E2E_TIMEOUT.
 if [ -n "$repo" ] && [ -n "$tag" ]; then
   echo "  pre-pulling ${repo}:${tag} (outside the convergence budget)"
+  t0=$(date +%s)
   docker pull "${repo}:${tag}" >/dev/null 2>&1 || true
+  echo "  pre-pull finished in $(( $(date +%s) - t0 ))s; convergence budget (E2E_TIMEOUT) starts now"
 fi
 
 docker secret inspect gitlab_smtp_password >/dev/null 2>&1 \

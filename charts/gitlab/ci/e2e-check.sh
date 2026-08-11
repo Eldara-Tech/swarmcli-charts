@@ -52,6 +52,12 @@ if [ "$ready" -ne 1 ]; then
 fi
 cid="$(gl_cid)"
 ok "${release}_gitlab: serving (gitlab-healthcheck OK)"
+# How long the container has been up ~= how much of E2E_TIMEOUT convergence actually used.
+# Pair it with the pre-pull duration ci/e2e-setup.sh reports to see the real margin.
+started="$(docker inspect -f '{{.State.StartedAt}}' "$cid" 2>/dev/null || true)"
+if [ -n "$started" ]; then
+  ok "task has been up $(( $(date +%s) - $(date -d "$started" +%s) ))s (of the E2E_TIMEOUT convergence budget)"
+fi
 
 # 1. The RUNNING configuration, as reconfigure rendered it — not what we asked for. gitlab.yml
 #    is generated from the merged config, so it reflects whatever actually won.
