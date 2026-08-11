@@ -1,0 +1,7 @@
+# Operator-supplied omnibus config, appended after everything the chart generates and
+# therefore able to override it — here re-enabling the bundled Prometheus the chart turns
+# off by default.
+config:
+  extraRb: |
+    prometheus_monitoring['enable'] = true
+    gitlab_rails['time_zone'] = 'Europe/Zurich'

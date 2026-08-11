@@ -1,0 +1,6 @@
+# Some other proxy on the shared overlay fronts GitLab: no published port, no Traefik
+# labels, and git over SSH is not exposed by this chart.
+exposure:
+  mode: none
+ssh:
+  mode: none

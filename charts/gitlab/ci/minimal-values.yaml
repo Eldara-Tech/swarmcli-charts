@@ -1,0 +1,23 @@
+# The e2e fixture (.github/e2e-matrix.yaml runs this one case). It is the default shape —
+# Traefik labels, SSH TCP router, persistence, and BOTH secret-backed settings, so that a
+# converged release proves GitLab's Ruby really did read /run/secrets — but trimmed to
+# something a 4-vCPU CI runner can boot inside the timeout.
+ingress:
+  host: gitlab.e2e.test
+auth:
+  rootPassword:
+    enabled: true
+    secretName: gitlab_root_password
+smtp:
+  enabled: true
+  address: smtp.e2e.test
+  port: 587
+  username: gitlab@e2e.test
+  passwordSecretName: gitlab_smtp_password
+  from: gitlab@e2e.test
+config:
+  extraRb: |
+    puma['worker_processes'] = 0
+    sidekiq['concurrency'] = 5
+    postgresql['shared_buffers'] = "64MB"
+    nginx['worker_processes'] = 2

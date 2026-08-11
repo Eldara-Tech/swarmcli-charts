@@ -1,0 +1,329 @@
+{{- /* Host-path persistence bind-mounts a host dir; a named-volume value must not be a
+       path (docker compose would otherwise emit a cryptic error). */}}
+{{- if and .Values.persistence.enabled (not .Values.persistence.configPath) (contains "/" .Values.persistence.configVolume) -}}
+{{- fail "persistence.configVolume is a Docker named-volume name and cannot contain '/'. To store /etc/gitlab under a host directory, set persistence.configPath instead." -}}
+{{- end -}}
+{{- if and .Values.persistence.enabled (not .Values.persistence.dataPath) (contains "/" .Values.persistence.dataVolume) -}}
+{{- fail "persistence.dataVolume is a Docker named-volume name and cannot contain '/'. To store /var/opt/gitlab under a host directory, set persistence.dataPath instead." -}}
+{{- end -}}
+{{- if and .Values.persistence.enabled (not .Values.persistence.logsPath) (contains "/" .Values.persistence.logsVolume) -}}
+{{- fail "persistence.logsVolume is a Docker named-volume name and cannot contain '/'. To store /var/log/gitlab under a host directory, set persistence.logsPath instead." -}}
+{{- end -}}
+{{- /* external_url is not optional the way an ingress host usually is: GitLab builds every
+       clone URL, e-mail link and OAuth redirect from it, and with no value the image falls
+       back to the CONTAINER hostname — which under Swarm is a task ID that changes on every
+       reschedule. */}}
+{{- if not .Values.ingress.host -}}
+{{- fail "ingress.host is required in every exposure mode: it is GitLab's external_url, and without it the image derives one from the container hostname (a Swarm task ID)." -}}
+{{- end -}}
+{{- if contains "_" .Values.ingress.host -}}
+{{- fail "ingress.host must not contain an underscore: GitLab's CI/CD fails with URI::InvalidComponentError on such an external_url (omnibus-gitlab doc/troubleshooting.md)." -}}
+{{- end -}}
+{{- if and (eq .Values.ssh.mode "traefik") (not .Values.ssh.entrypoint) -}}
+{{- fail "ssh.entrypoint is required when ssh.mode is traefik: the TCP router must name an entrypoint the traefik release defines (traefik.extraEntrypoints), or Traefik silently drops the router." -}}
+{{- end -}}
+{{- if and .Values.smtp.enabled (not .Values.smtp.address) -}}
+{{- fail "smtp.address is required when smtp.enabled is true." -}}
+{{- end -}}
+version: "3.9"
+
+{{- /* Exposure mode drives networks, ports, labels and the public scheme. GitLab never
+       terminates TLS here: its bundled nginx always serves plain HTTP on service.port. */}}
+{{- $mode := .Values.exposure.mode }}
+{{- $router := .Values.traefik.routerName | default .Release.Name }}
+{{- $proxied := or (eq $mode "traefik") (eq $mode "none") }}
+{{- $publicTLS := and $proxied .Values.ingress.tls }}
+{{- $scheme := ternary "https" "http" $publicTLS }}
+{{- /* Direct publish is reached on publish.port, so the public URL must carry it or GitLab
+       emits clone/redirect URLs nobody can reach. */}}
+{{- $externalURL := printf "%s://%s" $scheme .Values.ingress.host }}
+{{- if eq $mode "published" }}{{ $externalURL = printf "%s://%s:%v" $scheme .Values.ingress.host .Values.publish.port }}{{- end }}
+{{- $sshTraefik := eq .Values.ssh.mode "traefik" }}
+{{- /* The SSH TCP router reaches this service over the ingress overlay too, so joining it
+       is driven by EITHER the HTTP exposure mode or the SSH mode. */}}
+{{- $nets := list }}
+{{- if or $proxied $sshTraefik }}{{ $nets = append $nets .Values.exposure.network }}{{- end }}
+{{- /* An SMTP relay configured with authentication: none needs no password secret. */}}
+{{- $smtpAuth := and .Values.smtp.enabled (ne .Values.smtp.authentication "none") }}
+{{- $secrets := list }}
+{{- if .Values.auth.rootPassword.enabled }}{{ $secrets = append $secrets .Values.auth.rootPassword.secretName }}{{- end }}
+{{- if $smtpAuth }}{{ $secrets = append $secrets .Values.smtp.passwordSecretName }}{{- end }}
+
+{{- /* ---------------------------------------------------------------------------------------
+       The omnibus configuration. GitLab has no per-setting env vars: /assets/gitlab.rb ends
+       with `eval ENV["GITLAB_OMNIBUS_CONFIG"]`, so the whole gitlab.rb is passed as one
+       variable. A chart cannot ship the file itself — swarmcli refuses any configs.<x>.file
+       path outside the chart, and Swarm config data is immutable anyway.
+
+       Passwords are read with Ruby's File.read at reconfigure time, NOT interpolated here:
+       the manifest and `docker inspect` only ever show the File.read call, never the value.
+       If a secret is missing the read raises and reconfigure fails loudly, rather than
+       booting GitLab with an empty password.
+
+       Nothing generated below may contain a literal `$` — this lands in the compose manifest,
+       which docker interpolates before deploying. config.extraRb is the operator's to escape
+       (`$$`), which is why it is appended verbatim.
+       --------------------------------------------------------------------------------------- */}}
+{{- $rb := list
+      "# Generated by the swarmcli gitlab chart."
+      "# Do NOT override these by editing /etc/gitlab/gitlab.rb: that file is read AFTER this"
+      "# block and silently wins. Use chart values or config.extraRb instead."
+}}
+{{- $rb = append $rb (printf "external_url %q" $externalURL) }}
+{{- /* TLS terminates at the proxy (or nowhere), so the bundled nginx stays on plain HTTP.
+       letsencrypt defaults ON whenever external_url is https and no certificate is
+       configured, and its ACME challenge cannot work behind a proxy that owns :80 — a
+       failed challenge fails `gitlab-ctl reconfigure`, so the container never starts. */}}
+{{- $rb = append $rb (printf "nginx['listen_port'] = %v" .Values.service.port) }}
+{{- $rb = append $rb "nginx['listen_https'] = false" }}
+{{- $rb = append $rb "letsencrypt['enable'] = false" }}
+{{- /* The bundled Prometheus stack plus its exporters cost roughly a gigabyte of RAM and are
+       rarely what a Swarm deployment wants. Re-enable from config.extraRb (appended last, so
+       it wins) with prometheus_monitoring['enable'] = true. */}}
+{{- $rb = append $rb "prometheus_monitoring['enable'] = false" }}
+{{- if ne .Values.ssh.mode "none" }}
+{{- /* Display only: it is the port GitLab writes into clone URLs. sshd itself is pinned to
+       22 by /assets/sshd_config, which is what every mode below routes to. */}}
+{{- $rb = append $rb (printf "gitlab_rails['gitlab_shell_ssh_port'] = %v" .Values.ssh.port) }}
+{{- end }}
+{{- if .Values.auth.rootPassword.enabled }}
+{{- $rb = append $rb "# Only applied when the database is first seeded." }}
+{{- $rb = append $rb (printf "gitlab_rails['initial_root_password'] = File.read(%q).strip" (printf "/run/secrets/%s" .Values.auth.rootPassword.secretName)) }}
+{{- end }}
+{{- if .Values.smtp.enabled }}
+{{- $rb = append $rb "# --- outbound e-mail ---" }}
+{{- $rb = append $rb "gitlab_rails['smtp_enable'] = true" }}
+{{- $rb = append $rb (printf "gitlab_rails['smtp_address'] = %q" .Values.smtp.address) }}
+{{- $rb = append $rb (printf "gitlab_rails['smtp_port'] = %v" .Values.smtp.port) }}
+{{- with .Values.smtp.username }}
+{{- $rb = append $rb (printf "gitlab_rails['smtp_user_name'] = %q" .) }}
+{{- end }}
+{{- if $smtpAuth }}
+{{- $rb = append $rb (printf "gitlab_rails['smtp_password'] = File.read(%q).strip" (printf "/run/secrets/%s" .Values.smtp.passwordSecretName)) }}
+{{- end }}
+{{- with .Values.smtp.domain }}
+{{- $rb = append $rb (printf "gitlab_rails['smtp_domain'] = %q" .) }}
+{{- end }}
+{{- if eq .Values.smtp.authentication "none" }}
+{{- $rb = append $rb "gitlab_rails['smtp_authentication'] = nil" }}
+{{- else }}
+{{- $rb = append $rb (printf "gitlab_rails['smtp_authentication'] = %q" .Values.smtp.authentication) }}
+{{- end }}
+{{- $rb = append $rb (printf "gitlab_rails['smtp_tls'] = %v" .Values.smtp.tls) }}
+{{- $rb = append $rb (printf "gitlab_rails['smtp_enable_starttls_auto'] = %v" .Values.smtp.starttlsAuto) }}
+{{- $rb = append $rb (printf "gitlab_rails['smtp_openssl_verify_mode'] = %q" .Values.smtp.opensslVerifyMode) }}
+{{- with .Values.smtp.from }}
+{{- $rb = append $rb (printf "gitlab_rails['gitlab_email_from'] = %q" .) }}
+{{- end }}
+{{- with .Values.smtp.displayName }}
+{{- $rb = append $rb (printf "gitlab_rails['gitlab_email_display_name'] = %q" .) }}
+{{- end }}
+{{- with .Values.smtp.replyTo }}
+{{- $rb = append $rb (printf "gitlab_rails['gitlab_email_reply_to'] = %q" .) }}
+{{- end }}
+{{- end }}
+{{- with .Values.config.extraRb }}
+{{- $rb = append $rb "# --- config.extraRb ---" }}
+{{- range splitList "\n" (trimSuffix "\n" .) }}
+{{- $rb = append $rb . }}
+{{- end }}
+{{- end }}
+
+services:
+
+  gitlab:
+    image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
+
+    # A stable hostname: Swarm otherwise names the container after the task, which changes
+    # on every reschedule and shows up in `gitlab-ctl` output and SMTP HELO.
+    hostname: {{ .Values.ingress.host | quote }}
+
+{{- if $nets }}
+    networks:
+{{- range $nets }}
+      - {{ . }}
+{{- end }}
+{{- end }}
+
+{{- if or (eq $mode "published") (eq .Values.ssh.mode "published") }}
+    ports:
+{{- if eq $mode "published" }}
+      - target: {{ .Values.service.port }}
+        published: {{ .Values.publish.port }}
+        protocol: tcp
+        mode: {{ .Values.publish.mode }}
+{{- end }}
+{{- if eq .Values.ssh.mode "published" }}
+      - target: 22
+        published: {{ .Values.ssh.port }}
+        protocol: tcp
+        mode: {{ .Values.ssh.publishMode }}
+{{- end }}
+{{- end }}
+
+{{- if or .Values.persistence.enabled .Values.shm.enabled }}
+    volumes:
+{{- if .Values.persistence.enabled }}
+      - {{ .Values.persistence.configPath | default .Values.persistence.configVolume }}:/etc/gitlab
+      - {{ .Values.persistence.dataPath | default .Values.persistence.dataVolume }}:/var/opt/gitlab
+      - {{ .Values.persistence.logsPath | default .Values.persistence.logsVolume }}:/var/log/gitlab
+{{- end }}
+{{- if .Values.shm.enabled }}
+      # Long syntax with the size in BYTES, both deliberately: `shm_size` is on docker/cli's
+      # unsupported list and `docker stack deploy` drops it silently, and the compose v3.9
+      # schema types tmpfs.size as an integer — "256m" passes `docker compose config` (a
+      # different parser) and then fails at deploy.
+      - type: tmpfs
+        target: /dev/shm
+        tmpfs:
+          size: {{ mul .Values.shm.sizeMb 1048576 }}
+{{- end }}
+{{- end }}
+
+{{- if $secrets }}
+    secrets:
+{{- range $secrets }}
+      - {{ . }}
+{{- end }}
+{{- end }}
+
+    environment:
+      # /assets/gitlab.rb ends with `eval ENV["GITLAB_OMNIBUS_CONFIG"]`, so this IS the
+      # gitlab.rb. It is re-evaluated on every container start (GitLab reconfigures itself
+      # each boot), which is what makes a value change take effect on redeploy.
+      GITLAB_OMNIBUS_CONFIG: |
+{{ join "\n" $rb | indent 8 }}
+{{- range $key, $val := .Values.extraEnv }}
+      {{ $key }}: {{ $val | quote }}
+{{- end }}
+
+{{- if .Values.healthcheck.enabled }}
+    # The image's own HEALTHCHECK is this exact command, but with no start_period: at
+    # interval 60s x 5 retries a cold-booting GitLab is declared unhealthy after ~5 minutes
+    # and Swarm restarts it, forever. Same probe, with a start_period that covers a boot.
+    healthcheck:
+      test:
+        - CMD
+        - /opt/gitlab/bin/gitlab-healthcheck
+        - --fail
+        - --max-time
+        - "10"
+      interval: {{ .Values.healthcheck.interval }}
+      timeout: {{ .Values.healthcheck.timeout }}
+      retries: {{ .Values.healthcheck.retries }}
+      start_period: {{ .Values.healthcheck.startPeriod }}
+{{- end }}
+
+    # GitLab traps SIGTERM and runs `gitlab-ctl stop`; Swarm's 10s default would SIGKILL
+    # Postgres mid-shutdown.
+    stop_grace_period: {{ .Values.stopGracePeriod }}
+
+    deploy:
+      replicas: {{ .Values.replicas }}
+      update_config:
+        # stop-first is Swarm's default, pinned here because it is load-bearing: Postgres,
+        # Redis and Gitaly all live on ONE node-local volume set, so a start-first rollout
+        # would briefly run two GitLabs against the same database.
+        order: stop-first
+{{- if .Values.healthcheck.enabled }}
+        {{- /* Swarm watches a task for `monitor` after CREATING it, and only counts a
+               failure inside that window against the rollout. Shorter than the
+               healthcheck needs to fail and a broken deploy reports success. */}}
+        monitor: {{ .Values.healthcheck.monitor }}
+{{- end }}
+{{- /* The data-volume node pin travels with persistence: it exists only while
+       volumes need pinning, so persistence.enabled:false never leaves a task
+       Pending on a missing node label. placement.constraints adds extras. */}}
+{{- $constraints := list }}
+{{- if and .Values.persistence.enabled .Values.persistence.nodeLabel }}
+{{-   $constraints = append $constraints (printf "node.labels.%s == true" .Values.persistence.nodeLabel) }}
+{{- end }}
+{{- range .Values.placement.constraints }}
+{{-   $constraints = append $constraints . }}
+{{- end }}
+{{- if $constraints }}
+      placement:
+        constraints:
+{{- range $constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- if or .Values.resources.limits.memory .Values.resources.reservations.memory }}
+      resources:
+{{- with .Values.resources.limits.memory }}
+        limits:
+          memory: {{ . | quote }}
+{{- end }}
+{{- with .Values.resources.reservations.memory }}
+        reservations:
+          memory: {{ . | quote }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- if or (eq $mode "traefik") $sshTraefik .Values.labels }}
+      labels:
+{{- if or (eq $mode "traefik") $sshTraefik }}
+        - "traefik.enable=true"
+        - "traefik.swarm.network={{ .Values.exposure.network }}"
+        - "traefik.constraint-label={{ .Values.traefik.constraintLabel }}"
+{{- end }}
+{{- if eq $mode "traefik" }}
+        # HTTP router
+        - "traefik.http.routers.{{ $router }}-http.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ $router }}-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
+{{- if .Values.ingress.tls }}
+        # Redirect plain HTTP to HTTPS, then terminate TLS on the HTTPS router.
+        - "traefik.http.routers.{{ $router }}-http.middlewares={{ .Values.traefik.redirectMiddleware }}"
+        - "traefik.http.routers.{{ $router }}-https.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ $router }}-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
+        - "traefik.http.routers.{{ $router }}-https.tls=true"
+        - "traefik.http.routers.{{ $router }}-https.tls.certresolver={{ .Values.traefik.certResolver }}"
+{{- end }}
+        - "traefik.http.services.{{ $router }}.loadbalancer.server.port={{ .Values.service.port }}"
+{{- end }}
+{{- if $sshTraefik }}
+        # Git over SSH. Raw TCP, so there is no SNI to match on and the entrypoint alone
+        # selects this router — which means ssh.entrypoint must be dedicated to it. The
+        # traefik release has to define that entrypoint AND publish its port; see
+        # charts/traefik/README.md "Custom entrypoints".
+        - "traefik.tcp.routers.{{ $router }}-ssh.rule=HostSNI(`*`)"
+        - "traefik.tcp.routers.{{ $router }}-ssh.entrypoints={{ .Values.ssh.entrypoint }}"
+        - "traefik.tcp.services.{{ $router }}-ssh.loadbalancer.server.port=22"
+{{- end }}
+{{- range $key, $val := .Values.labels }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+{{- end }}
+
+{{- if and .Values.persistence.enabled (or (not .Values.persistence.configPath) (not .Values.persistence.dataPath) (not .Values.persistence.logsPath)) }}
+
+volumes:
+{{- if not .Values.persistence.configPath }}
+  {{ .Values.persistence.configVolume }}: {}
+{{- end }}
+{{- if not .Values.persistence.dataPath }}
+  {{ .Values.persistence.dataVolume }}: {}
+{{- end }}
+{{- if not .Values.persistence.logsPath }}
+  {{ .Values.persistence.logsVolume }}: {}
+{{- end }}
+{{- end }}
+
+{{- if $secrets }}
+
+secrets:
+{{- range $secrets }}
+  {{ . }}:
+    external: true
+{{- end }}
+{{- end }}
+
+{{- if $nets }}
+
+networks:
+{{- range $nets }}
+  {{ . }}:
+    external: true
+{{- end }}
+{{- end }}

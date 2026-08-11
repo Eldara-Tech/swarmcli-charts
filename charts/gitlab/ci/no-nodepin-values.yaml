@@ -1,0 +1,3 @@
+# Persistence on, pin off (single-node swarm): the volumes stay, only the constraint goes.
+persistence:
+  nodeLabel: ""

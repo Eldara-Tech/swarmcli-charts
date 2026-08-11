@@ -1,0 +1,5 @@
+# Traefik-routed but plain HTTP: no redirect middleware, no HTTPS router, and the
+# external_url scheme drops to http (which also stops GitLab generating https links).
+ingress:
+  host: gitlab.example.com
+  tls: false

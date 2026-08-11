@@ -76,3 +76,26 @@ include:
   # SQLite fallback. Excludes bind-mount, ephemeral, none and secrets — all render-covered by
   # charts.yml and still run in a full local `make e2e`.
   - { chart: vaultwarden,   cases: "default published postgres mysql edge",                                         timeout: 6m  }
+  # gitlab: ONE fixture. GitLab CE is a multi-gigabyte monolith (Postgres, Redis, Gitaly,
+  # Puma, Sidekiq in one container) whose documented baseline is 8 vCPU / 16 GB, so the
+  # runner boots exactly the case that carries the most signal per minute: `minimal` is the
+  # default shape (Traefik labels, SSH TCP router, all three volumes) with BOTH secret-backed
+  # settings on and the worker pools trimmed. Converging it proves the whole generated
+  # omnibus config parsed and both File.read calls found their mounted secrets — reconfigure
+  # raises otherwise and the task never becomes healthy. Every other fixture is render-only,
+  # and ci/render-check.sh is correspondingly thorough.
+  #
+  # 30m, not the 20m every other chart tops out at, and MEASURED rather than guessed. The
+  # instrumentation in ci/e2e-setup.sh + ci/e2e-check.sh (pull duration, task age) exists
+  # because e2e-test.sh's output reaches the Actions log in one flush: the fixture shows two
+  # timestamps and the pull/converge split is otherwise unrecoverable.
+  #
+  # Observed on a 4-vCPU runner: image pull 47s, then convergence 20m02s — the pull is
+  # negligible and GitLab's cold boot is the whole cost. That is already OVER the 20m every
+  # other chart uses; the first run passed on 20m by well under a minute, i.e. by luck. Keep
+  # the ~10m of headroom: GitLab's boot time is nowhere documented and varies with runner
+  # load, and this is a required check, so a flake here blocks PRs that never touched this
+  # chart. Trimming ci/minimal-values.yaml further does not help — the worker pools are
+  # already at 0/5/64MB and the time goes to Chef reconfigure and database migrations.
+  # The 75m job backstop still covers it comfortably.
+  - { chart: gitlab,        cases: "minimal",                                                                       timeout: 30m }

@@ -92,8 +92,9 @@ jobs:
     if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     # Hard backstop so a stuck phase self-kills: matrix.timeout only bounds convergence
-    # (E2E_TIMEOUT), not the smoke poll or teardown. Sized above the heaviest chart's
-    # converge (20m) + smoke budget + teardown, well under GitHub's 360m default.
+    # (E2E_TIMEOUT), not the image pull, the smoke poll or teardown. Sized above the heaviest
+    # chart's converge (gitlab, 30m) plus its multi-gigabyte pull, smoke budget and teardown,
+    # well under GitHub's 360m default.
     timeout-minutes: 75
     name: e2e (${{ matrix.chart }})
     strategy:

@@ -1,0 +1,18 @@
+# External requirements for GitLab CE.
+#
+# This file is authoritative when present: any external network/secret used by
+# the rendered stack must be declared here. Entries are declared
+# unconditionally and become inert when not referenced by the selected mode
+# (manifest-driven pre-flight).
+networks:
+  - name: "{{ .Values.exposure.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "Ingress overlay for the traefik/none exposure modes and for the SSH TCP router; provided by the edge proxy stack/operator"
+secrets:
+  - name: "{{ .Values.auth.rootPassword.secretName }}"
+    description: "auth.rootPassword.enabled=true only - initial root password, applied when the database is first seeded"
+  - name: "{{ .Values.smtp.passwordSecretName }}"
+    description: "smtp.enabled=true with authentication other than none - SMTP password"
+configs: []
