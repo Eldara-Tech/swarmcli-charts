@@ -1,0 +1,192 @@
+# gitlab chart default values
+
+image:
+  repository: gitlab/gitlab-ce
+  tag: ""  # defaults to appVersion from Chart.yaml
+
+# GitLab is a single-container monolith: Postgres, Redis, Gitaly, Sidekiq and Puma all
+# run inside it, against ONE node-local volume set. Two tasks would corrupt the database,
+# so this is capped at 1 by values.schema.json.
+replicas: 1
+
+# How GitLab's HTTP interface is reached:
+#   traefik   -> discovered by the traefik chart via deploy labels (no published port)
+#   published -> a port published on the node itself, no proxy
+#   none      -> no port and no labels; joins exposure.network so some OTHER proxy on
+#                that overlay can reach it
+exposure:
+  mode: traefik
+  # External overlay shared with the edge proxy. Also joined (in any exposure mode) when
+  # ssh.mode is traefik, because the TCP router needs to reach this service too.
+  network: traefik-public
+
+ingress:
+  # Public hostname. This is GitLab's external_url: every clone URL, notification e-mail
+  # link and OAuth redirect is built from it, so it must be the name users actually type.
+  # Required in every exposure mode. Must not contain an underscore — GitLab's CI/CD
+  # raises URI::InvalidComponentError on such a URL.
+  host: gitlab.example.com
+  # TLS at the edge proxy (traefik/none modes). GitLab itself never terminates TLS in this
+  # chart: its bundled nginx always serves plain HTTP on service.port and the proxy adds
+  # the certificate. With tls: true the external_url scheme becomes https, which is what
+  # makes GitLab set X-Forwarded-Proto/-Ssl and generate https links.
+  tls: true
+
+traefik:
+  # Router/service name prefix for the Traefik objects. Defaults to the release name.
+  routerName: ""
+  # Entrypoints as defined by the in-repo traefik chart (NOT Traefik's conventional
+  # web/websecure — a router bound to an entrypoint the instance does not define is
+  # silently dropped).
+  entrypoints:
+    http: http
+    https: https
+  certResolver: le
+  constraintLabel: traefik-public
+  redirectMiddleware: https-redirect
+
+# exposure.mode: published only — the node port GitLab's HTTP interface is published on.
+# It is also part of the public URL, so external_url carries it.
+publish:
+  port: 8080
+  # host    -> binds on the node running the task, preserves the client IP
+  # ingress -> published through the routing mesh on every node
+  mode: ingress
+
+service:
+  # Container port GitLab's bundled nginx listens on (nginx['listen_port']).
+  port: 80
+
+# Git over SSH. sshd's port inside the container is hard-coded to 22 by the image, so
+# every mode routes to 22; ssh.port is the port USERS type, which is also what GitLab
+# advertises in clone URLs (gitlab_rails['gitlab_shell_ssh_port']).
+#   traefik   -> a Traefik TCP router on ssh.entrypoint. The traefik release must define
+#                that entrypoint AND publish its port (traefik.extraEntrypoints + ports).
+#   published -> ssh.port published straight on the node
+#   none      -> git over SSH is not reachable from outside (HTTP(S) clone still works)
+ssh:
+  mode: traefik
+  port: 2222
+  # ssh.mode: traefik only — the Traefik entrypoint name to bind the TCP router to.
+  entrypoint: gitlab-ssh
+  # ssh.mode: published only.
+  publishMode: ingress
+
+# GitLab's three state directories. All three are Swarm volumes (node-local), which is
+# why the service is pinned to one node:
+#   /etc/gitlab     gitlab.rb, gitlab-secrets.json, the SSH HOST KEYS. Losing it makes
+#                   encrypted database columns unrecoverable even from a good backup, and
+#                   re-mints host keys so every git client warns.
+#   /var/opt/gitlab Postgres, repositories, uploads, LFS, artifacts, backups.
+#   /var/log/gitlab logs only — the one that is safe to lose.
+persistence:
+  enabled: true
+  configVolume: gitlab-config
+  dataVolume: gitlab-data
+  logsVolume: gitlab-logs
+  # Store the directories under host paths instead of Docker-managed named volumes. When
+  # a *Path is set it TAKES PRECEDENCE and the matching *Volume above is ignored: that
+  # directory is bind-mounted from the given absolute host path on the PINNED node, and
+  # must already exist there. This is host-filesystem access, acknowledged via
+  # swarmcli-charts/allow: "host-mount" in Chart.yaml. Leave "" to use the named volumes.
+  configPath: ""
+  dataPath: ""
+  logsPath: ""
+  # Node label pinning the service to the node holding the volumes. Rendered as
+  # `node.labels.<nodeLabel> == true` while persistence is enabled and dropped
+  # automatically when it is not. Label exactly ONE node first:
+  #   docker node update --label-add gitlab-data=true <node>
+  # Set "" to schedule unpinned even with persistence on (e.g. a single-node swarm).
+  nodeLabel: gitlab-data
+
+# Puma and Sidekiq write Prometheus metrics files to /dev/shm. Docker's default is 64 MiB
+# and GitLab needs at least 256, or it fails with "unmapped file". `shm_size` cannot be
+# used: docker/cli lists it as unsupported and `docker stack deploy` silently drops it
+# (GitLab's own Swarm example has this bug), so the chart mounts a sized tmpfs instead.
+shm:
+  enabled: true
+  sizeMb: 256
+
+auth:
+  # Initial root password, from an EXTERNAL Swarm secret. GitLab's own Ruby config reads
+  # the file at reconfigure time, so the value never appears in the compose file or in
+  # `docker inspect`. Only applied when the database is first seeded — changing the secret
+  # afterwards does nothing. With enabled: false GitLab generates one into
+  # /etc/gitlab/initial_root_password instead. Pre-create the secret:
+  #   printf 'S3cr3tPassw0rd' | docker secret create gitlab_root_password -
+  rootPassword:
+    enabled: false
+    secretName: gitlab_root_password
+
+# Outbound e-mail. GitLab sends notifications, password resets and 2FA mails through this;
+# with smtp.enabled false it falls back to the image's sendmail, which usually cannot
+# deliver anywhere. The password comes from an EXTERNAL Swarm secret, referenced only when
+# smtp.enabled and authentication is not "none":
+#   printf 'hunter2' | docker secret create gitlab_smtp_password -
+smtp:
+  enabled: false
+  address: ""
+  port: 587
+  username: ""
+  passwordSecretName: gitlab_smtp_password
+  # HELO domain announced to the SMTP server.
+  domain: ""
+  # login | plain | cram_md5 | none
+  authentication: login
+  # Implicit TLS for the whole connection (usually port 465). For STARTTLS on 587 leave
+  # this false and keep starttlsAuto true.
+  tls: false
+  starttlsAuto: true
+  # none | peer | client_once | fail_if_no_peer_cert
+  opensslVerifyMode: peer
+  # Envelope sender, e.g. "gitlab@example.com". Empty lets GitLab default it.
+  from: ""
+  displayName: ""
+  replyTo: ""
+
+config:
+  # Extra omnibus configuration, appended VERBATIM after everything the chart generates —
+  # so it can override any of it. This is the same Ruby you would put in gitlab.rb, e.g.
+  #   gitlab_rails['time_zone'] = 'Europe/Zurich'
+  #   gitlab_rails['ldap_enabled'] = true
+  # A literal `$` must be written `$$`: this is rendered into the compose manifest, which
+  # docker interpolates before deploying. See the README's "Extra configuration".
+  extraRb: ""
+
+# Extra environment variables for the container (NOT omnibus settings — use
+# config.extraRb for those).
+extraEnv: {}
+
+# EXTRA placement constraints. The persistence data pin is added automatically; never put
+# it here, or it would outlive persistence.enabled: false and strand the task Pending.
+placement:
+  constraints: []
+
+# GitLab's documented baseline is 8 vCPU / 16 GB. Both are unset by default: a memory
+# limit below what GitLab actually needs gets the task OOM-killed mid-reconfigure.
+resources:
+  limits:
+    memory: ""
+  reservations:
+    memory: ""
+
+# The image's own HEALTHCHECK has no start_period, so Swarm can declare a cold-booting
+# GitLab unhealthy and restart it into a loop. This one runs the same command with a
+# start_period that covers a real boot.
+healthcheck:
+  enabled: true
+  interval: 60s
+  timeout: 30s
+  retries: 5
+  startPeriod: 10m
+  # Swarm watches a task for `monitor` after creating it and only counts failures inside
+  # that window against the rollout. Keep it >= startPeriod + interval * retries, or a
+  # broken deploy reports success.
+  monitor: 20m
+
+# GitLab traps SIGTERM and runs `gitlab-ctl stop`. Swarm's 10s default would SIGKILL
+# Postgres mid-shutdown.
+stopGracePeriod: 5m
+
+# Extra deploy labels (key: value)
+labels: {}

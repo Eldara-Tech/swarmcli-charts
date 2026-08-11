@@ -76,3 +76,14 @@ include:
   # SQLite fallback. Excludes bind-mount, ephemeral, none and secrets — all render-covered by
   # charts.yml and still run in a full local `make e2e`.
   - { chart: vaultwarden,   cases: "default published postgres mysql edge",                                         timeout: 6m  }
+  # gitlab: ONE fixture. GitLab CE is a multi-gigabyte monolith (Postgres, Redis, Gitaly,
+  # Puma, Sidekiq in one container) whose documented baseline is 8 vCPU / 16 GB, so the
+  # runner boots exactly the case that carries the most signal per minute: `minimal` is the
+  # default shape (Traefik labels, SSH TCP router, all three volumes) with BOTH secret-backed
+  # settings on and the worker pools trimmed. Converging it proves the whole generated
+  # omnibus config parsed and both File.read calls found their mounted secrets — reconfigure
+  # raises otherwise and the task never becomes healthy. 20m is the per-fixture ceiling in
+  # this matrix; GitLab's cold-boot time is not documented as a number, so if this proves
+  # tight the fixture gets trimmed further rather than the 75m job backstop raised. Every
+  # other fixture is render-only, and ci/render-check.sh is correspondingly thorough.
+  - { chart: gitlab,        cases: "minimal",                                                                       timeout: 20m }

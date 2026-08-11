@@ -1,0 +1,7 @@
+# Host-path persistence: the three state directories are bind-mounted from the pinned
+# node's filesystem instead of Docker-managed volumes. Exercises the host-mount
+# acknowledgment in Chart.yaml.
+persistence:
+  configPath: /srv/gitlab/config
+  dataPath: /srv/gitlab/data
+  logsPath: /srv/gitlab/logs

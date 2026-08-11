@@ -1,0 +1,30 @@
+name: gitlab
+description: GitLab CE — self-hosted Git hosting and CI/CD on Docker Swarm
+# version is a placeholder — the git tag (gitlab/vX.Y.Z) sets the real version at release.
+version: 0.1.0
+# appVersion is the default image tag for gitlab/gitlab-ce.
+# renovate: image=gitlab/gitlab-ce
+appVersion: "19.2.1-ce.0"
+# Oldest swarmcli whose chart engine renders this chart; verified by
+# scripts/floor-check.sh against a real binary of that version.
+swarmcliVersion: ">= 1.11.0"
+maintainers:
+  - name: Eldara
+    url: https://github.com/Eldara-Tech
+keywords:
+  - gitlab
+  - git
+  - ci-cd
+  - devops
+home: https://github.com/Eldara-Tech/swarmcli-charts
+sources:
+  - https://gitlab.com/gitlab-org/omnibus-gitlab
+  - https://docs.gitlab.com/install/docker/
+# The default render needs no acknowledgment: GitLab's three state directories live on
+# node-local named volumes (no host mount), the root/SMTP passwords come from external
+# Swarm secrets, and there is no docker.sock / privileged / host-network / cap_add. The
+# /dev/shm tmpfs is a tmpfs mount, not a host mount, and is not flagged. Only the opt-in
+# host-path persistence (persistence.configPath / dataPath / logsPath) introduces a host
+# bind mount, which the security scan flags as host-mount only when configured:
+annotations:
+  swarmcli-charts/allow: "host-mount"

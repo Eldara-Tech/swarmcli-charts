@@ -1,0 +1,9 @@
+# An unauthenticated relay: authentication none, so no password secret is referenced or
+# required.
+smtp:
+  enabled: true
+  address: mail-relay
+  port: 25
+  authentication: none
+  starttlsAuto: false
+  from: gitlab@example.com

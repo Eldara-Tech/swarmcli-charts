@@ -1,0 +1,13 @@
+# No proxy at all: HTTP on a node port and git over SSH on another. The published HTTP
+# port is part of the public URL, so external_url must carry it.
+exposure:
+  mode: published
+publish:
+  port: 8080
+  mode: ingress
+ssh:
+  mode: published
+  port: 2222
+  publishMode: ingress
+ingress:
+  host: gitlab.example.com

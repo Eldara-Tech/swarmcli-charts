@@ -1,0 +1,4 @@
+# Chart defaults: Traefik-routed HTTPS, git over SSH on a Traefik TCP entrypoint,
+# all three state directories on node-local named volumes.
+ingress:
+  host: gitlab.example.com

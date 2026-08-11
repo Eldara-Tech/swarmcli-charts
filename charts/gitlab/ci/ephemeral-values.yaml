@@ -1,0 +1,4 @@
+# Persistence off: no volumes and — the part that matters — no node pin, so the task is
+# not left Pending on a label nothing needs. Wipes on every reschedule; test only.
+persistence:
+  enabled: false

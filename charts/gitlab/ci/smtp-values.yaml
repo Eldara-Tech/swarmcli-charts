@@ -1,0 +1,13 @@
+# Outbound e-mail over STARTTLS. The password is an external Swarm secret read by GitLab's
+# own Ruby at reconfigure time — the manifest only ever carries the File.read call.
+smtp:
+  enabled: true
+  address: smtp.example.com
+  port: 587
+  username: gitlab@example.com
+  passwordSecretName: gitlab_smtp_password
+  domain: example.com
+  authentication: login
+  starttlsAuto: true
+  from: gitlab@example.com
+  displayName: GitLab

@@ -145,6 +145,11 @@ traefik.tcp.routers.gitlab-ssh.rule=HostSNI(`*`)
 traefik.tcp.services.gitlab-ssh.loadbalancer.server.port=22
 ```
 
+The [gitlab](../gitlab) chart renders exactly those labels for `ssh.mode: traefik`
+— see its Prerequisites for the paired configuration. Note that the entrypoint must
+be **dedicated** to one service: raw SSH carries no SNI, so the rule matches any and
+the entrypoint alone selects the router.
+
 ## Requirements
 
 - **External `traefik-public` overlay network.** Declared in this chart's
