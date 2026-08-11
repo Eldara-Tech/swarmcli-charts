@@ -85,12 +85,17 @@ include:
   # raises otherwise and the task never becomes healthy. Every other fixture is render-only,
   # and ci/render-check.sh is correspondingly thorough.
   #
-  # 30m, not the 20m every other chart tops out at. The first green run took 20m50s for the
-  # WHOLE fixture (pre-pull + converge + smoke + teardown) against a 20m convergence cap that
-  # did not trip — so convergence fitted, but by an unknown margin, because e2e-test.sh's
-  # output reaches the Actions log in one flush and the split was unrecoverable. A required
-  # check possibly sitting at 95% of its budget is a flake waiting to happen, and GitLab's
-  # cold-boot time is nowhere documented as a number. ci/e2e-setup.sh and ci/e2e-check.sh now
-  # print the pull duration and the task's age, so the next run measures the real margin and
-  # this can come back down on evidence. The 75m job backstop still covers it comfortably.
+  # 30m, not the 20m every other chart tops out at, and MEASURED rather than guessed. The
+  # instrumentation in ci/e2e-setup.sh + ci/e2e-check.sh (pull duration, task age) exists
+  # because e2e-test.sh's output reaches the Actions log in one flush: the fixture shows two
+  # timestamps and the pull/converge split is otherwise unrecoverable.
+  #
+  # Observed on a 4-vCPU runner: image pull 47s, then convergence 20m02s — the pull is
+  # negligible and GitLab's cold boot is the whole cost. That is already OVER the 20m every
+  # other chart uses; the first run passed on 20m by well under a minute, i.e. by luck. Keep
+  # the ~10m of headroom: GitLab's boot time is nowhere documented and varies with runner
+  # load, and this is a required check, so a flake here blocks PRs that never touched this
+  # chart. Trimming ci/minimal-values.yaml further does not help — the worker pools are
+  # already at 0/5/64MB and the time goes to Chef reconfigure and database migrations.
+  # The 75m job backstop still covers it comfortably.
   - { chart: gitlab,        cases: "minimal",                                                                       timeout: 30m }
