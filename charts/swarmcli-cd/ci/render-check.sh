@@ -74,5 +74,38 @@ fi
 yq -r '(.services.controller.environment // {}) | keys | .[]' "$out" | grep -x 'SWARMCLI_CD_ADMIN_TOKEN' >/dev/null \
   && bad "the admin token is passed as a value — it must be SWARMCLI_CD_ADMIN_TOKEN_FILE"
 
+# 8. extra_hosts is a shape Docker converts, not a string it passes through: `docker stack
+#    deploy` splits each entry at the FIRST colon into SwarmKit's "<ip> <hostname>" and
+#    DROPS any entry it cannot split (docker/cli convertExtraHosts). A hostname with no
+#    address, or the address:hostname order, therefore renders, compose-validates, deploys
+#    — and resolves nothing. values.schema.json refuses that shape in the values; this is
+#    the same rule asserted on what actually came out.
+hosts_of() { yq -r "(.services[\"$1\"].extra_hosts // [])[]" "$out"; }
+for svc in $(yq -r '.services | keys | .[]' "$out"); do
+  while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    [[ "$entry" =~ ^[^:[:space:]]+:[0-9A-Fa-f.:]+$ ]] \
+      || bad "$svc extra_hosts entry '$entry' is not <hostname>:<ip> — docker drops such an entry without saying so"
+  done <<<"$(hosts_of "$svc")"
+done
+
+# 9. Both halves resolve the same names. In git-sync mode the SIDECAR is what dials the
+#    forge — the controller never fetches the app set — so a mapping rendered onto the
+#    controller alone leaves the one service that needs it unable to resolve the remote,
+#    and the failure arrives as a sidecar retrying a DNS lookup for ever.
+if [ "$(yq -r '.services | has("git-sync")' "$out")" = "true" ]; then
+  [ "$(hosts_of controller)" = "$(hosts_of git-sync)" ] \
+    || bad "controller and git-sync carry different extra_hosts — in git-sync mode the sidecar is what resolves the forge"
+fi
+
+# 10. …and the fixtures that exist to exercise all of that must still carry an entry. An
+#     extraHosts silently dropped from one of them leaves 8 and 9 passing on empty lists.
+case "$case" in
+  git-sync | published)
+    [ -n "$(hosts_of controller)" ] \
+      || bad "the $case fixture sets extraHosts, but nothing rendered onto the controller"
+    ;;
+esac
+
 [ "$fail" -eq 0 ] || exit 1
 echo "  placement: manager pin + node pin consistent; secrets by file path ($case)"

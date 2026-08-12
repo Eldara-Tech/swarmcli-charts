@@ -161,7 +161,7 @@
     "labels": { "type": "object" },
     "extraHosts": {
       "type": "array",
-      "items": { "type": "string" }
+      "items": { "type": "string", "pattern": "^[^\\s:]+:[0-9A-Fa-f.:]+$" }
     }
   },
   "required": ["image", "appset", "exposure", "auth", "persistence"]

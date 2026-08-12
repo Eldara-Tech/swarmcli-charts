@@ -77,6 +77,20 @@ if docker exec -e SWARMCLI_CD_ADMIN_TOKEN_FILE= -e SWARMCLI_CD_ADMIN_TOKEN=not-t
 fi
 echo "    token gate: a wrong admin token is refused"
 
+# published fixture: extraHosts. The rendered `extra_hosts:` key proves nothing on its own
+# — `docker stack deploy` rewrites each "<hostname>:<ip>" into SwarmKit's "<ip> <hostname>"
+# and silently drops whatever it cannot split at a colon — so the mapping is read back off
+# the deployed spec, and then out of the file the container actually resolves against.
+if [ "$case" = "published" ]; then
+  spec="$(docker service inspect --format '{{ json .Spec.TaskTemplate.ContainerSpec.Hosts }}' "${release}_controller")"
+  grep -F '"192.0.2.10 forge.e2e.test"' <<<"$spec" >/dev/null \
+    || { echo "  FAIL: the controller's spec carries no host entry for forge.e2e.test (Hosts: $spec)"; exit 1; }
+  etc_hosts="$(docker exec "$cid" cat /etc/hosts)"
+  grep -E '^192\.0\.2\.10[[:space:]]+forge\.e2e\.test$' <<<"$etc_hosts" >/dev/null \
+    || { echo "  FAIL: forge.e2e.test is missing from the task's /etc/hosts"; printf '%s\n' "$etc_hosts" | sed 's/^/    /'; exit 1; }
+  echo "    extraHosts: forge.e2e.test resolves to 192.0.2.10 inside the task"
+fi
+
 # edge fixture: prove a request routes THROUGH the stood-up traefik edge (issue #63).
 # /healthz is the endpoint to use — it is the only one that needs no credential, so what is
 # being tested is the routing and not curl's ability to carry a header.

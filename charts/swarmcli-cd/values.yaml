@@ -257,9 +257,15 @@ resources:
 # Extra deploy labels (key: value), merged after any Traefik labels.
 labels: {}
 
-# Extra /etc/hosts entries for the controller container, in "hostname:ip" format.
+# Extra /etc/hosts entries, in "hostname:ip" format — rendered onto BOTH the controller
+# and the git-sync sidecar, since either of them may be the one resolving the name.
 # Useful when the controller must reach an internal hostname (e.g. a self-hosted forge)
 # that is not in the swarm's DNS — for instance a GitLab instance behind a Traefik VIP:
 #   extraHosts:
 #     - "gitlab.example.com:10.0.0.5"
+#
+# The order is hostname first, address second. values.schema.json enforces that shape
+# because nothing downstream does: `docker stack deploy` splits each entry at the first
+# colon and silently DROPS any entry without one, so a typo here would deploy clean and
+# resolve nothing.
 extraHosts: []

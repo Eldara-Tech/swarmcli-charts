@@ -272,6 +272,7 @@ nothing.
 | `resources.limits.memory` | `""` | e.g. `1G` |
 | `resources.reservations.memory` | `""` | Scheduler hint |
 | `labels` | `{}` | Extra deploy labels |
+| `extraHosts` | `[]` | Extra `/etc/hosts` entries as `"hostname:ip"`, for a forge the swarm's DNS cannot resolve. Rendered onto the controller **and** the git-sync sidecar |
 
 ## What the data directory is, and is not
 
