@@ -78,6 +78,20 @@ for dir in charts/*/; do
   fi
 done
 
+# The presence check above says nothing about WHERE a row lands, so rows were simply
+# appended as charts shipped and a reader looking one up had to scan the whole table (#158).
+# Compared against the chart directories rather than against a re-sort of itself: a
+# table whose row format drifts extracts as nothing, and nothing is trivially sorted —
+# the check would pass while reading no table at all. Byte order, matching
+# .github/renovate.json's list (swarm-cronjob before swarmcli-cd).
+listed="$(sed -n 's#^| \[\([a-z0-9-]*\)\](charts/.*#\1#p' README.md)"
+expected="$(printf '%s\n' charts/*/ | sed 's#charts/\(.*\)/#\1#' | LC_ALL=C sort)"
+if [ "$listed" != "$expected" ]; then
+  echo "ERROR: the root README.md 'Available Charts' table must list every chart, in alphabetical order; expected:"
+  printf '%s\n' "$expected" | sed 's/^/  /'
+  fail=1
+fi
+
 # A consumer that exits early kills the producer, and pipefail keeps the corpse.
 #
 # `producer | grep -q PATTERN` under `set -o pipefail` reports a MATCH as no match:
