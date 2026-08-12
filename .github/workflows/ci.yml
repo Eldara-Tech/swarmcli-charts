@@ -66,7 +66,7 @@ jobs:
       # don't fail the job; shell scripts are checked separately below.
       - name: Lint workflows (actionlint)
         run: |
-          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          bash <(curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
           ./actionlint -color -shellcheck=
 
       # shellcheck is preinstalled on ubuntu runners. --severity=error fails only
@@ -84,7 +84,10 @@ jobs:
       - name: Install yq (mikefarah v4)
         run: |
           mkdir -p "$HOME/.local/bin"
-          curl -fsSL -o "$HOME/.local/bin/yq" https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+          # Retried: a 503 from the release CDN here failed a whole lint job.
+          # --retry alone would cover that one, but not the TLS handshake that
+          # broke the nightly (#104) — hence --retry-all-errors.
+          curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors -o "$HOME/.local/bin/yq" https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
           chmod +x "$HOME/.local/bin/yq"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 

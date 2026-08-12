@@ -57,7 +57,7 @@ jobs:
       - name: Install yq (mikefarah v4)
         run: |
           mkdir -p "$HOME/.local/bin"
-          curl -fsSL -o "$HOME/.local/bin/yq" https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+          curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors -o "$HOME/.local/bin/yq" https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
           chmod +x "$HOME/.local/bin/yq"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
@@ -97,7 +97,7 @@ jobs:
       - id: load
         name: Load e2e matrix from .github/e2e-matrix.yaml
         run: |
-          curl -fsSL -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+          curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors -o /tmp/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
           chmod +x /tmp/yq
           echo "matrix=$(/tmp/yq -o=json -I=0 '.' .github/e2e-matrix.yaml)" >> "$GITHUB_OUTPUT"
 

@@ -63,11 +63,31 @@ fi
 asset="swarmcli-oss_${os}_${arch}.tar.gz"
 checksums="checksums-oss.txt"
 
+# curl, with the transport failures retried. A runner that loses a TLS handshake
+# for one second must not redden a whole nightly (#104: `curl: (60) SSL
+# certificate problem: self-signed certificate`, one job out of eighteen, the
+# other seventeen fetching the same asset fine). curl's own --retry covers only
+# HTTP 5xx/429 and timeouts, and --retry-all-errors would also retry the 404 the
+# -oss probe below EXPECTS on a pre-editions tag — hence the loop.
+#
+# Passes curl's exit status back: 22 is an HTTP error under -f (the asset is not
+# in this release), any other non-zero means we never got there to find out.
+fetch() {
+  local rc try
+  for try in 1 2 3; do
+    [ "$try" -eq 1 ] || sleep 2
+    rc=0
+    curl -fsSL "$@" || rc=$?
+    if [ "$rc" -eq 0 ] || [ "$rc" -eq 22 ]; then break; fi
+  done
+  return "$rc"
+}
+
 # Resolve the tag. /releases/latest redirects to /releases/tag/<tag>; reading
 # the redirect target needs no API token and skips prereleases.
 REF="${SWARMCLI_REF:-}"
 if [ -z "$REF" ]; then
-  REF="$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+  REF="$(fetch -o /dev/null -w '%{url_effective}' \
         "https://github.com/$REPO/releases/latest" | sed -E 's#.*/tag/##')"
   [ -n "$REF" ] || { echo "download-swarmcli: could not resolve latest release" >&2; exit 1; }
 fi
@@ -77,7 +97,18 @@ work="$DEST/dl"
 rm -rf "$work"; mkdir -p "$work"
 
 echo "Downloading swarmcli $REF ($asset) ..." >&2
-if ! curl -fsSL -o "$work/$asset" "$base/$asset" 2>/dev/null; then
+rc=0
+fetch -o "$work/$asset" "$base/$asset" || rc=$?
+if [ "$rc" -ne 0 ]; then
+  # Only an HTTP error (22) means the asset is not in this release. Every other
+  # code is a transport failure that outlived the retries, and it must NOT fall
+  # through: the fallback name is the LICENSED build, so swapping it in because
+  # a handshake flaked is exactly the silent substitution this script exists to
+  # prevent — and it would pass green.
+  if [ "$rc" -ne 22 ]; then
+    echo "download-swarmcli: fetching $asset from $REF failed (curl exit $rc)" >&2
+    exit "$rc"
+  fi
   # Releases before the editions split published this build under the plain
   # name, with a `checksums.txt` covering it. floor-check.sh asks for whatever
   # tag a chart's Chart.yaml declares, so those tags stay reachable for as long
@@ -85,9 +116,9 @@ if ! curl -fsSL -o "$work/$asset" "$base/$asset" 2>/dev/null; then
   echo "download-swarmcli: no $asset in $REF; falling back to the pre-editions names" >&2
   asset="swarmcli_${os}_${arch}.tar.gz"
   checksums="checksums.txt"
-  curl -fsSL -o "$work/$asset" "$base/$asset"
+  fetch -o "$work/$asset" "$base/$asset"
 fi
-curl -fsSL -o "$work/$checksums" "$base/$checksums"
+fetch -o "$work/$checksums" "$base/$checksums"
 
 echo "Verifying checksum ..." >&2
 ( cd "$work" && grep " $asset\$" "$checksums" | sha256sum -c - >&2 )
