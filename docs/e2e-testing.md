@@ -212,17 +212,40 @@ These hooks are what let the `e2e.yml` workflow run a chart's e2e in CI without
 any repo secrets: everything the fixture needs is public images plus these
 on-runner, dummy-valued resources.
 
-Charts shipping these hooks today: **openclaw** (the reference above); **redis**, **mariadb**
-and **postgres** (dummy auth secret(s) + the persistence node-label pin + the bind-mount host
-dir); **traefik** (the `traefik-certs` node-label pin + the certs-bind-mount host dir);
-and **keycloak** (the two operator secrets + the DB/ingress overlays + a throwaway
-co-located backend on `keycloak-db-net` — MariaDB, or PostgreSQL for the `postgres` fixture —
-because Keycloak attaches its DB overlay unconditionally and `/health/ready` only passes once
-it has connected and migrated, so every keycloak fixture needs a reachable database); and
-**vaultwarden** (the four dummy secrets + the data node label for every fixture, plus a
-throwaway PostgreSQL/MariaDB named `vw-postgres`/`vw-mariadb` for the `postgres`/`mysql`
-fixtures — deliberately *not* the plain `postgres`/`mariadb` names the keycloak and superset
-hooks use, so the two never collide).
+Charts shipping these hooks today — `scripts/lint.sh` requires every chart with a
+`ci/e2e-setup.sh` to appear here, because a hook nobody knows about gets reinvented:
+
+- **openclaw** — the reference above.
+- **redis**, **mariadb**, **postgres** — dummy auth secret(s) + the persistence node-label
+  pin + the bind-mount host dir.
+- **traefik** — the `traefik-certs` node-label pin + the certs-bind-mount host dir.
+- **keycloak** — the two operator secrets + the DB/ingress overlays + a throwaway
+  co-located backend on `keycloak-db-net` — MariaDB, or PostgreSQL for the `postgres` fixture —
+  because Keycloak attaches its DB overlay unconditionally and `/health/ready` only passes once
+  it has connected and migrated, so every keycloak fixture needs a reachable database.
+- **vaultwarden** — the four dummy secrets + the data node label for every fixture, plus a
+  throwaway PostgreSQL/MariaDB named `vw-postgres`/`vw-mariadb` for the `postgres`/`mysql`
+  fixtures — deliberately *not* the plain `postgres`/`mariadb` names the keycloak and superset
+  hooks use, so the two never collide.
+- **superset** — the four operator secrets + the `superset-db-net`/`redis-net`/`traefik-public`
+  overlays + a throwaway metadata database (PostgreSQL, or MySQL for the `mysql` fixture) and a
+  password-protected `redis:7`. The `embedded-redis` fixture deliberately gets **no** Redis from
+  the hook, so only the chart's own can make its celery worker healthy.
+- **zammad** — the three operator secrets and nothing else: the `embedded-backing` fixture runs
+  its own PostgreSQL, Redis, memcached and Elasticsearch, and one dummy password backs both
+  sides of each pair (the embedded server reads the same secret the app does).
+- **swarmcli-cd** — the admin-token secret + the applications config + the persistence node
+  label; per fixture, the external app-set volume (`dir`, left empty on purpose) and a real
+  Traefik edge (`edge`). The application is declared `automated: false` because the controller
+  refuses to start on an empty set but this run is about the chart, not about converging a swarm.
+- **ollama** — the `ollama-data` node-label pin + `traefik-public` + the bind-mount host dir.
+  No secret: Ollama has no auth.
+- **gitlab** — the two dummy secrets (initial root password, SMTP password) + the `gitlab-data`
+  node label + `traefik-public`, which is `autoCreate:false`, so the hook stands in for the
+  operator. Both secrets are turned on by the fixture on purpose: GitLab `File.read`s them at
+  reconfigure time, so a wrong path or mount raises in Ruby and the task never converges —
+  convergence *is* the assertion that the secret plumbing works.
+
 `whoami` and `swarm-cronjob` converge solo and ship no hooks.
 
 > **Asserting what the secret wrapper actually produced.** Several charts export a

@@ -62,6 +62,20 @@ for dir in charts/*/; do
     echo "ERROR: $chart README.md documents a :latest default that values.yaml cannot have"
     fail=1
   fi
+
+  # Registering a new chart means editing three hand-maintained lists that nothing
+  # rendered depends on, so a chart can land, pass CI, release, and still be invisible:
+  # gitlab shipped and was published without a README row, a Renovate commit scope or an
+  # e2e-docs entry, and only a user reading the README noticed (#156). Presence is all
+  # that can be checked mechanically — the wording stays a human's job.
+  grep -qF "](charts/$chart)" README.md \
+    || { echo "ERROR: $chart has no row in the root README.md 'Available Charts' table"; fail=1; }
+  grep -qF "\"charts/$chart/**\"" .github/renovate.json \
+    || { echo "ERROR: $chart has no semanticCommitScope rule for 'charts/$chart/**' in .github/renovate.json"; fail=1; }
+  if [ -f "$dir/ci/e2e-setup.sh" ] && ! grep -qF "**$chart**" docs/e2e-testing.md; then
+    echo "ERROR: $chart ships ci/e2e-setup.sh but is not named in docs/e2e-testing.md's hooks list"
+    fail=1
+  fi
 done
 
 # A consumer that exits early kills the producer, and pipefail keeps the corpse.
