@@ -6,3 +6,11 @@ exposure:
 publish:
   port: 18080
   mode: host
+
+# The e2e half of extraHosts. This fixture is one of the few that converges in CI, and the
+# rendered `extra_hosts:` key proves nothing on its own: `docker stack deploy` rewrites it
+# into SwarmKit's "<ip> <hostname>" notation and drops anything it cannot split, so only a
+# deployed task shows whether the mapping survived. ci/e2e-check.sh reads it back off the
+# service spec and out of the container's /etc/hosts.
+extraHosts:
+  - "forge.e2e.test:192.0.2.10"

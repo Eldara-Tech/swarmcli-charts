@@ -6,6 +6,14 @@
 #
 # The node pin is what keeps both ends of the shared volume on one node; persistence stays
 # on here, so one label does both jobs.
+
+# extraHosts is here because this is the fixture where the controller is NOT the service
+# that reaches the forge: the sidecar fetches over SSH, so an entry rendered onto the
+# controller alone would leave gitlab.example.com below unresolvable by the only service
+# that dials it. ci/render-check.sh asserts both services carry the same list.
+extraHosts:
+  - "gitlab.example.com:192.0.2.10"
+
 appset:
   mode: git-sync
   path: gitops/swarmcli-cd/applications.yaml

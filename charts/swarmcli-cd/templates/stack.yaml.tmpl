@@ -167,6 +167,17 @@ services:
       - {{ $appsetVolume }}:{{ $appsetDir }}:ro
 {{- end }}
 
+{{- if .Values.extraHosts }}
+
+    # The controller resolves every application's repository itself, in every mode — so a
+    # forge the swarm's DNS cannot name is the controller's problem whether or not the
+    # sidecar below exists. Same list is rendered onto that sidecar.
+    extra_hosts:
+{{- range .Values.extraHosts }}
+      - {{ . | quote }}
+{{- end }}
+{{- end }}
+
 {{- if .Values.healthcheck.enabled }}
 
     healthcheck:
@@ -284,6 +295,17 @@ services:
 
     volumes:
       - {{ $appsetVolume }}:/out
+
+{{- if .Values.extraHosts }}
+
+    # This is the half that reaches the forge in git-sync mode: the controller never
+    # fetches the app set here, so extraHosts on the controller alone would leave the one
+    # service that resolves the remote unable to.
+    extra_hosts:
+{{- range .Values.extraHosts }}
+      - {{ . | quote }}
+{{- end }}
+{{- end }}
 
     deploy:
       replicas: 1
