@@ -81,9 +81,10 @@
 
     {
       "description": "Per-chart semantic commit scope, matching the repo's feat(redis):/fix(traefik): convention.",
-      "matchFileNames": ["charts/keycloak/**"],
-      "semanticCommitScope": "keycloak"
+      "matchFileNames": ["charts/gitlab/**"],
+      "semanticCommitScope": "gitlab"
     },
+    { "matchFileNames": ["charts/keycloak/**"], "semanticCommitScope": "keycloak" },
     { "matchFileNames": ["charts/mariadb/**"], "semanticCommitScope": "mariadb" },
     { "matchFileNames": ["charts/ollama/**"], "semanticCommitScope": "ollama" },
     { "matchFileNames": ["charts/openclaw/**"], "semanticCommitScope": "openclaw" },
