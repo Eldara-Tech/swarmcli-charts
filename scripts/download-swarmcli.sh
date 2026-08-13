@@ -16,9 +16,9 @@
 #
 # No Go, no `gh`, no auth: the assets are public, so plain curl + sha256sum do.
 #
-# It downloads the **-oss** artefact, deliberately. A swarmcli release now
+# It downloads the **oss** artefact, deliberately. A swarmcli release now
 # carries two builds under one tag: `swarmcli_*`, which is the Business Edition
-# build with the licensed code compiled in and inert, and `swarmcli-oss_*`,
+# build with the licensed code compiled in and inert, and `swarmcli_*_oss`,
 # which is the wholly Apache-2.0 one. Rendering a chart needs nothing licensed,
 # and this repository is Apache-2.0 — so it takes the artefact it can verify is
 # the same. See Eldara-Tech/swarmcli docs/editions.md.
@@ -44,7 +44,7 @@ DEST="${1:-.swarmcli-bin}"
 mkdir -p "$DEST"
 DEST="$(cd "$DEST" && pwd)"
 
-# GoReleaser asset naming: swarmcli-oss_<OS>_<ARCH>.tar.gz, with a universal
+# GoReleaser asset naming: swarmcli_<OS>_<ARCH>_oss.tar.gz, with a universal
 # ("all") macOS build.
 os="$(uname -s)"
 arch="$(uname -m)"
@@ -60,7 +60,21 @@ if [ "$os" != "Darwin" ]; then
     *) echo "download-swarmcli: unsupported arch '$arch'" >&2; exit 2 ;;
   esac
 fi
-asset="swarmcli-oss_${os}_${arch}.tar.gz"
+# Newest spelling first; each entry is `<asset>:<checksum manifest>`. Only an
+# HTTP error moves on to the next one, and the last entry is the LICENSED build
+# — see the fetch loop below for why that ordering has to be defended rather
+# than merely written down.
+#
+#   swarmcli_<OS>_<ARCH>_oss.tar.gz   the Apache-2.0 build (Eldara-Tech/swarmcli#569
+#                                     moved the qualifier to the end so that the
+#                                     Business Edition archives sort first on the
+#                                     release page)
+#   swarmcli-oss_<OS>_<ARCH>.tar.gz   the same build, as v1.14.0-rc1 and rc2 named it
+#   swarmcli_<OS>_<ARCH>.tar.gz       pre-editions, when the plain name WAS this build
+candidates="swarmcli_${os}_${arch}_oss.tar.gz:checksums-oss.txt
+swarmcli-oss_${os}_${arch}.tar.gz:checksums-oss.txt
+swarmcli_${os}_${arch}.tar.gz:checksums.txt"
+asset="swarmcli_${os}_${arch}_oss.tar.gz"
 checksums="checksums-oss.txt"
 
 # curl, with the transport failures retried. A runner that loses a TLS handshake
@@ -97,27 +111,37 @@ work="$DEST/dl"
 rm -rf "$work"; mkdir -p "$work"
 
 echo "Downloading swarmcli $REF ($asset) ..." >&2
-rc=0
-fetch -o "$work/$asset" "$base/$asset" || rc=$?
-if [ "$rc" -ne 0 ]; then
+found=
+while IFS=: read -r a c; do
+  [ -n "$a" ] || continue
+  rc=0
+  fetch -o "$work/$a" "$base/$a" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    asset="$a"; checksums="$c"; found=1
+    break
+  fi
   # Only an HTTP error (22) means the asset is not in this release. Every other
   # code is a transport failure that outlived the retries, and it must NOT fall
-  # through: the fallback name is the LICENSED build, so swapping it in because
-  # a handshake flaked is exactly the silent substitution this script exists to
-  # prevent — and it would pass green.
+  # through: the last name in the list is the LICENSED build, so swapping it in
+  # because a handshake flaked is exactly the silent substitution this script
+  # exists to prevent — and it would pass green.
   if [ "$rc" -ne 22 ]; then
-    echo "download-swarmcli: fetching $asset from $REF failed (curl exit $rc)" >&2
+    echo "download-swarmcli: fetching $a from $REF failed (curl exit $rc)" >&2
     exit "$rc"
   fi
   # Releases before the editions split published this build under the plain
   # name, with a `checksums.txt` covering it. floor-check.sh asks for whatever
   # tag a chart's Chart.yaml declares, so those tags stay reachable for as long
   # as a chart declares one.
-  echo "download-swarmcli: no $asset in $REF; falling back to the pre-editions names" >&2
-  asset="swarmcli_${os}_${arch}.tar.gz"
-  checksums="checksums.txt"
-  fetch -o "$work/$asset" "$base/$asset"
+  echo "download-swarmcli: no $a in $REF; trying the next asset name" >&2
+done <<EOF
+$candidates
+EOF
+if [ -z "$found" ]; then
+  echo "download-swarmcli: $REF publishes none of the asset names this script knows" >&2
+  exit 1
 fi
+echo "download-swarmcli: using $asset ($checksums)" >&2
 fetch -o "$work/$checksums" "$base/$checksums"
 
 echo "Verifying checksum ..." >&2
