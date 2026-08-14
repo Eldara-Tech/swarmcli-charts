@@ -269,9 +269,10 @@ constraint-label discovery gate). HTTP routing + label discovery only — no ACM
 `main` from source ON PURPOSE — it renders with the newest engine, so a change that
 breaks a chart shows up the moment it lands, before any release ships it.
 `scripts/install-swarmcli.sh` clones+builds `main` (`SWARMCLI_REF` overrides); a
-source build rather than `go install` because swarmcli's module path is `swarmcli`,
-not its GitHub path, so `go install github.com/Eldara-Tech/swarmcli@...` fails. The
-release counterpart is `scripts/download-swarmcli.sh` (download the
+source build rather than `go install` because `@main` resolves through the module
+proxy, which can lag a just-pushed commit — a shallow clone sees it immediately, and
+`SWARMCLI_REPO` has no `go install` equivalent. The release counterpart is
+`scripts/download-swarmcli.sh` (download the
 `swarmcli_<OS>_<ARCH>_oss.tar.gz` asset + verify `checksums-oss.txt`, falling back
 through `swarmcli-oss_<OS>_<ARCH>.tar.gz` as v1.14.0-rc1/rc2 named it and then the
 pre-editions `swarmcli_*` / `checksums.txt` names for tags that predate the split —

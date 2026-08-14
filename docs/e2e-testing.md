@@ -150,7 +150,7 @@ $BIN charts uninstall demo --purge-volumes
 
 > **On `--wait`.** `swarmcli charts install/upgrade` accept `--wait`, which is
 > what `make e2e` uses to decide a release is up. It needs **swarmcli >=
-> v1.13.0-rc4**: earlier builds counted tasks by *desired* state, so it returned
+> v1.13.0**: earlier builds counted tasks by *desired* state, so it returned
 > while they were still `Pending` (Eldara-Tech/swarmcli#473), and a one-shot
 > service hung it until the timeout (#443). Against an older binary, watch
 > `docker stack ps <release>` by hand instead.

@@ -87,11 +87,6 @@ First boot takes a few minutes: the image is ~930 MB, the driver is pip-installe
 then runs the full alembic migration chain. Watch it with
 `docker service logs -f superset_init`.
 
-> **Do not use `--wait`.** swarmcli counts a service converged when its *desired* task count is
-> met; a one-shot service that has finished sits at `0/1` forever, so `--wait` times out and
-> `swarmcli charts status` shows `init 0/1` even on a perfectly healthy stack. That `0/1` is the
-> expected steady state for `init`, not a failure.
-
 ## Python packages
 
 The lean image ships no driver, and it runs as the non-root `superset` user — so the chart
@@ -390,8 +385,7 @@ revokes the Superset role too.
 
 ## Operating notes
 
-- **`init` sits at `0/1` forever, by design.** It is a one-shot job: it runs, completes, and is
-  not restarted. See the `--wait` warning under [Installing](#installing).
+- **`init` is a one-shot job.** It runs, completes, and is not restarted.
 - **`init` re-runs on upgrade** (its spec changes with the image or the config), which is what
   you want: `superset db upgrade` is how you migrate to a new Superset version. Creating an
   already-existing admin is tolerated.
