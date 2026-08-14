@@ -253,17 +253,26 @@ SemVer (`0.2.0`); the leading `v` belongs to the git tag.
 
 ## How the renderer is obtained
 
-swarmcli *is* the renderer, so CI and `make test` need it. The `charts` CLI
-currently lives only on swarmcli's `main` branch (no release ships it yet), and
-swarmcli's Go module path is `swarmcli` (not its GitHub path), so `go install`
-does not work. `scripts/install-swarmcli.sh` therefore clones and builds swarmcli
-from `main`.
+swarmcli *is* the renderer, so CI and `make test` need it. There are two ways to
+get one, and the repo uses both on purpose:
 
-- Override the ref with `SWARMCLI_REF=<branch-or-tag>` if needed.
+- `scripts/install-swarmcli.sh` clones and builds swarmcli's **`main`**. This is
+  what the PR workflows use: `main` renders with the newest engine, so a change
+  that breaks a chart shows up the moment it lands, before any release ships it.
+- `scripts/download-swarmcli.sh` downloads a **released** binary and verifies its
+  checksum. `nightly.yml` uses it to run the suite against the latest release, and
+  `floor-check.sh` uses it to render each chart with the exact release its
+  `Chart.yaml` declares as its floor.
+
+A source build rather than `go install` — which does resolve, since swarmcli's
+module path is `github.com/Eldara-Tech/swarmcli` — because `go install ...@main`
+goes through the module proxy, which can lag a just-pushed commit; a shallow clone
+sees it immediately.
+
+- Override the ref with `SWARMCLI_REF=<branch-or-tag>` if needed, or the repo with
+  `SWARMCLI_REPO=<url>` to build a fork.
 - If an upstream swarmcli change on `main` reds CI for reasons unrelated to your
   chart, set `SWARMCLI_REF` to a known-good commit and open a tracking issue.
-- Once a swarmcli release ships the charts CLI, this will switch to downloading
-  the release binary (`swarmcli_<OS>_<ARCH>.tar.gz`) + checksum verification.
 
 ## Repo setup note (maintainers)
 

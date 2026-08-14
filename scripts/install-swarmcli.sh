@@ -11,9 +11,12 @@
 # scripts/download-swarmcli.sh, which nightly.yml and floor-check.sh use to
 # validate against the version users actually have.)
 #
-# A source build rather than `go install` because swarmcli's module path is
-# `swarmcli`, not its GitHub path, so `go install github.com/Eldara-Tech/swarmcli@...`
-# does not resolve.
+# A source build rather than `go install` — which does resolve now that swarmcli's
+# module path is `github.com/Eldara-Tech/swarmcli` — because `go install ...@main`
+# goes through the module proxy, which can lag a just-pushed commit by minutes. A
+# shallow clone sees it immediately, and that immediacy is the whole point of this
+# script. The clone also honours SWARMCLI_REPO, which `go install` has no equivalent
+# for.
 #
 # Tracks the latest `main` by default. Override the ref (a branch or tag) with
 # SWARMCLI_REF, or the repo with SWARMCLI_REPO.

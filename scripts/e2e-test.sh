@@ -24,8 +24,8 @@
 # and a completed one-shot service stopped hanging it in #443, so the poll was
 # reimplementing a working feature and testing nothing.
 #
-# NOTE this needs swarmcli >= v1.13.0-rc4. CI is fine either way (PR workflows
-# build `main`, nightly runs the pinned release), but `make e2e` against an older
+# NOTE this needs swarmcli >= v1.13.0. CI is fine either way (PR workflows build
+# `main`, nightly runs the latest release), but `make e2e` against an older
 # locally installed binary will not converge one-shot services.
 #
 # Usage: SWARMCLI=/path/to/swarmcli scripts/e2e-test.sh [chart ...]
