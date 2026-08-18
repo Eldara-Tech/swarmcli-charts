@@ -27,12 +27,47 @@ on:
   # except by releasing another chart, which is how #114's freeze had to sit
   # until something happened to be released.
   workflow_dispatch:
+  # THE workflow_run TRIGGER ABOVE DOES NOT FIRE FOR RECONCILE-DRIVEN RELEASES.
+  # `release-reconcile.yml` dispatches `Release Chart` with the default
+  # GITHUB_TOKEN, and GitHub's recursion guard means a run started that way raises
+  # no downstream `workflow_run` event. The release still packages the chart and
+  # publishes its .tgz — only the index rebuild is skipped, so the chart is
+  # complete on the releases page and invisible to `helm repo update`.
+  #
+  # Measured over 2026-08-10..08-17: fifteen dispatch-triggered `Release Chart`
+  # runs produced ZERO `Pages Index` runs, while both push-triggered ones
+  # (vaultwarden/v0.1.0, gitlab/v0.1.0) produced one immediately. The index
+  # therefore stopped at 2026-08-11 and swarmcli-cd 0.2.3, traefik 0.1.5 and
+  # superset 0.2.3 sat published-but-unlistable until a human pushed a tag.
+  #
+  # A schedule fixes it the same way `release-reconcile.yml` fixes releasing:
+  # level-triggered, asking only whether the served index matches the published
+  # releases. generate-index.sh enumerates every release, so one pass repairs any
+  # accumulated drift rather than the single release that happened to trigger it,
+  # and a missed or failed pass is simply retried tomorrow.
+  #
+  # 06:17 UTC — after reconcile (05:43) has dispatched and its releases have
+  # finished packaging.
+  #
+  # Residual, and deliberately not worked around here: #89 means Pages keeps only
+  # the FIRST deployment for a given pages_build_version (= GITHUB_SHA), so a pass
+  # over an unchanged `main` can be discarded. It does not bite the case this
+  # trigger exists for — reconcile only releases a chart once `main` has moved
+  # ahead of that chart's tag, so the repairing pass runs at a SHA that has never
+  # deployed. A stale index over a genuinely unchanged `main` still needs #89.
+  schedule:
+    - cron: '17 6 * * *'
 
 jobs:
   update-index:
-    # A release that did not publish has nothing to add to the index. A manual
-    # run has no triggering workflow, so it carries no conclusion to check.
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    # A release that did not publish has nothing to add to the index. A manual or
+    # scheduled run has no triggering workflow, so it carries no conclusion to
+    # check — and omitting `schedule` here would leave the new trigger firing
+    # daily into a skipped job, which reports success and rebuilds nothing.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
+      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     # A Pages deployment belongs to the `github-pages` environment. Declaring it
     # is also what actions/deploy-pages expects, and it is what makes the
