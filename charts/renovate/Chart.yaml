@@ -3,7 +3,7 @@ description: Self-hosted Renovate for Docker Swarm — opens dependency-update P
 # version is a placeholder — the git tag (renovate/vX.Y.Z) sets the real version at release.
 version: 0.1.0
 # renovate: image=renovate/renovate
-appVersion: "44.12.0"
+appVersion: "44.33.2"
 # Oldest swarmcli whose chart engine renders this chart; verified by
 # scripts/floor-check.sh against a real binary of that version.
 swarmcliVersion: ">= 1.11.0"
