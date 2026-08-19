@@ -4,7 +4,7 @@ description: GitLab CE — self-hosted Git hosting and CI/CD on Docker Swarm
 version: 0.1.0
 # appVersion is the default image tag for gitlab/gitlab-ce.
 # renovate: image=gitlab/gitlab-ce
-appVersion: "19.2.1-ce.0"
+appVersion: "19.2.4-ce.0"
 # Oldest swarmcli whose chart engine renders this chart; verified by
 # scripts/floor-check.sh against a real binary of that version.
 swarmcliVersion: ">= 1.11.0"
