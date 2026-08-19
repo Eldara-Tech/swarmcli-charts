@@ -192,11 +192,20 @@ services:
     deploy:
       # One. Two controllers reconciling one app set would race each other applying it.
       replicas: 1
-{{- if .Values.healthcheck.enabled }}
-      {{- /* Swarm watches a task for `monitor` after CREATING it, and only counts a
-             failure inside that window against the rollout. Shorter than the
-             healthcheck needs to fail and a broken deploy reports success. */}}
       update_config:
+        # Swarm's default is `pause`. For a one-replica service updated stop-first that
+        # means a controller image which will not come up leaves ZERO controllers running
+        # and the rollout halted — recoverable only by a human at a shell. Survivable when
+        # a person ran the deploy; not when the controller deployed ITSELF, because the
+        # thing that would apply the fix is the thing that is gone. With rollback the swarm
+        # reverts to the previous spec and the recovered controller reports the difference
+        # as drift instead. See the app set's `self: true` in swarmcli-cd's docs.
+        failure_action: rollback
+{{- if .Values.healthcheck.enabled }}
+        {{- /* Swarm watches a task for `monitor` after CREATING it, and only counts a
+               failure inside that window against the rollout. Shorter than the
+               healthcheck needs to fail and a broken deploy reports success — and with
+               failure_action above, reports it and keeps the broken spec. */}}
         monitor: {{ .Values.healthcheck.monitor }}
 {{- end }}
       placement:

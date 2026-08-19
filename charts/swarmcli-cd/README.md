@@ -176,6 +176,44 @@ prune sweep only considers releases stamped for itself; two controllers sharing 
 see the other's applications as departed, and with prune on they delete each other's
 deployments. The controller cannot detect this from the inside.
 
+## Letting the controller upgrade itself
+
+A swarmcli-cd that knows the `self` key can deploy this chart *as its own stack*, so
+upgrading the controller becomes a commit like every other deployment's. The app-set entry
+is one line beside an ordinary chart source:
+
+```yaml
+- name: swarmcli-cd      # the release name defaults to this, and it must be the stack
+  self: true             #   namespace the controller was deployed under
+  source:
+    repoURL: https://github.com/your-org/apps.git
+    revision: main
+    chart:
+      ref: swarmcli-charts/swarmcli-cd
+      version: "0.2.4"
+      values: [values/swarmcli-cd.yaml]
+      repositories:
+        - name: swarmcli-charts
+          url: https://eldara-tech.github.io/swarmcli-charts
+```
+
+Read [the controller's own documentation][self] before you commit it — `self: true` is the
+highest privilege the app set grants, an older controller refuses the whole file the moment
+the key appears, and from the first sync **this chart is the definition of your
+deployment**. Anything it cannot express is dropped, so render it and compare against your
+`stack.yml` first.
+
+What this chart contributes is the part that makes it survivable. The controller service is
+rendered with `update_config.failure_action: rollback`, because Swarm's default is `pause`
+and this is one replica updated stop-first: an image that will not come up would otherwise
+leave the swarm with **no controller running and the rollout halted**, recoverable only by
+a human at a shell — and the thing that would have applied the fix is the thing that is
+gone. With rollback the swarm reverts to the previous spec, and the recovered controller
+reports the difference as drift rather than re-pushing what the swarm just rejected. Keep
+`healthcheck.enabled` on: it is what tells Swarm the new task is bad in the first place.
+
+[self]: https://github.com/Eldara-Tech/swarmcli-cd/blob/main/docs/configuration.md#self-optional
+
 ## Private registries
 
 Image-pull credentials are per application, not per controller: an application's
