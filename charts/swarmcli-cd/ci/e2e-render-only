@@ -18,3 +18,7 @@ prune
 # Host-path persistence writes to /opt/swarmcli-cd-data on the runner. The bind render is
 # covered by charts.yml; still runs in local `make e2e` when named explicitly.
 bind-mount
+# A TLS listener needs a real certificate and single sign-on needs a reachable identity
+# provider; CI has neither, and the controller exits before its listener binds when given
+# a path nothing delivers. The render contract is what matters and charts.yml asserts it.
+listener-tls-sso
