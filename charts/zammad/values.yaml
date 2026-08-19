@@ -178,7 +178,7 @@ database:
   embedded:
     image:
       repository: postgres
-      tag: "17.10-alpine"  # pinned; the PostgreSQL major Zammad's own compose tests against
+      tag: "17.11-alpine"  # pinned; the PostgreSQL major Zammad's own compose tests against
     volumeName: zammad-postgres-data
     volumePath: ""
 
