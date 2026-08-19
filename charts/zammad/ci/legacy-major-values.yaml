@@ -4,7 +4,8 @@
 # /var/lib/postgresql and PGDATA is derived as /var/lib/postgresql/17/docker — the image's
 # documented opt-in to the 18+ layout. Also exercises the tmpfs lid that suppresses the stray
 # anonymous volume <=17 images would otherwise attach at their own VOLUME /var/lib/postgresql/data.
-# Render-only (charts.yml); the e2e job runs the embedded-backing fixture on the default 18 tag.
+# Render-only in CI (the e2e matrix names only embedded-backing, which runs on the default 18
+# tag); a local `make e2e` still deploys it.
 database:
   mode: embedded
   embedded:

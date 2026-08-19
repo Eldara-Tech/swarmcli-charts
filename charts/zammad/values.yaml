@@ -168,10 +168,10 @@ placement:
 #               /var/lib/postgresql, the PARENT, and the data directory itself is one level down at
 #               /var/lib/postgresql/<major>/docker, derived from the image tag. That is the
 #               postgres:18+ image's own layout and its documented opt-in for 17 and older, so one
-#               contract serves every major. Set pgdata only when the tag carries no major to derive
-#               from (a custom image, `postgres:alpine`) — otherwise the render fails rather than
-#               guess where your data lives. UPGRADING an existing embedded release across a
-#               PostgreSQL major is a dump/restore — see the README.
+#               contract serves every major. Set pgdata when the tag carries no major to derive from
+#               (a custom image, `postgres:alpine`) — otherwise the render fails rather than guess
+#               where your data lives. UPGRADING an existing embedded release across a PostgreSQL
+#               major is a dump/restore, and pgdata is also how you defer one — see the README.
 database:
   mode: external
   host: postgres_postgres
