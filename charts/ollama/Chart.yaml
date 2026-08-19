@@ -4,7 +4,7 @@ description: Ollama self-hosted LLM server for Docker Swarm — offline models, 
 version: 0.2.0
 # appVersion is the default image tag for ollama/ollama.
 # renovate: image=ollama/ollama
-appVersion: "0.32.5"
+appVersion: "0.32.14"
 # Oldest swarmcli whose chart engine renders this chart; verified by
 # scripts/floor-check.sh against a real binary of that version.
 swarmcliVersion: ">= 1.11.0"
