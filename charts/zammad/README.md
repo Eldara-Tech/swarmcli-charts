@@ -132,6 +132,56 @@ attach to).
 > — e.g. `openssl rand -hex 24`. Set `redis.auth.enabled=false` for an unauthenticated Redis on a
 > private overlay (the zero-secret path, natural with `redis.mode=embedded`).
 
+### Embedded PostgreSQL: the data mount, and upgrading a major
+
+The embedded server mounts its volume — or `database.embedded.volumePath` — at
+**`/var/lib/postgresql`**, the *parent*, and the data directory itself sits one level down at
+`/var/lib/postgresql/<major>/docker`, derived from `database.embedded.image.tag`. That is the
+`postgres:18+` image's own layout and its documented opt-in for 17 and older, so one mount contract
+serves every major and `pg_upgrade` never has to cross a mount boundary. It is not a preference:
+18+ **refuses to start** when anything is mounted at `/var/lib/postgresql/data`, empty volume
+included. Set `database.embedded.pgdata` only for an image whose tag carries no major to derive
+from (`postgres:alpine`, a custom build) — otherwise the render fails rather than guess where your
+data lives.
+
+> **Upgrading an existing embedded release is a database migration.** Chart versions up to
+> `zammad/v0.2.3` ran PostgreSQL **17** with the volume mounted at `/var/lib/postgresql/data`.
+> PostgreSQL 18 cannot read a data directory initialised by 17, and the image stops with an
+> explanatory error rather than touching it — nothing is deleted, but the stack will not converge
+> until you migrate. `database.mode: external` releases are unaffected: the volume belongs to the
+> [postgres](../postgres) chart there.
+
+Dump from the old server, give 18 a **fresh** volume, restore into it — the 17 volume stays
+untouched as the rollback:
+
+```bash
+# 1. with the OLD release still deployed, dump the one database from the running 17 server.
+#    `database.username` is the superuser the image created, and the image's default pg_hba
+#    trusts local socket connections, so this needs no password.
+cid=$(docker ps -q -f name=<release>_postgres)
+docker exec "$cid" pg_dump -U zammad -d zammad_production > zammad-pg17.sql
+
+# 2. upgrade, pointing the embedded server at a NEW volume so 18 initialises clean. The 17
+#    volume is left untouched — it is the rollback.
+swarmcli charts upgrade <release> swarmcli-charts/zammad -f values.yaml \
+  --set database.embedded.volumeName=zammad-postgres-data-18
+
+# 3. restore into the empty database the new server created, once it is healthy
+cid=$(docker ps -q -f name=<release>_postgres)
+docker exec -i "$cid" psql -U zammad -d zammad_production < zammad-pg17.sql
+```
+
+To **defer** the migration instead, keep the 17 image and point `pgdata` at your existing data:
+the mount moved up one level, so the old volume's contents are now `/var/lib/postgresql` itself.
+
+```yaml
+database:
+  embedded:
+    image:
+      tag: "17.11-alpine"        # the series Zammad's own docker-compose still pins
+    pgdata: /var/lib/postgresql  # your existing data, one level up from the 18 default
+```
+
 ## Reaching co-located, unexposed services (e.g. Ollama)
 
 `extraNetworks` attaches the whole Zammad app tier to additional **external** overlays, so Zammad can
@@ -227,7 +277,7 @@ new secret and point the relevant `*SecretName` value at it.
 | `database.passwordSecretName` | `zammad_db_password` | External secret for the DB password |
 | `database.options` / `.createDb` | `?pool=50` / `true` | Connection options / let init create the DB |
 | `database.network` | `postgres-net` | External overlay (external mode) |
-| `database.embedded.*` | see `values.yaml` | Image + volume for the embedded (persistent) PostgreSQL |
+| `database.embedded.*` | see `values.yaml` | Image, volume and `pgdata` for the embedded (persistent) PostgreSQL — see above |
 | `redis.mode` | `external` | `external` \| `embedded` (embedded is ephemeral) |
 | `redis.host` / `.port` | `redis_redis` / `6379` | Connection (host ignored when embedded) |
 | `redis.auth.enabled` / `.secretName` | `true` / `zammad_redis_password` | Redis auth |

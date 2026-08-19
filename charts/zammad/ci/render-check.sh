@@ -66,7 +66,7 @@ has_svc "$ws_host"    || note "nginx ZAMMAD_WEBSOCKET_HOST=$ws_host is not a ren
 labels="$(yq -r '.services.nginx.deploy.labels // [] | .[]' "$out")"
 ports="$(yq -r '.services.nginx.ports // [] | length' "$out")"
 case "$case" in
-  published|embedded-backing|ephemeral|bind-mount)
+  published|embedded-backing|ephemeral|bind-mount|legacy-major)
     grep -q 'traefik.enable=true' <<<"$labels" && note "published mode rendered Traefik labels"
     [ "$ports" -ge 1 ] || note "published mode rendered no published port on nginx"
     ;;
@@ -106,7 +106,7 @@ esac
 # 5. database.mode / redis.mode. embedded => service present + dialled in-stack; external => no
 #    such service + an EXTERNAL overlay consumed.
 case "$case" in
-  embedded-backing|ephemeral|bind-mount)
+  embedded-backing|ephemeral|bind-mount|legacy-major)
     has_svc postgres || note "embedded DB rendered no postgres service"
     [ "$(yq -r '.services.init.environment.POSTGRESQL_HOST' "$out")" = "postgres" ] \
       || note "embedded DB: init does not dial the in-stack postgres service"
@@ -136,6 +136,46 @@ for svc in init backup; do
   [ "$(yq -r ".services.$svc.environment.PGUSER" "$out")" = "$(yq -r ".services.$svc.environment.POSTGRESQL_USER" "$out")" ] \
     || note "$svc: PGUSER does not match POSTGRESQL_USER (pg_isready would probe as the wrong role)"
 done
+
+# 5c. Embedded PostgreSQL mount contract. The data volume (or host path) mounts at the PARENT
+#     /var/lib/postgresql and PGDATA sits one level down at /var/lib/postgresql/<major>/docker.
+#     This is not cosmetic: postgres:18+ REFUSES to start when anything is mounted at
+#     /var/lib/postgresql/data while PGDATA is that derived default (docker_error_old_databases
+#     checks /proc/self/mountinfo, so an EMPTY volume trips it too) — a regression to the pre-18
+#     mount point is a stack that never converges. <=17 images declare VOLUME
+#     /var/lib/postgresql/data themselves, so those renders carry a tmpfs lid instead.
+case "$case" in
+  embedded-backing|ephemeral|bind-mount|legacy-major)
+    pgtag="$(yq -r '.services.postgres.image' "$out" | sed 's/.*://')"
+    pgmajor="$(sed -E 's/[^0-9].*$//' <<<"$pgtag")"
+    if [ -z "$pgmajor" ]; then
+      note "embedded DB: no PostgreSQL major in the rendered image tag '$pgtag' (the chart derives PGDATA from it)"
+    else
+      pgdata="$(yq -r '.services.postgres.environment.PGDATA // ""' "$out")"
+      [ "$pgdata" = "/var/lib/postgresql/$pgmajor/docker" ] \
+        || note "embedded DB: PGDATA is '$pgdata', expected /var/lib/postgresql/$pgmajor/docker"
+
+      # Short-syntax (named volume / bind) entries and long-syntax (tmpfs) entries separately:
+      # the rendered list mixes scalars and maps.
+      pg_mounts="$(yq -r '[.services.postgres.volumes // [] | .[] | select(tag == "!!str")] | .[]' "$out")"
+      pg_tmpfs="$(yq -r '[.services.postgres.volumes // [] | .[] | select(tag == "!!map")] | .[] | .type + " " + .target' "$out")"
+
+      if [ "$case" != "ephemeral" ]; then
+        grep -E ':/var/lib/postgresql$' <<<"$pg_mounts" >/dev/null \
+          || note "embedded DB: no data mount at /var/lib/postgresql (got: $(tr '\n' ' ' <<<"$pg_mounts"))"
+      fi
+      grep -E ':/var/lib/postgresql/data$' <<<"$pg_mounts" >/dev/null \
+        && note "embedded DB: a data volume is mounted at /var/lib/postgresql/data — postgres 18+ refuses to start with it"
+
+      if [ "$pgmajor" -le 17 ]; then
+        grep -Fx 'tmpfs /var/lib/postgresql/data' <<<"$pg_tmpfs" >/dev/null \
+          || note "embedded DB on a <=17 image: no tmpfs lid at /var/lib/postgresql/data (Swarm would attach a stray anonymous volume at the image's own VOLUME)"
+      elif grep -E ' /var/lib/postgresql/data$' <<<"$pg_tmpfs" >/dev/null; then
+        note "embedded DB on an 18+ image rendered a mount at /var/lib/postgresql/data — the image refuses to start with it"
+      fi
+    fi
+    ;;
+esac
 
 # 6. persistence: the volume and the data pin travel together.
 pin="$(yq -r '[.services.railsserver.deploy.placement.constraints // [] | .[] | select(test("node.labels"))] | length' "$out")"

@@ -65,8 +65,9 @@ include:
   # websocket, scheduler, nginx) — off a large image, so nothing external is provisioned
   # (ci/e2e-setup.sh only creates the secrets) and the smoke check proves nginx -> rails ->
   # a migrated DB via /api/v1/getting_started. The ES heap is trimmed in the fixture. The
-  # other fixtures (external backing, exposure/ES variants, host-path, backup) are
-  # render-only here — covered by charts.yml, and still run in local `make e2e`.
+  # other fixtures (external backing, exposure/ES variants, host-path, backup, the pre-18
+  # embedded PostgreSQL) are render-only here — covered by charts.yml, and still run in
+  # local `make e2e`.
   - { chart: zammad,        cases: "embedded-backing",                                                              timeout: 20m }
   # vaultwarden: the two exposure shapes (default traefik-labelled + published), both
   # external-DB branches, and edge. ci/e2e-setup.sh creates the dummy secrets and the data
