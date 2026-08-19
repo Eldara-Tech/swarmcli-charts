@@ -107,5 +107,15 @@ case "$case" in
     ;;
 esac
 
+# 11. A controller that will not come up must be reverted, not left as the state of the
+#     swarm. Swarm's default failure_action is `pause`, and this service is one replica
+#     updated stop-first: a bad image pauses the rollout with ZERO controllers running.
+#     That is recoverable while a human is running the deploy and not recoverable when the
+#     controller deployed ITSELF from the app set, because what would apply the fix is
+#     what is gone. Asserted here because it renders, validates and deploys perfectly
+#     without it — right up until the one deploy where it matters.
+[ "$(yq -r '.services.controller.deploy.update_config.failure_action' "$out")" = "rollback" ] \
+  || bad "the controller's update_config.failure_action is not 'rollback' — a bad image would leave the swarm with no controller and no way back"
+
 [ "$fail" -eq 0 ] || exit 1
-echo "  placement: manager pin + node pin consistent; secrets by file path ($case)"
+echo "  placement: manager pin + node pin consistent; secrets by file path; self-update reverts ($case)"
