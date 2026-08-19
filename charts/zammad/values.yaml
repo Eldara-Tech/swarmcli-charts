@@ -163,8 +163,15 @@ placement:
 #               when the database already exists and the role may not CREATE DATABASE.
 #   network     EXTERNAL overlay the database is reachable on (external mode only). Ignored in
 #               embedded mode, where PostgreSQL lives on internalNetwork.
-#   embedded.*  the PostgreSQL the chart runs in embedded mode (image + volume). volumePath
-#               bind-mounts a host path (host-mount annotation); "" uses the named volume.
+#   embedded.*  the PostgreSQL the chart runs in embedded mode (image + volume). The volume (or,
+#               with volumePath, the bind-mounted host path — host-mount annotation) is mounted at
+#               /var/lib/postgresql, the PARENT, and the data directory itself is one level down at
+#               /var/lib/postgresql/<major>/docker, derived from the image tag. That is the
+#               postgres:18+ image's own layout and its documented opt-in for 17 and older, so one
+#               contract serves every major. Set pgdata only when the tag carries no major to derive
+#               from (a custom image, `postgres:alpine`) — otherwise the render fails rather than
+#               guess where your data lives. UPGRADING an existing embedded release across a
+#               PostgreSQL major is a dump/restore — see the README.
 database:
   mode: external
   host: postgres_postgres
@@ -178,9 +185,10 @@ database:
   embedded:
     image:
       repository: postgres
-      tag: "18.6-alpine"  # pinned; the PostgreSQL major Zammad's own compose tests against
+      tag: "18.6-alpine"  # pinned; ahead of the 17.11-alpine Zammad's own compose still uses
     volumeName: zammad-postgres-data
     volumePath: ""
+    pgdata: ""
 
 # Redis — Zammad's websocket session store + background job queue.
 #   mode        external (default) => an operator-provided Redis on redis.network (run the redis

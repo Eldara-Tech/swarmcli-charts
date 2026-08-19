@@ -611,21 +611,52 @@ services:
 
 {{- if $dbEmbedded }}
 
+{{- /* One mount contract for every major, the same one charts/postgres renders: the volume (or
+       host path) is mounted at /var/lib/postgresql — the PARENT — and PGDATA lives one level down
+       at /var/lib/postgresql/<major>/docker. That is the postgres:18+ image's own default layout,
+       and its DOCUMENTED opt-in for 17 and older, so pinning the tag back to a 17 series needs no
+       other change. 18+ does not merely prefer it: the entrypoint REFUSES to start when anything
+       is mounted at /var/lib/postgresql/data while PGDATA is the derived default, so the pre-18
+       mount point is not an option here. Keeping PGDATA below the mountpoint is also what makes
+       the volumePath (bind-mount) render safe — initdb refuses a data directory that is a
+       non-empty or unchownable mountpoint. The major comes from the tag; a tag with no leading
+       digits (a custom image, `postgres:alpine`) has none to derive from, so we fail loudly rather
+       than guess where the operator's data lives — set database.embedded.pgdata for those. */}}
+{{- $pgTag := .Values.database.embedded.image.tag }}
+{{- $pgMajor := regexFind "^[0-9]+" $pgTag }}
+{{- $pgdata := .Values.database.embedded.pgdata }}
+{{- if not $pgdata }}
+{{-   if not $pgMajor }}
+{{-     fail (printf "cannot derive the PostgreSQL major version from database.embedded.image.tag %q — set database.embedded.pgdata to the data directory inside /var/lib/postgresql (e.g. /var/lib/postgresql/18/docker)" $pgTag) }}
+{{-   end }}
+{{-   $pgdata = printf "/var/lib/postgresql/%s/docker" $pgMajor }}
+{{- end }}
+
   {{- /* PostgreSQL this chart runs itself (database.mode: embedded). PERSISTENT — it is Zammad's
          system of record — so volume + data pin. The password comes from the SAME external secret
          Zammad reads, via the image's POSTGRES_PASSWORD_FILE convention (plaintext never in the
-         manifest or `docker inspect`). The volume is mounted at the image's default PGDATA
-         (/var/lib/postgresql/data for this pinned 17-alpine tag). */}}
+         manifest or `docker inspect`). */}}
   postgres:
     image: {{ .Values.database.embedded.image.repository }}:{{ .Values.database.embedded.image.tag }}
     networks:
       - {{ $internal }}
-{{- if .Values.persistence.enabled }}
+{{- if or .Values.persistence.enabled (and $pgMajor (le (atoi $pgMajor) 17)) }}
     volumes:
+{{- if .Values.persistence.enabled }}
 {{- if .Values.database.embedded.volumePath }}
-      - {{ .Values.database.embedded.volumePath }}:/var/lib/postgresql/data
+      - {{ .Values.database.embedded.volumePath }}:/var/lib/postgresql
 {{- else }}
-      - {{ .Values.database.embedded.volumeName }}:/var/lib/postgresql/data
+      - {{ .Values.database.embedded.volumeName }}:/var/lib/postgresql
+{{- end }}
+{{- end }}
+{{- if and $pgMajor (le (atoi $pgMajor) 17) }}
+      # 17 and older declare VOLUME /var/lib/postgresql/data. Our mount is the parent, which
+      # does NOT suppress that declaration, so Swarm would attach a stray anonymous volume
+      # there on every task (and litter a bind-mounted host path with a root-owned data/).
+      # A mount whose destination matches it exactly does suppress it; the directory is unused
+      # under our layout (PGDATA is {{ $pgdata }}), so an empty tmpfs is the cheapest lid.
+      - type: tmpfs
+        target: /var/lib/postgresql/data
 {{- end }}
 {{- end }}
     secrets:
@@ -634,6 +665,7 @@ services:
       POSTGRES_USER: {{ .Values.database.username | quote }}
       POSTGRES_DB: {{ .Values.database.name | quote }}
       POSTGRES_PASSWORD_FILE: /run/secrets/{{ .Values.database.passwordSecretName }}
+      PGDATA: {{ $pgdata | quote }}
 {{- if .Values.healthcheck.enabled }}
     healthcheck:
       test:

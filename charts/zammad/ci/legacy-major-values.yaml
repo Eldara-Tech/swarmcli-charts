@@ -1,0 +1,16 @@
+# Embedded PostgreSQL pinned to a pre-18 series — the path an operator takes to stay on the major
+# Zammad's own docker-compose still pins (17.11-alpine), or to defer the dump/restore a major
+# upgrade costs. The mount contract does not change: the volume still mounts at
+# /var/lib/postgresql and PGDATA is derived as /var/lib/postgresql/17/docker — the image's
+# documented opt-in to the 18+ layout. Also exercises the tmpfs lid that suppresses the stray
+# anonymous volume <=17 images would otherwise attach at their own VOLUME /var/lib/postgresql/data.
+# Render-only (charts.yml); the e2e job runs the embedded-backing fixture on the default 18 tag.
+database:
+  mode: embedded
+  embedded:
+    image:
+      tag: "17.11-alpine"
+redis:
+  mode: embedded
+exposure:
+  mode: published
