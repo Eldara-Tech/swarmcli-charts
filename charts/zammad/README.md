@@ -155,18 +155,20 @@ Dump from the old server, give 18 a **fresh** volume, restore into it — the 17
 untouched as the rollback:
 
 ```bash
-# 1. with the OLD release still deployed, dump from the running 17 server (the image's default
-#    pg_hba trusts local socket connections, so this needs no password)
+# 1. with the OLD release still deployed, dump the one database from the running 17 server.
+#    `database.username` is the superuser the image created, and the image's default pg_hba
+#    trusts local socket connections, so this needs no password.
 cid=$(docker ps -q -f name=<release>_postgres)
-docker exec "$cid" pg_dumpall -U zammad > zammad-pg17.sql
+docker exec "$cid" pg_dump -U zammad -d zammad_production > zammad-pg17.sql
 
-# 2. upgrade, pointing the embedded server at a NEW volume so 18 initialises clean
+# 2. upgrade, pointing the embedded server at a NEW volume so 18 initialises clean. The 17
+#    volume is left untouched — it is the rollback.
 swarmcli charts upgrade <release> swarmcli-charts/zammad -f values.yaml \
   --set database.embedded.volumeName=zammad-postgres-data-18
 
-# 3. restore into the empty 18 server once it is healthy
+# 3. restore into the empty database the new server created, once it is healthy
 cid=$(docker ps -q -f name=<release>_postgres)
-docker exec -i "$cid" psql -U zammad -d postgres < zammad-pg17.sql
+docker exec -i "$cid" psql -U zammad -d zammad_production < zammad-pg17.sql
 ```
 
 To **defer** the migration instead, keep the 17 image and point `pgdata` at your existing data:

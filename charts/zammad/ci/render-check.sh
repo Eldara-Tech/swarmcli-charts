@@ -126,6 +126,17 @@ case "$case" in
     ;;
 esac
 
+# 5b. The libpq fallbacks track the connection the chart configures. The image's readiness probe
+#     runs `pg_isready` with no -U/-d, so a drift here sends it at a database named after the
+#     container's OS user and the server logs a failed connection (#119).
+for svc in init backup; do
+  has_svc "$svc" || continue
+  [ "$(yq -r ".services.$svc.environment.PGDATABASE" "$out")" = "$(yq -r ".services.$svc.environment.POSTGRESQL_DB" "$out")" ] \
+    || note "$svc: PGDATABASE does not match POSTGRESQL_DB (pg_isready would probe the wrong database)"
+  [ "$(yq -r ".services.$svc.environment.PGUSER" "$out")" = "$(yq -r ".services.$svc.environment.POSTGRESQL_USER" "$out")" ] \
+    || note "$svc: PGUSER does not match POSTGRESQL_USER (pg_isready would probe as the wrong role)"
+done
+
 # 5c. Embedded PostgreSQL mount contract. The data volume (or host path) mounts at the PARENT
 #     /var/lib/postgresql and PGDATA sits one level down at /var/lib/postgresql/<major>/docker.
 #     This is not cosmetic: postgres:18+ REFUSES to start when anything is mounted at
@@ -165,17 +176,6 @@ case "$case" in
     fi
     ;;
 esac
-
-# 5b. The libpq fallbacks track the connection the chart configures. The image's readiness probe
-#     runs `pg_isready` with no -U/-d, so a drift here sends it at a database named after the
-#     container's OS user and the server logs a failed connection (#119).
-for svc in init backup; do
-  has_svc "$svc" || continue
-  [ "$(yq -r ".services.$svc.environment.PGDATABASE" "$out")" = "$(yq -r ".services.$svc.environment.POSTGRESQL_DB" "$out")" ] \
-    || note "$svc: PGDATABASE does not match POSTGRESQL_DB (pg_isready would probe the wrong database)"
-  [ "$(yq -r ".services.$svc.environment.PGUSER" "$out")" = "$(yq -r ".services.$svc.environment.POSTGRESQL_USER" "$out")" ] \
-    || note "$svc: PGUSER does not match POSTGRESQL_USER (pg_isready would probe as the wrong role)"
-done
 
 # 6. persistence: the volume and the data pin travel together.
 pin="$(yq -r '[.services.railsserver.deploy.placement.constraints // [] | .[] | select(test("node.labels"))] | length' "$out")"
