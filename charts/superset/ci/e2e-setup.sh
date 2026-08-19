@@ -58,10 +58,10 @@ done
 #
 # WHICH postgres major, and why BOTH. The README tells operators to use the postgres chart with
 # its own default (18) and NOT to pin, so that is the path the primary fixtures must prove — an
-# untested recommendation is worse than none. Apache's published matrix for Superset 5.0.0 stops
-# at PostgreSQL 15, but that is documentation lag, not a ceiling: master's table already lists
-# 16, upstream's own compose runs postgres:17, and nothing in Superset enforces a version (the
-# metadata store is plain SQL; compatibility is whatever SQLAlchemy + psycopg2 support). The
+# untested recommendation is worse than none. Superset's 5.0.0 docs stopped at PostgreSQL 15,
+# but that was documentation lag, not a ceiling: the 6.x docs dropped the numbered table
+# entirely, upstream's own compose runs postgres:17, and nothing in Superset enforces a version
+# (the metadata store is plain SQL; compatibility is whatever SQLAlchemy + psycopg2 support). The
 # conservative in-matrix pin is still documented, so it needs coverage too — `no-celery` runs it
 # on 15. It is already in the CI subset and is indifferent to the DB major, so both majors are
 # proven at zero extra wall-clock.

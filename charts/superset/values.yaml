@@ -18,9 +18,9 @@
 # no password is ever exposed in the compose file, in `docker inspect`, or in the container's
 # environment.
 #
-# IMPORTANT — the stock image has NO database driver. apache/superset:5.0.0 is the upstream
-# "lean" build: it installs requirements/base.txt only, so psycopg2 / mysqlclient / Authlib are
-# all absent, and it runs as the non-root `superset` user. python.installDrivers (below) pip-
+# IMPORTANT — the stock image has NO database driver. Upstream publishes a "lean" build: it
+# installs requirements/base.txt only, so psycopg2 / mysqlclient / Authlib are all absent, and
+# it runs as the non-root `superset` user. python.installDrivers (below) pip-
 # installs the right pinned driver at start; for production, bake your own image instead and
 # set python.installDrivers: false. See the README.
 
@@ -122,7 +122,7 @@ redis:
     cache: 2
     rateLimit: 3
 
-# SECRET_KEY, from an EXTERNAL Swarm secret. Superset 5 REFUSES TO START on the built-in
+# SECRET_KEY, from an EXTERNAL Swarm secret. Superset REFUSES TO START on the built-in
 # default key, so this is mandatory. It signs session cookies AND encrypts the database
 # credentials Superset stores in its metadata DB — rotating it is therefore not a redeploy
 # (see "Rotating SECRET_KEY" in the README). Pre-create:
@@ -274,8 +274,8 @@ config:
   extraPy: ""
 
 # Arbitrary extra environment variables, injected into every Superset service verbatim. Note
-# that Superset 5 has NO env-var config mechanism (the SUPERSET__* scheme does not exist in
-# this version) — real configuration goes through config.extraPy above. This is for the few
+# that Superset has NO env-var config mechanism (the SUPERSET__* scheme does not exist; only
+# feature flags read SUPERSET_FEATURE_*) — real configuration goes through config.extraPy above. This is for the few
 # vars the IMAGE reads (SUPERSET_LOG_LEVEL, gunicorn knobs you want to override, …).
 extraEnv: {}
 
