@@ -45,6 +45,31 @@
 {{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) (contains "/" .Values.persistence.volumeName) }}
 {{-   fail "persistence.volumeName is a Swarm volume name and must not contain '/' — use persistence.volumePath for a host path" }}
 {{- end }}
+{{- /* The controller's own TLS listener. One of the pair alone is what the binary
+       refuses at startup, and for the reason worth repeating here: what it would
+       otherwise produce is a listener serving plaintext while you believe it is
+       encrypted. */}}
+{{- $tls := and .Values.tls.certSecret .Values.tls.keySecret }}
+{{- if and (or .Values.tls.certSecret .Values.tls.keySecret) (not $tls) }}
+{{-   fail "tls.certSecret and tls.keySecret are both or neither: one alone is refused, because a half-configured pair is a listener serving plaintext while you believe it is encrypted" }}
+{{- end }}
+{{- if and $tls (eq .Values.exposure.mode "traefik") }}
+{{-   fail "tls.* with exposure.mode: traefik is a misconfiguration, not defence in depth — the router rendered below carries loadbalancer.server.port=8080 and speaks plain HTTP to it, so the edge terminates TLS and the controller must not. Drop tls.*, or use exposure.mode: published" }}
+{{- end }}
+{{- /* Single sign-on. All three or none, matching the controller: a provider missing
+       one variable rejects every login and looks, from outside, exactly like a wrong
+       password. */}}
+{{- $ssoFields := compact (list .Values.sso.issuer .Values.sso.clientId .Values.sso.redirectURL) }}
+{{- $sso := eq (len $ssoFields) 3 }}
+{{- if and (gt (len $ssoFields) 0) (not $sso) }}
+{{-   fail "sso is half-configured: sso.issuer, sso.clientId and sso.redirectURL are all three or none at all. A provider missing one rejects every login and is indistinguishable, from outside, from a wrong password" }}
+{{- end }}
+{{- if and $sso (not (hasSuffix "/auth/callback" .Values.sso.redirectURL)) }}
+{{-   fail "sso.redirectURL must end in /auth/callback: the controller serves exactly one callback path, and the provider redirects to whatever was registered with it" }}
+{{- end }}
+{{- if and .Values.sso.clientSecretSecret (not $sso) }}
+{{-   fail "sso.clientSecretSecret configures nothing on its own: without sso.issuer, sso.clientId and sso.redirectURL no single sign-on is rendered, and the secret would be mounted and never read" }}
+{{- end }}
 {{- /* Where each piece lands in the container. The app set's directory is deliberately
        NOT under the data directory: in git mode the controller keeps its own app-set
        clone at <data>/appset, and a volume mounted over that would be read as one. */}}
@@ -103,6 +128,12 @@ services:
       - --prune-volumes
 {{- end }}
 {{- end }}
+{{- if $tls }}
+      - --tls-cert
+      - /run/secrets/{{ .Values.tls.certSecret }}
+      - --tls-key
+      - /run/secrets/{{ .Values.tls.keySecret }}
+{{- end }}
       - --controller-id
       - {{ .Values.controllerId | quote }}
       - --log-level
@@ -133,11 +164,41 @@ services:
       SWARMCLI_CD_GIT_USERNAME: {{ .Values.git.username | quote }}
       SWARMCLI_CD_GIT_TOKEN_FILE: /run/secrets/{{ .Values.git.tokenSecret }}
 {{- end }}
+{{- if $tls }}
+      # Not optional with the flags above, and the reason is the healthcheck. It is a
+      # separate process invocation that knows nothing about --tls-cert; it probes whatever
+      # SWARMCLI_CD_SERVER names, defaulting to http://127.0.0.1:8080. A Go TLS listener
+      # answers a plaintext request with 400, so the probe fails and swarm restarts a
+      # controller that is working perfectly — with nothing in `docker inspect` naming TLS.
+      SWARMCLI_CD_SERVER: https://127.0.0.1:8080
+      # The probe does not need this — a loopback https URL skips verification, because
+      # /healthz discloses nothing and the connection never leaves the host. `docker exec …
+      # swarmcli-cd app list` does: it verifies normally, and a self-signed leaf is its own
+      # authority, so naming the certificate is what makes those calls work.
+      SWARMCLI_CD_CA_CERT: /run/secrets/{{ .Values.tls.certSecret }}
+{{- end }}
+{{- if $sso }}
+      SWARMCLI_CD_OIDC_ISSUER: {{ .Values.sso.issuer | quote }}
+      SWARMCLI_CD_OIDC_CLIENT_ID: {{ .Values.sso.clientId | quote }}
+      SWARMCLI_CD_OIDC_REDIRECT_URL: {{ .Values.sso.redirectURL | quote }}
+{{- if .Values.sso.clientSecretSecret }}
+      # The file form, never the value: a Docker secret is encrypted at rest in the raft
+      # log and delivered in memory. A public client has none and is protected by PKCE.
+      SWARMCLI_CD_OIDC_CLIENT_SECRET_FILE: /run/secrets/{{ .Values.sso.clientSecretSecret }}
+{{- end }}
+{{- end }}
 
     secrets:
       - {{ .Values.auth.adminTokenSecret }}
 {{- if .Values.git.tokenSecret }}
       - {{ .Values.git.tokenSecret }}
+{{- end }}
+{{- if $tls }}
+      - {{ .Values.tls.certSecret }}
+      - {{ .Values.tls.keySecret }}
+{{- end }}
+{{- if and $sso .Values.sso.clientSecretSecret }}
+      - {{ .Values.sso.clientSecretSecret }}
 {{- end }}
 {{- range .Values.registryAuthSecrets }}
       - {{ . }}
@@ -341,6 +402,16 @@ secrets:
     external: true
 {{- if .Values.git.tokenSecret }}
   {{ .Values.git.tokenSecret }}:
+    external: true
+{{- end }}
+{{- if $tls }}
+  {{ .Values.tls.certSecret }}:
+    external: true
+  {{ .Values.tls.keySecret }}:
+    external: true
+{{- end }}
+{{- if and $sso .Values.sso.clientSecretSecret }}
+  {{ .Values.sso.clientSecretSecret }}:
     external: true
 {{- end }}
 {{- range .Values.registryAuthSecrets }}

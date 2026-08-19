@@ -171,6 +171,49 @@ git:
   username: ""
   tokenSecret: ""
 
+# Serve the API over HTTPS from the controller ITSELF. Both or neither: one alone is
+# refused, because what it would otherwise produce is a listener serving plaintext while
+# you believe it is encrypted.
+#
+# Not needed in exposure.mode traefik — the edge terminates TLS and speaks plain HTTP to
+# the controller, and setting both is refused as the misconfiguration it is. This is for
+# exposure.mode published, which is otherwise the mode with no TLS and no second factor.
+#
+# Pre-create the pair, like every other credential here:
+#   docker secret create swarmcli-cd-tls-cert ./tls.crt
+#   docker secret create swarmcli-cd-tls-key  ./tls.key
+#
+# Setting these also sets SWARMCLI_CD_SERVER to an https loopback URL, which is not
+# optional: the healthcheck is a separate process that knows nothing about the flags and
+# probes http://127.0.0.1:8080 by default. A TLS listener answers that with 400, and swarm
+# restarts a controller that is working perfectly with nothing in the log naming TLS.
+#
+# The pair is read once at startup, so a renewed certificate needs a redeploy.
+tls:
+  certSecret: ""
+  keySecret: ""
+
+# Single sign-on, over OIDC. A LICENSED capability: it is compiled into the default
+# artefact and does nothing until a licence verifies. The admin token above stays required
+# either way — it is what the CLI and the healthcheck send, and what a lapsed licence falls
+# back to.
+#
+# All three of issuer, clientId and redirectURL or none of them. A provider missing one
+# rejects every login and looks, from outside, exactly like a wrong password — so the
+# controller refuses to start half-configured and this chart refuses to render it.
+#
+# redirectURL must end in /auth/callback: the controller serves exactly one callback path,
+# and the provider redirects to what was registered with it.
+sso:
+  issuer: ""            # https://sso.example.com/realms/ops
+  clientId: ""          # the client you registered with the provider
+  redirectURL: ""       # https://cd.example.com/auth/callback
+  # An EXTERNAL Docker secret holding the client secret, read from its file so no plaintext
+  # lands in the compose document or in `docker service inspect`. Omit it for a public
+  # client, which this controller always protects with PKCE.
+  #   printf '%s' "$THE_CLIENT_SECRET" | docker secret create swarmcli-cd-oidc-secret -
+  clientSecretSecret: ""
+
 # Image-pull credentials, per application rather than per controller: an application's
 # `registryAuth:` in the app set names one of these secrets, and it can use only the one
 # it names. Each holds a docker config.json with STATIC credentials — the image ships no

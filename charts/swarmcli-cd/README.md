@@ -141,7 +141,7 @@ HTTP**, so it is not published for you.
 |---|---|
 | `none` (default) | nothing published. Reach it over an SSH tunnel to the node — `ssh -L 8080:127.0.0.1:8080 manager` — or from inside the swarm |
 | `traefik` | Traefik deploy labels on `exposure.network`. TLS terminated at the edge, which makes this the only mode that does not put the token on the wire in clear |
-| `published` | publish the port on the swarm. No TLS and no second factor: on a node with a public address, this puts your swarm on the internet |
+| `published` | publish the port on the swarm. No TLS and no second factor **unless you add them** — see [TLS](#tls-on-the-controller-itself) and [single sign-on](#single-sign-on) below. Without them, on a node with a public address, this puts your swarm on the internet |
 
 Put a middleware in front of it if you route it:
 
@@ -162,6 +162,73 @@ them if you run your own; the full label contract is in
 
 Nothing is exposed by the container port either way: the controller always listens on
 8080 inside the container, and `publish.port` is only the outside of that mapping.
+
+## TLS on the controller itself
+
+Only for `exposure.mode: published`. In `traefik` mode the edge terminates TLS and speaks
+plain HTTP to the controller, so setting `tls.*` there is **refused at render time** — it
+is a misconfiguration rather than defence in depth.
+
+```bash
+docker secret create swarmcli-cd-tls-cert ./tls.crt
+docker secret create swarmcli-cd-tls-key  ./tls.key
+```
+
+```yaml
+exposure:
+  mode: published
+tls:
+  certSecret: swarmcli-cd-tls-cert
+  keySecret: swarmcli-cd-tls-key
+```
+
+Both or neither — one alone is refused, because what it would otherwise produce is a
+listener serving plaintext while you believe it is encrypted.
+
+Setting them also renders `SWARMCLI_CD_SERVER: https://127.0.0.1:8080` and
+`SWARMCLI_CD_CA_CERT`, and **that is not optional**. The healthcheck is a separate process
+invocation that knows nothing about the flags: it probes whatever `SWARMCLI_CD_SERVER`
+names, defaulting to `http://127.0.0.1:8080`. A TLS listener answers a plaintext request
+with `400`, so the probe fails and Swarm restarts a controller that is working perfectly —
+with nothing in `docker inspect` naming TLS. `CA_CERT` is for the CLI inside the container,
+which verifies normally; a self-signed leaf is its own authority.
+
+The pair is read once at startup, so a renewed certificate needs a redeploy.
+
+## Single sign-on
+
+A **licensed** capability: it is compiled into the default artefact and does nothing until
+a licence verifies. The admin token stays required either way — it is what the CLI and the
+healthcheck send, and what a lapsed licence falls back to.
+
+```yaml
+sso:
+  issuer: https://sso.example.com/realms/ops
+  clientId: swarmcli-cd
+  redirectURL: https://cd.example.com/auth/callback
+  clientSecretSecret: swarmcli-cd-oidc-secret   # omit for a public client
+```
+
+All three of `issuer`, `clientId` and `redirectURL`, or none of them — a provider missing
+one rejects every login and looks, from outside, exactly like a wrong password, so both the
+controller and this chart refuse the half-configured state. `redirectURL` must end in
+`/auth/callback`: the controller serves exactly one callback path, and the provider
+redirects to whatever was registered with it.
+
+The client secret is a **secret name, never a value**. A confidential client passes one:
+
+```bash
+printf '%s' "$THE_CLIENT_SECRET" | docker secret create swarmcli-cd-oidc-secret -
+```
+
+A public client has none and is protected by PKCE, which the controller always sends —
+leave `clientSecretSecret` empty. The controller also accepts the secret as a literal
+environment variable; this chart does not offer it, because a chart never takes a secret
+value through `values.yaml`.
+
+Full setup, including the provider side: [swarmcli-cd docs/sso.md][sso].
+
+[sso]: https://github.com/Eldara-Tech/swarmcli-cd/blob/main/docs/sso.md
 
 ## Prune, and two controllers on one swarm
 
@@ -294,6 +361,12 @@ nothing.
 | `git.username` | `""` | Git username — GitHub wants `x-access-token` |
 | `git.tokenSecret` | `""` | **External** secret with the git password/token. Private repositories only |
 | `registryAuthSecrets` | `[]` | **External** secrets holding `docker config.json`s, one per application that pulls from a private registry |
+| `tls.certSecret` | `""` | **External** secret with the certificate the controller serves the API with. Both or neither with `tls.keySecret`; refused with `exposure.mode: traefik` |
+| `tls.keySecret` | `""` | **External** secret with that certificate's private key |
+| `sso.issuer` | `""` | OIDC issuer URL. Licensed. All three of issuer / clientId / redirectURL, or none |
+| `sso.clientId` | `""` | The OIDC client registered with the provider |
+| `sso.redirectURL` | `""` | Where the provider sends the browser back. Must end in `/auth/callback` |
+| `sso.clientSecretSecret` | `""` | **External** secret with the OIDC client secret. Omit for a public client, which is protected by PKCE |
 | `prune.enabled` | `false` | Delete an application's resources when it leaves the set |
 | `prune.volumes` | `false` | Extend prune to named volumes. Requires `prune.enabled` |
 | `controllerId` | `default` | This controller's identity. Two controllers on one swarm must differ |

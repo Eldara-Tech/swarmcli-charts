@@ -1,0 +1,22 @@
+# The controller terminating TLS itself, and single sign-on in front of the API.
+#
+# exposure.mode published on purpose: it is the mode TLS exists for. Without it that mode
+# is the one values.yaml warns puts the swarm on the internet, and with exposure.mode
+# traefik the template refuses tls.* outright, because the edge terminates it there.
+#
+# Distinct from traefik-tls, which is about ACME at the EDGE — this is the controller's own
+# listener. Render-only (ci/e2e-render-only): a TLS listener needs a real certificate and
+# single sign-on needs a reachable identity provider, and CI provides neither.
+exposure:
+  mode: published
+publish:
+  port: 8443
+  mode: ingress
+tls:
+  certSecret: swarmcli-cd-tls-cert
+  keySecret: swarmcli-cd-tls-key
+sso:
+  issuer: https://sso.example.com/realms/ops
+  clientId: swarmcli-cd
+  redirectURL: https://cd.example.com/auth/callback
+  clientSecretSecret: swarmcli-cd-oidc-secret

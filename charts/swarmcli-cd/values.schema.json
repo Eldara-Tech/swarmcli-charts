@@ -5,24 +5,52 @@
     "image": {
       "type": "object",
       "properties": {
-        "repository": { "type": "string", "minLength": 1 },
-        "tag": { "type": "string" }
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string"
+        }
       },
-      "required": ["repository"]
+      "required": [
+        "repository"
+      ]
     },
     "appset": {
       "type": "object",
       "properties": {
-        "mode": { "enum": ["static", "git", "git-sync", "dir"] },
-        "path": { "type": "string" },
-        "interval": { "type": "string", "minLength": 1 },
-        "configName": { "type": "string", "minLength": 1 },
-        "configVersion": { "type": "string" },
+        "mode": {
+          "enum": [
+            "static",
+            "git",
+            "git-sync",
+            "dir"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "interval": {
+          "type": "string",
+          "minLength": 1
+        },
+        "configName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "configVersion": {
+          "type": "string"
+        },
         "repo": {
           "type": "object",
           "properties": {
-            "url": { "type": "string" },
-            "revision": { "type": "string" }
+            "url": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "string"
+            }
           }
         },
         "sync": {
@@ -31,118 +59,251 @@
             "image": {
               "type": "object",
               "properties": {
-                "repository": { "type": "string", "minLength": 1 },
-                "tag": { "type": "string", "minLength": 1 }
+                "repository": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "tag": {
+                  "type": "string",
+                  "minLength": 1
+                }
               },
-              "required": ["repository", "tag"]
+              "required": [
+                "repository",
+                "tag"
+              ]
             },
-            "intervalSeconds": { "type": "integer", "minimum": 1 },
-            "sshKeySecret": { "type": "string" },
-            "knownHostsSecret": { "type": "string" },
-            "volumeName": { "type": "string", "minLength": 1 }
+            "intervalSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "sshKeySecret": {
+              "type": "string"
+            },
+            "knownHostsSecret": {
+              "type": "string"
+            },
+            "volumeName": {
+              "type": "string",
+              "minLength": 1
+            }
           }
         },
-        "dirVolumeName": { "type": "string", "minLength": 1 }
+        "dirVolumeName": {
+          "type": "string",
+          "minLength": 1
+        }
       },
-      "required": ["mode"]
+      "required": [
+        "mode"
+      ]
     },
     "exposure": {
       "type": "object",
       "properties": {
-        "mode": { "enum": ["none", "traefik", "published"] },
-        "network": { "type": "string", "minLength": 1 }
+        "mode": {
+          "enum": [
+            "none",
+            "traefik",
+            "published"
+          ]
+        },
+        "network": {
+          "type": "string",
+          "minLength": 1
+        }
       },
-      "required": ["mode"]
+      "required": [
+        "mode"
+      ]
     },
     "ingress": {
       "type": "object",
       "properties": {
-        "host": { "type": "string", "minLength": 1 },
-        "tls": { "type": "boolean" }
+        "host": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tls": {
+          "type": "boolean"
+        }
       }
     },
     "traefik": {
       "type": "object",
       "properties": {
-        "certResolver": { "type": "string" },
+        "certResolver": {
+          "type": "string"
+        },
         "entrypoints": {
           "type": "object",
           "properties": {
-            "http": { "type": "string", "minLength": 1 },
-            "https": { "type": "string", "minLength": 1 }
+            "http": {
+              "type": "string",
+              "minLength": 1
+            },
+            "https": {
+              "type": "string",
+              "minLength": 1
+            }
           }
         },
-        "constraintLabel": { "type": "string" },
-        "redirectMiddleware": { "type": "string" },
-        "middlewares": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+        "constraintLabel": {
+          "type": "string"
+        },
+        "redirectMiddleware": {
+          "type": "string"
+        },
+        "middlewares": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
       }
     },
     "publish": {
       "type": "object",
       "properties": {
-        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-        "mode": { "enum": ["ingress", "host"] }
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "mode": {
+          "enum": [
+            "ingress",
+            "host"
+          ]
+        }
       }
     },
     "auth": {
       "type": "object",
       "properties": {
-        "adminTokenSecret": { "type": "string", "minLength": 1 }
+        "adminTokenSecret": {
+          "type": "string",
+          "minLength": 1
+        }
       },
-      "required": ["adminTokenSecret"]
+      "required": [
+        "adminTokenSecret"
+      ]
     },
     "git": {
       "type": "object",
       "properties": {
-        "username": { "type": "string" },
-        "tokenSecret": { "type": "string" }
+        "username": {
+          "type": "string"
+        },
+        "tokenSecret": {
+          "type": "string"
+        }
       }
     },
     "registryAuthSecrets": {
       "type": "array",
-      "items": { "type": "string", "minLength": 1 }
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
     },
     "prune": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "volumes": { "type": "boolean" }
+        "enabled": {
+          "type": "boolean"
+        },
+        "volumes": {
+          "type": "boolean"
+        }
       }
     },
-    "controllerId": { "type": "string", "minLength": 1 },
+    "controllerId": {
+      "type": "string",
+      "minLength": 1
+    },
     "log": {
       "type": "object",
       "properties": {
-        "level": { "enum": ["debug", "info", "warn", "error"] },
-        "format": { "enum": ["text", "json"] }
+        "level": {
+          "enum": [
+            "debug",
+            "info",
+            "warn",
+            "error"
+          ]
+        },
+        "format": {
+          "enum": [
+            "text",
+            "json"
+          ]
+        }
       }
     },
     "persistence": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "volumeName": { "type": "string", "minLength": 1 },
-        "volumePath": { "type": "string" },
-        "nodeLabel": { "type": "string" }
+        "enabled": {
+          "type": "boolean"
+        },
+        "volumeName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "volumePath": {
+          "type": "string"
+        },
+        "nodeLabel": {
+          "type": "string"
+        }
       },
-      "required": ["enabled"]
+      "required": [
+        "enabled"
+      ]
     },
     "healthcheck": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "interval": { "type": "string", "minLength": 1 },
-        "timeout": { "type": "string", "minLength": 1 },
-        "retries": { "type": "integer", "minimum": 1 },
-        "startPeriod": { "type": "string", "minLength": 1 },
-        "monitor": { "type": "string", "minLength": 1 }
+        "enabled": {
+          "type": "boolean"
+        },
+        "interval": {
+          "type": "string",
+          "minLength": 1
+        },
+        "timeout": {
+          "type": "string",
+          "minLength": 1
+        },
+        "retries": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "startPeriod": {
+          "type": "string",
+          "minLength": 1
+        },
+        "monitor": {
+          "type": "string",
+          "minLength": 1
+        }
       },
-      "required": ["enabled"]
+      "required": [
+        "enabled"
+      ]
     },
     "placement": {
       "type": "object",
       "properties": {
-        "constraints": { "type": "array", "items": { "type": "string" } }
+        "constraints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       }
     },
     "resources": {
@@ -150,19 +311,66 @@
       "properties": {
         "limits": {
           "type": "object",
-          "properties": { "memory": { "type": "string" } }
+          "properties": {
+            "memory": {
+              "type": "string"
+            }
+          }
         },
         "reservations": {
           "type": "object",
-          "properties": { "memory": { "type": "string" } }
+          "properties": {
+            "memory": {
+              "type": "string"
+            }
+          }
         }
       }
     },
-    "labels": { "type": "object" },
+    "labels": {
+      "type": "object"
+    },
     "extraHosts": {
       "type": "array",
-      "items": { "type": "string", "pattern": "^[^\\s:]+:[0-9A-Fa-f.:]+$" }
+      "items": {
+        "type": "string",
+        "pattern": "^[^\\s:]+:[0-9A-Fa-f.:]+$"
+      }
+    },
+    "tls": {
+      "type": "object",
+      "properties": {
+        "certSecret": {
+          "type": "string"
+        },
+        "keySecret": {
+          "type": "string"
+        }
+      }
+    },
+    "sso": {
+      "type": "object",
+      "properties": {
+        "issuer": {
+          "type": "string"
+        },
+        "clientId": {
+          "type": "string"
+        },
+        "redirectURL": {
+          "type": "string"
+        },
+        "clientSecretSecret": {
+          "type": "string"
+        }
+      }
     }
   },
-  "required": ["image", "appset", "exposure", "auth", "persistence"]
+  "required": [
+    "image",
+    "appset",
+    "exposure",
+    "auth",
+    "persistence"
+  ]
 }

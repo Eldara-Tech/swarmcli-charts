@@ -117,5 +117,43 @@ esac
 [ "$(yq -r '.services.controller.deploy.update_config.failure_action' "$out")" = "rollback" ] \
   || bad "the controller's update_config.failure_action is not 'rollback' — a bad image would leave the swarm with no controller and no way back"
 
+# 12. TLS on the controller implies an https SWARMCLI_CD_SERVER. The healthcheck is a
+#     separate process invocation that knows nothing about --tls-cert: it probes whatever
+#     that variable names, defaulting to http://127.0.0.1:8080, and a Go TLS listener
+#     answers a plaintext request with 400. Without this the chart renders a controller
+#     swarm restarts every interval while it works perfectly, and `docker inspect` says
+#     "400 bad request" with nothing about TLS.
+cmdline() { yq -r '(.services.controller.command // [])[]' "$out"; }
+env_of() { yq -r ".services.controller.environment.$1 // \"\"" "$out"; }
+
+if cmdline | grep -x -- '--tls-cert' >/dev/null; then
+  case "$(env_of SWARMCLI_CD_SERVER)" in
+    https://*) ;;
+    *) bad "the controller serves TLS but SWARMCLI_CD_SERVER is '$(env_of SWARMCLI_CD_SERVER)' — the healthcheck would probe plaintext and swarm would restart a working controller" ;;
+  esac
+
+  # 13. …and that both halves of the pair are actually delivered. A flag naming a path
+  #     nothing mounts is a controller that exits before its listener binds, which from
+  #     outside is indistinguishable from a bad certificate.
+  mounted() { yq -r "(.services.controller.secrets // [])[] | (.source // .)" "$out"; }
+  for flag in --tls-cert --tls-key; do
+    path=$(cmdline | grep -A1 -x -- "$flag" | tail -1)
+    name=${path##*/}
+    mounted | grep -x "$name" >/dev/null \
+      || bad "$flag names /run/secrets/$name but the service mounts no secret '$name'"
+  done
+fi
+
+# 14. The callback path is the one the controller serves and the one the provider was
+#     registered with. A redirect URL ending anywhere else authenticates nobody, and the
+#     failure arrives as a provider error page rather than as anything in this stack.
+redirect=$(env_of SWARMCLI_CD_OIDC_REDIRECT_URL)
+if [ -n "$redirect" ]; then
+  case "$redirect" in
+    */auth/callback) ;;
+    *) bad "SWARMCLI_CD_OIDC_REDIRECT_URL is '$redirect', which does not end in /auth/callback — the controller serves exactly one callback path" ;;
+  esac
+fi
+
 [ "$fail" -eq 0 ] || exit 1
-echo "  placement: manager pin + node pin consistent; secrets by file path; self-update reverts ($case)"
+echo "  placement: manager pin + node pin consistent; secrets by file path; self-update reverts; TLS probe consistent ($case)"

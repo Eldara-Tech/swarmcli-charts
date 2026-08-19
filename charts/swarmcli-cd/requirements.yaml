@@ -35,6 +35,12 @@ secrets:
     description: "appset.mode git-sync only. The private deploy key the sidecar authenticates to the app-set repository with. Pre-create: docker secret create swarmcli-cd-appset-ssh-key ./id_ed25519"
   - name: "{{ .Values.appset.sync.knownHostsSecret | default `swarmcli-cd-appset-known-hosts` }}"
     description: "appset.mode git-sync only. The host keys the sidecar will accept, so the first connection is not a blind trust of whatever answers. Take it once from a host you trust: ssh-keyscan -p <port> <host> > known_hosts && docker secret create swarmcli-cd-appset-known-hosts ./known_hosts"
+  - name: "{{ .Values.tls.certSecret | default `swarmcli-cd-tls-cert` }}"
+    description: "tls.certSecret only. The certificate the controller serves the API with, in exposure.mode published. Pre-create: docker secret create swarmcli-cd-tls-cert ./tls.crt"
+  - name: "{{ .Values.tls.keySecret | default `swarmcli-cd-tls-key` }}"
+    description: "tls.keySecret only. The private key for that certificate. Both or neither — one alone is a listener serving plaintext while you believe it is encrypted. Pre-create: docker secret create swarmcli-cd-tls-key ./tls.key"
+  - name: "{{ .Values.sso.clientSecretSecret | default `swarmcli-cd-oidc-secret` }}"
+    description: "sso.clientSecretSecret only, and only for a CONFIDENTIAL OIDC client — a public one has no secret and is protected by PKCE. Pre-create: printf '%s' \"$THE_CLIENT_SECRET\" | docker secret create swarmcli-cd-oidc-secret -"
   # {{ range .Values.registryAuthSecrets }}
   - name: "{{ . }}"
     description: "Image-pull credentials for the applications naming it in registryAuth. A docker config.json with STATIC credentials — the image ships no credential helpers. Pre-create: docker --config /tmp/rc login <registry> -u <user> -p <pat> && docker secret create {{ . }} /tmp/rc/config.json"
