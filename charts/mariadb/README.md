@@ -1,6 +1,6 @@
 # mariadb
 
-Single-instance MariaDB 11.8 for Docker Swarm: persistent (data on a node-local
+Single-instance MariaDB for Docker Swarm: persistent (data on a node-local
 named volume), authenticated via external Swarm secrets (root, plus an optional
 non-root app user), pinned to one node, and reachable by other stacks over a shared
 overlay. Not Traefik-routed (MariaDB is TCP); publishes no port by default.
