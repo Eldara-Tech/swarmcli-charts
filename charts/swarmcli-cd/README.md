@@ -257,7 +257,7 @@ is one line beside an ordinary chart source:
     revision: main
     chart:
       ref: swarmcli-charts/swarmcli-cd
-      version: "0.2.4"
+      version: "0.4.0"
       values: [values/swarmcli-cd.yaml]
       repositories:
         - name: swarmcli-charts
@@ -269,6 +269,15 @@ highest privilege the app set grants, an older controller refuses the whole file
 the key appears, and from the first sync **this chart is the definition of your
 deployment**. Anything it cannot express is dropped, so render it and compare against your
 `stack.yml` first.
+
+**Pin `image.tag` in the values file that entry names.** It is the one value a
+self-managed deployment cannot leave to the default. Empty means "whatever appVersion this
+chart carries", so the first self-apply re-renders the image from the chart rather than
+keeping the one you installed — and a chart older than your controller renders a
+*downgrade*. A controller too old to parse the app set it inherits refuses the whole file
+and stops following git, which is not something a commit can put right, because nothing is
+left reading them. swarmcli-cd 1.3.0 and later refuse a self release that goes backwards;
+an older one applies it.
 
 What this chart contributes is the part that makes it survivable. The controller service is
 rendered with `update_config.failure_action: rollback`, because Swarm's default is `pause`
