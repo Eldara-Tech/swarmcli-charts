@@ -51,7 +51,7 @@ include:
   - { chart: ollama,        cases: "default ephemeral none edge",                                                    timeout: 10m }
   # superset: the cheap subset. Every fixture needs the full backend (ci/e2e-setup.sh
   # stands up postgres + redis + the secrets), and each one deploys FOUR services off a
-  # ~930 MB image that then pip-installs its DB driver and waits for alembic migrations —
+  # ~320 MB image that then pip-installs its DB driver and waits for alembic migrations —
   # hence the large budget. `default` covers init+app+worker+beat; `no-celery` the 2-service
   # render; `edge` (#63) routes a real request through the traefik chart; `embedded-redis`
   # gets NO redis from the setup hook and must stand up its own (redis.mode: embedded) —

@@ -49,7 +49,7 @@
 {{- end }}
 
 {{- /* ---------------------------------------------------------------------------------------
-       superset_config.py. Superset 5 has NO env-var configuration mechanism, and a chart cannot
+       superset_config.py. Superset has NO env-var configuration mechanism, and a chart cannot
        create a Swarm config object — so the chart renders the config as Python, base64s it into
        one env var, and each service's entrypoint decodes it to SUPERSET_CONFIG_PATH.
 
@@ -216,8 +216,8 @@
        `redis` is importable by construction: the config already imports cachelib.redis. */}}
 {{- $waitRedis := "until python -c \"import sys; sys.path.insert(0, '/tmp'); import superset_config as c; import redis; redis.from_url(c.RATELIMIT_STORAGE_URI).ping()\" >/dev/null 2>&1; do echo 'waiting for redis...'; sleep 2; done" }}
 
-{{- /* Shared environment. Superset 5 reads NO configuration from env (the SUPERSET__* scheme
-       does not exist in it) — these are the few vars the image itself reads, plus the config
+{{- /* Shared environment. Superset reads NO configuration from env (the SUPERSET__* scheme
+       does not exist) — these are the few vars the image itself reads, plus the config
        blob. PYTHONPATH/SUPERSET_CONFIG_PATH must live here, not just be exported by the
        entrypoint: the healthchecks run in a fresh shell that only sees `environment:`. */}}
 {{- $baseEnv := dict

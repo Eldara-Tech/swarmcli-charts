@@ -20,9 +20,9 @@ five services:
 `app`, `worker` and `beat` wait for `init` to finish migrating before they start (Swarm has no
 `depends_on`, and Superset's migrations take no lock).
 
-> **The stock Superset image has no database driver.** `apache/superset:5.0.0` is upstream's
-> *lean* build: it installs `requirements/base.txt` only, so `psycopg2`, `mysqlclient` and
-> `Authlib` are all absent — it cannot reach *any* metadata database out of the box. This chart
+> **The stock Superset image has no database driver.** Upstream publishes a *lean* build: it
+> installs `requirements/base.txt` only, so `psycopg2`, `mysqlclient` and `Authlib` are all
+> absent — it cannot reach *any* metadata database out of the box. This chart
 > installs the right driver at start (see [Python packages](#python-packages)); for production,
 > bake your own image instead.
 
@@ -110,7 +110,7 @@ has no compiler, so `mysqlclient` cannot be installed at runtime. If your derive
 outage) from every task start:
 
 ```dockerfile
-FROM apache/superset:5.0.0
+FROM apache/superset:6.1.0   # match the appVersion in Chart.yaml
 USER root
 RUN uv pip install psycopg2-binary==2.9.6 Authlib
 USER superset
@@ -119,7 +119,7 @@ USER superset
 ```yaml
 image:
   repository: registry.example.com/superset
-  tag: 5.0.0-drivers
+  tag: 6.1.0-drivers
 python:
   installDrivers: false
 ```
@@ -129,8 +129,9 @@ mirror.
 
 ## Configuration
 
-Superset 5 has **no environment-variable configuration mechanism** (the `SUPERSET__*` scheme
-does not exist in this version) — it is configured by a Python file. The chart renders that
+Superset has **no environment-variable configuration mechanism** (the `SUPERSET__*` scheme does
+not exist; only feature flags read a `SUPERSET_FEATURE_*` prefix) — it is configured by a Python
+file. The chart renders that
 `superset_config.py` from your values, ships it base64-encoded in `SUPERSET_CONFIG_B64`, and each
 service decodes it to `SUPERSET_CONFIG_PATH` at start. It wires the metadata database, the four
 Redis caches, the Celery broker/result backend, rate-limit storage, cookie hardening, feature
@@ -246,7 +247,7 @@ Two constraints worth knowing:
 ## Connecting to a database chart
 
 The [postgres chart](../postgres) is the first-party metadata backend, and its **defaults are
-what you want** — no version pin needed. Its e2e runs Superset 5.0.0 against `postgres:18` on
+what you want** — no version pin needed. Its e2e runs Superset against `postgres:18` on
 every push (see [PostgreSQL versions](#postgresql-versions) if you want the conservative pin
 instead):
 
@@ -280,20 +281,21 @@ notes](#operating-notes): **MariaDB is not on Superset's supported matrix.**
 
 ### PostgreSQL versions
 
-Apache's published matrix for Superset 5.0.0 lists PostgreSQL **10–15**, and its own
-`docker-compose.yml` ships `postgres:15` — which is where the "Superset needs an old Postgres"
-folklore comes from. It is **documentation lag, not a ceiling**:
+Superset's 5.0.0 docs listed PostgreSQL **10–15**, and upstream's own `docker-compose.yml`
+shipped `postgres:15` — which is where the "Superset needs an old Postgres" folklore comes from.
+It was **documentation lag, not a ceiling**, and the 6.x docs no longer publish a numbered
+ceiling at all:
 
 - Superset enforces no version check. Its metadata store is plain SQL, so compatibility is
   whatever SQLAlchemy and `psycopg2` support.
-- Upstream's matrix on `master` already reads 10–16 (PostgreSQL 16 was added in
-  [apache/superset#32597](https://github.com/apache/superset/pull/32597), after the 5.0 branch
-  was cut), and upstream's *own* compose now runs `postgres:17` — a major their table still
-  does not list.
-- This chart's e2e deploys Superset 5.0.0 against `postgres:18` — migrations, login, the lot —
-  on every push, which is why the section above does not pin.
+- The 6.x installation docs say only that Superset "is tested to work with PostgreSQL and MySQL"
+  — the numbered table is gone (PostgreSQL 16 had been added to it in
+  [apache/superset#32597](https://github.com/apache/superset/pull/32597)) — and upstream's own
+  compose runs `postgres:17`.
+- This chart's e2e deploys Superset against `postgres:18` — migrations, login, the lot — on
+  every push, which is why the section above does not pin.
 
-If your policy is to stay strictly inside the matrix Apache publishes for 5.0.0, pin the
+If your policy is to stay inside the range Apache's older docs published, pin the
 postgres chart to `image.tag: "15"`. That is the *only* change it needs: the chart mounts the
 volume one level above `PGDATA` and derives the data directory from the tag, so the mount
 contract is identical across majors. The `no-celery` e2e fixture runs that pin, so it stays
@@ -400,10 +402,17 @@ revokes the Superset role too.
 - **Scaling the web app** needs nothing extra — sessions are cookie-based, so no sticky sessions
   — but every replica must share the same `SECRET_KEY`, which they do by construction.
 - **Alerts & Reports / thumbnails** need `celery.enabled` plus the matching entries in
-  `featureFlags` (`ALERT_REPORTS`, `THUMBNAILS`).
+  `featureFlags` (`ALERT_REPORTS`, `THUMBNAILS`) — **and a browser in the image**, which the
+  stock one no longer has. Superset 6.0 flipped its Dockerfile default to
+  `INCLUDE_CHROMIUM=false` so the lean layer is lean
+  ([apache/superset#34258](https://github.com/apache/superset/pull/34258)); the published tag
+  dropped from 928 MB at 5.0.0 to 257 MB at 6.0.0, and upstream publishes no Chromium-bearing
+  variant. Screenshots therefore need your own image — build upstream's Dockerfile with
+  `--build-arg INCLUDE_CHROMIUM=true`, or install a browser in the derived image from
+  [Python packages](#python-packages) — and `image.repository`/`image.tag` pointed at it. Every
+  other Celery use (cache warm-up, async SQL Lab) is unaffected.
 - **Do not mount a volume over `/app/superset_home`.** Nothing needs to persist there when the
-  metadata DB is external, and a bind mount would shadow the headless Chromium that the 5.0.0
-  image bakes in — silently breaking Alerts & Reports.
+  metadata DB is external, and the mount would shadow whatever the image bakes in below it.
 
 ### Rotating `SECRET_KEY`
 

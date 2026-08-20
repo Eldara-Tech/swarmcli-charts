@@ -2,7 +2,7 @@
 # all. Render-only in e2e (ci/e2e-render-only) — the image does not exist on a CI runner.
 image:
   repository: registry.example.com/superset
-  tag: 5.0.0-drivers
+  tag: 6.1.0-drivers
 python:
   installDrivers: false
 ingress:
