@@ -11,6 +11,15 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 fail=0
 
+# The appVersion-drift check below reads each chart's appVersion history from git. A shallow
+# clone (actions/checkout's default) silently yields a SHORT history, so the check would find
+# nothing and pass — indistinguishable from clean. Refuse rather than run half-blind.
+if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" != "false" ]; then
+  echo "ERROR: lint.sh needs the full git history (the appVersion-drift check reads it)."
+  echo "       CI: set 'fetch-depth: 0' on actions/checkout. Local: git fetch --unshallow"
+  exit 1
+fi
+
 for dir in charts/*/; do
   chart="$(basename "$dir")"
   for field in name version appVersion description; do
@@ -51,6 +60,37 @@ for dir in charts/*/; do
     echo "ERROR: $chart README.md repeats the appVersion in the values table; it will drift — say 'defaults to appVersion in Chart.yaml'"
     fail=1
   fi
+
+  # The rule above catches ONE phrasing. Prose can say the version any way it likes, so instead
+  # of guessing phrasings, compare the docs against this chart's OWN appVersion history: a string
+  # that USED to be the appVersion and is still in the prose is, by construction, a claim the
+  # bump left behind. charts/mariadb opened with "Single-instance MariaDB 11.8" for the entire
+  # life of appVersion 12.3 (#153) — first line of the chart's front page, and nothing noticed.
+  # It fires on the bump PR, which is where the fix belongs and where someone is already looking.
+  #
+  # A deliberate historical mention ("Superset's 5.0.0 docs listed …") is legitimate prose, not
+  # drift: mark that line `<!-- appversion-ok -->` in Markdown, `# appversion-ok` in YAML.
+  #
+  # awk, not grep -E: `grep` is ugrep on some contributors' machines, and it does not match an
+  # anchor inside an alternation — `(^|[^0-9.])` silently matches NOTHING there while GNU grep
+  # matches. A check that reports clean because its regex never fired is the worst kind.
+  cur="$(sed -n 's/^appVersion: *"\?\([^"]*\)"\?$/\1/p' "$dir/Chart.yaml" 2>/dev/null)"
+  for old in $(git log -p --format= -- "$dir/Chart.yaml" \
+      | sed -n 's/^+appVersion: *"\?\([^"]*\)"\?$/\1/p' | sort -u); do
+    [ "$old" = "$cur" ] && continue
+    drift="$(awk -v v="$old" '
+      BEGIN { esc = v; gsub(/\./, "\\.", esc); re = "[^0-9.]" esc "[^0-9.]" }
+      /appversion-ok/ { next }
+      { padded = " " $0 " "; if (padded ~ re) printf "%s:%d: %s\n", FILENAME, FNR, $0 }
+    ' "${dir%/}/README.md" "${dir%/}/values.yaml" 2>/dev/null)"
+    if [ -n "$drift" ]; then
+      echo "ERROR: $chart docs still name $old, which is no longer its appVersion ($cur):"
+      printf '%s\n' "$drift" | sed 's/^/         /'
+      echo "       De-version the claim so the next bump cannot strand it, or mark a deliberate"
+      echo "       historical mention with 'appversion-ok' on that line."
+      fail=1
+    fi
+  done
 
   # A floating tag is unpinnable and unreviewable: it changes what deploys without
   # a commit. Renovate can only keep a concrete tag fresh.

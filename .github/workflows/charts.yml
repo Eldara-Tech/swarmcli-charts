@@ -63,6 +63,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # lint.sh compares each chart's docs against its own appVersion HISTORY, so it needs
+          # the real thing: on a shallow clone the history is short rather than missing and the
+          # check would pass by finding nothing. lint.sh refuses to run shallow for that reason.
+          fetch-depth: 0
 
       - name: Install yamllint
         run: pipx install yamllint

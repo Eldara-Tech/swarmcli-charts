@@ -281,7 +281,7 @@ notes](#operating-notes): **MariaDB is not on Superset's supported matrix.**
 
 ### PostgreSQL versions
 
-Superset's 5.0.0 docs listed PostgreSQL **10–15**, and upstream's own `docker-compose.yml`
+Superset's 5.0.0 docs listed PostgreSQL **10–15**, and upstream's own `docker-compose.yml` <!-- appversion-ok -->
 shipped `postgres:15` — which is where the "Superset needs an old Postgres" folklore comes from.
 It was **documentation lag, not a ceiling**, and the 6.x docs no longer publish a numbered
 ceiling at all:
@@ -406,7 +406,7 @@ revokes the Superset role too.
   stock one no longer has. Superset 6.0 flipped its Dockerfile default to
   `INCLUDE_CHROMIUM=false` so the lean layer is lean
   ([apache/superset#34258](https://github.com/apache/superset/pull/34258)); the published tag
-  dropped from 928 MB at 5.0.0 to 257 MB at 6.0.0, and upstream publishes no Chromium-bearing
+  dropped from 928 MB at 5.0.0 to 257 MB at 6.0.0, and upstream publishes no Chromium-bearing <!-- appversion-ok -->
   variant. Screenshots therefore need your own image — build upstream's Dockerfile with
   `--build-arg INCLUDE_CHROMIUM=true`, or install a browser in the derived image from
   [Python packages](#python-packages) — and `image.repository`/`image.tag` pointed at it. Every
