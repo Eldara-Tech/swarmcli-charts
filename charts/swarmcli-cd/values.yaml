@@ -12,7 +12,13 @@
 
 image:
   repository: eldaratech/swarmcli-cd
-  tag: ""  # defaults to appVersion from Chart.yaml
+  # Empty defaults to appVersion from Chart.yaml. PIN IT if this chart deploys the
+  # controller as its own stack (`self: true`): from the first self-apply the chart is
+  # the definition of the deployment, so an unpinned tag re-renders whatever appVersion
+  # this chart carries — which on a chart older than the controller is a DOWNGRADE, and
+  # a controller too old to read the app set cannot apply the commit that would undo it.
+  # swarmcli-cd 1.3.0 and later refuse that; an older one does not.
+  tag: ""
 
 # ─────────────────────────────────────────────────────────────────────────────────────
 # The app set — the list of applications the controller reconciles. Four shapes:
