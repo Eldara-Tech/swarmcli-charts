@@ -65,32 +65,104 @@ There is **no** `.Capabilities` or other Helm context.
 ## Chart conventions
 
 The existing charts share deliberate patterns — new charts must follow them.
-The full normative list lives in [CLAUDE.md](CLAUDE.md#chart-design-conventions);
-in short:
+Reference implementations: keycloak (routed, pluggable exposure), mariadb
+(stateful), openclaw (both). `make new-chart` scaffolds all of this correctly and
+`make test` enforces most of it.
 
-- **Image pins.** `Chart.yaml:appVersion` is the image pin (every chart ships
-  `image.tag: ""` and the template falls back to `.Chart.AppVersion`). Renovate
-  maintains it, so every `Chart.yaml` needs a `# renovate: image=<repo>` comment
-  directly above `appVersion`, naming the same image as `values.yaml`
-  `image.repository`. No `:latest`, and never repeat the version in a comment or in
-  the README values table — Renovate edits `Chart.yaml` and touches neither, so it
-  drifts. `make new-chart` gets all of this right; `make test` enforces it. The bot doing
-  the maintaining is our own, run from the [`renovate`](charts/renovate) chart — see
-  [docs/renovate-self-hosting.md](docs/renovate-self-hosting.md) for how it is configured
-  and which updates it holds back.
-- **Traefik-routed** services carry `traefik.enable=true`,
-  `traefik.constraint-label` and `traefik.swarm.network` deploy labels (the
-  swarm provider discovers nothing without the constraint label), and default
-  their `traefik.*` values to the in-repo traefik chart — entrypoints
-  `http`/`https`, cert resolver `le`, redirect middleware `https-redirect`. See
-  "Routing a service" in [charts/traefik/README.md](charts/traefik/README.md).
-- **Stateful** services run a single replica pinned via `persistence.nodeLabel`,
-  rendered only while `persistence.enabled` (never a hardcoded entry in
-  `placement.constraints`, which is for extra constraints); they offer host-path
-  persistence via `persistence.volumePath` with the `host-mount` acknowledgment,
-  and ship `ephemeral` + `bind-mount` CI fixtures. See charts/mariadb.
-- **Secrets** are external and operator-created; charts read them from the
-  mounted `/run/secrets/...` files (never take secret values via values.yaml).
+**Traefik-routed charts** — anything exposing HTTP via the traefik chart:
+
+- Deploy labels MUST carry `traefik.enable=true`,
+  `traefik.constraint-label=<constraintLabel>` and
+  `traefik.swarm.network=<network>`. The traefik chart's v3 swarm provider runs
+  `exposedByDefault=false` **plus** a constraint on `traefik.constraint-label`,
+  so a service without that label is never discovered (404 at the edge);
+  `traefik.docker.network` is the docker-provider selector, not the swarm
+  provider's — on multi-network services it can resolve the wrong overlay IP
+  (502/504). Full label contract: charts/traefik/README.md "Routing a service".
+- Default the `traefik.*` values to the in-repo traefik chart: entrypoints
+  `http`/`https` (NOT Traefik's conventional `web`/`websecure` — a router bound
+  to an entrypoint the instance doesn't define is dropped), `certResolver: le`,
+  `constraintLabel: traefik-public`, `redirectMiddleware: https-redirect` (the
+  traefik chart always defines it, independent of its dashboard). Operators
+  running their own Traefik override these; say so in the chart README.
+- Render the HTTP router's redirect-middleware label only when TLS is on, so
+  the `tls: false` path serves plain HTTP instead of redirecting into a
+  nonexistent HTTPS router.
+- Real services should make exposure pluggable — `exposure.mode:
+  traefik|published|none` (keycloak/openclaw pattern); demo charts (whoami) may
+  hardcode traefik mode.
+
+**Stateful charts** — anything persisting to a Swarm volume (node-local):
+
+- Single replica, pinned to the data node via `persistence.nodeLabel` (default
+  `<chart>-data`), rendered as `node.labels.<label> == true` ONLY while
+  `persistence.enabled` — the pin must never outlive the volume, or the
+  documented ephemeral mode strands the task `Pending` on a missing label
+  (#55). `nodeLabel: ""` skips the pin (single-node swarm).
+  `placement.constraints` holds only EXTRA constraints and applies in all
+  modes; never put the data pin there.
+- Offer host-path persistence: `persistence.volumePath` (per-volume `<x>Path`
+  when there are several — see openclaw) bind-mounts an absolute host path,
+  takes precedence over `volumeName`, and suppresses the top-level named-volume
+  block. `fail` at render time when a `volumeName` contains `/` (docker compose
+  otherwise emits a cryptic error). Acknowledge with `host-mount` in the
+  Chart.yaml `swarmcli-charts/allow` annotation (comma-separated with other
+  keys) and note in a comment that the default named-volume render is clean.
+- Ship both fixtures: `ci/ephemeral-values.yaml` (persistence off — must render
+  no placement block) and `ci/bind-mount-values.yaml` (host path — exercises
+  the host-mount acknowledgment).
+
+**swarmcli floor** — every `Chart.yaml` declares `swarmcliVersion`, the oldest
+swarmcli whose chart engine renders it (`>= 1.11.0` for most charts today).
+
+This exists because CI renders with swarmcli **`main`**, which is newer than
+anything a user has installed, so a chart can depend on unreleased behaviour and
+still go green. That is not hypothetical: `charts/zammad` uses template control
+flow in `requirements.yaml` (swarmcli #457, on `main`, in no release), so it
+renders in CI and fails on *every* released swarmcli with an opaque
+`parse requirements.yaml: could not find expected ':'`. It is unpublishable until
+v1.13.0 ships, and nothing told us.
+
+- **Raise the floor only to a RELEASED version.** `scripts/floor-check.sh` proves
+  a floor by downloading a real binary of it and rendering the chart. A floor naming
+  an unreleased version cannot be proven, so it is reported as unverified and
+  skipped — visible in the log, never silently passed. That is zammad's state.
+- `swarmcli charts lint --for-version X` checks whether a floor *admits* X. Only
+  floor-check proves the chart *runs* on it: a swarmcli binary carries one
+  engine's behaviour and cannot emulate another's.
+- Old swarmcli parses `Chart.yaml` leniently and **ignores `swarmcliVersion`
+  entirely** — only swarmcli ≥ v1.13.0 enforces it. The floor protects users
+  going forward; it cannot retroactively help anyone already on an old build.
+
+**Image pins** — the image a chart deploys is pinned by `Chart.yaml:appVersion`
+(every chart ships `image.tag: ""` and the template falls back to
+`.Chart.AppVersion`). Renovate maintains those pins, and `scripts/lint.sh` enforces
+the three rules that keep it working:
+
+- Every `Chart.yaml` carries `# renovate: image=<repo>` on the line **directly
+  above** `appVersion`, naming the same image as `values.yaml` `image.repository`.
+  Without it a new chart silently escapes Renovate and its image goes stale forever.
+- No `:latest` anywhere in `values.yaml` (or documented in the README). A floating
+  tag changes what deploys without a commit, and Renovate can only keep a concrete
+  tag fresh.
+- Never echo the appVersion into prose — not a `values.yaml` comment, not the
+  README values table. Renovate edits `Chart.yaml` and touches neither, so the
+  number drifts on the first bump. Say "defaults to `appVersion` in Chart.yaml".
+
+`make new-chart` scaffolds all of this correctly. A chart whose `image.repository`
+you change must have its renovate comment changed to match, or lint fails.
+
+**Secrets** — always EXTERNAL Swarm secrets the operator pre-creates; charts
+never create secrets or take secret values through `values.yaml`. Prefer the
+image's `*_FILE` convention; if the image lacks one, read the mounted file in a
+command/entrypoint wrapper (`$$` compose-escapes the `$`) so the plaintext never
+lands in the compose file or `docker inspect`. Document the
+`docker secret create` pre-step in the chart README.
+
+The bot maintaining the image pins is our own, run from the
+[`renovate`](charts/renovate) chart — see
+[docs/renovate-self-hosting.md](docs/renovate-self-hosting.md) for how it is
+configured and which updates it holds back.
 
 ## External resources (`requirements.yaml`)
 
