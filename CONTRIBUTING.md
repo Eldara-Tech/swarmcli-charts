@@ -194,6 +194,61 @@ attachable overlays. Use `autoCreate: false` for a network the operator
 pre-provisions (e.g. a shared ingress) — and document such prerequisites in the
 chart `README.md` too.
 
+### Modelling an optional secret
+
+The obvious shape — `secretName: ""` meaning "feature off" — **fails every
+install**, and not in the fixture that uses the feature: in the default one.
+
+`validateRequirements` errors on `secrets[i] has no name` (same for networks and
+configs). Because `requirements.yaml` is a template rendered with the release's
+values, an unconditional entry with an empty default renders a nameless
+declaration and the pre-flight refuses before anything deploys.
+
+CI does not catch it. `scripts/requirements-check.sh` only checks that names the
+manifest *references* are declared, so it reads an empty declaration as a harmless
+extra.
+
+Give the secret a real default name always, and gate its **use** with a separate
+flag — `charts/vaultwarden`'s `auth.adminToken` is the in-repo precedent:
+
+```yaml
+auth:
+  rootPassword:
+    enabled: false                    # the gate
+    secretName: gitlab_root_password  # always a real name
+```
+
+Declare the name unconditionally in `requirements.yaml`, and reference it from the
+manifest only when the gate is on. An unreferenced declaration is inert — swarmcli
+validates what the manifest uses — so over-declaring costs nothing, while a
+nameless entry costs every install.
+
+### `extra_hosts` needs its own schema guard
+
+If a chart exposes an `extraHosts`-style value, constrain it in
+`values.schema.json`. Docker's own converter will not.
+
+`convertExtraHosts` in docker/cli — identical in the pinned v28.5.1 and in
+v29.6.2 — is:
+
+```go
+if hostName, ipAddr, ok := strings.Cut(hostIP, ":"); ok {
+    hosts = append(hosts, ipAddr+" "+hostName)   // SwarmKit notation
+}
+```
+
+There is no `else`. An entry with **no colon is dropped silently**, and the
+reversed `ip:hostname` order is accepted and written as a garbage `/etc/hosts`
+line. Nothing upstream catches either: the v3 stack schema types `extra_hosts` as
+a bare `list_or_dict` with no format check.
+
+`docker compose config` *does* reject the colon-less form — but that is compose
+v2/v5, which runs in chart CI and never against an operator's own values. So a
+typo deploys clean and resolves nothing.
+
+`charts/swarmcli-cd` guards it with a `pattern` on the schema items
+(`^[^\s:]+:[0-9A-Fa-f.:]+$`), which swarmcli enforces at render time.
+
 ### It is a template, not static YAML
 
 swarmcli renders `requirements.yaml` as a Go template with the **release's**
