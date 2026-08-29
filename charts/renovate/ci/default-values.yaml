@@ -1,3 +1,4 @@
 # The shape most people want: interval mode, GitHub, an explicit repo list.
 repositories:
   - Eldara-Tech/swarmcli-charts
+gitAuthor: "Renovate Bot <12345678+my-bot@users.noreply.github.com>"

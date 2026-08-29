@@ -89,16 +89,27 @@ real account owned by Mend, used by the hosted `forking-renovate[bot]` App. Leav
 commit your bot pushes is attributed to a user you do not control, with Mend's Vigilant Mode
 flagging it `Unverified`. Renovate warns about this on every run.
 
-Point it at the account whose token you gave the chart:
+Renovate only derives an author from the token when that account exposes a readable email —
+always for a GitHub App token, but for a PAT only if its owner has a public profile email or
+the token can read `/user/emails`. When it cannot, the Mend default stands. Point it at the
+account whose token you gave the chart:
 
 ```yaml
-extraEnv:
-  RENOVATE_GIT_AUTHOR: "Renovate Bot <12345678+my-bot@users.noreply.github.com>"
+gitAuthor: "Renovate Bot <12345678+my-bot@users.noreply.github.com>"
 ```
 
 The numeric id is `gh api users/<login> --jq .id`. The commits stay unsigned — there is no
 signing key in the container — but they are attributed to an account you own, and an unsigned
 commit from an account without Vigilant Mode carries no badge at all.
+
+Use the `users.noreply.github.com` form rather than widening the token so Renovate can
+discover an address: discovery picks the account's **primary** email, and would stamp it into
+every commit it pushes.
+
+> Before this was a value of its own, the way to set it was
+> `extraEnv: { RENOVATE_GIT_AUTHOR: ... }`, which still works — `extraEnv` is injected
+> verbatim. Setting both renders the same environment key twice, so the chart fails the
+> render with a message naming the conflict rather than letting Compose reject it.
 
 ## Values
 
@@ -117,12 +128,13 @@ commit from an account without Vigilant Mode carries no badge at all.
 | `autodiscoverFilter` | `""` | Narrow autodiscovery, e.g. `infra/*` |
 | `auth.tokenSecret` | `renovate_token` | **External** Swarm secret holding the platform token |
 | `auth.githubComTokenSecret` | `""` | **External** secret with a read-only github.com token. Non-GitHub platforms only |
+| `gitAuthor` | `""` | Author of the commits Renovate pushes, as `Name <email>`. Empty leaves it to Renovate's token-based discovery, which falls back to Mend's address — see [Commit identity](#commit-identity) |
 | `configName` | `""` | **External** Docker config holding a Renovate config file |
 | `configVersion` | `""` | Rotation key. The chart mounts `<configName>_<configVersion>`, so new contents get a new config object |
 | `configFormat` | `json` | Format of that file — `json`, `json5`, `jsonc`, `yaml`, `yml`, `js`, `cjs`, `mjs`. Renovate parses by file extension, so this must match its contents |
 | `logLevel` | `info` | `trace`–`fatal` |
 | `dryRun` | `""` | `extract`, `lookup` or `full` — writes nothing to your repositories |
-| `extraEnv` | `{}` | Extra environment variables, injected verbatim. On GitHub, set `RENOVATE_GIT_AUTHOR` here — see [Commit identity](#commit-identity) |
+| `extraEnv` | `{}` | Extra environment variables, injected verbatim |
 | `resources.limits.memory` | `""` | e.g. `2G`. Renovate clones repos and runs package managers |
 | `resources.reservations.memory` | `""` | Scheduler hint |
 | `placement.constraints` | `[]` | Extra scheduling constraints |

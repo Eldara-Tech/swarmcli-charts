@@ -63,6 +63,23 @@ auth:
   # A read-only, no-scope github.com token fixes both. Leave empty on GitHub.
   githubComTokenSecret: ""
 
+# Git identity for the commits Renovate pushes, as `Name <email>`.
+#
+# Leave it empty and Renovate derives one from the token — reliably for a GitHub App
+# token, but for a PAT only when the token's account exposes a readable email. When it
+# cannot, it falls back to `renovate@whitesourcesoftware.com`, a real account owned by
+# Mend: every commit is then attributed to a user you do not control, Mend's Vigilant
+# Mode flags it `Unverified`, and Renovate WARNs on every run.
+#
+# Set it to the account whose token you gave the chart, in GitHub's no-reply form —
+# `<id>+<login>@users.noreply.github.com`, the id from `gh api users/<login> --jq .id`:
+#
+#   gitAuthor: "Renovate Bot <12345678+my-bot@users.noreply.github.com>"
+#
+# Prefer that over widening the token so Renovate can discover an address: discovery
+# would use the account's PRIMARY email, and stamp it into every public commit.
+gitAuthor: ""
+
 # Renovate's own config file, as an external Docker config you pre-create. The escape
 # hatch for anything the values above do not cover (onboarding, packageRules, hostRules).
 # Empty = configure entirely through the values here.
