@@ -351,6 +351,59 @@ example (it mounts the Docker socket by design). Risk keys: `docker-socket`,
   `values.yaml`.
 - The PR template has the checklist.
 
+## CI and scripting semantics that have bitten this repo
+
+Three of these produced a green result on a check that had not passed, or a
+missing run that looked like a failure. All three are still live traps.
+
+### `producer | grep -q` under `set -o pipefail` reports a match as no match
+
+`grep -q` exits at the **first** match. The producer's next write gets `SIGPIPE`
+and dies with 141, and `pipefail` makes *that* the pipeline's status. So `if`
+reads false and a `|| fail` fires on a check that actually passed.
+
+The tell is `PIPESTATUS=141 0` — grep matched (0) and the producer was killed
+(141). An *early* match is the trigger, not a large producer and not the pipe
+buffer, and shell builtins are not exempt.
+
+Capture first, then test:
+
+```bash
+out="$(producer)"            # let it finish
+grep -q PATTERN <<<"$out"
+```
+
+`scripts/lint.sh` enforces this repo-wide; keep new scripts clean.
+
+### A concurrency group cancels **queued** runs, not just running ones
+
+`cancel-in-progress: true` kills the running job when a newer run arrives — that
+much is the flag. But with `cancel-in-progress: false`, GitHub still keeps only
+**one pending run per group**: an older queued run is cancelled when a newer one
+enters.
+
+Ten chart releases produced ten `Pages Index` runs — 8 cancelled, 1 running, 1
+queued. Nothing failed, and the index still ended up complete because the job
+rebuilds from all tags. But any gate keyed on *"did workflow X succeed for this
+commit"* reads those cancellations as **never ran**, silently.
+
+If you write such a gate, treat `cancelled` as unknown rather than as failure or
+success, and re-check the durable artefact instead.
+
+### A `GITHUB_TOKEN`-dispatched run raises no downstream `workflow_run`
+
+Publishing is two stages: `Release Chart` packages and creates the GitHub
+release, then `Pages Index` regenerates `index.yaml` — chained by
+`on: workflow_run: workflows: ["Release Chart"]`.
+
+`release-reconcile.yml` dispatches `Release Chart` with the default
+`GITHUB_TOKEN`, and **a run started that way raises no downstream event**. The
+chart is released and the index is never rebuilt, with nothing red anywhere.
+
+That is why `Pages Index` also runs on a schedule. If you add another
+`workflow_run` chain, give it the same fallback — or dispatch with a PAT, which
+does raise the event.
+
 ## Releasing (maintainers)
 
 The **git tag is the source of truth** for the version. The easiest way to cut one
