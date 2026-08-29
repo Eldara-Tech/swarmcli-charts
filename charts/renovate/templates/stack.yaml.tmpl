@@ -6,6 +6,12 @@
 {{- if and .Values.configVersion (not .Values.configName) }}
 {{-   fail "configVersion names a version OF configName — set configName as well, or drop configVersion" }}
 {{- end }}
+{{- /* gitAuthor and extraEnv.RENOVATE_GIT_AUTHOR render into the SAME environment key, and a
+       duplicate mapping key is a compose parse error rather than a last-one-wins. Say which
+       one to drop here; the alternative is `mapping key already defined` at deploy time. */ -}}
+{{- if and .Values.gitAuthor (index (.Values.extraEnv | default dict) "RENOVATE_GIT_AUTHOR") }}
+{{-   fail "gitAuthor and extraEnv.RENOVATE_GIT_AUTHOR both set the same environment variable — keep gitAuthor and drop the extraEnv entry" }}
+{{- end }}
 {{- /* Renovate picks its config parser from the file's EXTENSION and exits
        `FATAL: Unsupported file type` on anything else, so configFormat — not the Docker
        config's name — is what makes the mount readable at all. One variable, so the env
@@ -46,6 +52,9 @@ services:
       RENOVATE_PLATFORM: {{ .Values.platform.type | quote }}
 {{- if .Values.platform.endpoint }}
       RENOVATE_ENDPOINT: {{ .Values.platform.endpoint | quote }}
+{{- end }}
+{{- if .Values.gitAuthor }}
+      RENOVATE_GIT_AUTHOR: {{ .Values.gitAuthor | quote }}
 {{- end }}
 {{- if .Values.autodiscover }}
       RENOVATE_AUTODISCOVER: "true"

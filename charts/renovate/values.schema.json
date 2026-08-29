@@ -42,6 +42,7 @@
       },
       "required": ["tokenSecret"]
     },
+    "gitAuthor": { "type": "string" },
     "configName": { "type": "string" },
     "configVersion": { "type": "string" },
     "configFormat": {

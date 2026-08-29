@@ -130,11 +130,10 @@ dropped:
 repositories:
   - Eldara-Tech/swarmcli-charts
 logLevel: info
-extraEnv:
-  RENOVATE_GIT_AUTHOR: "Renovate Bot <262318423+eldara-cruncher@users.noreply.github.com>"
+gitAuthor: "Renovate Bot <262318423+eldara-cruncher@users.noreply.github.com>"
 ```
 
-**`RENOVATE_GIT_AUTHOR` is not optional on github.com.** Renovate's default `gitAuthor` is
+**`gitAuthor` is not optional on github.com.** Renovate's default `gitAuthor` is
 `renovate@whitesourcesoftware.com`, a real account owned by Mend and used by the hosted
 `forking-renovate[bot]` App — leave it and every pin bump in this repo's history is attributed
 to a user we do not control, flagged `Unverified` by Mend's Vigilant Mode, and Renovate WARNs
@@ -234,8 +233,9 @@ Every change below is an edit to `renovate-values.yaml` followed by
   on the dashboard issue) → the PAT is missing *Dependabot alerts: Read-only*. Add it in the
   token's settings; nothing in the chart or in `.github/renovate.json` changes.
 - **`WARN: Using the default gitAuthor email address … is not recommended on GitHub.com`** →
-  `RENOVATE_GIT_AUTHOR` is unset; see Step 4. Commits already pushed keep the old author —
-  the fix applies to new ones.
+  `gitAuthor` is unset and Renovate could not derive one from the token — it only does that
+  when the token's account exposes a readable email, and `eldara-cruncher` has none. See
+  Step 4. Commits already pushed keep the old author — the fix applies to new ones.
 
 ### Optional: cronjob mode instead of interval
 
