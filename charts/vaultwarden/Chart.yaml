@@ -3,7 +3,7 @@ description: Vaultwarden password manager on Docker Swarm - sqlite by default, o
 # version is a placeholder — the git tag (vaultwarden/vX.Y.Z) sets the real version at release.
 version: 0.1.0
 # renovate: image=vaultwarden/server
-appVersion: "1.37.1"
+appVersion: "1.37.2"
 # Oldest swarmcli whose chart engine renders this chart; verified by
 # scripts/floor-check.sh against a real binary of that version.
 swarmcliVersion: ">= 1.11.0"
