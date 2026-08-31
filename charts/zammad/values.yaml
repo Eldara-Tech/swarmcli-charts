@@ -266,7 +266,7 @@ elasticsearch:
   network: elasticsearch-net
   image:
     repository: elasticsearch
-    tag: "9.5.1"  # pinned; the version Zammad's own compose tracks (Docker Hub library/elasticsearch)
+    tag: "9.5.2"  # pinned; the version Zammad's own compose tracks (Docker Hub library/elasticsearch)
   persistence:
     volumeName: zammad-elasticsearch-data
     volumePath: ""
