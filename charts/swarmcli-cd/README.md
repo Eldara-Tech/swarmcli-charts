@@ -276,7 +276,7 @@ chart carries", so the first self-apply re-renders the image from the chart rath
 keeping the one you installed — and a chart older than your controller renders a
 *downgrade*. A controller too old to parse the app set it inherits refuses the whole file
 and stops following git, which is not something a commit can put right, because nothing is
-left reading them. swarmcli-cd 1.3.0 and later refuse a self release that goes backwards;
+left reading them. swarmcli-cd 1.3.0 and later refuse a self release that goes backwards; <!-- appversion-ok -->
 an older one applies it.
 
 What this chart contributes is the part that makes it survivable. The controller service is
