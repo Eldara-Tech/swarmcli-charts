@@ -5,7 +5,7 @@ version: 0.2.0
 # appVersion is the default image tag for ghcr.io/zammad/zammad. It is the immutable
 # version+patchlevel Zammad's own docker-compose pins (the bare `7.1.1` tag floats).
 # renovate: image=ghcr.io/zammad/zammad
-appVersion: "7.1.1-0020"
+appVersion: "7.1.2-0020"
 # requirements.yaml uses template control flow, which needs swarmcli #457 —
 # on main but not in any release yet, so this chart cannot be published
 # until v1.13.0 ships. scripts/floor-check.sh reports it as unverified.
