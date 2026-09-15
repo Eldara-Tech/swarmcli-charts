@@ -1,0 +1,71 @@
+// Grafana Alloy configuration shipped by this chart and mounted as a Swarm config
+// at /etc/alloy/config.alloy. It is deployed only when shipper.enabled is true.
+//
+// Alloy runs as a GLOBAL service — one task per swarm node — and reads every
+// container's logs on its own node through the Docker API, then pushes them to
+// the Loki service in this stack. Nothing about it is per-release, so the two
+// values that do vary (where to push, how loudly to log) arrive as environment
+// variables the stack template sets.
+//
+// Promtail, the agent this replaces, reached end of life on 2026-03-02.
+
+logging {
+	level  = sys.env("ALLOY_LOG_LEVEL")
+	format = "logfmt"
+}
+
+// Containers on THIS node. The socket is mounted at the conventional path
+// whatever shipper.dockerSocket says on the host, so this address is fixed.
+discovery.docker "containers" {
+	host             = "unix:///var/run/docker.sock"
+	refresh_interval = "15s"
+}
+
+discovery.relabel "containers" {
+	targets = discovery.docker.containers.targets
+
+	// Swarm's own labels are the useful identity: a service and a stack outlive
+	// every container that implements them. The task name and container name do
+	// not — they carry a fresh task ID after each redeploy, so promoting one to a
+	// Loki label would open a new stream every time anything is updated.
+	rule {
+		source_labels = ["__meta_docker_container_label_com_docker_swarm_service_name"]
+		target_label  = "service"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_label_com_docker_stack_namespace"]
+		target_label  = "stack"
+	}
+
+	// A container started outside Swarm (docker run, docker compose) carries
+	// neither label, and would otherwise arrive with no identity at all. This rule
+	// fires ONLY when service is still empty — the regex is anchored on the
+	// separator — and falls back to the container name minus Docker's leading "/".
+	rule {
+		source_labels = ["service", "__meta_docker_container_name"]
+		separator     = ";"
+		regex         = "^;/?(.*)$"
+		target_label  = "service"
+	}
+
+	// Which node the line came from. NODE_NAME is a Swarm service template the
+	// stack template sets; it resolves per task, so each node's Alloy labels its
+	// own hostname.
+	rule {
+		target_label = "node"
+		replacement  = sys.env("NODE_NAME")
+	}
+}
+
+loki.source.docker "containers" {
+	host       = "unix:///var/run/docker.sock"
+	targets    = discovery.relabel.containers.output
+	forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+	endpoint {
+		url = sys.env("LOKI_PUSH_URL")
+	}
+}

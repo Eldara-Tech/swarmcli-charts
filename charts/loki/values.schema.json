@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": { "type": "string" },
+        "tag": { "type": "string" }
+      },
+      "required": ["repository"]
+    },
+    "replicas": { "type": "integer", "minimum": 1, "maximum": 1 },
+    "persistence": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "volumeName": { "type": "string", "pattern": "^[^/]+$" },
+        "volumePath": { "type": "string" },
+        "nodeLabel": { "type": "string" }
+      }
+    },
+    "exposure": {
+      "type": "object",
+      "properties": {
+        "mode": { "type": "string", "enum": ["traefik", "published", "none"] },
+        "network": { "type": "string", "minLength": 1 }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "host": { "type": "string" },
+        "tls": { "type": "boolean" }
+      }
+    },
+    "traefik": {
+      "type": "object",
+      "properties": {
+        "certResolver": { "type": "string" },
+        "routerName": { "type": "string" },
+        "constraintLabel": { "type": "string" },
+        "redirectMiddleware": { "type": "string" },
+        "basicAuthUsers": { "type": "string" },
+        "entrypoints": {
+          "type": "object",
+          "properties": {
+            "http": { "type": "string" },
+            "https": { "type": "string" }
+          }
+        }
+      }
+    },
+    "publish": {
+      "type": "object",
+      "properties": {
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "mode": { "type": "string", "enum": ["ingress", "host"] }
+      }
+    },
+    "service": {
+      "type": "object",
+      "properties": {
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "retention": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "period": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))*$" }
+      }
+    },
+    "analytics": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" }
+      }
+    },
+    "logLevel": { "type": "string", "enum": ["debug", "info", "warn", "error"] },
+    "config": {
+      "type": "object",
+      "properties": {
+        "mode": { "type": "string", "enum": ["chart", "external-config", "external-secret"] },
+        "externalName": { "type": "string", "minLength": 1 }
+      }
+    },
+    "extraArgs": { "type": "array", "items": { "type": "string" } },
+    "placement": {
+      "type": "object",
+      "properties": {
+        "constraints": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "limits": {
+          "type": "object",
+          "properties": { "memory": { "type": "string" } }
+        },
+        "reservations": {
+          "type": "object",
+          "properties": { "memory": { "type": "string" } }
+        }
+      }
+    },
+    "shipper": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": { "type": "string" },
+            "tag": { "type": "string", "minLength": 1 }
+          },
+          "required": ["repository"]
+        },
+        "logLevel": { "type": "string", "enum": ["debug", "info", "warn", "error"] },
+        "dockerSocket": { "type": "string", "pattern": "^/.*" },
+        "persistence": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "volumeName": { "type": "string", "pattern": "^[^/]+$" }
+          }
+        },
+        "extraArgs": { "type": "array", "items": { "type": "string" } },
+        "resources": {
+          "type": "object",
+          "properties": {
+            "limits": {
+              "type": "object",
+              "properties": { "memory": { "type": "string" } }
+            },
+            "reservations": {
+              "type": "object",
+              "properties": { "memory": { "type": "string" } }
+            }
+          }
+        }
+      }
+    },
+    "labels": { "type": "object" }
+  }
+}

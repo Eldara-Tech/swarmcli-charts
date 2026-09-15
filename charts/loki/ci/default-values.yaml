@@ -1,0 +1,4 @@
+# The default shape: no published port and no edge labels, Loki reachable only as
+# loki:3100 on the `monitoring` overlay, data on a node-local named volume,
+# retention on. This is what `swarmcli charts install loki swarmcli-charts/loki`
+# deploys with no -f at all.

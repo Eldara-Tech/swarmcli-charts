@@ -1,0 +1,9 @@
+# Host-path persistence: /loki is bind-mounted from an absolute host path instead
+# of a named volume, which the security scan flags as host-mount (acknowledged in
+# Chart.yaml). The path is under /tmp so ci/e2e-setup.sh can create it without
+# root; a real deployment uses a real directory, owned by UID 10001 — the user
+# the Loki image runs as.
+persistence:
+  volumePath: /tmp/loki-e2e/data
+exposure:
+  mode: published
