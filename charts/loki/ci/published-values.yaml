@@ -1,0 +1,8 @@
+# Publish the API port on the swarm routing mesh. The shape the Docker `loki`
+# log-driver plugin needs: it runs on the host, outside every overlay, and cannot
+# resolve a Swarm service name.
+exposure:
+  mode: published
+publish:
+  port: 3100
+  mode: ingress

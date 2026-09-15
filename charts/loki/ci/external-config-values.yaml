@@ -1,0 +1,9 @@
+# The operator supplies the whole Loki configuration as a Swarm config they
+# created themselves (docker config create loki-config ./loki-config.yaml). The
+# chart mounts it instead of the file it ships, and still renders its flags on
+# top. Render-only: the config object does not exist on a CI swarm.
+config:
+  mode: external-config
+  externalName: loki-config
+exposure:
+  mode: published

@@ -1,0 +1,39 @@
+name: loki
+description: Grafana Loki log aggregation for Docker Swarm — single-binary, filesystem-backed, retention-enforcing, with an opt-in Alloy log shipper
+# version is a placeholder — the git tag (loki/vX.Y.Z) sets the real version at release.
+version: 0.1.0
+# appVersion is the default image tag for grafana/loki.
+# renovate: image=grafana/loki
+appVersion: "3.7.7"
+# Oldest swarmcli whose chart engine renders this chart; verified by
+# scripts/floor-check.sh against a real binary of that version. 1.13.0 is the
+# release that taught the chart engine `files/`: this chart ships its Loki and
+# Alloy configuration as chart files, and an older swarmcli ignores the floor,
+# resolves `file: files/…` against a temp directory of its own and deploys
+# something else rather than refusing.
+swarmcliVersion: ">= 1.13.0"
+maintainers:
+  - name: Eldara
+    url: https://github.com/Eldara-Tech
+keywords:
+  - loki
+  - logs
+  - logging
+  - observability
+  - monitoring
+  - grafana
+home: https://github.com/Eldara-Tech/swarmcli-charts
+sources:
+  - https://github.com/grafana/loki
+  - https://grafana.com/docs/loki/latest/
+# Loki itself needs no acknowledgment: its data lives on a node-local named volume
+# and it runs unprivileged on the overlay. Two opt-in features introduce risk, and
+# the scan flags them only when configured:
+#   host-mount   — persistence.volumePath (and shipper.persistence.volumePath) bind
+#                  a host directory instead of using the named volume.
+#   docker-socket — shipper.enabled mounts /var/run/docker.sock so Alloy can read
+#                  container logs through the Docker API. That socket is
+#                  root-equivalent on every node the global shipper runs on, which
+#                  is why the shipper is off by default.
+annotations:
+  swarmcli-charts/allow: "docker-socket,host-mount"

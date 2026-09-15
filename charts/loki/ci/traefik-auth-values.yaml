@@ -1,0 +1,11 @@
+# The public shape: TLS at the edge plus basic auth. Renders both routers — the
+# HTTP one carrying only the redirect, the HTTPS one carrying the auth middleware
+# — which is the split the `edge` fixture (tls:false) cannot show.
+exposure:
+  mode: traefik
+  network: traefik-public
+ingress:
+  host: loki.example.com
+  tls: true
+traefik:
+  basicAuthUsers: "ops:$$apr1$$e2eSalt1$$1s/hES2iWPor3OWxBdGX./"
