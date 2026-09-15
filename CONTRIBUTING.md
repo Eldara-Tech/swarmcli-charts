@@ -296,11 +296,16 @@ every `ci/*-values.yaml` fixture, which is the form that actually matters. See
 ## Files a chart ships (`files/`)
 
 A Swarm stack gives a config or a secret its content in exactly one way — a path.
-The schema the docker CLI validates against (`config_schema_v3.9.json`) is
-name/file/external/labels/template_driver with `additionalProperties: false`, so
-there is no `content:` to inline with, whatever Compose itself accepts. Files a
-chart carries live in `files/`, read recursively and keyed by their path relative
-to the chart:
+There is no `content:` to inline with, whatever Compose itself accepts: the stack
+schema the docker CLI validates against (`config_schema_v3.9.json`, which allows
+only name/file/external/labels/template_driver) answers one with
+
+```
+configs.c1 Additional property content is not allowed
+```
+
+Files a chart carries live in `files/`, read recursively and keyed by their path
+relative to the chart:
 
 ```
 charts/<name>/
