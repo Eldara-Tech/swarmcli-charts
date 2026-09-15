@@ -1,0 +1,123 @@
+# mongodb chart default values.
+#
+# Single MongoDB instance on Docker Swarm. A Swarm named volume is node-local, so this is a
+# single-replica service pinned (via a node label) to the node holding its data volume. The root
+# password ALWAYS comes from an EXTERNAL Swarm secret the operator pre-creates (never created by
+# the chart); an optional application user + database (on by default) use a second external
+# secret. MongoDB is reachable by other stacks over a shared overlay; it is TCP, so it is NOT
+# Traefik-routed and publishes no port by default.
+
+image:
+  repository: mongo
+  tag: ""  # defaults to appVersion from Chart.yaml
+
+# Stateful + node-local volume => exactly one replica. Do not raise: Swarm replicas of one
+# service are not MongoDB replica-set members. See replicaSet below for what IS supported.
+replicas: 1
+
+# Credentials. Passwords are read from mounted secret files, so the plaintext never lands in the
+# compose file, the environment, or `docker inspect` — only the file path does.
+#   rootUsername: the root user created at first init (role `root` on the admin database).
+#   rootSecretName: EXTERNAL Swarm secret holding the root password (always required). Pre-create
+#     it, e.g.:
+#       printf 'S3cr3t' | docker secret create mongodb_root_password -
+#   appUser: optional least-privilege user created at first init with readWrite on ONE database.
+#     enabled:false => a root-only instance (no second secret needed). When enabled, secretName
+#     is an EXTERNAL Swarm secret holding the app user's password — pre-create it too.
+auth:
+  rootUsername: root
+  rootSecretName: mongodb_root_password
+  appUser:
+    enabled: true
+    username: app
+    database: app
+    secretName: mongodb_password
+
+# Single-member replica set. Transactions, change streams and some drivers/ORMs (e.g. Prisma)
+# need a replica set even on one node; a standalone mongod offers none of them. enabled:true
+# starts mongod with --replSet and an internal-auth keyFile, and the healthcheck runs the one-time
+# rs.initiate (so healthcheck.enabled must stay true). The member is advertised as
+# <release>_mongodb:27017, which clients on the overlay resolve; clients outside it (a published
+# port) must connect with directConnection=true.
+#   name: the replica set name clients pass as ?replicaSet=<name>.
+#   keyFileSecretName: EXTERNAL Swarm secret holding the keyFile (6-1024 base64 characters).
+#     Pre-create it, e.g.:
+#       openssl rand -base64 756 | docker secret create mongodb_keyfile -
+replicaSet:
+  enabled: false
+  name: rs0
+  keyFileSecretName: mongodb_keyfile
+
+# Persistence. Named volume at /data/db. enabled:false => ephemeral database (no volume, and the
+# node pin below is dropped with it).
+persistence:
+  enabled: true
+  volumeName: mongodb-data
+  # Store data under a host directory instead of Docker's managed volume storage. When volumePath
+  # is set it TAKES PRECEDENCE and volumeName is ignored: /data/db is bind-mounted from this
+  # absolute host path on the PINNED node. The directory must already exist on that node; the
+  # image entrypoint chowns it to the container's mongodb uid (999) on start. This is
+  # host-filesystem access, acknowledged via swarmcli-charts/allow: "host-mount" in Chart.yaml.
+  # Leave empty ("") to use the named volume.
+  volumePath: ""
+  # Node label pinning the service to the node carrying the data volume (Swarm volumes are
+  # node-local). Rendered as `node.labels.<nodeLabel> == true` while persistence is enabled and
+  # dropped automatically when it is not. Label exactly ONE node first:
+  #   docker node update --label-add mongodb-data=true <node>
+  # Set "" to schedule unpinned even with persistence on (e.g. single-node swarm).
+  nodeLabel: mongodb-data
+
+# Extra scheduling constraints, always applied (independent of the persistence pin).
+placement:
+  constraints: []
+
+# Overlay network mongodb attaches to. external:true (default) is a shared attachable overlay
+# (declared in requirements.yaml, auto-created if missing) that app stacks also join to reach
+# mongodb by service name. external:false => chart-managed internal overlay (mongodb only
+# reachable by services in this stack).
+network:
+  name: mongodb-net
+  external: true
+
+# Publish a port. Disabled by default — mongodb stays internal to the overlay.
+#   port: the port published on the HOST. The container always listens on 27017, so this maps
+#     <port> -> 27017 and you can republish elsewhere (e.g. 37017) when the host's 27017 is taken.
+#   mode: ingress (cluster-wide routing mesh) or host (only on the pinned node).
+exposure:
+  enabled: false
+  port: 27017
+  protocol: tcp
+  mode: ingress
+
+# Swarm deploy resource limits (optional). Rendered only when limits.memory is set. mongod sizes
+# its WiredTiger cache from this limit, not from the host's RAM.
+resources:
+  limits:
+    memory: ""           # e.g. "1G"
+
+# Container healthcheck via mongosh. It dials the container's own hostname rather than 127.0.0.1
+# ON PURPOSE: during first init the entrypoint runs a temporary server bound to 127.0.0.1 only,
+# so a loopback probe would report healthy before the users exist. Healthy means db.hello()
+# reports a writable primary, which needs no password. With replicaSet.enabled the same probe
+# runs the one-time rs.initiate, authenticated as the root user.
+healthcheck:
+  enabled: true
+  interval: 10s
+  timeout: 10s
+  retries: 5
+  startPeriod: 60s
+  # How long Swarm counts a task failure against the rollout, measured from
+  # task creation. Must cover the healthcheck's worst case above
+  # (60s start_period + 10s interval x 5 retries = 110s) or a container that goes unhealthy
+  # after the window does not fail the deploy. Raise it if you raise the values above.
+  monitor: 2m
+
+# Arbitrary extra mongod flags, appended verbatim to the container command. Each entry is ONE argv
+# element, so a flag with a value takes two entries:
+#   extraArgs: ["--slowms", "200", "--quiet"]
+# Do not set --port, --bind_ip, --replSet or --keyFile: the published port, the healthcheck and
+# replicaSet above already own them.
+extraArgs: []
+
+# Extra deploy labels (key: value).
+labels: {}

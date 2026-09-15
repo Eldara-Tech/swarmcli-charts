@@ -1,0 +1,22 @@
+# External resources this chart needs. Authoritative: every external network/secret/config the
+# rendered stack references must be listed here (swarmcli pre-flights it; scripts/
+# requirements-check.sh enforces it at PR time).
+#
+# The names are values-templated so an operator who overrides network.name or a secret name still
+# passes the pre-flight (swarmcli renders this file with the release's values). The app-user and
+# keyFile secrets are declared unconditionally: the pre-flight is manifest-driven, so a declared
+# secret the release does not mount is inert, while an empty name would fail every install.
+networks:
+  - name: "{{ .Values.network.name }}"
+    driver: overlay
+    attachable: true
+    autoCreate: true
+    description: "Shared overlay app stacks attach to in order to reach mongodb by service name"
+secrets:
+  - name: "{{ .Values.auth.rootSecretName }}"
+    description: "MongoDB root password. Pre-create: printf 'S3cr3t' | docker secret create mongodb_root_password -"
+  - name: "{{ .Values.auth.appUser.secretName }}"
+    description: "Application user's password (auth.appUser.enabled). Pre-create: printf 'S3cr3t' | docker secret create mongodb_password -"
+  - name: "{{ .Values.replicaSet.keyFileSecretName }}"
+    description: "Replica-set keyFile (replicaSet.enabled). Pre-create: openssl rand -base64 756 | docker secret create mongodb_keyfile -"
+configs: []

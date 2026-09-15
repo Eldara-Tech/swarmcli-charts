@@ -1,0 +1,17 @@
+# Published port on a chart-managed internal overlay, with a deploy memory limit and extra mongod
+# flags. Exercises the exposure branch (published 37017 -> target 27017, proving the two are not the
+# same knob), the network.external:false (chart-managed overlay) branch, the resources path, and
+# extraArgs — where each entry is ONE argv element, so a flag with a value takes two.
+exposure:
+  enabled: true
+  port: 37017
+  protocol: tcp
+  mode: ingress
+network:
+  external: false
+resources:
+  limits:
+    memory: "1G"
+extraArgs:
+  - "--slowms"
+  - "200"

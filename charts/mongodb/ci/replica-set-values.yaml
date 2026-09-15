@@ -1,0 +1,6 @@
+# Single-member replica set: --replSet + --keyFile on the command, the keyFile secret mounted
+# 0400 and owned by the mongodb uid, a hostname equal to the advertised member address, and the
+# healthcheck carrying the one-time rs.initiate. The app user stays on, so the replica-set args
+# ride behind the entrypoint wrapper.
+replicaSet:
+  enabled: true
