@@ -218,6 +218,10 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
 - **openclaw** — the reference above.
 - **redis**, **mariadb**, **postgres** — dummy auth secret(s) + the persistence node-label
   pin + the bind-mount host dir.
+- **mongodb** — the root, app-user and keyFile secrets + the persistence node-label pin + the
+  bind-mount host dir. Its `ci/e2e-check.sh` connects from a throwaway client container on the
+  release's overlay rather than `docker exec`, so the `replica-set` fixture exercises the member
+  address clients are handed, not just the one the server resolves.
 - **traefik** — the `traefik-certs` node-label pin + the certs-bind-mount host dir.
 - **keycloak** — the two operator secrets + the DB/ingress overlays + a throwaway
   co-located backend on `keycloak-db-net` — MariaDB, or PostgreSQL for the `postgres` fixture —

@@ -43,12 +43,12 @@
     },
 
     {
-      "description": "Coarse-tag databases. The tag IS the version series (postgres:18, mariadb:11.8) — the registry re-publishes it with patches, so the only update Renovate can see is a series change, and that is a DATA MIGRATION: postgres derives /var/lib/postgresql/<major>/docker from appVersion, and an existing volume initialised by the old server will not be read by the new one. Dashboard approval keeps it visible without ever auto-opening a PR.",
-      "matchDepNames": ["postgres", "mariadb"],
+      "description": "Coarse-tag databases. The tag IS the version series (postgres:18, mariadb:11.8, mongo:8.3) — the registry re-publishes it with patches, so the only update Renovate can see is a series change, and that is a DATA MIGRATION: postgres derives /var/lib/postgresql/<major>/docker from appVersion, and an existing volume initialised by the old server will not be read by the new one; mongod starts only on data whose featureCompatibilityVersion it supports. Dashboard approval keeps it visible without ever auto-opening a PR.",
+      "matchDepNames": ["postgres", "mariadb", "mongo"],
       "dependencyDashboardApproval": true,
       "labels": ["dependencies", "data-migration"],
       "prBodyNotes": [
-        "**This is a database series upgrade, not a version bump.** Volumes initialised by the old server will not be read by the new one without an explicit dump/restore (or `pg_upgrade` / `mariadb-upgrade`). Before merging: bump the chart MINOR (not patch), document the migration in the chart README, and check `ci/legacy-major-values.yaml` still pins an older series so the previous layout stays covered."
+        "**This is a database series upgrade, not a version bump.** Volumes initialised by the old server will not be read by the new one without an explicit dump/restore (or `pg_upgrade` / `mariadb-upgrade`; for mongo, follow that release's upgrade notes — mongod starts only on data whose `featureCompatibilityVersion` it supports). Before merging: bump the chart MINOR (not patch), document the migration in the chart README, and check `ci/legacy-major-values.yaml` still pins an older series so the previous layout stays covered."
       ]
     },
 
@@ -86,6 +86,7 @@
     },
     { "matchFileNames": ["charts/keycloak/**"], "semanticCommitScope": "keycloak" },
     { "matchFileNames": ["charts/mariadb/**"], "semanticCommitScope": "mariadb" },
+    { "matchFileNames": ["charts/mongodb/**"], "semanticCommitScope": "mongodb" },
     { "matchFileNames": ["charts/ollama/**"], "semanticCommitScope": "ollama" },
     { "matchFileNames": ["charts/openclaw/**"], "semanticCommitScope": "openclaw" },
     { "matchFileNames": ["charts/postgres/**"], "semanticCommitScope": "postgres" },

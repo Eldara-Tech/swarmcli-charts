@@ -1,0 +1,5 @@
+# Default render: root user + readWrite app user from external secrets (the app user through the
+# first-init entrypoint wrapper), persistence ON (named volume at /data/db + placement pin), the
+# tmpfs lid on /data/configdb, standalone (no --replSet), shared external overlay, no published
+# port. Exercises the external-secret + external-network path (the strictest requirements-check
+# case).
