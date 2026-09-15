@@ -36,6 +36,8 @@ charts/<name>/
   values.schema.json         # optional JSON Schema — swarmcli validates values against it
   templates/stack.yaml.tmpl  # Go text/template → Swarm stack
   requirements.yaml          # optional — external networks/secrets/configs; swarmcli pre-flights it
+  files/<name>               # optional — files the chart ships; a config's or secret's
+                             #   `file:` may name one (CONTRIBUTING.md § Files a chart ships)
   ci/<case>-values.yaml      # render fixtures (≥1 required; CI renders each)
   ci/e2e-check.sh            # optional executable smoke check for `make e2e`
   README.md

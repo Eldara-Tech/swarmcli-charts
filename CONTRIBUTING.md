@@ -44,6 +44,8 @@ charts/<name>/
   values.schema.json         # optional JSON Schema — swarmcli validates values against it
   templates/stack.yaml.tmpl  # Go text/template → Docker Swarm stack
   requirements.yaml          # optional — external networks/secrets/configs (see below)
+  files/<name>               # optional — files the chart ships, given to Swarm as a
+                             #   config or a secret by a `file:` key (see below)
   README.md                  # what it deploys + a values table
   ci/<case>-values.yaml      # render fixtures (at least ci/default-values.yaml)
 ```
@@ -118,18 +120,20 @@ swarmcli whose chart engine renders it (`>= 1.11.0` for most charts today).
 This exists because CI renders with swarmcli **`main`**, which is newer than
 anything a user has installed, so a chart can depend on unreleased behaviour and
 still go green. That is not hypothetical: `charts/zammad` uses template control
-flow in `requirements.yaml` (swarmcli #457, on `main`, in no release), so it
-renders in CI and fails on *every* released swarmcli with an opaque
-`parse requirements.yaml: could not find expected ':'`. It is unpublishable until
-v1.13.0 ships, and nothing told us.
+flow in `requirements.yaml` (swarmcli #457), so it rendered in CI and failed on
+*every* released swarmcli with an opaque
+`parse requirements.yaml: could not find expected ':'`. It was unpublishable
+until v1.13.0 shipped, and nothing told us.
 
 - **Raise the floor only to a RELEASED version.** `scripts/floor-check.sh` proves
   a floor by downloading a real binary of it and rendering the chart. A floor naming
   an unreleased version cannot be proven, so it is reported as unverified and
-  skipped — visible in the log, never silently passed. That is zammad's state.
+  skipped — visible in the log, never silently passed.
 - `swarmcli charts lint --for-version X` checks whether a floor *admits* X. Only
   floor-check proves the chart *runs* on it: a swarmcli binary carries one
   engine's behaviour and cannot emulate another's.
+- A chart that ships `files/`, or accepts an operator's config through `values/`,
+  needs `>= 1.13.0` — see [Files a chart ships](#files-a-chart-ships-files).
 - Old swarmcli parses `Chart.yaml` leniently and **ignores `swarmcliVersion`
   entirely** — only swarmcli ≥ v1.13.0 enforces it. The floor protects users
   going forward; it cannot retroactively help anyone already on an old build.
@@ -288,6 +292,171 @@ every `ci/*-values.yaml` fixture, which is the form that actually matters. See
 > hard-parsing the raw bytes as YAML (Eldara-Tech/swarmcli#457). If you find an
 > older comment claiming `range` "would break yamllint", it is stale — that
 > reasoning once cost a chart a user-facing feature.
+
+## Files a chart ships (`files/`)
+
+A Swarm stack gives a config or a secret its content in exactly one way — a path.
+The schema the docker CLI validates against (`config_schema_v3.9.json`) is
+name/file/external/labels/template_driver with `additionalProperties: false`, so
+there is no `content:` to inline with, whatever Compose itself accepts. Files a
+chart carries live in `files/`, read recursively and keyed by their path relative
+to the chart:
+
+```
+charts/<name>/
+  files/
+    app.conf
+    tls/ca.pem
+```
+
+```yaml
+# templates/stack.yaml.tmpl
+services:
+  app:
+    configs:
+      - source: app-config
+        target: /etc/app/app.conf
+configs:
+  app-config:
+    name: "{{ .Release.Name }}_app-config_{{ .Chart.Version }}"   # see rotation, below
+    file: files/app.conf
+```
+
+Exactly three compose keys read a path — a config's `file:`, a secret's `file:`
+and a service's `env_file:` — and the docker CLI resolves all three against the
+directory of the compose file it is handed, reading them client-side as the
+invoking operator. swarmcli writes that compose file to a temp directory, so an
+unguarded relative path used to mean "a file in the system temp directory" and an
+absolute one meant itself. Every path is therefore checked against the chart at
+**render** time, and the refusals say what to do instead:
+
+| Written in the manifest | Result |
+|---|---|
+| `files/app.conf` | resolved against the chart |
+| `values/<key>` | resolved against the values — a config's `file:` only, see below |
+| `app.conf` | `is outside files/ and values/ … reference it as 'files/app.conf'` |
+| `files/missing.conf` | `is not in the chart, and a chart may only read files it ships` |
+| `../../etc/passwd` | `escapes the chart` |
+| `/etc/app/app.conf` | `is an absolute path` — for every chart, local directory included |
+
+**There is no `.Files` object in templates.** `files/` is carried with the chart
+and referenced only by those keys; a template cannot read one, and cannot hash
+one. So the rotating name below is a convention you write out, not something the
+engine computes for you.
+
+### Rotation: a Swarm config is immutable
+
+`docker stack deploy` answers changed content under an existing name by calling
+`ConfigUpdate`, which the daemon refuses:
+
+```
+failed to update config myrelease_app-config_0.1.0: Error response from daemon:
+rpc error: code = InvalidArgument desc = only updates to Labels are allowed
+```
+
+New content under a new name is the only mechanism Swarm offers, so give the
+config an explicit `name:` that changes when the file does. For a file the chart
+ships, that is the **chart version** — it is stamped from the release tag, so
+every published version rotates exactly once and re-deploying the same version is
+idempotent:
+
+```yaml
+    name: "{{ .Release.Name }}_app-config_{{ .Chart.Version }}"
+```
+
+The release name keeps two releases on one swarm apart. Superseded configs are
+left in place — Swarm refuses to delete one still in use — and a custom `name:`
+still carries the stack's namespace label, so `docker stack rm` collects them.
+
+The trap this leaves is worth stating plainly: **editing a `files/` entry without
+bumping the chart version fails the next upgrade of an existing release** with the
+error above. Fresh installs are unaffected, which is exactly why it hides during
+development.
+
+### A config the operator supplies (`values/`)
+
+The section above is about a file the *chart* ships. A config the **operator**
+writes is the other half, and a `values/<key>` path is how a chart accepts one:
+
+```yaml
+configs:
+  app-config:
+    # Content-derived, because the content is now whatever the operator passed.
+    name: "{{ .Release.Name }}_app-config_{{ .Values.appConfig | sha256sum | trunc 12 }}"
+    file: values/appConfig
+```
+
+```yaml
+# values.yaml — "" so the name above renders; the operator supplies the content
+appConfig: ""
+```
+
+```bash
+swarmcli charts install myrelease swarmcli-charts/mychart --set-file appConfig=./app.conf
+```
+
+`--set-file <key>=<path>` reads the file into `.Values.<key>` verbatim — none of
+the comma splitting or type inference `--set` does, all of which would corrupt a
+file. The key is the full values path, so a nested one is `values/app.config`.
+An operator who forgets `--set-file` gets a refusal, not an empty config over a
+working one:
+
+```
+configs.app-config.file: 'values/appConfig' is empty, and values/ names a value,
+which the operator supplies (--set-file <key>=<path>, or a values file)
+```
+
+Two rules keep this as safe as the refusals above, and neither is symmetry for its
+own sake:
+
+- **Only a config's `file:` may name `values/`.** A secret's is refused, and so is
+  `env_file:`. Values are stored in the release record — a Docker Config readable
+  by anyone with Docker access, for every retained revision — so secret *material*
+  would land in the one place a secret exists to keep it out of. Secrets stay
+  `docker secret create` + `external: true`.
+- **The operator names the path, never the chart.** A path typed on the operator's
+  own command line carries the authority they already have; a path a chart chose
+  does not, which is why an absolute `file:` stays refused however the chart was
+  loaded.
+
+### Declare the floor
+
+A chart using `files/` or `values/` must declare `swarmcliVersion: ">= 1.13.0"` —
+the release that introduced both. This is not a formality: an older swarmcli
+parses `Chart.yaml` leniently, **ignores the floor**, carries none of the checks
+above, and resolves `file: files/app.conf` against a temp directory of its own. It
+does not fail; it deploys something else. Nothing can be done to an
+already-released binary, which makes the constraint the only thing that turns that
+into a refusal. `scripts/floor-check.sh` proves the floor by rendering the chart
+with a real binary of that version.
+
+Two consequences of the mechanism, both worth knowing before you ship a large file:
+
+- **The referenced files are stored in the release record**, so a rollback deploys
+  the bytes the original deploy sent rather than whatever the chart says today.
+- **That record is as readable as the manifest beside it**, and it shares a
+  ~500 KiB gzipped budget with it. An install whose record would not fit is
+  refused, naming the sizes.
+
+### What the checks cover
+
+- **`make test` catches every refusal above.** `swarmcli charts template` resolves
+  the file references, so a typo'd or missing path exits non-zero with an empty
+  manifest — it is not an install-time-only failure.
+- **`docker compose config` does not.** It accepts a `file:` pointing at nothing,
+  so the gate is swarmcli's render step, not the compose step.
+- **`yamllint` runs over the whole `charts/` tree**, so a shipped `.yaml` file must
+  pass it like any other chart YAML. A file with a non-YAML extension is not linted.
+- **Nothing checks the file's contents.** Most images can validate their own
+  config; run it once by hand and keep the command in the chart README:
+
+  ```bash
+  docker run --rm -v "$PWD/charts/x/files/x.yaml:/tmp/c:ro" <image> \
+    -config.file=/tmp/c -verify-config
+  ```
+- **Packaging carries `files/`.** `make package` and the release workflow tar the
+  whole chart directory, and swarmcli reads `files/` out of the `.tgz`, so a chart
+  installed from the repository behaves like the directory you tested.
 
 ## Testing locally (== CI)
 
