@@ -1,0 +1,17 @@
+# External requirements for GitLab Runner.
+#
+# This file is authoritative when present: any external network/secret the rendered stack
+# uses must be declared here. Entries are declared unconditionally and become inert when the
+# selected values never reference them (the pre-flight is manifest-driven).
+#
+# No networks: the runner only needs egress to your GitLab, which the stack's own overlay
+# provides, and its metrics endpoint is deliberately not exposed.
+networks: []
+secrets:
+  - name: "{{ .Values.auth.tokenSecret }}"
+    description: "Runner authentication token (glrt-...) from GitLab > Settings > CI/CD > Runners; create the runner there first"
+  - name: "{{ .Values.cache.s3.accessKeySecret }}"
+    description: "cache.enabled=true with authenticationType access-key - S3/MinIO access key"
+  - name: "{{ .Values.cache.s3.secretKeySecret }}"
+    description: "cache.enabled=true with authenticationType access-key - S3/MinIO secret key"
+configs: []

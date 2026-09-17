@@ -1,0 +1,208 @@
+# gitlab-runner chart default values.
+#
+# The runner is a long-lived poller: it asks GitLab for work and creates a CONTAINER PER
+# JOB on the node's own Docker engine. Those job containers are siblings of the runner and
+# invisible to Swarm — Swarm does not schedule them, does not count them against this
+# service's resources, and will not clean them up. Size the node for `concurrent` jobs, not
+# for the runner's own few tens of megabytes.
+#
+# Values that end up inside the generated config.toml (runner.environment, docker.volumes,
+# config.extra*Toml) travel through the compose manifest, which Docker interpolates before
+# deploying: write a literal `$` as `$$`.
+
+image:
+  repository: gitlab/gitlab-runner
+  tag: ""  # defaults to appVersion from Chart.yaml
+
+# Runner MANAGERS, not jobs. Each replica polls independently and runs up to `concurrent`
+# jobs of its own, so N replicas is N x concurrent against your GitLab. Replicas may share
+# one authentication token — GitLab groups them by system_id — but they must not share one
+# config volume, which is why replicas > 1 requires persistence.enabled: false.
+replicas: 1
+
+gitlab:
+  # Your GitLab instance. Required, and written into config.toml as the runner's url.
+  url: https://gitlab.com/
+  # Runner description shown in the GitLab UI. Empty uses the release name.
+  name: ""
+
+# The runner AUTHENTICATION token (`glrt-…`), created in GitLab under
+# Settings > CI/CD > Runners > "New project runner" (or group/instance). Create the runner
+# there FIRST: this chart runs no `gitlab-runner register` step, because a token in
+# config.toml is all `gitlab-runner run` needs.
+#
+# Always an EXTERNAL Swarm secret you pre-create — never a chart value:
+#   docker secret create gitlab-runner-token -    # paste the glrt-… token, then Ctrl-D
+#
+# It reaches config.toml as `${RUNNER_TOKEN}`, which the runner expands from its own
+# environment when it loads the file (documented for `url` and `token`). The container
+# reads the secret and exports it, so the token never appears in the manifest, in
+# `docker inspect`, or in the release record.
+auth:
+  tokenSecret: gitlab-runner-token
+
+# ── global config.toml settings ───────────────────────────────────────────────────────
+# Jobs this one runner process runs at a time.
+concurrent: 4
+# Seconds between job polls.
+checkInterval: 3
+# panic | fatal | error | warning | info | debug
+logLevel: info
+# runner | text | json
+logFormat: text
+# Seconds the runner keeps working after being asked to stop, so running jobs finish
+# instead of dying. stopGracePeriod must stay above it or Swarm kills the container first.
+shutdownTimeout: 1800
+
+runner:
+  # Simultaneous job REQUESTS to GitLab. 1 bottlenecks long polling, and the runner logs a
+  # CONFIGURATION warning about it on every start; 2-4 is what it recommends.
+  requestConcurrency: 4
+  # Cap on jobs for this runner entry. 0 = no cap beyond `concurrent`.
+  limit: 0
+  # Job log size cap in kilobytes. 0 keeps the runner's own default.
+  outputLimit: 0
+  # Environment injected into EVERY job, as "KEY=value" strings.
+  environment: []
+
+# ── the docker executor ───────────────────────────────────────────────────────────────
+# There is no Swarm executor and never was: the runner drives the plain engine on ONE node.
+docker:
+  # Image a job gets when its .gitlab-ci.yml names none.
+  image: alpine:3.24
+  # always | if-not-present | never
+  pullPolicy: if-not-present
+  # Mount the node's Docker socket INTO every job container, so a job can run `docker
+  # build`. This gives every job root on that node — and if it is a manager, control of the
+  # swarm. Off by default; see the chart README's security section before turning it on.
+  mountSocketInJobs: false
+  # PRIVILEGED job containers, which is what a `docker:dind` service needs. Swarm cannot run
+  # the runner itself privileged (the daemon silently drops the flag on a service), but the
+  # runner creates job containers through the engine API directly, so this does take effect.
+  # It disables those containers' security mechanisms.
+  privileged: false
+  # Extra volumes for job containers ("/host/path:/container/path", or "/cache" for an
+  # anonymous one).
+  volumes: []
+  # Image allowlist for jobs, e.g. ["alpine:*", "python:*"]. Empty allows any image.
+  allowedImages: []
+  # Docker network mode for job containers.
+  networkMode: ""
+  # Per-job engine limits ("512m", "1.5"). Empty = unlimited.
+  memory: ""
+  cpus: ""
+
+# ── distributed cache ─────────────────────────────────────────────────────────────────
+# Without this, a job's cache is a local Docker volume on whichever node ran it — so a
+# second runner node, or a rescheduled runner, is a guaranteed cache miss. Pointing the
+# cache at S3-compatible object storage (AWS S3, MinIO, Ceph) is what fixes that.
+cache:
+  enabled: false
+  # Share cached archives between runners, and so between nodes.
+  shared: true
+  # Prefix inside the bucket. Empty uses the runner's own layout.
+  path: ""
+  s3:
+    # host:port of the endpoint, e.g. s3.amazonaws.com or minio:9000. Required when enabled.
+    server: ""
+    bucket: gitlab-runner-cache
+    # S3 region. AWS needs it; MinIO ignores it.
+    location: ""
+    # Plain HTTP instead of HTTPS — only reasonable for a MinIO on an internal overlay.
+    insecure: false
+    # MinIO and most S3 clones need path-style addressing; AWS S3 does not.
+    pathStyle: false
+    # access-key = the two secrets below. iam = an instance profile/role, no secrets.
+    authenticationType: access-key
+    # EXTERNAL Swarm secrets, pre-created like the token above:
+    #   docker secret create gitlab-runner-cache-access-key -
+    #   docker secret create gitlab-runner-cache-secret-key -
+    # The container appends them to config.toml at start, so neither appears in the
+    # manifest. Both are ignored when authenticationType is iam. A value containing a
+    # single quote is refused at start (it cannot be written into config.toml).
+    accessKeySecret: gitlab-runner-cache-access-key
+    secretKeySecret: gitlab-runner-cache-secret-key
+
+# ── metrics ───────────────────────────────────────────────────────────────────────────
+# Prometheus /metrics (and /debug/pprof) on the task's own address. Deliberately not
+# publishable by this chart: the endpoint carries NO authentication, so it stays reachable
+# from inside the swarm only — scrape it from a Prometheus on the same overlay, or
+# `docker exec` into the task for a one-off. It is also what the healthcheck below probes.
+metrics:
+  enabled: false
+  port: 9252
+
+# Container healthcheck. It probes the metrics endpoint, so metrics.enabled must be on —
+# asking for one without the other fails the render rather than rendering a probe that
+# cannot pass. Two things it deliberately does not do: it does not ask GitLab whether the
+# token is valid (a GitLab outage would then mark every runner unhealthy, and Swarm would
+# restart them, aborting jobs mid-build), and it cannot tell you jobs are being picked up.
+# It proves the process is alive and its config parsed, no more.
+healthcheck:
+  enabled: false
+  interval: 30s
+  timeout: 5s
+  retries: 3
+  startPeriod: 20s
+  # How long Swarm counts a task failure against the rollout, measured from task creation.
+  # Must cover the worst case above (20s + 30s x 3 = 110s) or a container that goes
+  # unhealthy after the window does not fail the deploy.
+  monitor: 120s
+
+# How long Swarm waits after asking the runner to stop before it sends SIGKILL. The image's
+# STOPSIGNAL is SIGQUIT, which tells the runner to finish its running jobs and then exit, so
+# this is effectively the longest job you tolerate: Swarm's 10s default kills jobs mid-build
+# on every single update. Keep it above shutdownTimeout.
+stopGracePeriod: 31m
+
+# /etc/gitlab-runner holds the generated config.toml (rewritten on every start, so it is
+# never the thing you lose) and `.runner_system_id` — the stable identity that groups this
+# runner process in the GitLab UI and in job logs. Without a volume that ID is minted fresh
+# on every task restart and GitLab accumulates dead runner-manager entries.
+#
+#   volumeName  stack-scoped named volume (`<release>_<name>`). No slashes.
+#   volumePath  an ABSOLUTE host path to bind-mount instead. Takes precedence over
+#               volumeName and suppresses the named-volume declaration.
+#   nodeLabel   which node the runner runs on, rendered as `node.labels.<label> == true`
+#               and applied whether or not persistence is enabled: the runner drives ONE
+#               node's engine, so its job containers, image cache and job volumes all live
+#               there, and a reschedule elsewhere starts cold. Empty skips the pin, which is
+#               right on a single-node swarm. Label the node once:
+#                 docker node update --label-add gitlab-runner-data=true <node>
+persistence:
+  enabled: true
+  volumeName: gitlab-runner-config
+  volumePath: ""
+  nodeLabel: gitlab-runner-data
+
+# EXTRA scheduling constraints. The node pin above is rendered for you; this is for
+# constraints of your own — `node.role == worker` to keep CI off your managers, or
+# `node.role == manager` if your jobs must deploy to the swarm (read the README first).
+placement:
+  constraints: []
+
+# Swarm deploy resources for the RUNNER process only. Job containers are created outside
+# Swarm and are not covered by these (each rendered only when set).
+resources:
+  limits:
+    memory: ""
+  reservations:
+    memory: ""
+
+# Verbatim TOML for anything the runner supports and this chart does not. Both are appended
+# after the generated keys of their section, so they win.
+config:
+  # Top-level keys, emitted after the global block and before [[runners]]. Start your own
+  # table header for a section, e.g. [session_server].
+  extraGlobalToml: ""
+  # Emitted INSIDE [runners.docker], so bare keys belong to that table (memory_swap,
+  # extra_hosts, helper_image, …). Start your own header for another section, e.g.
+  # [[runners.docker.services]].
+  extraDockerToml: ""
+
+# Extra deploy labels (key: value).
+labels: {}
+
+# Extra environment for the RUNNER process (jobs get runner.environment instead). It reaches
+# config.toml as well: the runner expands ${VAR} in its `url` and `token`.
+extraEnv: {}

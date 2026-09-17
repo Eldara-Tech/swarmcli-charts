@@ -84,6 +84,7 @@
       "matchFileNames": ["charts/gitlab/**"],
       "semanticCommitScope": "gitlab"
     },
+    { "matchFileNames": ["charts/gitlab-runner/**"], "semanticCommitScope": "gitlab-runner" },
     { "matchFileNames": ["charts/keycloak/**"], "semanticCommitScope": "keycloak" },
     { "matchFileNames": ["charts/mariadb/**"], "semanticCommitScope": "mariadb" },
     { "matchFileNames": ["charts/ollama/**"], "semanticCommitScope": "ollama" },

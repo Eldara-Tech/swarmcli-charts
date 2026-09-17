@@ -1,0 +1,14 @@
+# Several runner managers off one token. Requires persistence off: each process needs its
+# own .runner_system_id, which a shared volume would deny it.
+replicas: 3
+concurrent: 2
+persistence:
+  enabled: false
+  nodeLabel: ""
+resources:
+  limits:
+    memory: 256M
+  reservations:
+    memory: 64M
+labels:
+  com.example.team: platform
