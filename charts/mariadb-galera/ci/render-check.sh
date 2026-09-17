@@ -106,6 +106,22 @@ alias_count="$(yq -r '[.services.*.networks.*.aliases // [] | .[] | select(. == 
 [ "$alias_count" -eq "$want_peers" ] \
   || err "client alias 'mariadb' is on $alias_count of $want_peers peers"
 
+# The healthcheck must run as the mysql unix user, with --su-mysql FIRST. Any other
+# ordering is silently wrong (the script re-execs through gosu and drops earlier
+# options), and without it the check authenticates from a file in the data dir that
+# a state transfer deletes — so it fails forever on a healthy peer and Swarm kills
+# it every startPeriod. That cost a CI run.
+for s in $svcs; do
+  hc="$(yq -r ".services.\"$s\".healthcheck.test // [] | join(\" \")" "$f")"
+  # Exact, not a prefix: `--su-mysql` on its own runs no tests at all and would
+  # report healthy unconditionally. The chart owns this list entirely, so there is
+  # no legitimate variation to allow for.
+  want_hc='CMD healthcheck.sh --su-mysql --connect --galera_online'
+  if [ -n "$hc" ] && [ "$hc" != "$want_hc" ]; then
+    err "$s: healthcheck is '$hc', expected '$want_hc' — --su-mysql must come first (the script re-execs and drops earlier options) and the probes must actually assert Synced"
+  fi
+done
+
 # Ports: never ingress (several peers publish the same port), and never Galera's own.
 pmodes="$(yq -r '.services.*.ports // [] | .[] | .mode' "$f")"
 for m in $pmodes; do

@@ -118,7 +118,7 @@ routing mesh. Port 3306 on a node then reaches the peer running there.
 | `exposure.protocol` | `tcp` | Published protocol. |
 | `exposure.mode` | `host` | Only `host` is valid — see *Connecting*. |
 | `resources.limits.memory` | `""` | Per-peer memory limit, e.g. `512M`. Rendered only when set. |
-| `healthcheck.enabled` | `true` | Container healthcheck (`--connect --galera_online`). |
+| `healthcheck.enabled` | `true` | Container healthcheck — `healthcheck.sh --su-mysql --connect --galera_online`. |
 | `healthcheck.interval` | `10s` | Probe interval. |
 | `healthcheck.timeout` | `5s` | Probe timeout. |
 | `healthcheck.retries` | `6` | Failures before unhealthy. |
@@ -242,6 +242,13 @@ unhealthy never fails the deploy: the rollout is reported complete and the task
 quietly restart-loops. Keep `monitor` at or above
 `startPeriod + interval × retries`; `swarmcli charts lint` warns when it is
 shorter.
+
+The check runs as the `mysql` unix user (`--su-mysql`) so it authenticates through
+the same `unix_socket` account used for state transfers. That is not a stylistic
+choice: the default path reads credentials from a file inside the data dir, and a
+state transfer replaces the data dir, so a freshly synced peer would fail its own
+healthcheck forever — reporting `Access denied for user 'root'@'localhost'` while
+being perfectly healthy — until Swarm killed it.
 
 `startPeriod` matters more here than in a single-node chart. A joining peer is not
 `Synced` until its state transfer finishes, and if the grace period expires first,

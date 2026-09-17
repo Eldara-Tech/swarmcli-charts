@@ -237,10 +237,22 @@ services:
     # only once it is actually replicating rather than merely listening. See
     # healthcheck.startPeriod in values.yaml for why that window must cover a full
     # state transfer.
+    #
+    # --su-mysql is load-bearing and must stay FIRST (the script re-execs itself
+    # through gosu, discarding earlier options). Without it the check authenticates
+    # from $DATADIR/.my-healthcheck.cnf, which the entrypoint writes during local
+    # initialisation — and a state transfer REPLACES the data dir, taking that file
+    # with it. The check then falls back to root with no password and fails forever
+    # on a peer that is perfectly healthy: `Access denied for user 'root'@'localhost'
+    # (using password: NO)` every interval, until Swarm kills the task. Running as
+    # the mysql unix user instead authenticates through the same unix_socket account
+    # this chart creates for state transfers, so it needs no password and no file in
+    # the data dir.
     healthcheck:
       test:
         - CMD
         - healthcheck.sh
+        - --su-mysql
         - --connect
         - --galera_online
       interval: {{ $.Values.healthcheck.interval }}
