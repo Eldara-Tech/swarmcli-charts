@@ -139,14 +139,16 @@ services:
           "CREATE USER IF NOT EXISTS 'mysql'@'localhost' IDENTIFIED VIA unix_socket;" \
           "GRANT RELOAD, PROCESS, LOCK TABLES, REPLICATION CLIENT ON *.* TO 'mysql'@'localhost';" \
           > /docker-entrypoint-initdb.d/00-galera-sst-user.sql
-        # A state transfer leaves a marker in the data dir while it runs, and the
-        # SST script refuses to start a new one while it is there. A container
-        # that was killed mid-transfer therefore leaves a marker no one clears —
-        # and because a fresh container's PID 1 matches the dead PID recorded in
-        # it, the script waits for "the previous SST" and then gives up, forever.
-        # We are at container start, so nothing of ours is running: the marker can
-        # only be stale.
-        rm -f /var/lib/mysql/sst_in_progress
+        # A state transfer records its PID in /var/lib/mysql/wsrep_sst.pid and the
+        # SST script refuses to start a new one while that PID is alive. It tests
+        # liveness with `ps -p`, and a container's PIDs restart from 1 — so a file
+        # left behind by a transfer that was interrupted names a PID that almost
+        # always matches some live process in the NEW container (PID 1 is this
+        # very shell). The script then waits 30s for "the previous SST" and exits
+        # 114, on every restart, forever: one interrupted transfer wedges the peer
+        # permanently. At container start nothing of ours can be running, which is
+        # exactly what makes the file meaningless and safe to drop.
+        rm -f /var/lib/mysql/wsrep_sst.pid
         # This peer's own routable address. Passing the IP rather than a name keeps
         # every peer's advertised address independent of DNS at the moment another
         # peer tries to open an IST or SST connection to it.

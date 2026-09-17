@@ -53,8 +53,8 @@ for s in $svcs; do
     || err "$s: does not resolve its own tasks.<release>_$s address (peer identity crossed over)"
   grep -Fq -- '--wsrep-node-address="$$SELF_ADDR"' <<<"$cmd" \
     || err "$s: does not advertise the resolved address — a name that fails to resolve breaks every state transfer to it"
-  grep -Fq 'rm -f /var/lib/mysql/sst_in_progress' <<<"$cmd" \
-    || err "$s: lost the stale state-transfer marker cleanup — a peer killed mid-transfer would refuse to retry forever"
+  grep -Fq 'rm -f /var/lib/mysql/wsrep_sst.pid' <<<"$cmd" \
+    || err "$s: lost the stale wsrep_sst.pid cleanup — a peer interrupted mid-transfer would refuse to retry forever"
   grep -Fq -- "--wsrep-sst-auth=mysql:" <<<"$cmd" \
     || err "$s: lost the passwordless unix_socket SST auth"
   # The gcomm list must name every peer, or a peer cannot find the cluster.
