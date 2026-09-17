@@ -128,15 +128,24 @@ services:
         GCOMM='{{ $gcomm }}'
 {{- if eq $force $n }}
         # cluster.forceBootstrap names this peer, so form a NEW cluster and skip
-        # the safety check below. Clear the value once the cluster is healthy.
+        # every check below. Clear the value once the cluster is healthy.
         GCOMM='gcomm://'
-{{- else }}
+{{- else if and (eq $n 1) (eq $force 0) }}
         if [ ! -d /var/lib/mysql/mysql ]; then
-          # No data dir, so this peer has never been a member. Bootstrap only when
-          # NO peer answers on the Galera port: otherwise a peer rebuilt from an
+          # SEED PEER: peer 1 is the only peer that may ever form a cluster, and
+          # even it only does so with no data dir AND no peer answering on the
+          # Galera port. Both halves matter. Without the data-dir test a restart
+          # would bootstrap again; without the port probe a peer 1 rebuilt from an
           # empty volume would form a rival cluster beside the survivors instead of
-          # re-syncing from them. Once a data dir exists this branch is skipped for
-          # good, which is what makes a restart safe.
+          # re-syncing from them.
+          #
+          # Letting EVERY peer bootstrap when it sees no peers is the obvious
+          # version of this and it is wrong: on a first install all peers start at
+          # once with empty data dirs and none is listening yet, so each one forms
+          # its own cluster and they never merge. One designated seed removes the
+          # race entirely. When cluster.forceBootstrap names a peer, that peer is
+          # the single bootstrapper and this branch is not rendered at all, so the
+          # count never rises above one.
           PEER_UP=no
           for p in {{ $peerList }}; do
             if timeout 2 bash -c "exec 3<>/dev/tcp/$$p/4567" 2>/dev/null; then
@@ -147,6 +156,24 @@ services:
             GCOMM='gcomm://'
           fi
         fi
+{{- else }}
+        # JOINING PEER: never bootstraps, so it has nothing to decide — it only
+        # waits for a peer to start listening, because a Galera node that finds no
+        # primary component exits and would otherwise crash-restart until the seed
+        # appears. Bounded: if nothing shows up we start anyway and let Swarm's
+        # restart policy carry it, rather than sitting here forever.
+        while [ "$$SECONDS" -lt 120 ]; do
+          PEER_UP=no
+          for p in {{ $peerList }}; do
+            if timeout 2 bash -c "exec 3<>/dev/tcp/$$p/4567" 2>/dev/null; then
+              PEER_UP=yes
+            fi
+          done
+          if [ "$$PEER_UP" = yes ]; then
+            break
+          fi
+          sleep 2
+        done
 {{- end }}
         exec docker-entrypoint.sh mariadbd \
           --wsrep-on=ON \

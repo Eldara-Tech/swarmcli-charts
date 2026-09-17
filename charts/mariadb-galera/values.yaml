@@ -34,11 +34,17 @@ cluster:
   # an even count buys no extra fault tolerance and 1 is not a cluster.
   peers: 3
   # DISASTER RECOVERY ONLY — normally "". Names the 1-based peer that must form a
-  # NEW cluster on its next start, bypassing the safety check below. Use it only
-  # when every peer is down and refusing to bootstrap, and only for the peer with
-  # the highest seqno. Setting it on a peer while the cluster is still up creates a
-  # SECOND cluster (split brain), so clear it back to "" once the cluster is
-  # healthy. README.md § Recovering a fully stopped cluster has the procedure.
+  # NEW cluster on its next start, bypassing every check. Use it only when every
+  # peer is down and refusing to bootstrap, and only for the peer with the highest
+  # seqno. Setting it while the cluster is still up gives that peer a SECOND
+  # cluster (split brain), so clear it back to "" once the cluster is healthy.
+  # README.md § Recovering a fully stopped cluster has the procedure.
+  #
+  # Peer 1 is otherwise the designated seed — the only peer that can form a
+  # cluster, and only with an empty data dir and no peer answering. Naming a peer
+  # here demotes peer 1 to joining, so exactly one peer can ever bootstrap.
+  # A FIRST install therefore needs peer 1 schedulable; see README.md § How
+  # bootstrapping decides.
   forceBootstrap: ""
 
 # Credentials. Passwords are read from mounted secret files via the image's

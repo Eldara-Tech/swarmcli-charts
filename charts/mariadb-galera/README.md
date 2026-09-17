@@ -139,16 +139,35 @@ already trusted — see *Prerequisites*.
 ### How bootstrapping decides
 
 Exactly one peer must form the cluster, once, and never again — bootstrapping a
-second time beside a live cluster is a split brain. Each peer decides for itself
-before `mariadbd` starts:
+second time beside a live cluster is a split brain. **Peer 1 is the designated
+seed**: it is the only peer that can ever form a cluster, and the others only ever
+join. Before `mariadbd` starts:
 
-- **Data dir exists** → join the others. This is every restart, so a restart can
+- **Peer 1, data dir empty, no peer answering on port 4567** → form the cluster.
+  This is the first install.
+- **Peer 1, data dir exists** → join. This is every restart, so a restart can
   never bootstrap.
-- **Data dir empty and no peer answers on port 4567** → form the cluster. This is
-  the first install.
-- **Data dir empty but some peer answers** → join and pull a state transfer. This
-  is a peer rebuilt on a new node, and it is why a lost volume re-syncs instead of
-  starting a rival cluster.
+- **Peer 1, data dir empty but some peer answers** → join and pull a state
+  transfer. This is the seed rebuilt on a new node, and it is why a lost volume
+  re-syncs instead of starting a rival cluster.
+- **Any other peer** → always join. It waits up to two minutes for a peer to start
+  listening first, because a Galera node that finds no cluster exits, and without
+  the wait a first install would be a burst of crash-restarts.
+
+A single designated seed is what removes the race. Letting every peer bootstrap
+when it sees no peers is the tempting version and it is wrong: on a first install
+all peers start at once with empty data dirs and none is listening yet, so each
+forms its own cluster of one and they never merge — while all of them report
+healthy.
+
+The consequence to know: **a first install needs peer 1 to be schedulable.** If
+its node is unavailable the other peers wait rather than forming a cluster without
+it. Once the cluster exists, peer 1 is no more special than any other peer, and
+losing it costs nothing extra.
+
+When `cluster.forceBootstrap` names a peer, that peer becomes the only
+bootstrapper and peer 1 is demoted to joining — so the count never rises above
+one, whatever you set.
 
 ### Recovering a fully stopped cluster
 

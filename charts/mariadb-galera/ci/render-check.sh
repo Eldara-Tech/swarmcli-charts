@@ -94,12 +94,46 @@ for p in $(yq -r '.services.*.ports // [] | .[] | .published' "$f"); do
   esac
 done
 
-# Exactly one peer may bootstrap unconditionally, and only when asked to.
+# EXACTLY ONE peer may be able to bootstrap, in any fixture. This is the assertion
+# that matters most, and the one whose absence let a broken chart reach CI: when
+# every peer carried the "bootstrap if no peer answers" branch, a first install
+# started them all at once with empty data dirs and none listening yet, so each
+# formed its own cluster and wsrep_cluster_size stayed at 1 on all three. They
+# still converged and still reported healthy — which is precisely why this has to
+# be checked on the render rather than trusted to the deploy.
+#
+# A forced peer and the seed peer both count as bootstrappers, and the template
+# renders the seed branch only when no peer is forced, so the sum is always 1.
 forced="$(grep -cF 'cluster.forceBootstrap names this peer' "$f" || true)"
+seeds="$(grep -cF 'SEED PEER:' "$f" || true)"
+waiters="$(grep -cF 'JOINING PEER:' "$f" || true)"
+
 want_forced=0
 if [ "$case_name" = "force-bootstrap" ]; then want_forced=1; fi
 [ "$forced" -eq "$want_forced" ] \
-  || err "$forced peers bootstrap unconditionally, expected $want_forced — more than one is a split brain"
+  || err "$forced peers bootstrap unconditionally, expected $want_forced"
+[ "$((seeds + forced))" -eq 1 ] \
+  || err "$((seeds + forced)) peers can bootstrap ($seeds seed + $forced forced), expected exactly 1 — two racing bootstrappers each form their own cluster"
+[ "$waiters" -eq "$((want_peers - 1))" ] \
+  || err "$waiters peers are join-only, expected $((want_peers - 1))"
+
+# A seed that bootstraps without first checking for live peers would, once rebuilt
+# from an empty volume, form a rival cluster beside the survivors. Both halves of
+# its guard must survive: the data-dir test and the port probe.
+if [ "$seeds" -eq 1 ]; then
+  grep -Fq 'if [ ! -d /var/lib/mysql/mysql ]; then' "$f" \
+    || err "the seed peer lost its data-dir test — it would bootstrap on every restart"
+  grep -Fq 'if [ "$$PEER_UP" = no ]; then' "$f" \
+    || err "the seed peer lost its live-peer probe — a rebuilt seed would form a rival cluster"
+fi
+
+# Joining peers wait for someone to listen. Losing this does not corrupt anything —
+# Swarm's restart policy still gets them there — but it turns a quiet first install
+# into a burst of crash-restarts, so it is worth keeping honest.
+if [ "$waiters" -gt 0 ]; then
+  grep -Fq 'while [ "$$SECONDS" -lt 120 ]; do' "$f" \
+    || err "joining peers lost their wait gate — they would crash-restart until the seed appears"
+fi
 
 # The ephemeral fixture must render no volumes and no pins at all.
 if [ "$case_name" = "ephemeral" ]; then
