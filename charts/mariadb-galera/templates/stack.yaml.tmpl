@@ -24,18 +24,32 @@
 {{- fail (printf "cluster.forceBootstrap must be a peer number from 1 to %d, or \"\" to leave it off. Got %v." $peers .Values.cluster.forceBootstrap) -}}
 {{- end -}}
 {{- end -}}
-{{- /* Peer identity. Each peer is its own service, and its service name doubles as
-       its network alias, its wsrep node name and the address it advertises to the
-       others. endpoint_mode: dnsrr (below) is what makes that alias resolve to the
-       task's real address instead of a service VIP — Galera's group communication
-       needs the real one. */ -}}
+{{- /* Peer identity and addressing — the part that is easy to get wrong.
+
+       Peers must reach each other at their REAL task addresses: Galera's group
+       communication and its state transfers connect to the address a peer
+       advertises, and a load-balanced service VIP is not a usable target for
+       either. Swarm publishes exactly that under `tasks.<service>`, and a stack's
+       service name is `<release>_<service>`, so `tasks.<release>_<peer>` is the
+       one name guaranteed to resolve to the peer itself.
+
+       Do NOT reach for `endpoint_mode: dnsrr` to avoid the `tasks.` prefix. It
+       looks like the tidier answer — the plain service name then resolves to the
+       task — but dnsrr does not register network aliases, so the short per-peer
+       alias silently does not exist and only the scoped name resolves. This chart
+       shipped that version to CI and every state transfer failed with
+       `resolve: Host not found (authoritative)`. VIP mode keeps aliases working,
+       which is also what network.clientAlias needs. */ -}}
 {{- $prefix := .Chart.Name -}}
 {{- $names := list -}}
+{{- $addrs := list -}}
 {{- range $i := until $peers -}}
-{{- $names = append $names (printf "%s-%d" $prefix (add1 $i)) -}}
+{{- $nm := printf "%s-%d" $prefix (add1 $i) -}}
+{{- $names = append $names $nm -}}
+{{- $addrs = append $addrs (printf "tasks.%s_%s" $.Release.Name $nm) -}}
 {{- end -}}
-{{- $gcomm := printf "gcomm://%s" (join "," $names) -}}
-{{- $peerList := join " " $names -}}
+{{- $gcomm := printf "gcomm://%s" (join "," $addrs) -}}
+{{- $peerList := join " " $addrs -}}
 version: "3.9"
 
 services:
@@ -125,6 +139,28 @@ services:
           "CREATE USER IF NOT EXISTS 'mysql'@'localhost' IDENTIFIED VIA unix_socket;" \
           "GRANT RELOAD, PROCESS, LOCK TABLES, REPLICATION CLIENT ON *.* TO 'mysql'@'localhost';" \
           > /docker-entrypoint-initdb.d/00-galera-sst-user.sql
+        # A state transfer leaves a marker in the data dir while it runs, and the
+        # SST script refuses to start a new one while it is there. A container
+        # that was killed mid-transfer therefore leaves a marker no one clears —
+        # and because a fresh container's PID 1 matches the dead PID recorded in
+        # it, the script waits for "the previous SST" and then gives up, forever.
+        # We are at container start, so nothing of ours is running: the marker can
+        # only be stale.
+        rm -f /var/lib/mysql/sst_in_progress
+        # This peer's own routable address. Passing the IP rather than a name keeps
+        # every peer's advertised address independent of DNS at the moment another
+        # peer tries to open an IST or SST connection to it.
+        SELF_ADDR=''
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+          SELF_ADDR="$$(getent hosts 'tasks.{{ $.Release.Name }}_{{ $name }}' 2>/dev/null | awk 'NR==1{print $$1}')"
+          if [ -n "$$SELF_ADDR" ]; then
+            break
+          fi
+          sleep 1
+        done
+        if [ -z "$$SELF_ADDR" ]; then
+          SELF_ADDR='tasks.{{ $.Release.Name }}_{{ $name }}'
+        fi
         GCOMM='{{ $gcomm }}'
 {{- if eq $force $n }}
         # cluster.forceBootstrap names this peer, so form a NEW cluster and skip
@@ -162,7 +198,7 @@ services:
         # primary component exits and would otherwise crash-restart until the seed
         # appears. Bounded: if nothing shows up we start anyway and let Swarm's
         # restart policy carry it, rather than sitting here forever.
-        while [ "$$SECONDS" -lt 120 ]; do
+        while [ "$$SECONDS" -lt 60 ]; do
           PEER_UP=no
           for p in {{ $peerList }}; do
             if timeout 2 bash -c "exec 3<>/dev/tcp/$$p/4567" 2>/dev/null; then
@@ -181,7 +217,7 @@ services:
           --wsrep-cluster-name={{ $.Values.cluster.name | quote }} \
           --wsrep-cluster-address="$$GCOMM" \
           --wsrep-node-name={{ $name }} \
-          --wsrep-node-address={{ $name }} \
+          --wsrep-node-address="$$SELF_ADDR" \
           --wsrep-sst-method=mariabackup \
           --wsrep-sst-auth=mysql: \
           --binlog-format=ROW \
@@ -211,10 +247,12 @@ services:
       # sharing one data dir would corrupt it. Scale the cluster with
       # cluster.peers, never with replicas.
       replicas: 1
-      # dnsrr makes this service's aliases resolve to the task's own address.
-      # Galera's group communication needs the real address, not a load-balanced
-      # VIP in front of it.
-      endpoint_mode: dnsrr
+      # vip (the default, stated explicitly because it is load-bearing): it is what
+      # keeps network aliases working, which both the per-peer alias and
+      # network.clientAlias depend on. Peers address each other by
+      # `tasks.<release>_<peer>` instead, which resolves to the task itself — see
+      # the addressing note at the top of this template.
+      endpoint_mode: vip
 {{- if $.Values.healthcheck.enabled }}
       {{- /* Swarm watches a task for `monitor` after CREATING it, and only counts a
              failure inside that window against the rollout. Shorter than the

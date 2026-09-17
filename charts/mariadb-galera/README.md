@@ -76,6 +76,13 @@ put a proxy such as MaxScale or HAProxy in front of the alias — this chart doe
 not deploy one. Individual peers are addressable as `mariadb-galera-1`,
 `mariadb-galera-2`, … if you want to pin reads to one.
 
+Peers address *each other* differently, and it is worth knowing why: they use
+`tasks.<release>_<peer>`, the name Swarm publishes for a service's actual tasks.
+Galera's group communication and its state transfers connect to the address a peer
+advertises, and a load-balanced service VIP is not a usable target for either. The
+chart resolves that name to an IP at start-up and advertises the IP, so a transfer
+never depends on DNS at the moment another peer dials it.
+
 `exposure.enabled` publishes the SQL port in **host** mode only: every peer
 publishes the same port, and several services cannot each claim it on the ingress
 routing mesh. Port 3306 on a node then reaches the peer running there.
@@ -112,8 +119,8 @@ routing mesh. Port 3306 on a node then reaches the peer running there.
 | `healthcheck.interval` | `10s` | Probe interval. |
 | `healthcheck.timeout` | `5s` | Probe timeout. |
 | `healthcheck.retries` | `6` | Failures before unhealthy. |
-| `healthcheck.startPeriod` | `120s` | Grace period — **must exceed your worst-case state transfer**. |
-| `healthcheck.monitor` | `180s` | Rollout failure window; see below. |
+| `healthcheck.startPeriod` | `300s` | Grace period — **must exceed your worst-case state transfer**. |
+| `healthcheck.monitor` | `360s` | Rollout failure window; see below. |
 | `extraArgs` | `[]` | Extra `mariadbd` flags, appended verbatim. |
 | `labels` | `{}` | Extra deploy labels on every peer. |
 

@@ -11,8 +11,9 @@
 #     (the copy-paste bug the peer loop exists to prevent) silently gives two
 #     peers one data dir;
 #   * a gcomm list missing a peer leaves that peer unable to find the cluster;
-#   * endpoint_mode back to vip makes peer addresses resolve to a load-balanced
-#     VIP, which Galera's group communication cannot use;
+#   * endpoint_mode switched to dnsrr drops network aliases, so the per-peer and
+#     client aliases silently stop existing and every state transfer fails to
+#     resolve its target;
 #   * an ingress-mode port, or a published Galera port, is accepted by compose and
 #     rejected (or worse, exposed) only later.
 #
@@ -36,24 +37,30 @@ if [ "$n_svcs" -ne "$want_peers" ]; then
   err "expected $want_peers peer services, rendered $n_svcs: $(echo "$svcs" | tr '\n' ' ')"
 fi
 
-# Every peer is a single replica, dnsrr, and names ITSELF in wsrep-node-name /
-# wsrep-node-address.
+# Every peer is a single replica in vip mode, and names ITSELF in wsrep-node-name
+# and in the address it resolves for wsrep-node-address.
 for s in $svcs; do
   [ "$(yq -r ".services.\"$s\".deploy.replicas" "$f")" = "1" ] \
     || err "$s: replicas is not 1 — two tasks would share one data dir"
-  [ "$(yq -r ".services.\"$s\".deploy.endpoint_mode" "$f")" = "dnsrr" ] \
-    || err "$s: endpoint_mode is not dnsrr — peer addresses would resolve to a VIP"
+  [ "$(yq -r ".services.\"$s\".deploy.endpoint_mode" "$f")" = "vip" ] \
+    || err "$s: endpoint_mode is not vip — dnsrr drops network aliases, so the per-peer and client aliases would silently not exist"
   cmd="$(yq -r ".services.\"$s\".command[0]" "$f")"
   grep -Fq -- "--wsrep-node-name=$s" <<<"$cmd" \
     || err "$s: does not set --wsrep-node-name=$s (peer identity crossed over)"
-  grep -Fq -- "--wsrep-node-address=$s" <<<"$cmd" \
-    || err "$s: does not set --wsrep-node-address=$s (peer identity crossed over)"
+  # The advertised address is resolved at runtime, so what must be per-peer here is
+  # the name it resolves: tasks.<release>_<this peer>.
+  grep -Eq "getent hosts 'tasks\.[A-Za-z0-9_.-]*_$s'" <<<"$cmd" \
+    || err "$s: does not resolve its own tasks.<release>_$s address (peer identity crossed over)"
+  grep -Fq -- '--wsrep-node-address="$$SELF_ADDR"' <<<"$cmd" \
+    || err "$s: does not advertise the resolved address — a name that fails to resolve breaks every state transfer to it"
+  grep -Fq 'rm -f /var/lib/mysql/sst_in_progress' <<<"$cmd" \
+    || err "$s: lost the stale state-transfer marker cleanup — a peer killed mid-transfer would refuse to retry forever"
   grep -Fq -- "--wsrep-sst-auth=mysql:" <<<"$cmd" \
     || err "$s: lost the passwordless unix_socket SST auth"
   # The gcomm list must name every peer, or a peer cannot find the cluster.
   for p in $svcs; do
-    grep -Eq "(gcomm://|,)$p(,|')" <<<"$cmd" \
-      || err "$s: gcomm list does not name peer $p"
+    grep -Eq "(gcomm://|,)tasks\.[A-Za-z0-9_.-]*_$p(,|')" <<<"$cmd" \
+      || err "$s: gcomm list does not name peer $p by its tasks.<release>_$p address"
   done
 done
 
@@ -131,7 +138,7 @@ fi
 # Swarm's restart policy still gets them there — but it turns a quiet first install
 # into a burst of crash-restarts, so it is worth keeping honest.
 if [ "$waiters" -gt 0 ]; then
-  grep -Fq 'while [ "$$SECONDS" -lt 120 ]; do' "$f" \
+  grep -Fq 'while [ "$$SECONDS" -lt 60 ]; do' "$f" \
     || err "joining peers lost their wait gate — they would crash-restart until the seed appears"
 fi
 
