@@ -33,8 +33,16 @@ release="$1"
 # Peer services, in peer order, discovered from the stack rather than assumed, so
 # this works for the 3- and 5-peer fixtures alike.
 peers="$(docker service ls --filter "label=com.docker.stack.namespace=${release}" --format '{{.Name}}' | sort)"
+[ -n "$peers" ] || { echo "  no services found for stack ${release}"; exit 1; }
 want="$(printf '%s\n' "$peers" | wc -l | tr -d ' ')"
-[ "$want" -gt 0 ] || { echo "  no services found for stack ${release}"; exit 1; }
+# The expected size is derived from the stack, so it must be sanity-checked against
+# what a cluster can even be — otherwise a stack that came up with only one peer
+# would set want=1 and then "cluster_size == want" would PASS on a single peer that
+# had bootstrapped alone, which is the exact failure this check exists to catch.
+if [ "$want" -lt 3 ]; then
+  echo "  only $want peer service(s) in stack ${release}; a cluster is at least 3"
+  exit 1
+fi
 
 cid_of() {
   docker ps -q -f "label=com.docker.swarm.service.name=$1" | sed -n 1p
