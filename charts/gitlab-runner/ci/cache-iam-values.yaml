@@ -1,0 +1,10 @@
+# Cache with an instance role instead of keys: no cache secrets are mounted or declared,
+# and nothing is appended to config.toml.
+cache:
+  enabled: true
+  shared: false
+  s3:
+    server: s3.amazonaws.com
+    bucket: runner-cache
+    location: eu-central-1
+    authenticationType: iam

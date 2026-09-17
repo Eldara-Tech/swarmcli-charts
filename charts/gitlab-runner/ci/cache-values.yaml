@@ -1,0 +1,15 @@
+# Distributed cache against an in-swarm MinIO: insecure + path-style, credentials from two
+# external secrets, which the container appends to the end of config.toml.
+cache:
+  enabled: true
+  path: swarm-ci
+  s3:
+    server: minio:9000
+    bucket: runner-cache
+    insecure: true
+    pathStyle: true
+
+# Deployed in CI (e2e), so the url is deliberately non-routable: this fixture is about
+# the cache credentials, and a runner polls an unreachable instance harmlessly.
+gitlab:
+  url: http://gitlab.invalid/

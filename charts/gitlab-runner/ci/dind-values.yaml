@@ -1,0 +1,12 @@
+# The privileged path: docker:dind jobs plus the socket mounted into jobs, narrowed by an
+# image allowlist. Both grants are root-equivalent on the runner's node.
+docker:
+  image: docker:29.8-cli
+  mountSocketInJobs: true
+  privileged: true
+  allowedImages:
+    - "docker:*"
+    - "alpine:*"
+  memory: 2g
+  cpus: "1.5"
+  networkMode: bridge

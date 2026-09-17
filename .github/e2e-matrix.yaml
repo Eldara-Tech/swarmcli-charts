@@ -13,6 +13,15 @@ include:
   # regression guard and picks up the #63 edge-routing fixture automatically. Its
   # >=2 GB image + 120s health start period needs the 10m per-fixture budget.
   - { chart: openclaw,      cases: "",                                                                                timeout: 10m }
+  # gitlab-runner: the three fixtures that prove something a render cannot. `mock` stands up
+  # a mock GitLab on the release's own overlay (ci/e2e-check.sh, after install — that overlay
+  # does not exist before it) and asserts the runner authenticated with exactly the token
+  # from the Swarm secret; convergence proves nothing on its own here, because a runner with
+  # an empty or bogus token reports Running just the same. `cache` proves the container
+  # really appends the S3 credentials to config.toml, with a secret carrying the / and + of a
+  # real base64 key. `ephemeral` proves the no-volume shape schedules with no node pin. The
+  # rest are render-only (charts.yml) and still run in a local `make e2e`.
+  - { chart: gitlab-runner, cases: "mock cache ephemeral",                                            timeout: 6m  }
   - { chart: whoami,        cases: "",                                                                                timeout: 5m  }
   - { chart: swarm-cronjob, cases: "",                                                                                timeout: 5m  }
   # swarmcli-cd: the four fixtures that can converge without a forge to clone from.
