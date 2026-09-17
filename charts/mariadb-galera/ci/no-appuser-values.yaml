@@ -1,0 +1,5 @@
+# Root-only cluster: no app user, no database, and the second secret is neither
+# mounted nor declared external in the rendered stack.
+auth:
+  appUser:
+    enabled: false
