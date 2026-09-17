@@ -76,12 +76,15 @@ put a proxy such as MaxScale or HAProxy in front of the alias — this chart doe
 not deploy one. Individual peers are addressable as `mariadb-galera-1`,
 `mariadb-galera-2`, … if you want to pin reads to one.
 
-Peers address *each other* differently, and it is worth knowing why: they use
-`tasks.<release>_<peer>`, the name Swarm publishes for a service's actual tasks.
-Galera's group communication and its state transfers connect to the address a peer
-advertises, and a load-balanced service VIP is not a usable target for either. The
-chart resolves that name to an IP at start-up and advertises the IP, so a transfer
-never depends on DNS at the moment another peer dials it.
+Peers address *each other* differently, and it is worth knowing why. They find one
+another through `tasks.<release>_<peer>`, the name Swarm publishes for a service's
+actual tasks, because a load-balanced service VIP is not a usable rendezvous for
+group communication. But each peer *advertises* its own plain IP, read from
+`/etc/hosts` at start-up — never a name. Galera has to bind its state-transfer
+listener to the address a peer advertises, and a `tasks.` name does not resolve
+inside the container, so advertising one makes every transfer to that peer fail
+with `Host not found (authoritative)`. A peer that cannot establish its own address
+refuses to start rather than join with one nothing can dial.
 
 `exposure.enabled` publishes the SQL port in **host** mode only: every peer
 publishes the same port, and several services cannot each claim it on the ingress

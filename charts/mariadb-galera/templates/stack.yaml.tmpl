@@ -149,19 +149,24 @@ services:
         # permanently. At container start nothing of ours can be running, which is
         # exactly what makes the file meaningless and safe to drop.
         rm -f /var/lib/mysql/wsrep_sst.pid
-        # This peer's own routable address. Passing the IP rather than a name keeps
-        # every peer's advertised address independent of DNS at the moment another
-        # peer tries to open an IST or SST connection to it.
-        SELF_ADDR=''
-        for _ in 1 2 3 4 5 6 7 8 9 10; do
-          SELF_ADDR="$$(getent hosts 'tasks.{{ $.Release.Name }}_{{ $name }}' 2>/dev/null | awk 'NR==1{print $$1}')"
-          if [ -n "$$SELF_ADDR" ]; then
-            break
-          fi
-          sleep 1
-        done
+        # This peer's own overlay address, taken from /etc/hosts — where Docker
+        # writes the container's hostname — and never from DNS.
+        #
+        # Galera has to BIND its IST listener to whatever this says, so it must be
+        # a real local address. A `tasks.<release>_<peer>` name does not resolve
+        # inside the container, and handing one to Galera produces
+        # `Failed to open IST listener ... resolve: Host not found (authoritative)`,
+        # after which the joiner aborts and every state transfer to it fails. A
+        # name is therefore never safe here, however convenient it looks.
+        #
+        # There is deliberately NO fallback: a peer that cannot establish its own
+        # address must refuse to start, because the alternative is joining while
+        # advertising something no other peer can dial — which fails later, looks
+        # like a replication bug, and is far harder to read than this line.
+        SELF_ADDR="$$(awk -v h="$$(hostname)" '$$1 !~ /^127\./ { for (i = 2; i <= NF; i++) if ($$i == h) { print $$1; exit } }' /etc/hosts)"
         if [ -z "$$SELF_ADDR" ]; then
-          SELF_ADDR='tasks.{{ $.Release.Name }}_{{ $name }}'
+          echo 'mariadb-galera: cannot determine this peer own address from /etc/hosts' >&2
+          exit 1
         fi
         GCOMM='{{ $gcomm }}'
 {{- if eq $force $n }}

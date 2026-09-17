@@ -47,12 +47,28 @@ for s in $svcs; do
   cmd="$(yq -r ".services.\"$s\".command[0]" "$f")"
   grep -Fq -- "--wsrep-node-name=$s" <<<"$cmd" \
     || err "$s: does not set --wsrep-node-name=$s (peer identity crossed over)"
-  # The advertised address is resolved at runtime, so what must be per-peer here is
-  # the name it resolves: tasks.<release>_<this peer>.
-  grep -Eq "getent hosts 'tasks\.[A-Za-z0-9_.-]*_$s'" <<<"$cmd" \
-    || err "$s: does not resolve its own tasks.<release>_$s address (peer identity crossed over)"
+  # The advertised address must be a real local IP, established at start-up from
+  # /etc/hosts. Galera BINDS its IST listener to it, so a DNS name here fails with
+  # "Failed to open IST listener ... Host not found (authoritative)" and the joiner
+  # aborts — which is how this chart burned a CI run.
   grep -Fq -- '--wsrep-node-address="$$SELF_ADDR"' <<<"$cmd" \
-    || err "$s: does not advertise the resolved address — a name that fails to resolve breaks every state transfer to it"
+    || err "$s: does not advertise the address it established at start-up"
+  # Assert the CODE, not a string that also appears in the comment above it: the
+  # first version of this grepped for "/etc/hosts", which the explanatory comment
+  # satisfies on its own, so swapping the real lookup to /dev/null passed.
+  grep -Fq 'SELF_ADDR="$$(awk -v h="$$(hostname)"' <<<"$cmd" \
+    || err "$s: no longer establishes its own address with the /etc/hosts lookup"
+  grep -Fq '/etc/hosts)"' <<<"$cmd" \
+    || err "$s: the address lookup no longer reads /etc/hosts"
+  # An `x && err` here would exit the whole script under `set -e` on the HAPPY
+  # path, because the grep correctly finds nothing. It has to be an if.
+  if grep -Fq 'tasks.' <<<"$(grep -F 'SELF_ADDR=' <<<"$cmd")"; then
+    err "$s: sets its own address to a tasks.<...> NAME — Galera cannot bind a listener to one"
+  fi
+  # No silent fallback: a peer that cannot find its own address must refuse to
+  # start rather than join advertising something nothing can dial.
+  grep -Fq 'cannot determine this peer own address' <<<"$cmd" \
+    || err "$s: lost the hard failure when its own address cannot be determined"
   grep -Fq 'rm -f /var/lib/mysql/wsrep_sst.pid' <<<"$cmd" \
     || err "$s: lost the stale wsrep_sst.pid cleanup — a peer interrupted mid-transfer would refuse to retry forever"
   grep -Fq -- "--wsrep-sst-auth=mysql:" <<<"$cmd" \
