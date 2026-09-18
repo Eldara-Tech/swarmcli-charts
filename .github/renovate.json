@@ -86,6 +86,7 @@
     },
     { "matchFileNames": ["charts/keycloak/**"], "semanticCommitScope": "keycloak" },
     { "matchFileNames": ["charts/mariadb/**"], "semanticCommitScope": "mariadb" },
+    { "matchFileNames": ["charts/mariadb-galera/**"], "semanticCommitScope": "mariadb-galera" },
     { "matchFileNames": ["charts/ollama/**"], "semanticCommitScope": "ollama" },
     { "matchFileNames": ["charts/openclaw/**"], "semanticCommitScope": "openclaw" },
     { "matchFileNames": ["charts/postgres/**"], "semanticCommitScope": "postgres" },

@@ -1,0 +1,191 @@
+# mariadb-galera chart default values.
+#
+# A MariaDB Galera cluster on Docker Swarm: synchronous multi-primary replication,
+# so every peer accepts reads AND writes and a committed transaction is on every
+# peer before it returns. Quorum is majority, so 3 peers survive losing 1 and 5
+# survive losing 2.
+#
+# Each peer is its OWN Swarm service with exactly one replica, its own data volume
+# and its own node label, because a Swarm volume is node-local — the same reason
+# the single-node `mariadb` chart pins itself. Peers find each other over the
+# overlay by their `tasks.<service>` DNS name, which resolves to the task's real
+# address; Galera needs that rather than a service VIP.
+#
+# Galera's own ports (4567/4568/4444) are NEVER published: peers on a shared
+# overlay already reach each other on every port, so replication stays off the
+# host entirely.
+#
+# The root password ALWAYS comes from an EXTERNAL Swarm secret the operator
+# pre-creates (never created by the chart); an optional application user +
+# database (on by default) uses a second external secret.
+#
+# Not a drop-in replacement for the `mariadb` chart: Galera is InnoDB-only and
+# every table needs a primary key. See README.md § Galera constraints.
+
+image:
+  repository: mariadb
+  tag: ""  # defaults to the appVersion in Chart.yaml
+
+cluster:
+  # Galera cluster name. Peers only join a cluster whose name matches, so this is
+  # also what keeps two releases on one overlay from merging by accident.
+  name: mariadb-galera
+  # Number of peers. Must be 3 or 5: Galera needs a majority to stay writable, so
+  # an even count buys no extra fault tolerance and 1 is not a cluster.
+  peers: 3
+  # DISASTER RECOVERY ONLY — normally "". Names the 1-based peer that must form a
+  # NEW cluster on its next start, bypassing every check. Use it only when every
+  # peer is down and refusing to bootstrap, and only for the peer with the highest
+  # seqno. Setting it while the cluster is still up gives that peer a SECOND
+  # cluster (split brain), so clear it back to "" once the cluster is healthy.
+  # README.md § Recovering a fully stopped cluster has the procedure.
+  #
+  # Peer 1 is otherwise the designated seed — the only peer that can form a
+  # cluster, and only with an empty data dir and no peer answering. Naming a peer
+  # here demotes peer 1 to joining, so exactly one peer can ever bootstrap.
+  # A FIRST install therefore needs peer 1 schedulable; see README.md § How
+  # bootstrapping decides.
+  forceBootstrap: ""
+
+# Credentials. Passwords are read from mounted secret files via the image's
+# MARIADB_*_FILE convention, so the plaintext never lands in the compose file, the
+# environment, or `docker inspect` — only the file path does.
+#   rootSecretName: EXTERNAL Swarm secret holding the root password (always
+#     required). Pre-create it, e.g.:
+#       printf 'S3cr3t' | docker secret create mariadb_galera_root_password -
+#   appUser: optional non-root user + database created when the cluster first
+#     bootstraps. enabled:false => a root-only cluster (no second secret needed).
+#     When enabled, secretName is an EXTERNAL Swarm secret holding the app user's
+#     password — pre-create it too.
+#
+# State transfer between peers (SST) needs a database account of its own. The
+# chart creates it as `mysql`@localhost authenticating VIA unix_socket, so there
+# is NO third secret and no password on a command line or in a log: MariaDB
+# matches the account against the OS user mysqld already runs as. This is the
+# documented passwordless alternative to `wsrep_sst_auth=user:password`.
+auth:
+  rootSecretName: mariadb_galera_root_password
+  appUser:
+    enabled: true
+    username: app
+    database: app
+    secretName: mariadb_galera_password
+
+# Persistence. One named volume per peer at /var/lib/mysql, suffixed with the
+# peer's 1-based index (mariadb-galera-data-1, -2, -3).
+#
+# enabled:false => an ephemeral cluster: no volumes and no node pins, so losing a
+# task loses that peer's data and it re-syncs from the others on restart. Fine for
+# CI and demos, never for real data.
+persistence:
+  enabled: true
+  volumePrefix: mariadb-galera-data
+  # Store each peer's data under a host directory instead of Docker's managed
+  # volume storage. When set it TAKES PRECEDENCE and volumePrefix is ignored: give
+  # exactly one ABSOLUTE host path per peer, in peer order. Each directory must
+  # already exist on that peer's node and be writable by the container's mysql uid
+  # (999) — the image entrypoint chowns it on first init, but pre-creating it with
+  # the right owner is safest. This is host-filesystem access, acknowledged via
+  # swarmcli-charts/allow: "host-mount" in Chart.yaml. Leave empty ([]) to use the
+  # named volumes above.
+  volumePaths: []
+  # Node-label prefix pinning each peer to the node carrying its data volume
+  # (Swarm volumes are node-local). Peer N renders
+  # `node.labels.<nodeLabelPrefix>-<N> == true` while persistence is enabled, and
+  # the pin is dropped automatically when it is not. Label one node per peer first:
+  #   docker node update --label-add mariadb-galera-1=true <node-a>
+  #   docker node update --label-add mariadb-galera-2=true <node-b>
+  #   docker node update --label-add mariadb-galera-3=true <node-c>
+  # Set "" to schedule every peer unpinned even with persistence on. That is only
+  # correct on a single-node swarm, where it is the ONLY way this chart converges —
+  # and it is a single point of failure, so it buys no availability, just a
+  # realistic cluster to develop against.
+  nodeLabelPrefix: mariadb-galera
+
+# Extra scheduling constraints, applied to EVERY peer (independent of the
+# per-peer persistence pins above).
+placement:
+  constraints: []
+
+# Overlay network the cluster attaches to. external:true (default) is a shared
+# attachable overlay (declared in requirements.yaml, auto-created if missing) that
+# app stacks also join to reach the cluster. external:false => chart-managed
+# internal overlay (the cluster is only reachable by services in this stack).
+#
+# clientAlias is a DNS alias every peer shares, so an app resolving it gets all
+# healthy peers' addresses and spreads its connections over them. Any peer accepts
+# writes, so this needs no leader election.
+#
+# It IS health-aware: Swarm stops resolving the alias to a peer that has no healthy
+# task, so a peer that is down, still receiving a state transfer, or cut off from
+# the cluster leaves the rotation on its own. A peer DONATING a transfer stays in
+# it deliberately: it is still writable. The caveat is the detection lag — up to
+# healthcheck.interval x healthcheck.retries before that happens — so clients still
+# want a pool that retries. Set "" to publish no shared alias and address peers
+# individually.
+#
+# encrypted applies IPsec to the overlay's data plane, which is what keeps
+# replication traffic — i.e. every row written — off the wire in the clear. It
+# costs throughput, so it is opt-in. Only settable on a chart-managed network
+# (external:false); for an external overlay the operator passes
+# `--opt encrypted` to `docker network create` instead.
+network:
+  name: mariadb-galera-net
+  external: true
+  encrypted: false
+  clientAlias: mariadb
+
+# Publish the SQL port on each peer's own node. Disabled by default — the cluster
+# stays internal to the overlay.
+#
+# mode is host-only, on purpose: every peer publishes the same port, and three
+# services cannot each claim 3306 on the cluster-wide routing mesh. host mode
+# gives you "port 3306 on this node reaches the peer running here"; a single
+# load-balanced endpoint needs a health-aware proxy in front, which this chart
+# does not deploy.
+exposure:
+  enabled: false
+  port: 3306
+  protocol: tcp
+  mode: host
+
+# Swarm deploy resource limits per peer (optional). Rendered only when
+# limits.memory is set.
+resources:
+  limits:
+    memory: ""           # e.g. "512M"
+
+# Container healthcheck via the image's healthcheck.sh. --connect tests the TCP
+# port and --galera_ready requires WSREP_READY=ON — connected to a primary
+# component and able to serve — so a peer counts as healthy once it can actually
+# take queries rather than merely listening.
+#
+# NOT --galera_online (Synced): a peer donating a state transfer is Donor/Desynced
+# for the whole transfer while staying writable, and the strict check would have
+# Swarm kill it mid-transfer. See the template for the full reasoning.
+#
+# startPeriod MUST cover the worst case for a joining peer, which is a full state
+# transfer of the whole dataset from another peer. Until it expires a failing
+# check does not count, so this is what stops Swarm killing a peer in the middle
+# of a transfer and restarting it into the same transfer forever. 120s suits a
+# small dataset; raise it well past your restore time as the data grows.
+healthcheck:
+  enabled: true
+  interval: 10s
+  timeout: 5s
+  retries: 6
+  startPeriod: 300s
+  # How long Swarm counts a task failure against the rollout, measured from task
+  # creation. Must cover the healthcheck's worst case above
+  # (300s start_period + 10s interval x 6 retries = 360s) or a container that goes
+  # unhealthy after the window does not fail the deploy. Raise it if you raise the
+  # values above.
+  monitor: 360s
+
+# Arbitrary extra mariadbd flags, appended verbatim after the chart's own. Each
+# entry is a full flag string, e.g. "--max-connections=200". Galera tuning goes
+# here too, e.g. "--wsrep-provider-options=gcache.size=1G".
+extraArgs: []
+
+# Extra deploy labels (key: value), applied to every peer.
+labels: {}

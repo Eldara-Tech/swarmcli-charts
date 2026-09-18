@@ -1,0 +1,364 @@
+{{- /* The CROSS-FIELD invariants only. Single-field rules (peers is 3 or 5,
+       exposure.mode is host, a volumePath is absolute) live in
+       values.schema.json, which rejects them earlier and names the offending
+       path; duplicating them here would be unreachable. What is left is the set
+       a schema cannot state, and note that nothing downstream catches these
+       either — `docker compose config` even accepts an ingress port beside
+       endpoint_mode dnsrr, and only the daemon rejects it. */ -}}
+{{- $peers := int .Values.cluster.peers -}}
+{{- if and .Values.persistence.enabled .Values.persistence.volumePaths -}}
+{{- if ne (len .Values.persistence.volumePaths) $peers -}}
+{{- fail (printf "persistence.volumePaths has %d entries but cluster.peers is %d. Give exactly one absolute host path per peer, in peer order, or leave it [] to use named volumes." (len .Values.persistence.volumePaths) $peers) -}}
+{{- end -}}
+{{- end -}}
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePaths) (contains "/" .Values.persistence.volumePrefix) -}}
+{{- fail "persistence.volumePrefix is a Docker named-volume name prefix and cannot contain '/'. To store data under host directories, set persistence.volumePaths instead." -}}
+{{- end -}}
+{{- if and .Values.network.encrypted .Values.network.external -}}
+{{- fail "network.encrypted only applies to a chart-managed overlay: an external network's driver options are fixed when it is created, so setting this on external:true would silently not encrypt anything. Either set network.external: false, or pre-create the overlay yourself with `docker network create --opt encrypted`." -}}
+{{- end -}}
+{{- $force := 0 -}}
+{{- if .Values.cluster.forceBootstrap -}}
+{{- $force = int .Values.cluster.forceBootstrap -}}
+{{- if or (lt $force 1) (gt $force $peers) -}}
+{{- fail (printf "cluster.forceBootstrap must be a peer number from 1 to %d, or \"\" to leave it off. Got %v." $peers .Values.cluster.forceBootstrap) -}}
+{{- end -}}
+{{- end -}}
+{{- /* Peer identity and addressing — the part that is easy to get wrong.
+
+       Peers must reach each other at their REAL task addresses: Galera's group
+       communication and its state transfers connect to the address a peer
+       advertises, and a load-balanced service VIP is not a usable target for
+       either. Swarm publishes exactly that under `tasks.<service>`, and a stack's
+       service name is `<release>_<service>`, so `tasks.<release>_<peer>` is the
+       one name guaranteed to resolve to the peer itself.
+
+       Do NOT reach for `endpoint_mode: dnsrr` to avoid the `tasks.` prefix. It
+       looks like the tidier answer — the plain service name then resolves to the
+       task — but dnsrr does not register network aliases, so the short per-peer
+       alias silently does not exist and only the scoped name resolves. This chart
+       shipped that version to CI and every state transfer failed with
+       `resolve: Host not found (authoritative)`. VIP mode keeps aliases working,
+       which is also what network.clientAlias needs. */ -}}
+{{- $prefix := .Chart.Name -}}
+{{- $names := list -}}
+{{- $addrs := list -}}
+{{- range $i := until $peers -}}
+{{- $nm := printf "%s-%d" $prefix (add1 $i) -}}
+{{- $names = append $names $nm -}}
+{{- $addrs = append $addrs (printf "tasks.%s_%s" $.Release.Name $nm) -}}
+{{- end -}}
+{{- $gcomm := printf "gcomm://%s" (join "," $addrs) -}}
+{{- $peerList := join " " $addrs -}}
+version: "3.9"
+
+services:
+{{- range $i := until $peers }}
+{{- $n := add1 $i }}
+{{- $name := printf "%s-%d" $prefix $n }}
+
+  {{ $name }}:
+    image: {{ $.Values.image.repository }}:{{ if $.Values.image.tag }}{{ $.Values.image.tag }}{{ else }}{{ $.Chart.AppVersion }}{{ end }}
+    # A stable hostname: Swarm otherwise names the container after the task, which
+    # changes on every reschedule and is what shows up in this peer's own error log
+    # and in the others' membership messages.
+    hostname: {{ $name }}
+
+    networks:
+      {{ $.Values.network.name }}:
+        aliases:
+          # The per-peer alias the other peers dial. Declared explicitly rather
+          # than relying on the name Swarm derives from the stack, so the address
+          # in wsrep_cluster_address is one this chart controls.
+          - {{ $name }}
+{{- if $.Values.network.clientAlias }}
+          # Shared by every peer, so a client resolving it gets them all and
+          # spreads connections over them. Any peer accepts writes, so no leader
+          # election is needed — but DNS is not health-aware, and a client handed
+          # a peer that is down or re-syncing has to reconnect.
+          - {{ $.Values.network.clientAlias }}
+{{- end }}
+
+{{- if $.Values.exposure.enabled }}
+    # host mode only — see the exposure.mode guard at the top of this template.
+    # Galera's own ports (4567/4568/4444) are deliberately NOT published: peers
+    # reach each other over the overlay, so replication never touches the host.
+    ports:
+      - target: {{ $.Values.exposure.port }}
+        published: {{ $.Values.exposure.port }}
+        protocol: {{ $.Values.exposure.protocol | default "tcp" }}
+        mode: host
+{{- end }}
+
+{{- if $.Values.persistence.enabled }}
+    volumes:
+{{- if $.Values.persistence.volumePaths }}
+      - {{ index $.Values.persistence.volumePaths $i }}:/var/lib/mysql
+{{- else }}
+      - {{ printf "%s-%d" $.Values.persistence.volumePrefix $n }}:/var/lib/mysql
+{{- end }}
+{{- end }}
+
+    secrets:
+      - {{ $.Values.auth.rootSecretName }}
+{{- if $.Values.auth.appUser.enabled }}
+      - {{ $.Values.auth.appUser.secretName }}
+{{- end }}
+
+    # Passwords are read from the mounted secret files via the image's MARIADB_*_FILE
+    # convention, so the plaintext is never in the compose file or `docker inspect`
+    # (which show only the /run/secrets/... path), only inside the container.
+    # Every peer carries them because any peer may be the one that bootstraps and
+    # runs first-time initialisation; the peers that instead join get their user
+    # table from the state transfer, which overwrites whatever they initialised.
+    environment:
+      MARIADB_ROOT_PASSWORD_FILE: /run/secrets/{{ $.Values.auth.rootSecretName }}
+{{- if $.Values.auth.appUser.enabled }}
+      MARIADB_DATABASE: {{ $.Values.auth.appUser.database | quote }}
+      MARIADB_USER: {{ $.Values.auth.appUser.username | quote }}
+      MARIADB_PASSWORD_FILE: /run/secrets/{{ $.Values.auth.appUser.secretName }}
+{{- end }}
+
+    # The image's own entrypoint still does all the work; this wrapper only decides
+    # ONE thing before handing over — whether this peer joins the others or forms a
+    # new cluster. `$$` is the compose escape for a literal `$`, so every expansion
+    # below happens inside the container.
+    entrypoint:
+      - /bin/bash
+      - -c
+    command:
+      - |-
+        set -eu
+        # The state-transfer account. mariadb-backup connects to the DONOR peer to
+        # stream its data dir; authenticating VIA unix_socket matches the account
+        # against the OS user mysqld already runs as, so there is no password to
+        # put on a command line, in a config file or in a log. Only a peer that
+        # initialises its own data dir ever runs this file.
+        mkdir -p /docker-entrypoint-initdb.d
+        printf '%s\n' \
+          "CREATE USER IF NOT EXISTS 'mysql'@'localhost' IDENTIFIED VIA unix_socket;" \
+          "GRANT RELOAD, PROCESS, LOCK TABLES, REPLICATION CLIENT ON *.* TO 'mysql'@'localhost';" \
+          > /docker-entrypoint-initdb.d/00-galera-sst-user.sql
+        # A state transfer records its PID in /var/lib/mysql/wsrep_sst.pid and the
+        # SST script refuses to start a new one while that PID is alive. It tests
+        # liveness with `ps -p`, and a container's PIDs restart from 1 — so a file
+        # left behind by a transfer that was interrupted names a PID that almost
+        # always matches some live process in the NEW container (PID 1 is this
+        # very shell). The script then waits 30s for "the previous SST" and exits
+        # 114, on every restart, forever: one interrupted transfer wedges the peer
+        # permanently. At container start nothing of ours can be running, which is
+        # exactly what makes the file meaningless and safe to drop.
+        rm -f /var/lib/mysql/wsrep_sst.pid
+        # This peer's own overlay address, taken from /etc/hosts — where Docker
+        # writes the container's hostname — and never from DNS.
+        #
+        # Galera has to BIND its IST listener to whatever this says, so it must be
+        # a real local address. A `tasks.<release>_<peer>` name does not resolve
+        # inside the container, and handing one to Galera produces
+        # `Failed to open IST listener ... resolve: Host not found (authoritative)`,
+        # after which the joiner aborts and every state transfer to it fails. A
+        # name is therefore never safe here, however convenient it looks.
+        #
+        # There is deliberately NO fallback: a peer that cannot establish its own
+        # address must refuse to start, because the alternative is joining while
+        # advertising something no other peer can dial — which fails later, looks
+        # like a replication bug, and is far harder to read than this line.
+        SELF_ADDR="$$(awk -v h="$$(hostname)" '$$1 !~ /^127\./ { for (i = 2; i <= NF; i++) if ($$i == h) { print $$1; exit } }' /etc/hosts)"
+        if [ -z "$$SELF_ADDR" ]; then
+          echo 'mariadb-galera: cannot determine this peer own address from /etc/hosts' >&2
+          exit 1
+        fi
+        GCOMM='{{ $gcomm }}'
+{{- if eq $force $n }}
+        # cluster.forceBootstrap names this peer, so form a NEW cluster and skip
+        # every check below. Clear the value once the cluster is healthy.
+        GCOMM='gcomm://'
+{{- else if and (eq $n 1) (eq $force 0) }}
+        if [ ! -d /var/lib/mysql/mysql ]; then
+          # SEED PEER: peer 1 is the only peer that may ever form a cluster, and
+          # even it only does so with no data dir AND no peer answering on the
+          # Galera port. Both halves matter. Without the data-dir test a restart
+          # would bootstrap again; without the port probe a peer 1 rebuilt from an
+          # empty volume would form a rival cluster beside the survivors instead of
+          # re-syncing from them.
+          #
+          # Letting EVERY peer bootstrap when it sees no peers is the obvious
+          # version of this and it is wrong: on a first install all peers start at
+          # once with empty data dirs and none is listening yet, so each one forms
+          # its own cluster and they never merge. One designated seed removes the
+          # race entirely. When cluster.forceBootstrap names a peer, that peer is
+          # the single bootstrapper and this branch is not rendered at all, so the
+          # count never rises above one.
+          PEER_UP=no
+          for p in {{ $peerList }}; do
+            if timeout 2 bash -c "exec 3<>/dev/tcp/$$p/4567" 2>/dev/null; then
+              PEER_UP=yes
+            fi
+          done
+          if [ "$$PEER_UP" = no ]; then
+            GCOMM='gcomm://'
+          fi
+        fi
+{{- else }}
+        # JOINING PEER: never bootstraps, so it has nothing to decide — it only
+        # waits for a peer to start listening, because a Galera node that finds no
+        # primary component exits and would otherwise crash-restart until the seed
+        # appears. Bounded: if nothing shows up we start anyway and let Swarm's
+        # restart policy carry it, rather than sitting here forever.
+        while [ "$$SECONDS" -lt 60 ]; do
+          PEER_UP=no
+          for p in {{ $peerList }}; do
+            if timeout 2 bash -c "exec 3<>/dev/tcp/$$p/4567" 2>/dev/null; then
+              PEER_UP=yes
+            fi
+          done
+          if [ "$$PEER_UP" = yes ]; then
+            break
+          fi
+          sleep 2
+        done
+{{- end }}
+        exec docker-entrypoint.sh mariadbd \
+          --wsrep-on=ON \
+          --wsrep-provider=/usr/lib/galera/libgalera_smm.so \
+          --wsrep-cluster-name={{ $.Values.cluster.name | quote }} \
+          --wsrep-cluster-address="$$GCOMM" \
+          --wsrep-node-name={{ $name }} \
+          --wsrep-node-address="$$SELF_ADDR" \
+          --wsrep-sst-method=mariabackup \
+          --wsrep-sst-auth=mysql: \
+          --binlog-format=ROW \
+          --default-storage-engine=InnoDB \
+          --innodb-autoinc-lock-mode=2{{ range $.Values.extraArgs }} \
+          {{ . | quote }}{{ end }}
+
+{{- if $.Values.healthcheck.enabled }}
+    # --galera_ready requires WSREP_READY=ON: connected to a primary component and
+    # able to serve. Deliberately NOT --galera_online (wsrep_local_state == 4,
+    # Synced), which looks stricter and better and is a trap: a peer DONATING a
+    # state transfer sits in state 2 (Donor/Desynced) for the whole transfer while
+    # remaining perfectly writable — mariabackup is specifically the method that
+    # lets a donor keep serving. Under the strict check that donor is "unhealthy",
+    # and once a transfer runs longer than interval x retries Swarm KILLS it,
+    # aborting the transfer during exactly the operation the cluster needs most.
+    #
+    # What --galera_ready still catches is everything that should leave the client
+    # endpoint: a joiner receiving a transfer, a peer that lost the primary
+    # component, and a dead one. The cost is that a donor's apply queue lags, so it
+    # can serve slightly stale reads mid-transfer; clients needing causal reads set
+    # wsrep_sync_wait, which is what ci/e2e-check.sh demonstrates.
+    #
+    # See healthcheck.startPeriod in values.yaml for why that window must still
+    # cover a full state transfer on the RECEIVING side.
+    #
+    # --su-mysql is load-bearing and must stay FIRST (the script re-execs itself
+    # through gosu, discarding earlier options). Without it the check authenticates
+    # from $DATADIR/.my-healthcheck.cnf, which the entrypoint writes during local
+    # initialisation — and a state transfer REPLACES the data dir, taking that file
+    # with it. The check then falls back to root with no password and fails forever
+    # on a peer that is perfectly healthy: `Access denied for user 'root'@'localhost'
+    # (using password: NO)` every interval, until Swarm kills the task. Running as
+    # the mysql unix user instead authenticates through the same unix_socket account
+    # this chart creates for state transfers, so it needs no password and no file in
+    # the data dir.
+    healthcheck:
+      test:
+        - CMD
+        - healthcheck.sh
+        - --su-mysql
+        - --connect
+        - --galera_ready
+      interval: {{ $.Values.healthcheck.interval }}
+      timeout: {{ $.Values.healthcheck.timeout }}
+      retries: {{ $.Values.healthcheck.retries }}
+      start_period: {{ $.Values.healthcheck.startPeriod }}
+{{- end }}
+
+    deploy:
+      # One replica per peer, always: a peer IS a service here, and two tasks
+      # sharing one data dir would corrupt it. Scale the cluster with
+      # cluster.peers, never with replicas.
+      replicas: 1
+      # vip (the default, stated explicitly because it is load-bearing): it is what
+      # keeps network aliases working, which both the per-peer alias and
+      # network.clientAlias depend on. Peers address each other by
+      # `tasks.<release>_<peer>` instead, which resolves to the task itself — see
+      # the addressing note at the top of this template.
+      endpoint_mode: vip
+{{- if $.Values.healthcheck.enabled }}
+      {{- /* Swarm watches a task for `monitor` after CREATING it, and only counts a
+             failure inside that window against the rollout. Shorter than the
+             healthcheck needs to fail and a broken deploy reports success. */}}
+      update_config:
+        monitor: {{ $.Values.healthcheck.monitor }}
+        # The old task must be gone before the new one starts: both would otherwise
+        # mount the same data dir.
+        order: stop-first
+{{- else }}
+      update_config:
+        order: stop-first
+{{- end }}
+{{- /* Each peer is pinned to the node holding ITS volume, so the pins differ per
+       peer — unlike the single-service stateful charts. The pin travels with
+       persistence: it exists only while a volume needs pinning, so the documented
+       ephemeral mode never strands a task Pending on a missing node label.
+       placement.constraints adds extras and applies in every mode. */}}
+{{- $constraints := list }}
+{{- if and $.Values.persistence.enabled $.Values.persistence.nodeLabelPrefix }}
+{{-   $constraints = append $constraints (printf "node.labels.%s-%d == true" $.Values.persistence.nodeLabelPrefix $n) }}
+{{- end }}
+{{- range $.Values.placement.constraints }}
+{{-   $constraints = append $constraints . }}
+{{- end }}
+{{- if $constraints }}
+      placement:
+        constraints:
+{{- range $constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- with $.Values.resources.limits.memory }}
+      resources:
+        limits:
+          memory: {{ . | quote }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- if $.Values.labels }}
+      labels:
+{{- range $key, $val := $.Values.labels }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePaths) }}
+
+volumes:
+{{- range $i := until $peers }}
+  {{ printf "%s-%d" $.Values.persistence.volumePrefix (add1 $i) }}: {}
+{{- end }}
+{{- end }}
+
+secrets:
+  {{ .Values.auth.rootSecretName }}:
+    external: true
+{{- if .Values.auth.appUser.enabled }}
+  {{ .Values.auth.appUser.secretName }}:
+    external: true
+{{- end }}
+
+networks:
+  {{ .Values.network.name }}:
+{{- if .Values.network.external }}
+    external: true
+{{- else }}
+    driver: overlay
+    attachable: true
+{{- if .Values.network.encrypted }}
+    # IPsec on the data plane. Replication carries every row written, so without
+    # this it crosses the wire between nodes in the clear.
+    driver_opts:
+      encrypted: "true"
+{{- end }}
+{{- end }}

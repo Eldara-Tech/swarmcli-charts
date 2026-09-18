@@ -219,6 +219,10 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
 - **redis**, **mariadb**, **postgres** — dummy auth secret(s) + the persistence node-label
   pin + the bind-mount host dir.
 - **traefik** — the `traefik-certs` node-label pin + the certs-bind-mount host dir.
+- **mariadb-galera** — the two dummy auth secrets + a node label for EVERY peer
+  (`mariadb-galera-1` … `-5`) on the single CI node, so the pinned default fixture
+  schedules all its peers there. `ci/e2e-check.sh` then asserts one cluster of the right
+  size, every peer `Synced`, and a write on the first peer read back from the last.
 - **keycloak** — the two operator secrets + the DB/ingress overlays + a throwaway
   co-located backend on `keycloak-db-net` — MariaDB, or PostgreSQL for the `postgres` fixture —
   because Keycloak attaches its DB overlay unconditionally and `/health/ready` only passes once
