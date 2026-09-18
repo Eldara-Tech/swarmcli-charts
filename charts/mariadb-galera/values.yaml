@@ -113,10 +113,15 @@ placement:
 # internal overlay (the cluster is only reachable by services in this stack).
 #
 # clientAlias is a DNS alias every peer shares, so an app resolving it gets all
-# peers' addresses and spreads its connections over them. Any peer accepts writes,
-# so this needs no leader election — but it is NOT health-aware: a client handed a
-# peer that is down or re-syncing must reconnect. Set "" to publish no shared
-# alias and address peers individually.
+# healthy peers' addresses and spreads its connections over them. Any peer accepts
+# writes, so this needs no leader election.
+#
+# It IS health-aware: Swarm stops resolving the alias to a peer that has no healthy
+# task, and this chart's healthcheck asserts Synced, so a down peer and a desynced
+# one are both taken out of rotation. The caveat is the detection lag — up to
+# healthcheck.interval x healthcheck.retries before that happens — so clients still
+# want a pool that retries. Set "" to publish no shared alias and address peers
+# individually.
 #
 # encrypted applies IPsec to the overlay's data plane, which is what keeps
 # replication traffic — i.e. every row written — off the wire in the clear. It

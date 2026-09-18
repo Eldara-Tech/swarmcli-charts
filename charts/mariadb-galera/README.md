@@ -69,12 +69,22 @@ networks:
 mysql://app:<password>@mariadb:3306/app
 ```
 
-Any peer accepts writes, so nothing needs to find a leader. But DNS round-robin is
-**not health-aware**: a client handed a peer that is down or re-syncing must
-reconnect, so use a driver/pool that retries. For a single health-checked endpoint,
-put a proxy such as MaxScale or HAProxy in front of the alias — this chart does
-not deploy one. Individual peers are addressable as `mariadb-galera-1`,
-`mariadb-galera-2`, … if you want to pin reads to one.
+Any peer accepts writes, so nothing needs to find a leader. The alias is also
+health-aware, which is worth being precise about because it is easy to assume
+otherwise: Swarm stops resolving the alias to a peer once that peer has no healthy
+task, and resolves it again once a replacement passes its healthcheck. Since this
+chart's healthcheck asserts `Synced`, that covers a peer which is down *and* one
+which has desynced — neither keeps receiving client connections.
+
+What it does not remove is the **detection lag**. A failing peer stays in the alias
+for up to `healthcheck.interval × healthcheck.retries` (60s at the defaults) plus
+propagation, so clients still need a pool that retries, and lowering `retries`
+trades that window against false positives under load. Closing the gap properly
+needs a health-checked proxy in front of the alias, which this chart does not
+deploy.
+
+Individual peers are addressable as `mariadb-galera-1`, `mariadb-galera-2`, … if
+you want to pin reads to one.
 
 Peers address *each other* differently, and it is worth knowing why. They find one
 another through `tasks.<release>_<peer>`, the name Swarm publishes for a service's
@@ -112,7 +122,7 @@ routing mesh. Port 3306 on a node then reaches the peer running there.
 | `network.name` | `mariadb-galera-net` | Overlay the cluster attaches to. |
 | `network.external` | `true` | `false` = chart-managed internal overlay. |
 | `network.encrypted` | `false` | IPsec on a chart-managed overlay; requires `external: false`. |
-| `network.clientAlias` | `mariadb` | DNS alias shared by every peer. `""` = no shared alias. |
+| `network.clientAlias` | `mariadb` | Health-aware DNS alias shared by every peer. `""` = no shared alias. |
 | `exposure.enabled` | `false` | Publish the SQL port on each peer's own node. |
 | `exposure.port` | `3306` | Published port. |
 | `exposure.protocol` | `tcp` | Published protocol. |
