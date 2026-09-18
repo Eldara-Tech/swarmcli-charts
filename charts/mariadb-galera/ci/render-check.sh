@@ -116,9 +116,9 @@ for s in $svcs; do
   # Exact, not a prefix: `--su-mysql` on its own runs no tests at all and would
   # report healthy unconditionally. The chart owns this list entirely, so there is
   # no legitimate variation to allow for.
-  want_hc='CMD healthcheck.sh --su-mysql --connect --galera_online'
+  want_hc='CMD healthcheck.sh --su-mysql --connect --galera_ready'
   if [ -n "$hc" ] && [ "$hc" != "$want_hc" ]; then
-    err "$s: healthcheck is '$hc', expected '$want_hc' — --su-mysql must come first (the script re-execs and drops earlier options) and the probes must actually assert Synced"
+    err "$s: healthcheck is '$hc', expected '$want_hc' — --su-mysql must come first (the script re-execs and drops earlier options) and the probe must be --galera_ready, not --galera_online, which would kill donors"
   fi
 done
 

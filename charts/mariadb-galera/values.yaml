@@ -117,8 +117,9 @@ placement:
 # writes, so this needs no leader election.
 #
 # It IS health-aware: Swarm stops resolving the alias to a peer that has no healthy
-# task, and this chart's healthcheck asserts Synced, so a down peer and a desynced
-# one are both taken out of rotation. The caveat is the detection lag — up to
+# task, so a peer that is down, still receiving a state transfer, or cut off from
+# the cluster leaves the rotation on its own. A peer DONATING a transfer stays in
+# it deliberately: it is still writable. The caveat is the detection lag — up to
 # healthcheck.interval x healthcheck.retries before that happens — so clients still
 # want a pool that retries. Set "" to publish no shared alias and address peers
 # individually.
@@ -155,10 +156,13 @@ resources:
     memory: ""           # e.g. "512M"
 
 # Container healthcheck via the image's healthcheck.sh. --connect tests the TCP
-# port and --galera_online requires wsrep_local_state == 4 (Synced), so a peer
-# counts as healthy only once it is actually replicating rather than merely
-# listening. The official image auto-creates a healthcheck@localhost user, so no
-# secret is needed on the command line.
+# port and --galera_ready requires WSREP_READY=ON — connected to a primary
+# component and able to serve — so a peer counts as healthy once it can actually
+# take queries rather than merely listening.
+#
+# NOT --galera_online (Synced): a peer donating a state transfer is Donor/Desynced
+# for the whole transfer while staying writable, and the strict check would have
+# Swarm kill it mid-transfer. See the template for the full reasoning.
 #
 # startPeriod MUST cover the worst case for a joining peer, which is a full state
 # transfer of the whole dataset from another peer. Until it expires a failing

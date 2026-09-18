@@ -73,8 +73,10 @@ Any peer accepts writes, so nothing needs to find a leader. The alias is also
 health-aware, which is worth being precise about because it is easy to assume
 otherwise: Swarm stops resolving the alias to a peer once that peer has no healthy
 task, and resolves it again once a replacement passes its healthcheck. Since this
-chart's healthcheck asserts `Synced`, that covers a peer which is down *and* one
-which has desynced — neither keeps receiving client connections.
+chart's healthcheck asserts the peer can actually serve, that covers a peer which
+is down, one still receiving a state transfer, and one cut off from the cluster —
+none of them keeps receiving client connections. A peer *donating* a transfer
+stays in rotation on purpose: it remains writable throughout.
 
 What it does not remove is the **detection lag**. A failing peer stays in the alias
 for up to `healthcheck.interval × healthcheck.retries` (60s at the defaults) plus
@@ -128,7 +130,7 @@ routing mesh. Port 3306 on a node then reaches the peer running there.
 | `exposure.protocol` | `tcp` | Published protocol. |
 | `exposure.mode` | `host` | Only `host` is valid — see *Connecting*. |
 | `resources.limits.memory` | `""` | Per-peer memory limit, e.g. `512M`. Rendered only when set. |
-| `healthcheck.enabled` | `true` | Container healthcheck — `healthcheck.sh --su-mysql --connect --galera_online`. |
+| `healthcheck.enabled` | `true` | Container healthcheck — `healthcheck.sh --su-mysql --connect --galera_ready`. |
 | `healthcheck.interval` | `10s` | Probe interval. |
 | `healthcheck.timeout` | `5s` | Probe timeout. |
 | `healthcheck.retries` | `6` | Failures before unhealthy. |
@@ -253,6 +255,14 @@ quietly restart-loops. Keep `monitor` at or above
 `startPeriod + interval × retries`; `swarmcli charts lint` warns when it is
 shorter.
 
+The check asserts `--galera_ready` (able to serve), **not** `--galera_online`
+(fully `Synced`). The stricter check is a trap: a peer donating a state transfer is
+`Donor/Desynced` for the whole transfer while staying writable, so Swarm would kill
+it once the transfer outran `interval × retries` — breaking the transfer during
+exactly the recovery the cluster exists for. The trade-off is that a donor's apply
+queue lags, so it can serve slightly stale reads mid-transfer; a client needing a
+causal read sets `wsrep_sync_wait`.
+
 The check runs as the `mysql` unix user (`--su-mysql`) so it authenticates through
 the same `unix_socket` account used for state transfers. That is not a stylistic
 choice: the default path reads credentials from a file inside the data dir, and a
@@ -260,8 +270,12 @@ state transfer replaces the data dir, so a freshly synced peer would fail its ow
 healthcheck forever — reporting `Access denied for user 'root'@'localhost'` while
 being perfectly healthy — until Swarm killed it.
 
-`startPeriod` matters more here than in a single-node chart. A joining peer is not
-`Synced` until its state transfer finishes, and if the grace period expires first,
-Swarm kills it mid-transfer and restarts it into the same transfer — forever. Raise
-`startPeriod` (and `monitor` with it) well past the time a full restore of your
-dataset takes.
+`startPeriod` matters more here than in a single-node chart. A joining peer cannot
+serve until its state transfer finishes, so it fails the check for the whole
+transfer; if the grace period expires first, Swarm kills it mid-transfer and
+restarts it into the same transfer — forever. Raise `startPeriod` (and `monitor`
+with it) well past the time a full restore of your dataset takes.
+
+That applies to the peer *receiving* a transfer. The peer sending one is covered by
+the choice of `--galera_ready` above, which is why a large donation does not put
+the donor on the same clock.

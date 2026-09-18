@@ -233,10 +233,23 @@ services:
           {{ . | quote }}{{ end }}
 
 {{- if $.Values.healthcheck.enabled }}
-    # --galera_online requires wsrep_local_state == 4 (Synced), so a peer is healthy
-    # only once it is actually replicating rather than merely listening. See
-    # healthcheck.startPeriod in values.yaml for why that window must cover a full
-    # state transfer.
+    # --galera_ready requires WSREP_READY=ON: connected to a primary component and
+    # able to serve. Deliberately NOT --galera_online (wsrep_local_state == 4,
+    # Synced), which looks stricter and better and is a trap: a peer DONATING a
+    # state transfer sits in state 2 (Donor/Desynced) for the whole transfer while
+    # remaining perfectly writable — mariabackup is specifically the method that
+    # lets a donor keep serving. Under the strict check that donor is "unhealthy",
+    # and once a transfer runs longer than interval x retries Swarm KILLS it,
+    # aborting the transfer during exactly the operation the cluster needs most.
+    #
+    # What --galera_ready still catches is everything that should leave the client
+    # endpoint: a joiner receiving a transfer, a peer that lost the primary
+    # component, and a dead one. The cost is that a donor's apply queue lags, so it
+    # can serve slightly stale reads mid-transfer; clients needing causal reads set
+    # wsrep_sync_wait, which is what ci/e2e-check.sh demonstrates.
+    #
+    # See healthcheck.startPeriod in values.yaml for why that window must still
+    # cover a full state transfer on the RECEIVING side.
     #
     # --su-mysql is load-bearing and must stay FIRST (the script re-execs itself
     # through gosu, discarding earlier options). Without it the check authenticates
@@ -254,7 +267,7 @@ services:
         - healthcheck.sh
         - --su-mysql
         - --connect
-        - --galera_online
+        - --galera_ready
       interval: {{ $.Values.healthcheck.interval }}
       timeout: {{ $.Values.healthcheck.timeout }}
       retries: {{ $.Values.healthcheck.retries }}
