@@ -1,0 +1,7 @@
+# Persistence off: no volume, and — the property that matters — no node pin
+# either, so the task is schedulable on a swarm where no node carries the
+# loki-data label (#55).
+persistence:
+  enabled: false
+exposure:
+  mode: published

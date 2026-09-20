@@ -1,0 +1,34 @@
+# External resources this chart needs. Authoritative: every external
+# network/secret/config the rendered stack references must be listed here
+# (swarmcli pre-flights it; scripts/requirements-check.sh enforces it at PR time).
+# swarmcli renders this file with the release's values, so every name below
+# tracks whatever the release overrode.
+#
+# Everything here is declared UNCONDITIONALLY, including the entries a given
+# configuration never touches. The pre-flight is manifest-driven, so a
+# declaration the rendered stack does not reference is inert — whereas a
+# conditional entry that renders empty ("secrets[0] has no name") fails every
+# install, including the ones that do not use the feature.
+networks:
+  # Attached in the none and traefik exposure modes; unused in published mode.
+  # autoCreate:true, unlike the other charts' ingress overlays: this is the
+  # network Loki's own readers and writers meet on, and on a fresh swarm nothing
+  # else has created it yet. The cost of the convenience is that a TYPO here
+  # creates a second, empty overlay rather than failing — if you are attaching
+  # Loki to an overlay that already exists (traefik-public, say), check the
+  # spelling against `docker network ls`.
+  - name: "{{ .Values.exposure.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: true
+    description: "Overlay Loki shares with its log producers and with Grafana (exposure.network); in traefik mode this is the edge's ingress overlay"
+secrets:
+  # Only referenced when config.mode is external-secret — the mode for a config
+  # file carrying credentials (S3 keys), which belong in a secret rather than in
+  # a Swarm config anyone with Docker access can read.
+  - name: "{{ .Values.config.externalName }}"
+    description: "Complete Loki configuration file (config.mode: external-secret). Pre-create: docker secret create loki-config ./loki-config.yaml"
+configs:
+  # Only referenced when config.mode is external-config.
+  - name: "{{ .Values.config.externalName }}"
+    description: "Complete Loki configuration file (config.mode: external-config). Pre-create: docker config create loki-config ./loki-config.yaml"

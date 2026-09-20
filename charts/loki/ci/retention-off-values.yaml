@@ -1,0 +1,5 @@
+# Retention disabled: the compactor still compacts but deletes nothing, and no
+# -store.retention flag is rendered. Keeps every line forever, and grows the data
+# volume forever with it.
+retention:
+  enabled: false

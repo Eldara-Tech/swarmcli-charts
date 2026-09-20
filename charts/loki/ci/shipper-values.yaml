@@ -1,0 +1,7 @@
+# Alloy shipping enabled: a global service reads this node's container logs
+# through the Docker API and pushes them to loki:3100 over the stack-internal
+# overlay. Exposure stays at the default `none`, so the push path under test is
+# the internal one, not a published port.
+shipper:
+  enabled: true
+  logLevel: debug

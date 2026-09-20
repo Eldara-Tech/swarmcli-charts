@@ -1,0 +1,223 @@
+# loki chart default values.
+#
+# Grafana Loki is a log database: services push log lines to it over HTTP and
+# Grafana (or LogCLI) queries them back with LogQL. This chart deploys the
+# single-binary ("monolithic") Loki on filesystem storage — the shape that fits a
+# Swarm: one process, one node-local data volume, no object store to operate.
+#
+# Two things about Loki drive almost every default below:
+#
+#   1. Loki has NO authentication. Not "disabled by default" — none, in any
+#      configuration. Anything that can reach port 3100 can read every log line
+#      you have and write forged ones. That is why exposure.mode defaults to
+#      `none`: the API sits on an overlay network your own services join, and
+#      never on a published port or a public hostname unless you say so.
+#   2. Loki never deletes anything unless a compactor is told to. Retention is on
+#      here (retention.period), because the alternative is a data volume that
+#      grows until the node fills up.
+#
+# Getting logs IN is a separate decision, and the chart offers one answer:
+# shipper.enabled deploys Grafana Alloy on every node to read container logs and
+# push them here. It is off by default — see that section. The chart README
+# covers the other two paths (the Docker loki log-driver plugin, and services
+# that push to Loki themselves).
+
+image:
+  repository: grafana/loki
+  tag: ""  # defaults to appVersion from Chart.yaml
+
+# Stateful + node-local data volume => exactly one replica. Two Loki processes on
+# one filesystem store corrupt each other's index; scaling out means object
+# storage and a different topology entirely (see config.mode in the README).
+replicas: 1
+
+# Persistence. Named volume at /loki (chunks, index, compactor working state).
+# enabled:false => ephemeral: every log line is lost on restart, which is useful
+# for a smoke test and for nothing else.
+persistence:
+  enabled: true
+  volumeName: loki-data
+  # Store the data under a host directory instead of Docker's managed volume
+  # storage. When volumePath is set it TAKES PRECEDENCE and volumeName is
+  # ignored: /loki is bind-mounted from this absolute host path on the PINNED
+  # node. The directory must already exist AND be writable by UID 10001 — the
+  # unprivileged user the Loki image runs as — so `chown 10001:10001 <path>`
+  # first, or Loki exits on its first write. This is host-filesystem access,
+  # acknowledged via swarmcli-charts/allow: "host-mount" in Chart.yaml; the
+  # default named-volume render needs no acknowledgment. Leave empty ("") for it.
+  volumePath: ""
+  # Node label pinning the service to the node carrying the data volume (Swarm
+  # volumes are node-local). Rendered as `node.labels.<nodeLabel> == true` while
+  # persistence is enabled, and dropped with it. Label exactly ONE node first:
+  #   docker node update --label-add loki-data=true <node>
+  # Set "" to schedule unpinned even with persistence on (single-node swarm).
+  nodeLabel: loki-data
+
+# How the Loki API is exposed:
+#   none      - (default) no port, no edge labels. Loki sits on exposure.network
+#               and the services that need it — Grafana, LogCLI, your own
+#               apps — join that network and dial loki:<service.port>. Nothing
+#               outside the swarm can reach it.
+#   published - publish the API port on the Swarm. Reachable at <node>:<publish.port>
+#               on every node (ingress mode). REQUIRED by the Docker loki
+#               log-driver plugin, which runs on the host outside every overlay
+#               and cannot resolve a Swarm service name. Unauthenticated: only do
+#               this on a trusted network.
+#   traefik   - Traefik deploy labels on exposure.network, TLS at the edge. Loki
+#               still has no auth of its own, so set traefik.basicAuthUsers
+#               unless something else in front of it authenticates callers.
+exposure:
+  mode: none
+  network: monitoring  # overlay Loki shares with Grafana / your log producers
+
+# Public-facing address for traefik mode. host drives the Traefik Host() rule;
+# tls selects the public scheme (https/http). Unused in the other modes.
+ingress:
+  host: loki.example.com
+  tls: true
+
+# traefik-mode routing. The defaults match the traefik chart in this repository;
+# adjust certResolver / entrypoints / constraintLabel / redirectMiddleware to
+# your Traefik install if you run your own.
+traefik:
+  certResolver: le
+  entrypoints:
+    http: http
+    https: https
+  # Base name for this chart's Traefik router/service objects (`<name>-http` /
+  # `<name>-https` routers + the `<name>` service). Empty => the release name.
+  routerName: ""
+  # Swarm-provider constraint label. The traefik chart runs with
+  # --providers.swarm.exposedByDefault=false and a constraint on this label, so a
+  # routed service must carry it to be discovered. Match your Traefik's.
+  constraintLabel: traefik-public
+  # Middleware applied to the HTTP router to redirect to HTTPS (when ingress.tls).
+  # The traefik chart always defines https-redirect in the swarm provider.
+  redirectMiddleware: https-redirect
+  # htpasswd users for a basic-auth middleware on the router — the only thing
+  # standing between a public hostname and your logs, since Loki authenticates
+  # nobody. Empty => no middleware, and traefik mode then serves the full read
+  # and write API to anyone who resolves ingress.host. Generate the entry with
+  # `htpasswd -nbB <user> <password>` and DOUBLE every `$` (Compose eats single
+  # ones), e.g. "ops:$$2y$$05$$…". Applies to whichever router is public: the
+  # HTTPS one when ingress.tls, the HTTP one otherwise.
+  basicAuthUsers: ""
+
+# published-mode direct port publish. mode: ingress (routing mesh, reachable on
+# every node) or host (only the node running the task).
+publish:
+  port: 3100
+  mode: ingress
+
+# Container HTTP port Loki listens on — the Traefik load-balancer target, the
+# publish target, and the port other stacks dial in none mode. Loki's own default
+# is 3100 and the shipped config binds it; changing this value alone does not
+# move the listener, so pass -server.http-listen-port in extraArgs as well.
+service:
+  port: 3100
+
+# Log retention. Loki deletes nothing at all unless the compactor is told to
+# apply retention, so `enabled: false` means "keep every line forever" and the
+# data volume grows without bound. period accepts a Go duration (744h = 31 days);
+# it is applied to every stream. Per-stream rules (retention_stream) need a
+# custom config — see config.mode.
+retention:
+  enabled: true
+  period: 744h
+
+# Anonymous usage statistics to Grafana Labs (version, configuration shape,
+# cluster size — not log data). Off by default; set true to contribute them.
+analytics:
+  enabled: false
+
+# Loki's own log level: debug, info, warn or error.
+logLevel: info
+
+# Where Loki's configuration comes from.
+#   chart          - (default) the file this chart ships, files/loki-config.yaml,
+#                    deployed as a Swarm config. The values above render as
+#                    command-line flags on top of it, which is why one file
+#                    serves every release.
+#   external-config - a Swarm CONFIG you created yourself, named externalName,
+#                    holding a complete Loki config file. For a shape this chart
+#                    does not model: S3/GCS object storage, multi-tenancy,
+#                    per-stream retention, rulers and alerting.
+#   external-secret - the same, but a Swarm SECRET. Use this one when the config
+#                    contains credentials (S3 access keys): a secret is mounted
+#                    from tmpfs and never lands in `docker inspect`, whereas a
+#                    config is readable by anyone with Docker access to the swarm.
+# In both external modes the chart still renders the flags below, and they still
+# win over the file — drop the ones you set in your own config from values.
+config:
+  mode: chart
+  # Name of the Swarm config/secret to mount in the external modes. It is
+  # declared in requirements.yaml unconditionally (an undeclared name fails the
+  # pre-flight, and an unreferenced declaration is inert), so leave it a real
+  # name even when config.mode is chart.
+  externalName: loki-config
+
+# Extra Loki command-line flags, appended verbatim, e.g.
+# ["-distributor.ingestion-rate-limit-mb=32", "-querier.max-concurrent=8"].
+# Every Loki configuration field has a flag, and flags beat the config file, so
+# this covers anything the values above do not — run
+# `docker run --rm grafana/loki -help` for the full list.
+extraArgs: []
+
+# Extra scheduling constraints, always applied (independent of the persistence
+# pin above, which travels with persistence.enabled).
+placement:
+  constraints: []
+
+# Swarm deploy resources (optional; each rendered only when set). Loki's memory
+# use scales with ingestion volume and query concurrency; 1-2G suits a small
+# swarm.
+resources:
+  limits:
+    memory: ""
+  reservations:
+    memory: ""
+
+# Grafana Alloy — the log shipper. Off by default, and deliberately so: it runs
+# as a GLOBAL service (one task per node) and mounts that node's Docker socket,
+# which is root-equivalent access to it. Enable it when you want every
+# container's stdout/stderr in Loki without touching the nodes' daemon config;
+# the alternatives (the loki log-driver plugin, or applications pushing
+# themselves) are in the chart README.
+#
+# When enabled, Alloy reads container logs through the Docker API on its own node
+# and labels each stream with the Swarm service, the stack, and the node it came
+# from. Promtail, the agent this replaces, reached end of life on 2026-03-02.
+shipper:
+  enabled: false
+  image:
+    repository: grafana/alloy
+    tag: "v1.19.2"
+  # Alloy's own log level: debug, info, warn or error. debug reports every
+  # discovery and push decision, which is what to reach for when lines are not
+  # arriving.
+  logLevel: info
+  # Host path of the Docker socket, mounted read-only into Alloy at the
+  # conventional /var/run/docker.sock. Change it for a rootless daemon
+  # (/run/user/<uid>/docker.sock). NOTE: `:ro` stops Alloy rewriting the socket
+  # file, not what it can ask the daemon — anything that can talk to this socket
+  # can start a privileged container on that node.
+  dockerSocket: /var/run/docker.sock
+  # Alloy's positions/WAL directory. Persisting it is what stops a restarted
+  # shipper re-reading every container's log from the beginning (duplicate lines)
+  # or skipping what arrived while it was down. The volume is node-local and the
+  # service is global, so each node keeps its own — no node pin, by design.
+  persistence:
+    enabled: true
+    volumeName: loki-alloy-data
+  # Extra `alloy run` flags, appended verbatim, e.g. ["--server.http.listen-addr=0.0.0.0:12345"]
+  # to reach Alloy's own debug UI.
+  extraArgs: []
+  resources:
+    limits:
+      memory: ""
+    reservations:
+      memory: ""
+
+# Extra deploy labels (key: value) on the Loki service, merged after any Traefik
+# router labels.
+labels: {}

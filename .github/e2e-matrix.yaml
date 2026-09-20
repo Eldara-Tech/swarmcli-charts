@@ -77,6 +77,17 @@ include:
   # SQLite fallback. Excludes bind-mount, ephemeral, none and secrets — all render-covered by
   # charts.yml and still run in a full local `make e2e`.
   - { chart: vaultwarden,   cases: "default published postgres mysql edge",                                         timeout: 6m  }
+  # loki: the five fixtures that prove something a render cannot. Each one pushes a line to
+  # /loki/api/v1/push and reads it back out of query_range, which is where a bad schema,
+  # an unwritable store or a compactor that cannot open its working directory actually
+  # surfaces — Loki starts happily with all three. `shipper` additionally waits for a line
+  # NOBODY pushed: one Alloy collected from a real container and labelled with the Swarm
+  # service it came from. `edge` stands up the traefik chart and proves the basic-auth
+  # middleware refuses an unauthenticated request (401) before an authenticated one works.
+  # The other five fixtures are render-only or covered by charts.yml, and still run in a
+  # full local `make e2e`: bind-mount, retention-off, external-config, external-secret
+  # (all deploy locally) and traefik-auth (marked ci/e2e-render-only — it needs ACME).
+  - { chart: loki,          cases: "default published ephemeral shipper edge",                                       timeout: 6m  }
   # gitlab: ONE fixture. GitLab CE is a multi-gigabyte monolith (Postgres, Redis, Gitaly,
   # Puma, Sidekiq in one container) whose documented baseline is 8 vCPU / 16 GB, so the
   # runner boots exactly the case that carries the most signal per minute: `minimal` is the

@@ -1,0 +1,17 @@
+# Traefik-routed, behind a basic-auth middleware, on the overlay the in-repo
+# traefik chart uses as its edge. Plain HTTP (tls:false): CI cannot issue an ACME
+# certificate, so this exercises routing, discovery and the auth middleware — not
+# cert resolution.
+#
+# The credential is a throwaway for e2e: user `e2e`, password `e2e-secret`. The
+# `$` characters are DOUBLED because Compose eats single ones, which is exactly
+# what an operator has to do with their own htpasswd output.
+exposure:
+  mode: traefik
+  network: traefik-public
+ingress:
+  host: loki.e2e.test
+  tls: false
+traefik:
+  constraintLabel: traefik-public
+  basicAuthUsers: "e2e:$$apr1$$e2eSalt1$$1s/hES2iWPor3OWxBdGX./"
