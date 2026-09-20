@@ -34,6 +34,13 @@ include:
   # so initdb never has to chown or empty the bind-mounted mountpoint itself. legacy-major
   # pulls a second image (postgres:15) — hence the 8m budget.
   - { chart: postgres,      cases: "",                                                                                timeout: 8m  }
+  # mongodb: EVERY fixture (cases: "" => no filter). ci/e2e-setup.sh creates the three dummy
+  # secrets and the data node label; ci/e2e-check.sh then connects from a throwaway client
+  # container on the release's overlay, so `replica-set` proves clients can follow replica-set
+  # discovery to the advertised member address and commit a transaction, and every fixture proves
+  # root, the least-privilege app user and --auth from outside. swarmcli waits out the 2m
+  # update_config.monitor window (from task creation) per fixture, hence the 6m budget.
+  - { chart: mongodb,       cases: "",                                                                                timeout: 6m  }
   # traefik: every CI-friendly fixture EXCEPT loki-logging, which needs the
   # loki:latest Docker log-driver plugin (absent on stock runners). `routing` (#63)
   # stands up two whoami backends and proves a request routes THROUGH the edge.

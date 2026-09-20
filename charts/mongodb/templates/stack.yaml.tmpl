@@ -1,0 +1,207 @@
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) (contains "/" .Values.persistence.volumeName) -}}
+{{- fail "persistence.volumeName is a Docker named-volume name and cannot contain '/'. To store data under a host directory, set persistence.volumePath instead." -}}
+{{- end -}}
+{{- if and .Values.replicaSet.enabled (not .Values.healthcheck.enabled) -}}
+{{- fail "replicaSet.enabled needs healthcheck.enabled: the healthcheck runs the one-time rs.initiate, so without it the replica set never elects a primary." -}}
+{{- end -}}
+{{- /* The stack-qualified service name. It is the replica-set member address, so clients on the
+       overlay that follow replica-set discovery dial the same name they connected with. */}}
+{{- $service := printf "%s_mongodb" .Release.Name }}
+{{- $args := list }}
+{{- if .Values.replicaSet.enabled }}
+{{-   $args = list "--replSet" .Values.replicaSet.name "--keyFile" (printf "/run/secrets/%s" .Values.replicaSet.keyFileSecretName) }}
+{{- end }}
+{{- $args = concat $args .Values.extraArgs }}
+{{- /* Healthy == db.hello() reports a writable primary: always true for a standalone once it
+       listens, and true for a replica set only after it has elected itself. hello needs no
+       password. With the replica set on, the same probe runs the one-time rs.initiate — it cannot
+       run at first init, because the entrypoint's temporary init server drops --replSet — and
+       only then authenticates as root. The root user and its password file come from the
+       container's own environment, not from rendered values, so a quote in a username cannot
+       break out of the shell's single quotes. The trailing-newline strip matches the image's
+       file_env, which is how the root password was set in the first place. */}}
+{{- $probe := "const h = db.hello(); if (h.isWritablePrimary) quit(0);" }}
+{{- if .Values.replicaSet.enabled }}
+{{-   $config := dict "_id" .Values.replicaSet.name "members" (list (dict "_id" 0 "host" (printf "%s:27017" $service))) }}
+{{-   $probe = printf "%s if (h.isreplicaset) { db.getSiblingDB(\"admin\").auth(process.env.MONGO_INITDB_ROOT_USERNAME, fs.readFileSync(process.env.MONGO_INITDB_ROOT_PASSWORD_FILE, \"utf8\").replace(/\\n+$$/, \"\")); rs.initiate(%s); }" $probe ($config | toJson) }}
+{{- end }}
+{{- $probe = printf "%s quit(1);" $probe }}
+version: "3.9"
+
+services:
+
+  mongodb:
+    image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
+
+{{- if .Values.replicaSet.enabled }}
+    # Swarm adds a task to its service VIP only once the task is HEALTHY, but rs.initiate — run by
+    # the healthcheck, before the task is healthy — must already resolve the member address to
+    # this container. A hostname equal to that address puts it in the container's /etc/hosts, so
+    # the name resolves locally from the first probe while clients reach it through the VIP.
+    hostname: {{ $service }}
+{{- end }}
+
+    networks:
+      - {{ .Values.network.name }}
+
+{{- if .Values.exposure.enabled }}
+    # mongod always listens on 27017 inside the container; exposure.port is the port published on
+    # the host, so a taken 27017 can be republished (e.g. 37017:27017).
+    ports:
+      - target: 27017
+        published: {{ .Values.exposure.port }}
+        protocol: {{ .Values.exposure.protocol | default "tcp" }}
+        mode: {{ .Values.exposure.mode | default "ingress" }}
+{{- end }}
+
+    volumes:
+{{- if .Values.persistence.enabled }}
+{{- if .Values.persistence.volumePath }}
+      - {{ .Values.persistence.volumePath }}:/data/db
+{{- else }}
+      - {{ .Values.persistence.volumeName }}:/data/db
+{{- end }}
+{{- end }}
+      # The image also declares VOLUME /data/configdb, used only by a sharded cluster's config
+      # server. Swarm would attach a stray anonymous volume there on every task; a mount whose
+      # destination matches it exactly suppresses that, and an empty tmpfs is the cheapest lid.
+      - type: tmpfs
+        target: /data/configdb
+
+    secrets:
+      - {{ .Values.auth.rootSecretName }}
+{{- if .Values.auth.appUser.enabled }}
+      - {{ .Values.auth.appUser.secretName }}
+{{- end }}
+{{- if .Values.replicaSet.enabled }}
+      # mongod refuses a keyFile that group or others can read, and it reads the file as the
+      # mongodb user (uid 999) once the entrypoint has dropped root — so the mount sets both.
+      - source: {{ .Values.replicaSet.keyFileSecretName }}
+        target: {{ .Values.replicaSet.keyFileSecretName }}
+        uid: "999"
+        gid: "999"
+        mode: 0400
+{{- end }}
+
+    # The root user is created on FIRST BOOT (an empty /data/db) from these two, and their presence
+    # also makes the entrypoint start mongod with --auth on every boot. The password is read from
+    # the mounted secret file via the image's MONGO_INITDB_ROOT_PASSWORD_FILE convention, so the
+    # plaintext is never in the compose file or `docker inspect` (which show only the
+    # /run/secrets/... path), only inside the container.
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: {{ .Values.auth.rootUsername | quote }}
+      MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/{{ .Values.auth.rootSecretName }}
+
+{{- if .Values.auth.appUser.enabled }}
+    # The image has no *_FILE variable for a non-root user, so this wrapper writes a first-init
+    # script and then hands over to the image's own entrypoint, which runs it — on first boot only,
+    # against the temporary init server — and drops to the mongodb user. mongosh reads the
+    # password from the secret file itself, so it is never an argument or an environment value.
+    # $$ is the compose escape for a literal $.
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        cat > /docker-entrypoint-initdb.d/10-app-user.js <<'EOF'
+        db.getSiblingDB({{ .Values.auth.appUser.database | toJson }}).createUser({
+          user: {{ .Values.auth.appUser.username | toJson }},
+          pwd: fs.readFileSync("/run/secrets/{{ .Values.auth.appUser.secretName }}", "utf8").replace(/\n+$$/, ""),
+          roles: [{ role: "readWrite", db: {{ .Values.auth.appUser.database | toJson }} }],
+        });
+        EOF
+        exec docker-entrypoint.sh "$$@"
+      - docker-entrypoint.sh
+{{- end }}
+
+{{- if or .Values.auth.appUser.enabled $args }}
+    # mongod is spelled out rather than left to the image's CMD, which an overridden entrypoint
+    # drops. Each entry is one argv element.
+    command:
+      - mongod
+{{- range $args }}
+      - {{ . | quote }}
+{{- end }}
+{{- end }}
+
+{{- if .Values.healthcheck.enabled }}
+    # mongosh dials the container's hostname, not 127.0.0.1: during first init the entrypoint runs
+    # a temporary server bound to 127.0.0.1 only, so a loopback probe would report healthy before
+    # the users exist. HOME=/tmp keeps mongosh's per-run log file out of the data volume (the image
+    # sets HOME=/data/db).
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - {{ printf "HOME=/tmp mongosh --quiet --norc --host \"$$(hostname)\" --eval '%s'" $probe | quote }}
+      interval: {{ .Values.healthcheck.interval }}
+      timeout: {{ .Values.healthcheck.timeout }}
+      retries: {{ .Values.healthcheck.retries }}
+      start_period: {{ .Values.healthcheck.startPeriod }}
+{{- end }}
+
+    deploy:
+      replicas: {{ .Values.replicas }}
+{{- if .Values.healthcheck.enabled }}
+      {{- /* Swarm watches a task for `monitor` after CREATING it, and only counts a
+             failure inside that window against the rollout. Shorter than the
+             healthcheck needs to fail and a broken deploy reports success. */}}
+      update_config:
+        monitor: {{ .Values.healthcheck.monitor }}
+{{- end }}
+{{- /* The data-volume node pin travels with persistence: it exists only while a volume needs
+       pinning, so persistence.enabled:false never leaves a task Pending on a missing node
+       label. placement.constraints adds extras. */}}
+{{- $constraints := list }}
+{{- if and .Values.persistence.enabled .Values.persistence.nodeLabel }}
+{{-   $constraints = append $constraints (printf "node.labels.%s == true" .Values.persistence.nodeLabel) }}
+{{- end }}
+{{- range .Values.placement.constraints }}
+{{-   $constraints = append $constraints . }}
+{{- end }}
+{{- if $constraints }}
+      placement:
+        constraints:
+{{- range $constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- with .Values.resources.limits.memory }}
+      resources:
+        limits:
+          memory: {{ . | quote }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- if .Values.labels }}
+      labels:
+{{- range $key, $val := .Values.labels }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+{{- end }}
+
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) }}
+
+volumes:
+  {{ .Values.persistence.volumeName }}: {}
+{{- end }}
+
+secrets:
+  {{ .Values.auth.rootSecretName }}:
+    external: true
+{{- if .Values.auth.appUser.enabled }}
+  {{ .Values.auth.appUser.secretName }}:
+    external: true
+{{- end }}
+{{- if .Values.replicaSet.enabled }}
+  {{ .Values.replicaSet.keyFileSecretName }}:
+    external: true
+{{- end }}
+
+networks:
+  {{ .Values.network.name }}:
+{{- if .Values.network.external }}
+    external: true
+{{- else }}
+    driver: overlay
+    attachable: true
+{{- end }}
