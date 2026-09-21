@@ -1,0 +1,16 @@
+# Distributed cache against an in-swarm MinIO: insecure, default `auto` addressing, and
+# credentials from two external secrets which the container appends to the end of
+# config.toml. `auto` emits no PathStyle key, which is what lets the runner pick path-style
+# for a MinIO endpoint by itself — the shipped default, on the fixture CI deploys.
+cache:
+  enabled: true
+  path: swarm-ci
+  s3:
+    server: minio:9000
+    bucket: runner-cache
+    insecure: true
+
+# Deployed in CI (e2e), so the url is deliberately non-routable: this fixture is about
+# the cache credentials, and a runner polls an unreachable instance harmlessly.
+gitlab:
+  url: http://gitlab.invalid/

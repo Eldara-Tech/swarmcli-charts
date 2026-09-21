@@ -1,0 +1,7 @@
+# Metrics without a Swarm healthcheck — a real mode, and the asymmetry worth covering: the
+# probe requires the listener (healthcheck.enabled without metrics.enabled fails the
+# render), but the listener does not require the probe. Scraping without letting a probe
+# failure restart the runner is a reasonable thing to want.
+metrics:
+  enabled: true
+  port: 9100

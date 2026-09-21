@@ -1,0 +1,22 @@
+# Verbatim TOML at both insertion points, plus the typed [[runners]] knobs.
+gitlab:
+  url: https://gitlab.example.com/
+  name: swarm-docker-1
+logLevel: debug
+logFormat: json
+runner:
+  limit: 2
+  outputLimit: 8192
+  environment:
+    - DOCKER_DRIVER=overlay2
+    - FF_NETWORK_PER_BUILD=true
+config:
+  extraGlobalToml: |
+    [session_server]
+      session_timeout = 1800
+  extraDockerToml: |
+    memory_swap = "4g"
+    helper_image = "gitlab/gitlab-runner-helper:x86_64-v19.4.0"
+    [[runners.docker.services]]
+      name = "redis:8"
+      alias = "cache"
