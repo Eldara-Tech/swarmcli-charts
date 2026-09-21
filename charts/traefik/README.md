@@ -103,9 +103,15 @@ with rotation; point it at another driver (e.g. Loki) by overriding `logging`:
 logging:
   driver: loki:latest
   options:
-    loki-url: http://loki:3100/loki/api/v1/push
+    loki-url: http://127.0.0.1:3100/loki/api/v1/push
     loki-external-labels: "app=traefik"
 ```
+
+The URL is a **host** address, not a service name: a log-driver plugin runs in the
+daemon, outside every overlay network, so `http://loki:3100` does not resolve for
+it however well it resolves for a container. Point it at a Loki that publishes its
+port on the swarm — `127.0.0.1:3100` reaches the routing mesh on the node, and the
+[loki](../loki) chart's `exposure.mode: published` is what puts it there.
 
 Set `logging:` empty to drop the block and inherit the daemon's default driver.
 (This is the Docker *container* log driver — separate from Traefik's own access

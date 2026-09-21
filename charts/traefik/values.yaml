@@ -10,11 +10,13 @@ image:
 
 # Docker logging driver for the Traefik service. Defaults to json-file with
 # rotation so logs don't grow unbounded. Override driver/options to ship logs
-# elsewhere, e.g. Loki:
+# elsewhere, e.g. Loki (the URL is a HOST address: a log-driver plugin runs in the
+# daemon, outside every overlay, and cannot resolve a service name — see the
+# Logging section of this chart's README):
 #   logging:
 #     driver: loki:latest
 #     options:
-#       loki-url: http://loki:3100/loki/api/v1/push
+#       loki-url: http://127.0.0.1:3100/loki/api/v1/push
 #       loki-external-labels: "app=traefik"
 # Set to an empty value to omit the block and use the daemon's default driver.
 logging:

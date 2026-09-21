@@ -1,0 +1,6 @@
+# Root-only instance: no app user, so no second secret and no entrypoint wrapper — the image's own
+# entrypoint and CMD run untouched (no entrypoint, no command rendered). Exercises the plainest
+# service shape the chart can emit.
+auth:
+  appUser:
+    enabled: false

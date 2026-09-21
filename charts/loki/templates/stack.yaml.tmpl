@@ -1,0 +1,274 @@
+{{- /* Host-path persistence bind-mounts a host dir; a named-volume value must not be a
+       path (docker compose would otherwise emit a cryptic error). */}}
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) (contains "/" .Values.persistence.volumeName) -}}
+{{-   fail "persistence.volumeName is a Docker named-volume name and cannot contain '/'. To store Loki's data under a host directory, set persistence.volumePath instead." -}}
+{{- end -}}
+version: "3.9"
+
+{{- /* Exposure mode drives networks, ports, labels and the public scheme. */}}
+{{- $mode := .Values.exposure.mode }}
+{{- $router := .Values.traefik.routerName | default .Release.Name }}
+{{- $proxied := or (eq $mode "traefik") (eq $mode "none") }}
+
+{{- /* Networks Loki attaches to. The shipper adds a stack-internal overlay rather than
+       riding on whatever exposure.network is: in traefik mode that is the edge's ingress
+       network, and a log agent holding the Docker socket has no business on it. */}}
+{{- $nets := list }}
+{{- if $proxied }}{{ $nets = append $nets .Values.exposure.network }}{{- end }}
+{{- if .Values.shipper.enabled }}{{ $nets = append $nets "internal" }}{{- end }}
+
+{{- /* Where Loki reads its configuration, and what the stack has to mount for it to be
+       there. A Swarm SECRET lands under /run/secrets; a Swarm CONFIG goes where we ask. */}}
+{{- $chartConfig := eq .Values.config.mode "chart" }}
+{{- $configPath := "/etc/loki/loki-config.yaml" }}
+{{- if eq .Values.config.mode "external-secret" }}{{ $configPath = "/run/secrets/loki-config" }}{{- end }}
+
+{{- /* Swarm config data is IMMUTABLE: `docker stack deploy` answers changed contents under
+       an existing name by calling ConfigUpdate, which the daemon refuses with "only updates
+       to Labels are allowed". Rotation — new contents under a new name — is the only
+       mechanism Swarm offers. The chart version is what changes when the shipped file does
+       (a released chart's version is stamped from its git tag), so it is the suffix; the
+       release name keeps two releases on one swarm from colliding. */}}
+{{- $lokiConfigName := printf "%s_loki-config_%s" .Release.Name .Chart.Version }}
+{{- $alloyConfigName := printf "%s_alloy-config_%s" .Release.Name .Chart.Version }}
+
+services:
+
+  loki:
+    image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
+
+{{- /* The image's entrypoint is the loki binary and its CMD is a -config.file pointing at
+       the config baked into the image; this replaces that CMD. Every value below is a FLAG
+       rather than a line in files/loki-config.yaml because flags win over the file, which
+       is what lets one shipped file serve every release — including the external modes,
+       where the file is the operator's. */}}
+    command:
+      - "-config.file={{ $configPath }}"
+      - "-log.level={{ .Values.logLevel }}"
+      - "-reporting.enabled={{ .Values.analytics.enabled }}"
+      - "-compactor.retention-enabled={{ .Values.retention.enabled }}"
+{{- if .Values.retention.enabled }}
+      - "-store.retention={{ .Values.retention.period }}"
+{{- end }}
+{{- range .Values.extraArgs }}
+      - {{ . | quote }}
+{{- end }}
+
+{{- if $chartConfig }}
+    configs:
+      - source: loki-config
+        target: {{ $configPath }}
+{{- else if eq .Values.config.mode "external-config" }}
+    configs:
+      - source: {{ .Values.config.externalName }}
+        target: {{ $configPath }}
+{{- else }}
+    secrets:
+      - source: {{ .Values.config.externalName }}
+        target: loki-config
+{{- end }}
+
+{{- if $nets }}
+    networks:
+{{- range $nets }}
+      - {{ . }}
+{{- end }}
+{{- end }}
+
+{{- if eq $mode "published" }}
+    ports:
+      - target: {{ .Values.service.port }}
+        published: {{ .Values.publish.port }}
+        protocol: tcp
+        mode: {{ .Values.publish.mode }}
+{{- end }}
+
+{{- if .Values.persistence.enabled }}
+    volumes:
+{{- if .Values.persistence.volumePath }}
+      - {{ .Values.persistence.volumePath }}:/loki
+{{- else }}
+      - {{ .Values.persistence.volumeName }}:/loki
+{{- end }}
+{{- end }}
+
+{{- /* No healthcheck: the grafana/loki image contains exactly one file, /usr/bin/loki —
+       no shell, no curl, no wget — so there is no command a healthcheck could run. Swarm
+       reports the task healthy as soon as the process is up; readiness is /ready on the
+       HTTP port, which something outside the container has to ask for. */}}
+    deploy:
+      replicas: {{ .Values.replicas }}
+{{- /* The data-volume node pin travels with persistence: it exists only while a volume
+       needs pinning, so persistence.enabled:false never leaves a task Pending on a missing
+       node label. placement.constraints adds extras and applies in every mode. */}}
+{{- $constraints := list }}
+{{- if and .Values.persistence.enabled .Values.persistence.nodeLabel }}
+{{-   $constraints = append $constraints (printf "node.labels.%s == true" .Values.persistence.nodeLabel) }}
+{{- end }}
+{{- range .Values.placement.constraints }}
+{{-   $constraints = append $constraints . }}
+{{- end }}
+{{- if $constraints }}
+      placement:
+        constraints:
+{{- range $constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- $limitMem := .Values.resources.limits.memory }}
+{{- $resMem := .Values.resources.reservations.memory }}
+{{- if or $limitMem $resMem }}
+      resources:
+{{-   with $limitMem }}
+        limits:
+          memory: {{ . | quote }}
+{{-   end }}
+{{-   with $resMem }}
+        reservations:
+          memory: {{ . | quote }}
+{{-   end }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- if or (eq $mode "traefik") .Values.labels }}
+      labels:
+{{- if eq $mode "traefik" }}
+        - "traefik.enable=true"
+        - "traefik.swarm.network={{ .Values.exposure.network }}"
+        - "traefik.constraint-label={{ .Values.traefik.constraintLabel }}"
+{{- if .Values.traefik.basicAuthUsers }}
+        # Basic-auth middleware. Loki authenticates nobody, so on a public hostname this
+        # is the whole of the access control.
+        - "traefik.http.middlewares.{{ $router }}-auth.basicauth.users={{ .Values.traefik.basicAuthUsers }}"
+{{- end }}
+        # HTTP router
+        - "traefik.http.routers.{{ $router }}-http.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ $router }}-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
+{{- if .Values.ingress.tls }}
+        # Redirect plain HTTP to HTTPS, then terminate TLS on the HTTPS router. The
+        # redirect is the HTTP router's only middleware: nothing is served there to
+        # authenticate.
+        - "traefik.http.routers.{{ $router }}-http.middlewares={{ .Values.traefik.redirectMiddleware }}"
+        - "traefik.http.routers.{{ $router }}-https.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ $router }}-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
+        - "traefik.http.routers.{{ $router }}-https.tls=true"
+        - "traefik.http.routers.{{ $router }}-https.tls.certresolver={{ .Values.traefik.certResolver }}"
+{{- if .Values.traefik.basicAuthUsers }}
+        - "traefik.http.routers.{{ $router }}-https.middlewares={{ $router }}-auth"
+{{- end }}
+{{- else if .Values.traefik.basicAuthUsers }}
+        # tls:false — the HTTP router is the public one, so the auth middleware goes there.
+        - "traefik.http.routers.{{ $router }}-http.middlewares={{ $router }}-auth"
+{{- end }}
+        - "traefik.http.services.{{ $router }}.loadbalancer.server.port={{ .Values.service.port }}"
+{{- end }}
+{{- range $key, $val := .Values.labels }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+{{- end }}
+
+{{- if .Values.shipper.enabled }}
+
+{{- /* Grafana Alloy: one task per node (mode: global), reading that node's container logs
+       through the Docker API and pushing them to the loki service above over the internal
+       overlay. Its configuration is static — the two per-release values reach it as
+       environment variables, which is also how NODE_NAME can be a Swarm service template
+       ({{ "{{.Node.Hostname}}" }} is resolved per task by the daemon, not by this chart). */}}
+  alloy:
+    image: {{ .Values.shipper.image.repository }}:{{ .Values.shipper.image.tag }}
+    command:
+      - "run"
+      - "/etc/alloy/config.alloy"
+      - "--storage.path=/var/lib/alloy/data"
+      # Alloy reports its enabled components to Grafana Labs by default; off, matching
+      # analytics.enabled:false for Loki itself.
+      - "--disable-reporting"
+{{- range .Values.shipper.extraArgs }}
+      - {{ . | quote }}
+{{- end }}
+    environment:
+      ALLOY_LOG_LEVEL: {{ .Values.shipper.logLevel | quote }}
+      LOKI_PUSH_URL: "http://loki:{{ .Values.service.port }}/loki/api/v1/push"
+      NODE_NAME: "{{ `{{.Node.Hostname}}` }}"
+    configs:
+      - source: alloy-config
+        target: /etc/alloy/config.alloy
+    volumes:
+      # Root-equivalent access to this node's daemon. :ro protects the socket file, not
+      # the API behind it — see shipper.dockerSocket in values.yaml.
+      - {{ .Values.shipper.dockerSocket }}:/var/run/docker.sock:ro
+{{- if .Values.shipper.persistence.enabled }}
+      - {{ .Values.shipper.persistence.volumeName }}:/var/lib/alloy/data
+{{- end }}
+    networks:
+      - internal
+    deploy:
+      mode: global
+{{- $shipLimitMem := .Values.shipper.resources.limits.memory }}
+{{- $shipResMem := .Values.shipper.resources.reservations.memory }}
+{{- if or $shipLimitMem $shipResMem }}
+      resources:
+{{-   with $shipLimitMem }}
+        limits:
+          memory: {{ . | quote }}
+{{-   end }}
+{{-   with $shipResMem }}
+        reservations:
+          memory: {{ . | quote }}
+{{-   end }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- end }}
+
+{{- if or (ne .Values.config.mode "external-secret") .Values.shipper.enabled }}
+
+configs:
+{{- if $chartConfig }}
+  loki-config:
+    name: {{ $lokiConfigName }}
+    file: files/loki-config.yaml
+{{- else if eq .Values.config.mode "external-config" }}
+  {{ .Values.config.externalName }}:
+    external: true
+{{- end }}
+{{- if .Values.shipper.enabled }}
+  alloy-config:
+    name: {{ $alloyConfigName }}
+    file: files/alloy-config.alloy
+{{- end }}
+{{- end }}
+{{- if eq .Values.config.mode "external-secret" }}
+
+secrets:
+  {{ .Values.config.externalName }}:
+    external: true
+{{- end }}
+
+{{- $volumes := list }}
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) }}
+{{-   $volumes = append $volumes .Values.persistence.volumeName }}
+{{- end }}
+{{- if and .Values.shipper.enabled .Values.shipper.persistence.enabled }}
+{{-   $volumes = append $volumes .Values.shipper.persistence.volumeName }}
+{{- end }}
+{{- if $volumes }}
+
+volumes:
+{{- range $volumes }}
+  {{ . }}: {}
+{{- end }}
+{{- end }}
+{{- if $nets }}
+
+networks:
+{{- if $proxied }}
+  {{ .Values.exposure.network }}:
+    external: true
+{{- end }}
+{{- if .Values.shipper.enabled }}
+  # Chart-managed overlay carrying Alloy's pushes to Loki. Not external: it exists for
+  # this release only, and nothing outside the stack needs to be on it.
+  internal: {}
+{{- end }}
+{{- end }}

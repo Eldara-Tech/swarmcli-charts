@@ -218,6 +218,10 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
 - **openclaw** — the reference above.
 - **redis**, **mariadb**, **postgres** — dummy auth secret(s) + the persistence node-label
   pin + the bind-mount host dir.
+- **mongodb** — the root, app-user and keyFile secrets + the persistence node-label pin + the
+  bind-mount host dir. Its `ci/e2e-check.sh` connects from a throwaway client container on the
+  release's overlay rather than `docker exec`, so the `replica-set` fixture exercises the member
+  address clients are handed, not just the one the server resolves.
 - **traefik** — the `traefik-certs` node-label pin + the certs-bind-mount host dir.
 - **mariadb-galera** — the two dummy auth secrets + a node label for EVERY peer
   (`mariadb-galera-1` … `-5`) on the single CI node, so the pinned default fixture
@@ -244,6 +248,10 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   refuses to start on an empty set but this run is about the chart, not about converging a swarm.
 - **ollama** — the `ollama-data` node-label pin + `traefik-public` + the bind-mount host dir.
   No secret: Ollama has no auth.
+- **loki** — the `loki-data` node label + the `monitoring` overlay for every fixture; per
+  fixture, the bind-mount host dir, a real Traefik edge (`edge`), and — for `external-config` /
+  `external-secret` — a Swarm config/secret holding the chart's own shipped Loki configuration,
+  standing in for the operator's. No auth secret: Loki has none.
 - **gitlab** — the two dummy secrets (initial root password, SMTP password) + the `gitlab-data`
   node label + `traefik-public`, which is `autoCreate:false`, so the hook stands in for the
   operator. Both secrets are turned on by the fixture on purpose: GitLab `File.read`s them at

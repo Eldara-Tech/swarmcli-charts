@@ -45,6 +45,13 @@ include:
   # so initdb never has to chown or empty the bind-mounted mountpoint itself. legacy-major
   # pulls a second image (postgres:15) — hence the 8m budget.
   - { chart: postgres,      cases: "",                                                                                timeout: 8m  }
+  # mongodb: EVERY fixture (cases: "" => no filter). ci/e2e-setup.sh creates the three dummy
+  # secrets and the data node label; ci/e2e-check.sh then connects from a throwaway client
+  # container on the release's overlay, so `replica-set` proves clients can follow replica-set
+  # discovery to the advertised member address and commit a transaction, and every fixture proves
+  # root, the least-privilege app user and --auth from outside. swarmcli waits out the 2m
+  # update_config.monitor window (from task creation) per fixture, hence the 6m budget.
+  - { chart: mongodb,       cases: "",                                                                                timeout: 6m  }
   # traefik: every CI-friendly fixture EXCEPT loki-logging, which needs the
   # loki:latest Docker log-driver plugin (absent on stock runners). `routing` (#63)
   # stands up two whoami backends and proves a request routes THROUGH the edge.
@@ -88,6 +95,17 @@ include:
   # SQLite fallback. Excludes bind-mount, ephemeral, none and secrets — all render-covered by
   # charts.yml and still run in a full local `make e2e`.
   - { chart: vaultwarden,   cases: "default published postgres mysql edge",                                         timeout: 6m  }
+  # loki: the five fixtures that prove something a render cannot. Each one pushes a line to
+  # /loki/api/v1/push and reads it back out of query_range, which is where a bad schema,
+  # an unwritable store or a compactor that cannot open its working directory actually
+  # surfaces — Loki starts happily with all three. `shipper` additionally waits for a line
+  # NOBODY pushed: one Alloy collected from a real container and labelled with the Swarm
+  # service it came from. `edge` stands up the traefik chart and proves the basic-auth
+  # middleware refuses an unauthenticated request (401) before an authenticated one works.
+  # The other five fixtures are render-only or covered by charts.yml, and still run in a
+  # full local `make e2e`: bind-mount, retention-off, external-config, external-secret
+  # (all deploy locally) and traefik-auth (marked ci/e2e-render-only — it needs ACME).
+  - { chart: loki,          cases: "default published ephemeral shipper edge",                                       timeout: 6m  }
   # gitlab: ONE fixture. GitLab CE is a multi-gigabyte monolith (Postgres, Redis, Gitaly,
   # Puma, Sidekiq in one container) whose documented baseline is 8 vCPU / 16 GB, so the
   # runner boots exactly the case that carries the most signal per minute: `minimal` is the
