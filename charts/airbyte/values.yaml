@@ -1,0 +1,136 @@
+# Airbyte Community Platform for Docker Swarm. Airbyte keeps durable metadata in
+# an external PostgreSQL database and sync artifacts in external S3-compatible
+# object storage. Its control plane, Temporal database and OAuth2 session cache
+# are persisted in node-local named volumes, so replicas stay at one and may be
+# pinned to the node that owns those volumes.
+
+image:
+  repository: airbyte/server
+  tag: ""  # defaults to appVersion from Chart.yaml
+
+# The control-plane services are separate Airbyte images. Keep their tags aligned
+# with the matching Airbyte release; the webapp is intentionally separate.
+bootloader:
+  repository: airbyte/bootloader
+  tag: "1.8.1"
+worker:
+  repository: airbyte/worker
+  tag: "1.8.1"
+connectorBuilderServer:
+  repository: airbyte/connector-builder-server
+  tag: "1.8.1"
+workloadApiServer:
+  repository: airbyte/workload-api-server
+  tag: "1.8.1"
+workloadLauncher:
+  image:
+    repository: airbyte/workload-launcher
+    tag: "1.8.1"
+  replicas: 1
+  memoryReservation: 1G
+  memoryLimit: 4G
+  # Extra EXTERNAL attachable overlays for connector containers, for example a
+  # target database's shared-services network. database.network is included
+  # automatically; do not repeat it here.
+  extraNetworks: []
+# The workload launcher uses these credentials to request control-plane tokens.
+# They are external Swarm secrets and are inherited by the FakeK8s process when
+# it injects credentials into connector workload containers.
+dataplane:
+  clientIdSecretName: airbyte_dataplane_client_id
+  clientSecretSecretName: airbyte_dataplane_client_secret
+webapp:
+  repository: airbyte/webapp
+  tag: "1.7.8"
+oauth2Proxy:
+  repository: quay.io/oauth2-proxy/oauth2-proxy
+  tag: "v7.15.4"
+redis:
+  repository: redis
+  tag: "7.4.7-alpine"
+temporal:
+  repository: temporalio/temporal
+  tag: "1.9.1"
+
+# Leave empty for released charts: Chart.Version rotates the immutable config.
+# For a local upgrade after changing files/FakeK8s.java, set a new value such as
+# "dev-3" in the release values so Swarm creates a new config object.
+fakeK8sConfigVersion: ""
+
+# Stateful services use node-local named volumes. Pin them to exactly one node
+# with this label before deploying, or set nodeLabel: "" on a single-node swarm.
+persistence:
+  workspaceVolume: airbyte_workspace
+  configVolume: airbyte_config
+  temporalVolume: temporal_data
+  oauthRedisVolume: airbyte_oauth2_redis
+  nodeLabel: airbyte-data
+
+# Airbyte metadata database. The username/password are external Swarm secrets;
+# the database and network are supplied by the operator.
+database:
+  host: postgres
+  port: 5432
+  name: airbyte
+  userSecretName: airbyte_db_user
+  passwordSecretName: airbyte_db_password
+  network: airbyte-db-net
+
+# S3-compatible object storage for logs, state and workload payloads. Access
+# credentials are external secrets, never values.
+storage:
+  endpoint: https://minio.example.com
+  accessKeySecretName: airbyte_s3_access_key
+  secretKeySecretName: airbyte_s3_secret_key
+  bucket: airbyte-storage
+
+# Airbyte's connector registry loads Enterprise source stubs from this URL.
+connectorRegistry:
+  enterpriseSourceStubsUrl: https://connectors.airbyte.com/files/resources/connector_stubs/v1/connector_stubs.json
+
+# Airbyte server refuses to start until both database schemas meet these floors.
+flyway:
+  configsMinimumMigrationVersion: "0.0.0.001"
+  jobsMinimumMigrationVersion: "0.0.0.001"
+
+# Web exposure through the oauth2-proxy. The client and cookie secrets are
+# external Swarm secrets. Set exposure.mode: published for a private direct port.
+exposure:
+  mode: traefik
+  network: traefik-public
+  host: airbyte.example.com
+  tls: true
+  publishedPort: 8080
+
+oauth2:
+  issuerUrl: https://keycloak.example.com/realms/airbyte
+  clientId: airbyte-client
+  clientSecretName: airbyte_oauth_client_secret
+  cookieSecretName: airbyte_oauth_cookie_secret
+  cookieName: _oauth2_proxy_airbyte
+  emailDomain: "*"
+  redisNetwork: airbyte-oauth
+  trustedProxyIp: 10.0.0.0/8
+  scope: "openid email"
+  skipJwtBearerTokens: true
+  sslInsecureSkipVerify: true
+  upstreamTimeout: 300s
+
+traefik:
+  certResolver: le
+  constraintLabel: traefik-public
+  redirectMiddleware: https-redirect
+  entrypoints:
+    http: http
+    https: https
+
+# The workload launcher translates Airbyte's Kubernetes job API into containers
+# through Docker's Unix socket. It is intentionally privileged access; Chart.yaml
+# acknowledges it for CI's security scan.
+
+# Optional extra constraints applied to all stateful Airbyte services.
+placement:
+  constraints: []
+
+# Extra deploy labels for the OAuth2 proxy service.
+labels: {}

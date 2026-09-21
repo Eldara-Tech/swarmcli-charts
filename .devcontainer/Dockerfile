@@ -20,6 +20,8 @@ RUN apt-get update \
         docker-compose-plugin \
         telnet \
     && rm -rf /var/lib/apt/lists/*
+    
+RUN snap install yq
 
 ARG USERNAME=vscode
 RUN groupadd -f docker && usermod -aG docker ${USERNAME}

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "image": { "$ref": "#/$defs/image" },
+    "bootloader": { "$ref": "#/$defs/image" },
+    "worker": { "$ref": "#/$defs/image" },
+    "connectorBuilderServer": { "$ref": "#/$defs/image" },
+    "workloadApiServer": { "$ref": "#/$defs/image" },
+    "webapp": { "$ref": "#/$defs/image" },
+    "oauth2Proxy": { "$ref": "#/$defs/image" },
+    "redis": { "$ref": "#/$defs/image" },
+    "temporal": { "$ref": "#/$defs/image" },
+    "fakeK8sConfigVersion": { "type": "string" },
+    "persistence": { "type": "object", "properties": { "workspaceVolume": { "type": "string" }, "configVolume": { "type": "string" }, "temporalVolume": { "type": "string" }, "oauthRedisVolume": { "type": "string" }, "nodeLabel": { "type": "string" } } },
+    "database": { "type": "object", "properties": { "host": { "type": "string" }, "port": { "type": "integer", "minimum": 1, "maximum": 65535 }, "name": { "type": "string" }, "userSecretName": { "type": "string", "minLength": 1 }, "passwordSecretName": { "type": "string", "minLength": 1 }, "network": { "type": "string", "minLength": 1 } } },
+    "storage": { "type": "object", "properties": { "endpoint": { "type": "string", "format": "uri" }, "accessKeySecretName": { "type": "string", "minLength": 1 }, "secretKeySecretName": { "type": "string", "minLength": 1 }, "bucket": { "type": "string", "minLength": 1 } } },
+    "connectorRegistry": { "type": "object", "properties": { "enterpriseSourceStubsUrl": { "type": "string", "format": "uri" } } },
+    "flyway": { "type": "object", "properties": { "configsMinimumMigrationVersion": { "type": "string", "minLength": 1 }, "jobsMinimumMigrationVersion": { "type": "string", "minLength": 1 } } },
+    "exposure": { "type": "object", "properties": { "mode": { "type": "string", "enum": ["traefik", "published", "none"] }, "network": { "type": "string", "minLength": 1 }, "host": { "type": "string", "minLength": 1 }, "tls": { "type": "boolean" }, "publishedPort": { "type": "integer", "minimum": 1, "maximum": 65535 } } },
+    "oauth2": { "type": "object", "properties": { "issuerUrl": { "type": "string", "format": "uri" }, "clientId": { "type": "string" }, "clientSecretName": { "type": "string", "minLength": 1 }, "cookieSecretName": { "type": "string", "minLength": 1 }, "cookieName": { "type": "string", "minLength": 1 }, "emailDomain": { "type": "string", "minLength": 1 }, "redisNetwork": { "type": "string", "minLength": 1 }, "trustedProxyIp": { "type": "string" }, "scope": { "type": "string", "minLength": 1 }, "skipJwtBearerTokens": { "type": "boolean" }, "sslInsecureSkipVerify": { "type": "boolean" }, "upstreamTimeout": { "type": "string", "minLength": 1 } } },
+    "traefik": { "type": "object", "properties": { "certResolver": { "type": "string" }, "constraintLabel": { "type": "string" }, "redirectMiddleware": { "type": "string" }, "entrypoints": { "type": "object", "properties": { "http": { "type": "string" }, "https": { "type": "string" } } } } },
+    "workloadLauncher": { "type": "object", "properties": { "image": { "$ref": "#/$defs/image" }, "replicas": { "type": "integer", "minimum": 1, "maximum": 1 }, "memoryReservation": { "type": "string" }, "memoryLimit": { "type": "string" }, "extraNetworks": { "type": "array", "items": { "type": "string", "minLength": 1 } } } },
+    "dataplane": { "type": "object", "properties": { "clientIdSecretName": { "type": "string", "minLength": 1 }, "clientSecretSecretName": { "type": "string", "minLength": 1 } } },
+    "placement": { "type": "object", "properties": { "constraints": { "type": "array", "items": { "type": "string" } } } },
+    "labels": { "type": "object", "additionalProperties": { "type": "string" } }
+  },
+  "$defs": {
+    "image": { "type": "object", "properties": { "repository": { "type": "string", "minLength": 1 }, "tag": { "type": "string" } }, "required": ["repository"] }
+  }
+}

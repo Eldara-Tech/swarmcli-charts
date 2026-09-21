@@ -1,0 +1,451 @@
+{{- $serverImage := printf "%s:%s" .Values.image.repository (.Values.image.tag | default .Chart.AppVersion) }}
+{{- $constraints := .Values.placement.constraints }}
+{{- if .Values.persistence.nodeLabel }}{{ $constraints = append $constraints (printf "node.labels.%s == true" .Values.persistence.nodeLabel) }}{{- end }}
+{{- $proxyNetworks := list "airbyte" .Values.oauth2.redisNetwork }}
+{{- if or (eq .Values.exposure.mode "traefik") (eq .Values.exposure.mode "none") }}{{ $proxyNetworks = append $proxyNetworks .Values.exposure.network }}{{- end }}
+{{- $workloadNetworks := list .Values.database.network }}
+{{- range .Values.workloadLauncher.extraNetworks }}{{ $workloadNetworks = append $workloadNetworks . }}{{- end }}
+{{- $workloadNetworks = $workloadNetworks | uniq }}
+{{- $router := .Release.Name }}
+version: "3.9"
+
+services:
+  db-migrations:
+    image: {{ .Values.bootloader.repository }}:{{ .Values.bootloader.tag }}
+    networks:
+      - airbyte
+      - {{ .Values.database.network }}
+    secrets:
+      - {{ .Values.database.userSecretName }}
+      - {{ .Values.database.passwordSecretName }}
+    configs:
+      - source: fakek8s
+        target: /tmp/FakeK8s.java
+        mode: 0444
+    environment:
+      DATABASE_HOST: {{ .Values.database.host | quote }}
+      DATABASE_PORT: {{ .Values.database.port | quote }}
+      DATABASE_DB: {{ .Values.database.name | quote }}
+      AIRBYTE_VERSION: {{ .Chart.AppVersion | quote }}
+      RUN_DATABASE_MIGRATION_ON_STARTUP: "true"
+      SECRET_PERSISTENCE: TESTING_CONFIG_DB_TABLE
+      MICRONAUT_ENVIRONMENTS: docker
+      AIRBYTE_AUTH_KUBERNETES_SECRET_CREATION_ENABLED: "false"
+      KUBERNETES_NAMESPACE: default
+    command:
+      - /bin/bash
+      - -c
+      - |-
+        export DATABASE_USER="$$(cat /run/secrets/{{ .Values.database.userSecretName }})"
+        export DATABASE_PASSWORD="$$(cat /run/secrets/{{ .Values.database.passwordSecretName }})"
+        export DATABASE_URL="jdbc:postgresql://$${DATABASE_HOST}:$${DATABASE_PORT}/$${DATABASE_DB}"
+        cat > /tmp/bootloader.yml <<EOF
+        datasources:
+          local: { url: $${DATABASE_URL}, username: $${DATABASE_USER}, password: $${DATABASE_PASSWORD}, driver-class-name: org.postgresql.Driver }
+          local-secrets: { url: $${DATABASE_URL}, username: $${DATABASE_USER}, password: $${DATABASE_PASSWORD}, driver-class-name: org.postgresql.Driver }
+        EOF
+        export MICRONAUT_CONFIG_FILES=/tmp/bootloader.yml
+        mkdir -p /tmp/.kube
+        printf '%s\n' 'apiVersion: v1' 'kind: Config' 'clusters:' '- cluster:' '    server: http://127.0.0.1:6443' '  name: fake' 'contexts:' '- context:' '    cluster: fake' '    namespace: default' '    user: fake' '  name: fake' 'current-context: fake' 'users:' '- name: fake' '  user:' '    token: fake' > /tmp/.kube/config
+        export KUBECONFIG=/tmp/.kube/config HOME=/tmp
+        java /tmp/FakeK8s.java &
+        FAKE_K8S_PID=$$!
+        trap 'kill $$FAKE_K8S_PID 2>/dev/null || true' EXIT
+        for _attempt in $$(seq 1 300); do
+          bash -c 'echo >/dev/tcp/127.0.0.1/6443' 2>/dev/null && break
+          sleep 0.1
+        done
+        if ! bash -c 'echo >/dev/tcp/127.0.0.1/6443' 2>/dev/null; then
+          echo 'FakeK8s did not start on 127.0.0.1:6443' >&2
+          exit 1
+        fi
+        airbyte-app/bin/airbyte-bootloader
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  oauth2-redis:
+    image: {{ .Values.redis.repository }}:{{ .Values.redis.tag }}
+    command: [redis-server, --appendonly, "yes"]
+    networks:
+      - {{ .Values.oauth2.redisNetwork }}
+    volumes:
+      - {{ .Values.persistence.oauthRedisVolume }}:/data
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+{{ toYaml $constraints | indent 10 }}
+
+  oauth2-proxy:
+    image: {{ .Values.oauth2Proxy.repository }}:{{ .Values.oauth2Proxy.tag }}
+    networks:
+{{ toYaml $proxyNetworks | indent 6 }}
+    secrets:
+      - {{ .Values.oauth2.clientSecretName }}
+      - {{ .Values.oauth2.cookieSecretName }}
+    command:
+      - --http-address=0.0.0.0:4180
+      - --provider=keycloak-oidc
+      - {{ printf "--oidc-issuer-url=%s" .Values.oauth2.issuerUrl | quote }}
+      - {{ printf "--client-id=%s" .Values.oauth2.clientId | quote }}
+      - --client-secret-file=/run/secrets/{{ .Values.oauth2.clientSecretName }}
+      - --cookie-secret-file=/run/secrets/{{ .Values.oauth2.cookieSecretName }}
+      - {{ printf "--cookie-name=%s" .Values.oauth2.cookieName | quote }}
+      - --cookie-secure={{ .Values.exposure.tls }}
+      - {{ printf "--cookie-domain=%s" .Values.exposure.host | quote }}
+      - {{ printf "--redirect-url=https://%s/oauth2/callback" .Values.exposure.host | quote }}
+      - {{ printf "--email-domain=%s" .Values.oauth2.emailDomain | quote }}
+      - --session-store-type=redis
+      - --redis-connection-url=redis://oauth2-redis:6379
+      - --set-xauthrequest=false
+      - --pass-access-token=false
+      - --pass-authorization-header=false
+      - --pass-user-headers=false
+      - --skip-provider-button=false
+      - --reverse-proxy=true
+      - {{ printf "--trusted-proxy-ip=%s" .Values.oauth2.trustedProxyIp | quote }}
+      - --code-challenge-method=S256
+      - {{ printf "--scope=%s" .Values.oauth2.scope | quote }}
+      - --upstream=http://webapp:8080/
+      - --skip-jwt-bearer-tokens={{ .Values.oauth2.skipJwtBearerTokens }}
+      - {{ printf "--extra-jwt-issuers=%s=%s" .Values.oauth2.issuerUrl .Values.oauth2.clientId | quote }}
+      - --ssl-insecure-skip-verify={{ .Values.oauth2.sslInsecureSkipVerify }}
+      - --proxy-prefix=/oauth2
+      - {{ printf "--whitelist-domain=%s" .Values.exposure.host | quote }}
+      - --upstream-timeout={{ .Values.oauth2.upstreamTimeout }}
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+{{- if or (eq .Values.exposure.mode "traefik") .Values.labels }}
+      labels:
+{{- if eq .Values.exposure.mode "traefik" }}
+        - "traefik.enable=true"
+        - "traefik.swarm.network={{ .Values.exposure.network }}"
+        - "traefik.constraint-label={{ .Values.traefik.constraintLabel }}"
+        - "traefik.http.routers.{{ $router }}-http.rule=Host(`{{ .Values.exposure.host }}`)"
+        - "traefik.http.routers.{{ $router }}-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
+{{- if .Values.exposure.tls }}
+        - "traefik.http.routers.{{ $router }}-http.middlewares={{ .Values.traefik.redirectMiddleware }}"
+        - "traefik.http.routers.{{ $router }}-https.rule=Host(`{{ .Values.exposure.host }}`)"
+        - "traefik.http.routers.{{ $router }}-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
+        - "traefik.http.routers.{{ $router }}-https.tls=true"
+        - "traefik.http.routers.{{ $router }}-https.tls.certresolver={{ .Values.traefik.certResolver }}"
+        - "traefik.http.routers.{{ $router }}-https.middlewares={{ $router }}-headers"
+        - "traefik.http.middlewares.{{ $router }}-headers.headers.customrequestheaders.X-Forwarded-Host={{ .Values.exposure.host }}"
+        - "traefik.http.middlewares.{{ $router }}-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
+{{- end }}
+        - "traefik.http.services.{{ $router }}.loadbalancer.server.port=4180"
+{{- end }}
+{{- range $key, $value := .Values.labels }}
+        - "{{ $key }}={{ $value }}"
+{{- end }}
+{{- end }}
+{{- if eq .Values.exposure.mode "published" }}
+    ports:
+      - target: 4180
+        published: {{ .Values.exposure.publishedPort }}
+        protocol: tcp
+        mode: ingress
+{{- end }}
+
+  webapp:
+    image: {{ .Values.webapp.repository }}:{{ .Values.webapp.tag }}
+    networks: [airbyte]
+    environment:
+      AIRBYTE_SERVER_HOST: server:8001
+      CONNECTOR_BUILDER_API_HOST: connector-builder-server:8080
+      KEYCLOAK_INTERNAL_HOST: server
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+{{ toYaml $constraints | indent 10 }}
+
+  workload-launcher:
+    image: {{ .Values.workloadLauncher.image.repository }}:{{ .Values.workloadLauncher.image.tag }}
+    user: "0"
+    networks: [airbyte, {{ .Values.database.network }}]
+    volumes:
+      - {{ .Values.persistence.workspaceVolume }}:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    configs:
+      - source: fakek8s
+        target: /tmp/FakeK8s.java
+        mode: 0444
+    secrets:
+      - {{ .Values.database.userSecretName }}
+      - {{ .Values.database.passwordSecretName }}
+      - {{ .Values.storage.accessKeySecretName }}
+      - {{ .Values.storage.secretKeySecretName }}
+      - {{ .Values.dataplane.clientIdSecretName }}
+      - {{ .Values.dataplane.clientSecretSecretName }}
+    environment:
+      AIRBYTE_VERSION: {{ .Chart.AppVersion | quote }}
+      DATABASE_HOST: {{ .Values.database.host | quote }}
+      DATABASE_PORT: {{ .Values.database.port | quote }}
+      DATABASE_DB: {{ .Values.database.name | quote }}
+      STORAGE_TYPE: minio
+      MINIO_ENDPOINT: {{ .Values.storage.endpoint | quote }}
+      STORAGE_BUCKET_LOG: {{ .Values.storage.bucket | quote }}
+      STORAGE_BUCKET_STATE: {{ .Values.storage.bucket | quote }}
+      STORAGE_BUCKET_WORKLOAD_OUTPUT: {{ .Values.storage.bucket | quote }}
+      STORAGE_BUCKET_ACTIVITY_PAYLOAD: {{ .Values.storage.bucket | quote }}
+      STORAGE_BUCKET_AUDIT_LOGGING: {{ .Values.storage.bucket | quote }}
+      S3_PATH_STYLE_ACCESS: "true"
+      INTERNAL_API_HOST: http://server:8001
+      WORKLOAD_API_HOST: http://workload-api-server:8007
+      CONTROL_PLANE_TOKEN_ENDPOINT: http://server:8001/api/v1/dataplanes/token
+      DATAPLANE_CLIENT_ID_SECRET_NAME: dataplane-credentials
+      DATAPLANE_CLIENT_ID_SECRET_KEY: DATAPLANE_CLIENT_ID
+      DATAPLANE_CLIENT_SECRET_SECRET_NAME: dataplane-credentials
+      DATAPLANE_CLIENT_SECRET_SECRET_KEY: DATAPLANE_CLIENT_SECRET
+      FAKEK8S_POD_EXTRA_NETWORKS: {{ $workloadNetworks | join "," | quote }}
+      WORKSPACE_ROOT: /data/workspace
+      LOCAL_ROOT: /tmp/airbyte_local
+      MICRONAUT_ENVIRONMENTS: docker
+      JOB_KUBE_NAMESPACE: default
+    command:
+      - /bin/bash
+      - -c
+      - |-
+        export DATABASE_USER="$$(cat /run/secrets/{{ .Values.database.userSecretName }})"
+        export DATABASE_PASSWORD="$$(cat /run/secrets/{{ .Values.database.passwordSecretName }})"
+        export AWS_ACCESS_KEY_ID="$$(cat /run/secrets/{{ .Values.storage.accessKeySecretName }})"
+        export AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/{{ .Values.storage.secretKeySecretName }})"
+        export DATAPLANE_CLIENT_ID="$$(cat /run/secrets/{{ .Values.dataplane.clientIdSecretName }})"
+        export DATAPLANE_CLIENT_SECRET="$$(cat /run/secrets/{{ .Values.dataplane.clientSecretSecretName }})"
+        export DATABASE_URL="jdbc:postgresql://$${DATABASE_HOST}:$${DATABASE_PORT}/$${DATABASE_DB}"
+        cat > /tmp/launcher-datasources.yml <<EOF
+        datasources:
+          config: { url: $${DATABASE_URL}, username: $${DATABASE_USER}, password: $${DATABASE_PASSWORD} }
+          local: { url: $${DATABASE_URL}, username: $${DATABASE_USER}, password: $${DATABASE_PASSWORD} }
+          local-secrets: { url: $${DATABASE_URL}, username: $${DATABASE_USER}, password: $${DATABASE_PASSWORD} }
+        EOF
+        export MICRONAUT_CONFIG_FILES=/tmp/launcher-datasources.yml
+        mkdir -p /tmp/.kube
+        printf '%s\n' 'apiVersion: v1' 'kind: Config' 'clusters:' '- cluster:' '    server: http://127.0.0.1:6443' '  name: fake' 'contexts:' '- context:' '    cluster: fake' '    namespace: default' '    user: fake' '  name: fake' 'current-context: fake' 'users:' '- name: fake' '  user:' '    token: fake' > /tmp/.kube/config
+        export KUBECONFIG=/tmp/.kube/config HOME=/tmp
+        mkdir -p /tmp/fakek8s-classes && javac /tmp/FakeK8s.java -d /tmp/fakek8s-classes
+        java -cp /tmp/fakek8s-classes FakeK8s & FAKE_K8S_PID=$$!
+        trap 'kill $$FAKE_K8S_PID 2>/dev/null || true' EXIT
+        exec airbyte-app/bin/airbyte-workload-launcher
+    deploy:
+      replicas: {{ .Values.workloadLauncher.replicas }}
+      placement:
+        constraints:
+{{ toYaml $constraints | indent 10 }}
+      resources:
+        reservations:
+          memory: {{ .Values.workloadLauncher.memoryReservation | quote }}
+        limits:
+          memory: {{ .Values.workloadLauncher.memoryLimit | quote }}
+
+  workload-api-server:
+    image: {{ .Values.workloadApiServer.repository }}:{{ .Values.workloadApiServer.tag }}
+    networks: [airbyte, {{ .Values.database.network }}]
+    secrets:
+      - {{ .Values.database.userSecretName }}
+      - {{ .Values.database.passwordSecretName }}
+      - {{ .Values.storage.accessKeySecretName }}
+      - {{ .Values.storage.secretKeySecretName }}
+    environment:
+      AIRBYTE_VERSION: {{ .Chart.AppVersion | quote }}
+      DATABASE_HOST: {{ .Values.database.host | quote }}
+      DATABASE_PORT: {{ .Values.database.port | quote }}
+      DATABASE_DB: {{ .Values.database.name | quote }}
+      STORAGE_TYPE: minio
+      MINIO_ENDPOINT: {{ .Values.storage.endpoint | quote }}
+      STORAGE_BUCKET_LOG: {{ .Values.storage.bucket | quote }}
+      STORAGE_BUCKET_STATE: {{ .Values.storage.bucket | quote }}
+      STORAGE_BUCKET_WORKLOAD_OUTPUT: {{ .Values.storage.bucket | quote }}
+      STORAGE_BUCKET_ACTIVITY_PAYLOAD: {{ .Values.storage.bucket | quote }}
+      STORAGE_BUCKET_AUDIT_LOGGING: {{ .Values.storage.bucket | quote }}
+      S3_PATH_STYLE_ACCESS: "true"
+      INTERNAL_API_HOST: http://server:8001
+      MICRONAUT_ENVIRONMENTS: docker
+    command: [/bin/bash, -c, 'export DATABASE_USER="$$(cat /run/secrets/{{ .Values.database.userSecretName }})" DATABASE_PASSWORD="$$(cat /run/secrets/{{ .Values.database.passwordSecretName }})" AWS_ACCESS_KEY_ID="$$(cat /run/secrets/{{ .Values.storage.accessKeySecretName }})" AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/{{ .Values.storage.secretKeySecretName }})"; export DATABASE_URL="jdbc:postgresql://$${DATABASE_HOST}:$${DATABASE_PORT}/$${DATABASE_DB}"; exec airbyte-app/bin/airbyte-workload-api-server']
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+{{ toYaml $constraints | indent 10 }}
+
+  server:
+    image: {{ $serverImage }}
+    networks: [airbyte, {{ .Values.database.network }}]
+    volumes:
+      - {{ .Values.persistence.workspaceVolume }}:/data
+      - {{ .Values.persistence.configVolume }}:/config
+    secrets:
+      - {{ .Values.database.userSecretName }}
+      - {{ .Values.database.passwordSecretName }}
+      - {{ .Values.storage.accessKeySecretName }}
+      - {{ .Values.storage.secretKeySecretName }}
+    environment:
+      AIRBYTE_VERSION: {{ .Chart.AppVersion | quote }}
+      AIRBYTE_EDITION: community
+      DATABASE_HOST: {{ .Values.database.host | quote }}
+      DATABASE_PORT: {{ .Values.database.port | quote }}
+      DATABASE_DB: {{ .Values.database.name | quote }}
+      DATABASE_URL: {{ printf "jdbc:postgresql://%s:%v/%s" .Values.database.host .Values.database.port .Values.database.name | quote }}
+      DATABASE_INITIALIZATION_TIMEOUT_MS: "600000"
+      DATABASE_MAX_RETRIES: "30"
+      DATABASE_RETRY_DELAY_MS: "10000"
+      AIRBYTE_FLYWAY_CONFIGS_MINIMUM_MIGRATION_VERSION: {{ .Values.flyway.configsMinimumMigrationVersion | quote }}
+      AIRBYTE_FLYWAY_JOBS_MINIMUM_MIGRATION_VERSION: {{ .Values.flyway.jobsMinimumMigrationVersion | quote }}
+      ENTERPRISE_SOURCE_STUBS_URL: {{ .Values.connectorRegistry.enterpriseSourceStubsUrl | quote }}
+      AIRBYTE_CONNECTOR_REGISTRY_ENTERPRISE_ENTERPRISE_SOURCE_STUBS_URL: {{ .Values.connectorRegistry.enterpriseSourceStubsUrl | quote }}
+      STORAGE_TYPE: minio
+      MINIO_ENDPOINT: {{ .Values.storage.endpoint | quote }}
+      STORAGE_BUCKET_LOG: {{ .Values.storage.bucket | quote }}
+      STORAGE_BUCKET_STATE: {{ .Values.storage.bucket | quote }}
+      STORAGE_BUCKET_WORKLOAD_OUTPUT: {{ .Values.storage.bucket | quote }}
+      STORAGE_BUCKET_ACTIVITY_PAYLOAD: {{ .Values.storage.bucket | quote }}
+      STORAGE_BUCKET_AUDIT_LOGGING: {{ .Values.storage.bucket | quote }}
+      S3_PATH_STYLE_ACCESS: "true"
+      TEMPORAL_HOST: temporal:7233
+      AIRBYTE_URL: {{ printf "https://%s" .Values.exposure.host | quote }}
+      CONFIG_ROOT: /config
+      JAVA_OPTS: -Dairbyte.config.root=/config
+      WORKSPACE_ROOT: /data/workspace
+      SECRET_PERSISTENCE: TESTING_CONFIG_DB_TABLE
+    command: [/bin/bash, -c, 'export DATABASE_USER="$$(cat /run/secrets/{{ .Values.database.userSecretName }})" DATABASE_PASSWORD="$$(cat /run/secrets/{{ .Values.database.passwordSecretName }})" AWS_ACCESS_KEY_ID="$$(cat /run/secrets/{{ .Values.storage.accessKeySecretName }})" AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/{{ .Values.storage.secretKeySecretName }})"; export DATABASE_URL="jdbc:postgresql://$${DATABASE_HOST}:$${DATABASE_PORT}/$${DATABASE_DB}"; exec airbyte-app/bin/airbyte-server']
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+{{ toYaml $constraints | indent 10 }}
+
+  connector-builder-server:
+    image: {{ .Values.connectorBuilderServer.repository }}:{{ .Values.connectorBuilderServer.tag }}
+    networks: [airbyte, {{ .Values.database.network }}]
+    volumes:
+      - {{ .Values.persistence.workspaceVolume }}:/data
+      - {{ .Values.persistence.configVolume }}:/config
+    secrets:
+      - {{ .Values.database.userSecretName }}
+      - {{ .Values.database.passwordSecretName }}
+      - {{ .Values.storage.accessKeySecretName }}
+      - {{ .Values.storage.secretKeySecretName }}
+    environment:
+      AIRBYTE_VERSION: {{ .Chart.AppVersion | quote }}
+      DATABASE_HOST: {{ .Values.database.host | quote }}
+      DATABASE_PORT: {{ .Values.database.port | quote }}
+      DATABASE_DB: {{ .Values.database.name | quote }}
+      ENTERPRISE_SOURCE_STUBS_URL: {{ .Values.connectorRegistry.enterpriseSourceStubsUrl | quote }}
+      STORAGE_TYPE: minio
+      MINIO_ENDPOINT: {{ .Values.storage.endpoint | quote }}
+      STORAGE_BUCKET_LOG: {{ .Values.storage.bucket | quote }}
+      STORAGE_BUCKET_STATE: {{ .Values.storage.bucket | quote }}
+      STORAGE_BUCKET_WORKLOAD_OUTPUT: {{ .Values.storage.bucket | quote }}
+      STORAGE_BUCKET_ACTIVITY_PAYLOAD: {{ .Values.storage.bucket | quote }}
+      STORAGE_BUCKET_AUDIT_LOGGING: {{ .Values.storage.bucket | quote }}
+      S3_PATH_STYLE_ACCESS: "true"
+      TEMPORAL_HOST: temporal:7233
+      CONFIG_ROOT: /config
+      WORKSPACE_ROOT: /data/workspace
+    command: [/bin/bash, -c, 'export DATABASE_USER="$$(cat /run/secrets/{{ .Values.database.userSecretName }})" DATABASE_PASSWORD="$$(cat /run/secrets/{{ .Values.database.passwordSecretName }})" AWS_ACCESS_KEY_ID="$$(cat /run/secrets/{{ .Values.storage.accessKeySecretName }})" AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/{{ .Values.storage.secretKeySecretName }})"; exec airbyte-app/bin/airbyte-connector-builder-server']
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+{{ toYaml $constraints | indent 10 }}
+
+  worker:
+    image: {{ .Values.worker.repository }}:{{ .Values.worker.tag }}
+    networks: [airbyte, {{ .Values.database.network }}]
+    volumes:
+      - {{ .Values.persistence.workspaceVolume }}:/data
+      - {{ .Values.persistence.configVolume }}:/config
+      - /var/run/docker.sock:/var/run/docker.sock
+    secrets:
+      - {{ .Values.database.userSecretName }}
+      - {{ .Values.database.passwordSecretName }}
+      - {{ .Values.storage.accessKeySecretName }}
+      - {{ .Values.storage.secretKeySecretName }}
+    environment:
+      AIRBYTE_VERSION: {{ .Chart.AppVersion | quote }}
+      DATABASE_HOST: {{ .Values.database.host | quote }}
+      DATABASE_PORT: {{ .Values.database.port | quote }}
+      DATABASE_DB: {{ .Values.database.name | quote }}
+      ENTERPRISE_SOURCE_STUBS_URL: {{ .Values.connectorRegistry.enterpriseSourceStubsUrl | quote }}
+      STORAGE_TYPE: minio
+      MINIO_ENDPOINT: {{ .Values.storage.endpoint | quote }}
+      STORAGE_BUCKET_LOG: {{ .Values.storage.bucket | quote }}
+      STORAGE_BUCKET_STATE: {{ .Values.storage.bucket | quote }}
+      STORAGE_BUCKET_WORKLOAD_OUTPUT: {{ .Values.storage.bucket | quote }}
+      STORAGE_BUCKET_ACTIVITY_PAYLOAD: {{ .Values.storage.bucket | quote }}
+      STORAGE_BUCKET_AUDIT_LOGGING: {{ .Values.storage.bucket | quote }}
+      S3_PATH_STYLE_ACCESS: "true"
+      TEMPORAL_HOST: temporal:7233
+      AIRBYTE_URL: {{ printf "https://%s" .Values.exposure.host | quote }}
+      INTERNAL_API_HOST: http://server:8001
+      WORKLOAD_API_HOST: http://workload-api-server:8007
+      CONFIG_ROOT: /config
+      JAVA_OPTS: -Dairbyte.config.root=/config
+      WORKSPACE_ROOT: /data/workspace
+      SECRET_PERSISTENCE: TESTING_CONFIG_DB_TABLE
+      SHOULD_RUN_CONNECTION_MANAGER_WORKFLOWS: "true"
+      MICRONAUT_ENVIRONMENTS: docker,control-plane
+    command: [/bin/bash, -c, 'export DATABASE_USER="$$(cat /run/secrets/{{ .Values.database.userSecretName }})" DATABASE_PASSWORD="$$(cat /run/secrets/{{ .Values.database.passwordSecretName }})" AWS_ACCESS_KEY_ID="$$(cat /run/secrets/{{ .Values.storage.accessKeySecretName }})" AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/{{ .Values.storage.secretKeySecretName }})"; export DATABASE_URL="jdbc:postgresql://$${DATABASE_HOST}:$${DATABASE_PORT}/$${DATABASE_DB}"; exec airbyte-app/bin/airbyte-workers']
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+{{ toYaml $constraints | indent 10 }}
+
+  temporal:
+    image: {{ .Values.temporal.repository }}:{{ .Values.temporal.tag }}
+    command: [server, start-dev, --ip, 0.0.0.0, --db-filename, /home/temporal/temporal.db]
+    networks: [airbyte]
+    volumes:
+      - {{ .Values.persistence.temporalVolume }}:/home/temporal
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+{{ toYaml $constraints | indent 10 }}
+
+volumes:
+  {{ .Values.persistence.workspaceVolume }}: {}
+  {{ .Values.persistence.configVolume }}: {}
+  {{ .Values.persistence.temporalVolume }}: {}
+  {{ .Values.persistence.oauthRedisVolume }}: {}
+
+configs:
+  fakek8s:
+    name: "{{ .Release.Name }}_fakek8s_{{ .Chart.Version }}{{ with .Values.fakeK8sConfigVersion }}_{{ . }}{{ end }}"
+    file: files/FakeK8s.java
+
+secrets:
+  {{ .Values.database.userSecretName }}:
+    external: true
+  {{ .Values.database.passwordSecretName }}:
+    external: true
+  {{ .Values.storage.accessKeySecretName }}:
+    external: true
+  {{ .Values.storage.secretKeySecretName }}:
+    external: true
+  {{ .Values.dataplane.clientIdSecretName }}:
+    external: true
+  {{ .Values.dataplane.clientSecretSecretName }}:
+    external: true
+  {{ .Values.oauth2.clientSecretName }}:
+    external: true
+  {{ .Values.oauth2.cookieSecretName }}:
+    external: true
+
+networks:
+  airbyte:
+    driver: overlay
+    attachable: true
+  {{ .Values.oauth2.redisNetwork }}: {}
+  {{ .Values.database.network }}:
+    external: true
+{{- if or (eq .Values.exposure.mode "traefik") (eq .Values.exposure.mode "none") }}
+  {{ .Values.exposure.network }}:
+    external: true
+{{- end }}
