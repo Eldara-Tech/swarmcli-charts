@@ -9,3 +9,7 @@
 # not the host's. The host-mount acknowledgment and the volumePath render contract are what
 # this fixture is for, and charts.yml plus ci/render-check.sh assert both.
 bind-mount
+
+# The `path` addressing override renders PathStyle = true and changes nothing else: there is
+# no deploy-time behaviour to observe, and ci/render-check.sh asserts the render.
+cache-path

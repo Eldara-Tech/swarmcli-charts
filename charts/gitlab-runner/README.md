@@ -114,8 +114,16 @@ cache:
     server: minio:9000
     bucket: runner-cache
     insecure: true      # in-swarm MinIO over plain HTTP
-    pathStyle: true     # MinIO and most S3 clones need this; AWS S3 does not
 ```
+
+**Leave `cache.s3.addressing` alone.** Its default, `auto`, writes no `PathStyle` key at
+all, and that absence is what lets the runner choose from the endpoint: path-style
+(`https://minio:9000/runner-cache/…`) for MinIO, Ceph and every other S3 clone,
+virtual-host (`https://runner-cache.s3.amazonaws.com/…`) for AWS. Setting it to `virtual`
+against a MinIO is the one way to break a cache that is otherwise configured correctly —
+the bucket moves into the hostname, and nothing resolves it unless that MinIO was given a
+`MINIO_DOMAIN` and a wildcard DNS record. `path` and `virtual` are there for an endpoint
+the detection gets wrong, which is rare enough that you will know if you have one.
 
 With `authenticationType: iam` the two secrets are neither needed nor mounted. A credential
 containing a single quote is refused at start-up, because it cannot be written into the TOML
@@ -179,7 +187,7 @@ jobs.
 | `cache.s3.bucket` | `gitlab-runner-cache` | Bucket name. |
 | `cache.s3.location` | `""` | S3 region. AWS needs it; MinIO ignores it. |
 | `cache.s3.insecure` | `false` | Plain HTTP instead of HTTPS. |
-| `cache.s3.pathStyle` | `false` | Path-style addressing, which MinIO needs. |
+| `cache.s3.addressing` | `auto` | `auto` (the runner detects it from the endpoint), `path` or `virtual`. |
 | `cache.s3.authenticationType` | `access-key` | `access-key` (the two secrets below) or `iam` (no secrets). |
 | `cache.s3.accessKeySecret` | `gitlab-runner-cache-access-key` | External Swarm secret with the S3 access key. |
 | `cache.s3.secretKeySecret` | `gitlab-runner-cache-secret-key` | External Swarm secret with the S3 secret key. |
@@ -225,6 +233,18 @@ a single runner manager. The chart refuses that combination at render time.
 **Stale runner managers in the GitLab UI** are the other side of the same file: with
 persistence off, every task restart mints a new `system_id` and GitLab lists each one. That
 is cosmetic, and the reason `persistence.enabled` defaults to on.
+
+**A cache that uploads nothing, with the job still green.** If a job's *Uploading cache*
+step ends in
+
+```
+FATAL: Put "https://<bucket>.<endpoint>/…": dial tcp: lookup <bucket>.<endpoint>: no such host
+```
+
+then the runner is addressing the bucket virtual-host style and your endpoint has no DNS
+record for the bucket subdomain. Either set `cache.s3.addressing: path`, or go back to the
+`auto` default and let the runner work it out. The hostname in the error is a giveaway: it
+is one you never configured anywhere.
 
 **Job containers and disk.** Caches and images accumulate on the runner's node, outside
 Swarm's view. The image ships `clear-docker-cache` for exactly this:

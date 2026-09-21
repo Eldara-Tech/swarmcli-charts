@@ -189,15 +189,38 @@ esac
 # ── the distributed cache ─────────────────────────────────────────────────────────────
 # Capitalisation is copied from the runner's own toml tags on purpose: it ignores keys it
 # does not know, so `accesskey` or `servername` would disable the cache in silence.
-if [ "$case" = "cache" ] || [ "$case" = "cache-iam" ]; then
+if [ "$case" = "cache" ] || [ "$case" = "cache-iam" ] || [ "$case" = "cache-path" ]; then
   grep -E '^  \[runners\.cache\]$' <<<"$toml" >/dev/null || bad "case $case: no [runners.cache] table"
   grep -E '^    Type = "s3"$' <<<"$toml" >/dev/null || bad "case $case: [runners.cache] Type is not exactly \"s3\""
   grep -E '^    Shared = (true|false)$' <<<"$toml" >/dev/null || bad "case $case: [runners.cache] Shared is missing or not a bool"
   grep -E '^    \[runners\.cache\.s3\]$' <<<"$toml" >/dev/null || bad "case $case: no [runners.cache.s3] table"
-  for key in ServerAddress BucketName Insecure PathStyle AuthenticationType; do
+  for key in ServerAddress BucketName Insecure AuthenticationType; do
     grep -E "^      $key = " <<<"$toml" >/dev/null \
       || bad "case $case: [runners.cache.s3] $key is missing or mis-cased (the runner would ignore it silently)"
   done
+  # ── bucket addressing ───────────────────────────────────────────────────────────────
+  # PathStyle is a *bool upstream (cache/cacheconfig/cacheconfig.go:45 at v19.4.0), so an
+  # ABSENT key is not the same as `false`: absent selects the runner's own detection, which
+  # picks path-style for MinIO and virtual-host for AWS, while `false` forces virtual-host
+  # on every endpoint. Forcing it on a MinIO with no wildcard DNS breaks the cache at JOB
+  # time, in a job log, with "no such host" on a hostname the operator never typed — so the
+  # default emitting nothing is the assertion that matters most in this file.
+  case "$case" in
+    cache)
+      if grep -E '^      PathStyle = ' <<<"$toml" >/dev/null; then
+        bad "case $case: PathStyle is rendered although addressing is the default auto — that suppresses the runner's own endpoint detection"
+      fi
+      ;;
+    cache-path)
+      grep -E '^      PathStyle = true$' <<<"$toml" >/dev/null \
+        || bad "case $case: addressing: path did not render PathStyle = true"
+      ;;
+    cache-iam)
+      grep -E '^      PathStyle = false$' <<<"$toml" >/dev/null \
+        || bad "case $case: addressing: virtual did not render PathStyle = false"
+      ;;
+  esac
+
   # The credentials are appended by the container, so the s3 table has to be last.
   last_table="$(grep -E '^ *\[+runners' <<<"$toml" | sed -n '$p' | sed 's/^ *//')"
   [ "$last_table" = "[runners.cache.s3]" ] \
@@ -215,7 +238,7 @@ case "$case" in
       q "$svc.secrets[]" | grep -Fx "$s" >/dev/null || bad "case $case: secret $s is not mounted"
     done
     ;;
-  cache-iam)
+  cache-iam|cache-path)
     if grep -F "AccessKey = '%s'" <<<"$cmd" >/dev/null; then
       bad "case $case: the command appends AccessKey although authenticationType is iam"
     fi

@@ -132,7 +132,15 @@ version: "3.9"
 {{- $toml = append $toml (printf "      BucketLocation = %q" .) }}
 {{- end }}
 {{- $toml = append $toml (printf "      Insecure = %v" .Values.cache.s3.insecure) }}
-{{- $toml = append $toml (printf "      PathStyle = %v" .Values.cache.s3.pathStyle) }}
+{{- /* `auto` writes no key: upstream types PathStyle as a *bool, and nil is what selects
+       the runner's own endpoint detection (path-style for MinIO and its kin, virtual-host
+       for AWS). Writing `false` forces virtual-host, which a MinIO without wildcard DNS
+       cannot serve — and the cache then fails in a job log, not at deploy. */}}
+{{- if eq .Values.cache.s3.addressing "path" }}
+{{- $toml = append $toml "      PathStyle = true" }}
+{{- else if eq .Values.cache.s3.addressing "virtual" }}
+{{- $toml = append $toml "      PathStyle = false" }}
+{{- end }}
 {{- $toml = append $toml (printf "      AuthenticationType = %q" .Values.cache.s3.authenticationType) }}
 {{- if $cacheKeys }}
 {{- $toml = append $toml "      # AccessKey and SecretKey are appended here by the container, from the mounted secrets." }}

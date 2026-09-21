@@ -1,0 +1,15 @@
+# The `path` addressing override, which is the other half of the enum: a MinIO whose
+# operator would rather pin the addressing than rely on the runner's detection. Render-only
+# (ci/e2e-render-only), because what it proves — PathStyle = true in config.toml — is
+# visible in the render and nothing more happens at deploy.
+cache:
+  enabled: true
+  s3:
+    server: minio:9000
+    bucket: runner-cache
+    insecure: true
+    addressing: path
+    authenticationType: iam
+
+gitlab:
+  url: http://gitlab.invalid/

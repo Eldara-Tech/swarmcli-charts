@@ -74,7 +74,10 @@
             "bucket": { "type": "string" },
             "location": { "type": "string" },
             "insecure": { "type": "boolean" },
-            "pathStyle": { "type": "boolean" },
+            "addressing": {
+              "type": "string",
+              "enum": ["auto", "path", "virtual"]
+            },
             "authenticationType": {
               "type": "string",
               "enum": ["access-key", "iam"]

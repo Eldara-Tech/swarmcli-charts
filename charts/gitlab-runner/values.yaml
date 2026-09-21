@@ -110,8 +110,14 @@ cache:
     location: ""
     # Plain HTTP instead of HTTPS — only reasonable for a MinIO on an internal overlay.
     insecure: false
-    # MinIO and most S3 clones need path-style addressing; AWS S3 does not.
-    pathStyle: false
+    # Bucket addressing. `auto` writes no PathStyle key at all and lets the runner detect
+    # it from the endpoint — path-style for MinIO and every other S3 clone, virtual-host for
+    # AWS. Override only for an endpoint that is the exception:
+    #   path     https://<endpoint>/<bucket>/...
+    #   virtual  https://<bucket>.<endpoint>/... , which needs a wildcard DNS record for the
+    #            bucket subdomain. A MinIO has none unless you set MINIO_DOMAIN and add one,
+    #            and the cache then fails at job time with "no such host".
+    addressing: auto
     # access-key = the two secrets below. iam = an instance profile/role, no secrets.
     authenticationType: access-key
     # EXTERNAL Swarm secrets, pre-created like the token above:
