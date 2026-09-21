@@ -71,11 +71,16 @@ services:
           # than relying on the name Swarm derives from the stack, so the address
           # in wsrep_cluster_address is one this chart controls.
           - {{ $name }}
-{{- if $.Values.network.clientAlias }}
+{{- if and $.Values.network.clientAlias (not $.Values.proxy.enabled) }}
           # Shared by every peer, so a client resolving it gets them all and
           # spreads connections over them. Any peer accepts writes, so no leader
-          # election is needed — but DNS is not health-aware, and a client handed
-          # a peer that is down or re-syncing has to reconnect.
+          # election is needed. Swarm stops resolving it to a peer with no healthy
+          # task, so a failed peer leaves the endpoint on its own — after the
+          # healthcheck's detection window.
+          #
+          # When proxy.enabled, this alias belongs to the proxy instead: two things
+          # answering the same name would defeat the point of putting a
+          # health-aware proxy in front.
           - {{ $.Values.network.clientAlias }}
 {{- end }}
 
@@ -218,6 +223,26 @@ services:
           sleep 2
         done
 {{- end }}
+{{- if $.Values.proxy.enabled }}
+        # Synced responder for the proxy. socat, gosu and the mariadb client are
+        # all already in this image, so this needs no extra package and no sidecar.
+        # It answers 200 only at wsrep_local_state=4 (Synced) — which is exactly
+        # the state the CONTAINER healthcheck deliberately does NOT require, so a
+        # peer donating a state transfer stops receiving client traffic without
+        # Swarm killing it. The query runs as the mysql unix user, reusing the same
+        # unix_socket account as the state transfers.
+        cat > /usr/local/bin/galera-synced-check <<'CHECK'
+        #!/bin/bash
+        s=$$(gosu mysql mariadb -N -B -e "SELECT VARIABLE_VALUE FROM information_schema.GLOBAL_STATUS WHERE VARIABLE_NAME='WSREP_LOCAL_STATE'" 2>/dev/null)
+        if [ "$$s" = "4" ]; then
+          printf 'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 7\r\nConnection: close\r\n\r\nSynced\n'
+        else
+          printf 'HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: 11\r\nConnection: close\r\n\r\nNot Synced\n'
+        fi
+        CHECK
+        chmod +x /usr/local/bin/galera-synced-check
+        socat TCP-LISTEN:{{ $.Values.proxy.checkPort }},fork,reuseaddr EXEC:/usr/local/bin/galera-synced-check &
+{{- end }}
         exec docker-entrypoint.sh mariadbd \
           --wsrep-on=ON \
           --wsrep-provider=/usr/lib/galera/libgalera_smm.so \
@@ -327,6 +352,102 @@ services:
 {{- if $.Values.labels }}
       labels:
 {{- range $key, $val := $.Values.labels }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- if .Values.proxy.enabled }}
+
+  {{ $prefix }}-proxy:
+    image: {{ .Values.proxy.image.repository }}:{{ .Values.proxy.image.tag }}
+
+    networks:
+      {{ .Values.network.name }}:
+        aliases:
+          - {{ $prefix }}-proxy
+{{- if .Values.network.clientAlias }}
+          # The client endpoint moves here when the proxy is on: one name, backed
+          # by health checks that follow Galera's state rather than DNS.
+          - {{ .Values.network.clientAlias }}
+{{- end }}
+
+    # The config travels in an env var and is written out at every start, the same
+    # way charts/gitlab-runner carries its config.toml — so a values change takes
+    # effect on redeploy and a hand-edit inside the container never survives one.
+    # `$$` is the compose escape for a literal `$`.
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - >-
+        set -eu;
+        printf '%s\n' "$$HAPROXY_CFG" > /tmp/haproxy.cfg;
+        exec haproxy -f /tmp/haproxy.cfg -db
+    environment:
+      HAPROXY_CFG: |
+        global
+          log stdout format raw local0
+          maxconn 4096
+        defaults
+          mode tcp
+          log global
+          option tcplog
+          timeout connect 5s
+          # Database sessions are long-lived and idle between statements; a short
+          # timeout here would sever them mid-transaction.
+          timeout client 1h
+          timeout server 1h
+          default-server inter 2s fall 3 rise 2
+        listen galera
+          bind :{{ .Values.exposure.port }}
+          # The check is the Synced responder each peer runs, on its own port —
+          # NOT a TCP probe of 3306, which would happily route to a peer that is
+          # listening but not Synced.
+          option httpchk GET /
+          http-check expect status 200
+{{- range $i := until $peers }}
+          server {{ printf "%s-%d" $prefix (add1 $i) }} {{ printf "%s-%d" $prefix (add1 $i) }}:{{ $.Values.exposure.port }} check port {{ $.Values.proxy.checkPort }}
+{{- end }}
+
+    healthcheck:
+      # HAProxy is up iff it is listening; whether any BACKEND is usable is the
+      # cluster's health, not the proxy's, and conflating them would take the
+      # endpoint down exactly when clients most need to reach the survivors.
+      test:
+        - CMD-SHELL
+        - "exec 3<>/dev/tcp/127.0.0.1/{{ .Values.exposure.port }}"
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    deploy:
+      # Stateless, so this is the one part of the chart that is safe to scale, and
+      # it should be: a single proxy in front of an HA cluster is a single point of
+      # failure. Swarm load-balances the client alias across these replicas.
+      replicas: {{ .Values.proxy.replicas }}
+      endpoint_mode: vip
+      update_config:
+        monitor: 60s
+        order: start-first
+{{- if .Values.placement.constraints }}
+      placement:
+        constraints:
+{{- range .Values.placement.constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- with .Values.proxy.resources.limits.memory }}
+      resources:
+        limits:
+          memory: {{ . | quote }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- if .Values.labels }}
+      labels:
+{{- range $key, $val := .Values.labels }}
         - "{{ $key }}={{ $val }}"
 {{- end }}
 {{- end }}

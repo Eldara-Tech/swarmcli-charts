@@ -149,6 +149,37 @@ exposure:
   protocol: tcp
   mode: host
 
+# Health-aware client endpoint: an HAProxy in front of the peers.
+#
+# Off by default, and everything below renders nothing at all when it is off, so a
+# cluster without it is exactly the cluster this chart shipped before.
+#
+# What it buys over the shared DNS alias (which already drops peers Swarm marks
+# unhealthy) is two things the alias cannot do: sub-second detection instead of
+# healthcheck.interval x healthcheck.retries, and routing that follows Galera's
+# own state. With it on, each peer runs a tiny responder that answers 200 only
+# while that peer is Synced, so a peer DONATING a state transfer is taken out of
+# rotation without being killed — the container healthcheck deliberately still
+# calls that peer healthy (see healthcheck below).
+#
+# The proxy is stateless, so it runs more than one replica and Swarm load-balances
+# across them; it is the one part of this chart that is safe to scale.
+#
+# checkPort is where the responder listens INSIDE each peer. It is never published
+# and only exists while proxy.enabled.
+proxy:
+  enabled: false
+  image:
+    repository: haproxy
+    # A concrete tag, not appVersion: this is a second image, and Renovate's
+    # helm-values manager maintains pins written here.
+    tag: "3.4"
+  replicas: 2
+  checkPort: 9200
+  resources:
+    limits:
+      memory: ""
+
 # Swarm deploy resource limits per peer (optional). Rendered only when
 # limits.memory is set.
 resources:

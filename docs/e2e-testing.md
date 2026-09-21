@@ -227,6 +227,9 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   (`mariadb-galera-1` … `-5`) on the single CI node, so the pinned default fixture
   schedules all its peers there. `ci/e2e-check.sh` then asserts one cluster of the right
   size, every peer `Synced`, and a write on the first peer read back from the last.
+  The `proxy` fixture additionally scales one peer to 0 and keeps querying through the
+  client endpoint, asserting the HAProxy routes around it — the one claim a render
+  check cannot stand in for.
 - **keycloak** — the two operator secrets + the DB/ingress overlays + a throwaway
   co-located backend on `keycloak-db-net` — MariaDB, or PostgreSQL for the `postgres` fixture —
   because Keycloak attaches its DB overlay unconditionally and `/health/ready` only passes once

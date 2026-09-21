@@ -81,9 +81,35 @@ stays in rotation on purpose: it remains writable throughout.
 What it does not remove is the **detection lag**. A failing peer stays in the alias
 for up to `healthcheck.interval × healthcheck.retries` (60s at the defaults) plus
 propagation, so clients still need a pool that retries, and lowering `retries`
-trades that window against false positives under load. Closing the gap properly
-needs a health-checked proxy in front of the alias, which this chart does not
-deploy.
+trades that window against false positives under load.
+
+### The proxy endpoint (`proxy.enabled`)
+
+Set `proxy.enabled: true` for the production endpoint MariaDB's own Galera guide
+recommends: an HAProxy in front of the peers, which takes over the `mariadb` alias.
+
+```bash
+swarmcli charts install db swarmcli-charts/mariadb-galera --set proxy.enabled=true
+```
+
+It closes the lag — checks run every 2s rather than every 60s — and it routes by
+Galera's *state*, not just by reachability. Each peer runs a small responder that
+answers 200 only while it is `Synced`, so a peer **donating** a state transfer stops
+receiving client traffic without being killed: the container healthcheck
+deliberately still calls that peer healthy (see the healthcheck note below), and the
+proxy simply declines to route to it. That split is the whole point — one layer
+decides *alive*, the other decides *good to serve*.
+
+The responder uses `socat`, `gosu` and the `mariadb` client already in the image, so
+it adds no package and no sidecar, and it listens only inside the peer on
+`proxy.checkPort` (never published). The proxy itself is stateless and runs
+`proxy.replicas: 2` by default, because a single proxy in front of an HA cluster is
+a single point of failure.
+
+Connections are spread across all `Synced` peers. Galera is multi-primary so that is
+correct, but writing the same rows from several peers at once raises certification
+conflicts; an application with heavy write contention on the same keys may prefer to
+funnel writes to one peer, which this chart does not currently express.
 
 Individual peers are addressable as `mariadb-galera-1`, `mariadb-galera-2`, … if
 you want to pin reads to one.
@@ -125,6 +151,12 @@ routing mesh. Port 3306 on a node then reaches the peer running there.
 | `network.external` | `true` | `false` = chart-managed internal overlay. |
 | `network.encrypted` | `false` | IPsec on a chart-managed overlay; requires `external: false`. |
 | `network.clientAlias` | `mariadb` | Health-aware DNS alias shared by every peer. `""` = no shared alias. |
+| `proxy.enabled` | `false` | HAProxy client endpoint in front of the peers; takes over `network.clientAlias`. |
+| `proxy.image.repository` | `haproxy` | Proxy image. |
+| `proxy.image.tag` | `3.4` | Proxy image tag (a concrete pin; Renovate maintains it). |
+| `proxy.replicas` | `2` | Proxy replicas — stateless, so more than one is safe and recommended. |
+| `proxy.checkPort` | `9200` | Port the Synced responder listens on inside each peer; never published. |
+| `proxy.resources.limits.memory` | `""` | Proxy memory limit. Rendered only when set. |
 | `exposure.enabled` | `false` | Publish the SQL port on each peer's own node. |
 | `exposure.port` | `3306` | Published port. |
 | `exposure.protocol` | `tcp` | Published protocol. |

@@ -31,7 +31,16 @@ count() { if [ -z "$1" ]; then echo 0; else printf '%s\n' "$1" | wc -l | tr -d '
 want_peers=3
 if [ "$case_name" = "five-peers" ]; then want_peers=5; fi
 
-svcs="$(yq -r '.services | keys | .[]' "$f")"
+# The proxy fixture renders one extra service; every other fixture renders peers only.
+proxy_svc=""
+all="$(yq -r '.services | keys | .[]' "$f")"
+if [ "$case_name" = "proxy" ]; then
+  proxy_svc="$(printf '%s\n' "$all" | { grep -E -- '-proxy$' || true; })"
+  [ -n "$proxy_svc" ] || err "the proxy fixture rendered no proxy service"
+else
+  printf '%s\n' "$all" | { grep -qE -- '-proxy$' && err "a proxy service is rendered for case '$case_name'; it must be opt-in" || true; }
+fi
+svcs="$(printf '%s\n' "$all" | { grep -vE -- '-proxy$' || true; })"
 n_svcs="$(count "$svcs")"
 if [ "$n_svcs" -ne "$want_peers" ]; then
   err "expected $want_peers peer services, rendered $n_svcs: $(echo "$svcs" | tr '\n' ' ')"
@@ -101,10 +110,34 @@ if [ "$n_vols" -gt 0 ]; then
     || err "expected $want_peers data mounts, found $n_vols"
 fi
 
-# The shared client alias must be on every peer, or DNS round-robin reaches only some.
+# The client alias: on every peer when there is no proxy, and on the proxy ALONE
+# when there is. Two things answering the same name would defeat the proxy.
 alias_count="$(yq -r '[.services.*.networks.*.aliases // [] | .[] | select(. == "mariadb")] | length' "$f")"
-[ "$alias_count" -eq "$want_peers" ] \
-  || err "client alias 'mariadb' is on $alias_count of $want_peers peers"
+if [ -n "$proxy_svc" ]; then
+  [ "$alias_count" -eq 1 ] \
+    || err "client alias 'mariadb' is on $alias_count services; with the proxy on it belongs to the proxy alone"
+  yq -r ".services.\"$proxy_svc\".networks.*.aliases // [] | .[]" "$f" | { grep -qxF 'mariadb' || err "the client alias is not on the proxy"; }
+else
+  [ "$alias_count" -eq "$want_peers" ] \
+    || err "client alias 'mariadb' is on $alias_count of $want_peers peers"
+fi
+
+# With the proxy on: every peer must be a backend, checked on the responder port,
+# and the check must be the HTTP Synced probe — a bare TCP check would route to a
+# peer that is listening but not Synced, which is the whole point of the responder.
+if [ -n "$proxy_svc" ]; then
+  cfg="$(yq -r ".services.\"$proxy_svc\".environment.HAPROXY_CFG" "$f")"
+  grep -Fq 'option httpchk' <<<"$cfg" || err "proxy does not use an HTTP check"
+  grep -Fq 'http-check expect status 200' <<<"$cfg" || err "proxy does not require a 200 from the Synced responder"
+  port="$(yq -r '.services.*.command[0]' "$f" | { grep -oE 'TCP-LISTEN:[0-9]+' || true; } | sed -n 1p | cut -d: -f2)"
+  [ -n "$port" ] || err "no peer runs the Synced responder"
+  for s in $svcs; do
+    grep -Eq "server $s $s:[0-9]+ check port $port" <<<"$cfg" \
+      || err "peer $s is not a proxy backend checked on the responder port $port"
+    grep -Fq 'galera-synced-check' <<<"$(yq -r ".services.\"$s\".command[0]" "$f")" \
+      || err "peer $s does not run the Synced responder the proxy checks"
+  done
+fi
 
 # The healthcheck must run as the mysql unix user, with --su-mysql FIRST. Any other
 # ordering is silently wrong (the script re-execs through gosu and drops earlier

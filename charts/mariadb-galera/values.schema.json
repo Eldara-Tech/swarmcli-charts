@@ -104,6 +104,38 @@
         "monitor": { "type": "string", "minLength": 1 }
       }
     },
+    "proxy": {
+      "description": "Health-aware client endpoint (HAProxy) in front of the peers.",
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string", "minLength": 1 }
+          }
+        },
+        "replicas": {
+          "description": "Stateless, so more than one is safe and recommended.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "checkPort": {
+          "description": "Port the Synced responder listens on inside each peer; never published.",
+          "type": "integer", "minimum": 1, "maximum": 65535
+        },
+        "resources": {
+          "type": "object",
+          "properties": {
+            "limits": {
+              "type": "object",
+              "properties": { "memory": { "type": "string" } }
+            }
+          }
+        }
+      }
+    },
     "extraArgs": { "type": "array", "items": { "type": "string" } },
     "labels": { "type": "object" }
   }

@@ -32,8 +32,12 @@ release="$1"
 
 # Peer services, in peer order, discovered from the stack rather than assumed, so
 # this works for the 3- and 5-peer fixtures alike.
-peers="$(docker service ls --filter "label=com.docker.stack.namespace=${release}" --format '{{.Name}}' | sort)"
-[ -n "$peers" ] || { echo "  no services found for stack ${release}"; exit 1; }
+all_svcs="$(docker service ls --filter "label=com.docker.stack.namespace=${release}" --format '{{.Name}}' | sort)"
+[ -n "$all_svcs" ] || { echo "  no services found for stack ${release}"; exit 1; }
+# The proxy is a service in this stack but it is NOT a peer: counting it would make
+# `want` one too many and then try to run SQL inside HAProxy.
+peers="$(printf '%s\n' "$all_svcs" | { grep -vE -- '-proxy$' || true; })"
+[ -n "$peers" ] || { echo "  no peer services found for stack ${release}"; exit 1; }
 want="$(printf '%s\n' "$peers" | wc -l | tr -d ' ')"
 # The expected size is derived from the stack, so it must be sanity-checked against
 # what a cluster can even be — otherwise a stack that came up with only one peer
@@ -91,6 +95,38 @@ got="$(q "$last" "SET SESSION wsrep_sync_wait=1; SELECT v FROM e2e_galera.t WHER
 if [ "$got" != "replicated" ]; then
   echo "  write on the first peer did not reach the last one (read back: '$got')"
   exit 1
+fi
+
+# With the proxy fixture, the thing worth proving is not that the cluster formed —
+# the assertions above already did that — but that the CLIENT ENDPOINT keeps
+# working while a peer is gone. That is the claim the proxy exists to make, and it
+# cannot be made without it.
+proxy="$(printf '%s\n' "$all_svcs" | { grep -E -- '-proxy$' || true; })"
+if [ -n "$proxy" ]; then
+  net="$(docker service inspect "$proxy" --format '{{range .Spec.TaskTemplate.Networks}}{{.Target}}{{end}}' | sed -n 1p)"
+  pw="$(docker exec "$first" sh -c 'cat /run/secrets/mariadb_galera_root_password')"
+  # Query through the alias, which now belongs to the proxy.
+  via_proxy() {
+    docker run --rm --network "$net" -e MYSQL_PWD="$pw" mariadb:12.3 \
+      mariadb -h mariadb -uroot -N -B -e 'SELECT 1' 2>/dev/null
+  }
+  [ "$(via_proxy)" = "1" ] || { echo "  $proxy: cannot reach the cluster through the client endpoint"; exit 1; }
+
+  # Take a peer away and keep asking. The endpoint must keep answering.
+  victim="$(printf '%s\n' $peers | sed -n 2p)"
+  docker service scale "${victim}=0" >/dev/null 2>&1
+  ok=0; fail=0
+  for _ in $(seq 1 20); do
+    if [ "$(via_proxy)" = "1" ]; then ok=$((ok+1)); else fail=$((fail+1)); fi
+    sleep 2
+  done
+  docker service scale "${victim}=1" >/dev/null 2>&1
+  if [ "$fail" -gt 2 ]; then
+    echo "  $proxy: $fail of $((ok+fail)) queries failed with $victim down — the endpoint did not route around it"
+    exit 1
+  fi
+  echo "  ${release}: $want peers, all Synced, cross-peer write replicated, endpoint survived losing $victim ($ok/$((ok+fail)) queries OK)"
+  exit 0
 fi
 
 echo "  ${release}: $want peers, all Synced, cross-peer write replicated OK"
