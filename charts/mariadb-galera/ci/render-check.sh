@@ -126,6 +126,12 @@ fi
 # and the check must be the HTTP Synced probe — a bare TCP check would route to a
 # peer that is listening but not Synced, which is the whole point of the responder.
 if [ -n "$proxy_svc" ]; then
+  # CMD-SHELL here means dash, which has no /dev/tcp: the check would fail forever
+  # and Swarm would kill the proxy on a loop. This cost a CI run.
+  hc0="$(yq -r ".services.\"$proxy_svc\".healthcheck.test[0] // \"\"" "$f")"
+  [ "$hc0" != "CMD-SHELL" ] \
+    || err "proxy healthcheck uses CMD-SHELL (dash, no /dev/tcp); use CMD with an explicit bash"
+
   cfg="$(yq -r ".services.\"$proxy_svc\".environment.HAPROXY_CFG" "$f")"
   grep -Fq 'option httpchk' <<<"$cfg" || err "proxy does not use an HTTP check"
   grep -Fq 'http-check expect status 200' <<<"$cfg" || err "proxy does not require a 200 from the Synced responder"

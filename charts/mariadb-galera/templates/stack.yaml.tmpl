@@ -241,7 +241,12 @@ services:
         fi
         CHECK
         chmod +x /usr/local/bin/galera-synced-check
-        socat TCP-LISTEN:{{ $.Values.proxy.checkPort }},fork,reuseaddr EXEC:/usr/local/bin/galera-synced-check &
+        # stderr is dropped on purpose: HAProxy closes each check connection as soon
+        # as it has the response, so socat logs "Connection reset by peer" once per
+        # check — at inter 2s that is ~30 lines a minute per peer, drowning the
+        # database's own log. The responder's health is visible where it matters,
+        # in HAProxy's backend state.
+        socat TCP-LISTEN:{{ $.Values.proxy.checkPort }},fork,reuseaddr EXEC:/usr/local/bin/galera-synced-check 2>/dev/null &
 {{- end }}
         exec docker-entrypoint.sh mariadbd \
           --wsrep-on=ON \
@@ -414,8 +419,13 @@ services:
       # HAProxy is up iff it is listening; whether any BACKEND is usable is the
       # cluster's health, not the proxy's, and conflating them would take the
       # endpoint down exactly when clients most need to reach the survivors.
+      # CMD, not CMD-SHELL: CMD-SHELL runs /bin/sh, which is dash in this image, and
+      # /dev/tcp is a bash feature. Under dash the check fails every time, Swarm
+      # kills a perfectly good proxy on a loop, and nothing says why.
       test:
-        - CMD-SHELL
+        - CMD
+        - bash
+        - -c
         - "exec 3<>/dev/tcp/127.0.0.1/{{ .Values.exposure.port }}"
       interval: 10s
       timeout: 5s
