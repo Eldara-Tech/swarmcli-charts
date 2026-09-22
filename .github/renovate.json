@@ -88,6 +88,7 @@
     { "matchFileNames": ["charts/keycloak/**"], "semanticCommitScope": "keycloak" },
     { "matchFileNames": ["charts/loki/**"], "semanticCommitScope": "loki" },
     { "matchFileNames": ["charts/mariadb/**"], "semanticCommitScope": "mariadb" },
+    { "matchFileNames": ["charts/mariadb-galera/**"], "semanticCommitScope": "mariadb-galera" },
     { "matchFileNames": ["charts/mongodb/**"], "semanticCommitScope": "mongodb" },
     { "matchFileNames": ["charts/ollama/**"], "semanticCommitScope": "ollama" },
     { "matchFileNames": ["charts/openclaw/**"], "semanticCommitScope": "openclaw" },

@@ -1,0 +1,4 @@
+# No volumes at all, so no node pins either — the required stateful-chart fixture.
+# Must render no top-level volumes: block and no placement block.
+persistence:
+  enabled: false

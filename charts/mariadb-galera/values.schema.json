@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "mariadb-galera chart values",
+  "type": "object",
+  "properties": {
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string" }
+      }
+    },
+    "cluster": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "peers": {
+          "description": "Galera needs a majority to stay writable, so only odd counts of 3 or more make sense.",
+          "enum": [3, 5]
+        },
+        "forceBootstrap": {
+          "description": "Disaster recovery only: the 1-based peer that must form a new cluster, or \"\" for off.",
+          "oneOf": [
+            { "type": "string", "enum": [""] },
+            { "type": "integer", "minimum": 1, "maximum": 5 }
+          ]
+        }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "properties": {
+        "rootSecretName": { "type": "string", "minLength": 1 },
+        "appUser": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "username": { "type": "string", "minLength": 1 },
+            "database": { "type": "string", "minLength": 1 },
+            "secretName": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "persistence": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "volumePrefix": { "type": "string", "minLength": 1 },
+        "volumePaths": {
+          "description": "One absolute host path per peer, in peer order, or [] for named volumes.",
+          "type": "array",
+          "items": { "type": "string", "pattern": "^/" }
+        },
+        "nodeLabelPrefix": { "type": "string" }
+      }
+    },
+    "placement": {
+      "type": "object",
+      "properties": {
+        "constraints": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "network": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "external": { "type": "boolean" },
+        "encrypted": { "type": "boolean" },
+        "clientAlias": { "type": "string" }
+      }
+    },
+    "exposure": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "protocol": { "enum": ["tcp", "udp"] },
+        "mode": {
+          "description": "host only: several peers publish the same port, which the ingress mesh cannot share.",
+          "enum": ["host"]
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "limits": {
+          "type": "object",
+          "properties": {
+            "memory": { "type": "string" }
+          }
+        }
+      }
+    },
+    "healthcheck": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "interval": { "type": "string", "minLength": 1 },
+        "timeout": { "type": "string", "minLength": 1 },
+        "retries": { "type": "integer", "minimum": 1 },
+        "startPeriod": { "type": "string", "minLength": 1 },
+        "monitor": { "type": "string", "minLength": 1 }
+      }
+    },
+    "proxy": {
+      "description": "Health-aware client endpoint (HAProxy) in front of the peers.",
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string", "minLength": 1 }
+          }
+        },
+        "replicas": {
+          "description": "Stateless, so more than one is safe and recommended.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "checkPort": {
+          "description": "Port the Synced responder listens on inside each peer; never published.",
+          "type": "integer", "minimum": 1, "maximum": 65535
+        },
+        "resources": {
+          "type": "object",
+          "properties": {
+            "limits": {
+              "type": "object",
+              "properties": { "memory": { "type": "string" } }
+            }
+          }
+        }
+      }
+    },
+    "extraArgs": { "type": "array", "items": { "type": "string" } },
+    "labels": { "type": "object" }
+  }
+}

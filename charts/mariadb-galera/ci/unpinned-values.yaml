@@ -1,0 +1,5 @@
+# Persistence on, node pins off. This is the single-node-swarm shape and the only
+# one that can converge in CI, where the whole swarm is one node: five node
+# labels cannot be satisfied by one machine, and three cannot either.
+persistence:
+  nodeLabelPrefix: ""
