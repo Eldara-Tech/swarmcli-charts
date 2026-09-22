@@ -15,8 +15,8 @@ its operator-provisioned, **attachable** overlay to `workloadLauncher.extraNetwo
 
 ```yaml
 workloadLauncher:
-	extraNetworks:
-		- shared-services
+  extraNetworks:
+    - shared-services
 ```
 
 The chart validates every listed overlay before deployment and attaches each
@@ -26,7 +26,7 @@ do not repeat it in this list.
 ## Prerequisites
 
 Create the two external overlays used by the default configuration, then create
-the six secrets. `requirements.yaml` validates all of them before deployment.
+the eight secrets. `requirements.yaml` validates all of them before deployment.
 
 ```bash
 docker network create -d overlay --attachable airbyte-db-net
@@ -62,13 +62,13 @@ hostname. Secret values always stay in Swarm secrets, never in this file.
 ```yaml
 # airbyte-values.yaml
 database:
-	host: postgres_postgres
+  host: postgres_postgres
 storage:
-	endpoint: https://minio.example.com
+  endpoint: https://minio.example.com
 exposure:
-	host: airbyte.example.com
+  host: airbyte.example.com
 oauth2:
-	issuerUrl: https://keycloak.example.com/realms/airbyte
+  issuerUrl: https://keycloak.example.com/realms/airbyte
 ```
 
 ```bash
@@ -82,9 +82,10 @@ shared `exposure.network` using the labels expected by this repository's Traefik
 chart. `published` exposes the proxy on `exposure.publishedPort`; `none` joins
 the external network without adding Traefik labels so another proxy can reach it.
 
-The OAuth2 callback is `https://<exposure.host>/oauth2/callback`. Register that
-exact redirect URI with the OIDC provider, and set `oauth2.clientId` and
-`oauth2.issuerUrl` to match the provider. The client and cookie secret names are
+The OAuth2 callback is `https://<exposure.host>/oauth2/callback` (`http://` when
+`exposure.tls` is false). Register that exact redirect URI with the OIDC
+provider, and set `oauth2.clientId` and `oauth2.issuerUrl` to match the
+provider. The client and cookie secret names are
 always real external secret names. OAuth2 Proxy reads them directly from their
 mounted files; the cookie secret must be exactly 16, 24, or 32 raw bytes.
 
@@ -122,7 +123,7 @@ for `persistence.nodeLabel`; do not relax its access controls.
 | `oauth2.issuerUrl` / `.clientId` | see `values.yaml` | OIDC discovery issuer and client ID |
 | `oauth2.clientSecretName` / `.cookieSecretName` | see `values.yaml` | External OIDC client and cookie-encryption secrets |
 | `oauth2.cookieName`, `.emailDomain`, `.trustedProxyIp`, `.scope` | see `values.yaml` | OAuth2 proxy cookie and OIDC request settings |
-| `oauth2.skipJwtBearerTokens`, `.sslInsecureSkipVerify`, `.upstreamTimeout` | `true`, `true`, `300s` | OAuth2 proxy token, TLS-validation, and upstream behavior |
+| `oauth2.skipJwtBearerTokens`, `.sslInsecureSkipVerify`, `.upstreamTimeout` | `true`, `false`, `300s` | OAuth2 proxy token, TLS-validation, and upstream behavior |
 | `oauth2.redisNetwork` | `airbyte-oauth` | Chart-managed OAuth2 proxy/Redis overlay |
 | `traefik.*` | see `values.yaml` | Traefik router settings; defaults match this repository's Traefik chart |
 | `workloadLauncher.*` | see `values.yaml` | Single launcher replica, memory limits, and connector-only `extraNetworks` |
