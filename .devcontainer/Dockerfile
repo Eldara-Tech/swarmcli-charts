@@ -20,8 +20,8 @@ RUN apt-get update \
         docker-compose-plugin \
         telnet \
     && rm -rf /var/lib/apt/lists/*
-    
-RUN snap install yq
+
+RUN GOBIN=/usr/local/bin go install github.com/mikefarah/yq/v4@v4.44.3
 
 ARG USERNAME=vscode
 RUN groupadd -f docker && usermod -aG docker ${USERNAME}
