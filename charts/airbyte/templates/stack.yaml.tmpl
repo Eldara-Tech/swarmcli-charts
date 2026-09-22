@@ -1,7 +1,8 @@
 {{- $airbyteVersion := .Values.image.tag | default .Chart.AppVersion }}
 {{- $serverImage := printf "%s:%s" .Values.image.repository $airbyteVersion }}
 {{- $constraints := .Values.placement.constraints }}
-{{- if .Values.persistence.nodeLabel }}{{ $constraints = append $constraints (printf "node.labels.%s == true" .Values.persistence.nodeLabel) }}{{- end }}
+{{- $dataConstraints := $constraints }}
+{{- if .Values.persistence.nodeLabel }}{{ $dataConstraints = append $constraints (printf "node.labels.%s == true" .Values.persistence.nodeLabel) }}{{- end }}
 {{- $proxyNetworks := list "airbyte" .Values.oauth2.redisNetwork }}
 {{- if or (eq .Values.exposure.mode "traefik") (eq .Values.exposure.mode "none") }}{{ $proxyNetworks = append $proxyNetworks .Values.exposure.network }}{{- end }}
 {{- $workloadNetworks := list .Values.database.network }}
@@ -50,7 +51,7 @@ services:
         mkdir -p /tmp/.kube
         printf '%s\n' 'apiVersion: v1' 'kind: Config' 'clusters:' '- cluster:' '    server: http://127.0.0.1:6443' '  name: fake' 'contexts:' '- context:' '    cluster: fake' '    namespace: default' '    user: fake' '  name: fake' 'current-context: fake' 'users:' '- name: fake' '  user:' '    token: fake' > /tmp/.kube/config
         export KUBECONFIG=/tmp/.kube/config HOME=/tmp
-        java /tmp/FakeK8s.java &
+        java -cp "$$(ls airbyte-app/lib/postgresql-*.jar)" /tmp/FakeK8s.java &
         FAKE_K8S_PID=$$!
         trap 'kill $$FAKE_K8S_PID 2>/dev/null || true' EXIT
         for _attempt in $$(seq 1 300); do
@@ -78,7 +79,7 @@ services:
       replicas: 1
       placement:
         constraints:
-{{ toYaml $constraints | indent 10 }}
+{{ toYaml $dataConstraints | indent 10 }}
 
   oauth2-proxy:
     image: {{ .Values.oauth2Proxy.image.repository }}:{{ .Values.oauth2Proxy.image.tag }}
@@ -110,7 +111,8 @@ services:
       - {{ printf "--trusted-proxy-ip=%s" .Values.oauth2.trustedProxyIp | quote }}
       - --code-challenge-method=S256
       - {{ printf "--scope=%s" .Values.oauth2.scope | quote }}
-      - --upstream=http://webapp:8080/
+      - --upstream=http://server:8001/
+      - --upstream=http://connector-builder-server:8080/api/v1/connector_builder/
       - --skip-jwt-bearer-tokens={{ .Values.oauth2.skipJwtBearerTokens }}
       - {{ printf "--extra-jwt-issuers=%s=%s" .Values.oauth2.issuerUrl .Values.oauth2.clientId | quote }}
       - --ssl-insecure-skip-verify={{ .Values.oauth2.sslInsecureSkipVerify }}
@@ -153,25 +155,11 @@ services:
         mode: ingress
 {{- end }}
 
-  webapp:
-    image: {{ .Values.webapp.image.repository }}:{{ .Values.webapp.image.tag }}
-    networks: [airbyte]
-    environment:
-      AIRBYTE_SERVER_HOST: server:8001
-      CONNECTOR_BUILDER_API_HOST: connector-builder-server:8080
-      KEYCLOAK_INTERNAL_HOST: server
-    deploy:
-      replicas: 1
-      placement:
-        constraints:
-{{ toYaml $constraints | indent 10 }}
-
   workload-launcher:
     image: {{ .Values.workloadLauncher.image.repository }}:{{ .Values.workloadLauncher.image.tag | default $airbyteVersion }}
     user: "0"
     networks: [airbyte, {{ .Values.database.network }}]
     volumes:
-      - {{ .Values.persistence.workspaceVolume }}:/data
       - /var/run/docker.sock:/var/run/docker.sock
     configs:
       - source: fakek8s
@@ -182,8 +170,6 @@ services:
       - {{ .Values.database.passwordSecretName }}
       - {{ .Values.storage.accessKeySecretName }}
       - {{ .Values.storage.secretKeySecretName }}
-      - {{ .Values.dataplane.clientIdSecretName }}
-      - {{ .Values.dataplane.clientSecretSecretName }}
     environment:
       AIRBYTE_VERSION: {{ $airbyteVersion | quote }}
       DATABASE_HOST: {{ .Values.database.host | quote }}
@@ -200,10 +186,11 @@ services:
       INTERNAL_API_HOST: http://server:8001
       WORKLOAD_API_HOST: http://workload-api-server:8007
       CONTROL_PLANE_TOKEN_ENDPOINT: http://server:8001/api/v1/dataplanes/token
-      DATAPLANE_CLIENT_ID_SECRET_NAME: dataplane-credentials
-      DATAPLANE_CLIENT_ID_SECRET_KEY: DATAPLANE_CLIENT_ID
-      DATAPLANE_CLIENT_SECRET_SECRET_NAME: dataplane-credentials
-      DATAPLANE_CLIENT_SECRET_SECRET_KEY: DATAPLANE_CLIENT_SECRET
+      DATAPLANE_CLIENT_ID_SECRET_NAME: airbyte-auth-secrets
+      DATAPLANE_CLIENT_ID_SECRET_KEY: dataplane-client-id
+      DATAPLANE_CLIENT_SECRET_SECRET_NAME: airbyte-auth-secrets
+      DATAPLANE_CLIENT_SECRET_SECRET_KEY: dataplane-client-secret
+      FAKEK8S_OWNER: {{ .Release.Name | quote }}
       FAKEK8S_POD_NETWORK: "{{ .Release.Name }}_airbyte"
       FAKEK8S_POD_EXTRA_NETWORKS: {{ $workloadNetworks | join "," | quote }}
       WORKSPACE_ROOT: /data/workspace
@@ -218,8 +205,6 @@ services:
         export DATABASE_PASSWORD="$$(cat /run/secrets/{{ .Values.database.passwordSecretName }})"
         export AWS_ACCESS_KEY_ID="$$(cat /run/secrets/{{ .Values.storage.accessKeySecretName }})"
         export AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/{{ .Values.storage.secretKeySecretName }})"
-        export DATAPLANE_CLIENT_ID="$$(cat /run/secrets/{{ .Values.dataplane.clientIdSecretName }})"
-        export DATAPLANE_CLIENT_SECRET="$$(cat /run/secrets/{{ .Values.dataplane.clientSecretSecretName }})"
         export DATABASE_URL="jdbc:postgresql://$${DATABASE_HOST}:$${DATABASE_PORT}/$${DATABASE_DB}"
         cat > /tmp/launcher-datasources.yml <<EOF
         datasources:
@@ -232,7 +217,15 @@ services:
         printf '%s\n' 'apiVersion: v1' 'kind: Config' 'clusters:' '- cluster:' '    server: http://127.0.0.1:6443' '  name: fake' 'contexts:' '- context:' '    cluster: fake' '    namespace: default' '    user: fake' '  name: fake' 'current-context: fake' 'users:' '- name: fake' '  user:' '    token: fake' > /tmp/.kube/config
         export KUBECONFIG=/tmp/.kube/config HOME=/tmp
         mkdir -p /tmp/fakek8s-classes && javac /tmp/FakeK8s.java -d /tmp/fakek8s-classes
-        java -cp /tmp/fakek8s-classes FakeK8s & FAKE_K8S_PID=$$!
+        FAKEK8S_CP="/tmp/fakek8s-classes:$$(ls airbyte-app/lib/postgresql-*.jar)"
+        # db-migrations registers the dataplane on its first run and stores the credentials.
+        until DATAPLANE_CLIENT_ID="$$(java -cp "$$FAKEK8S_CP" FakeK8s get-secret airbyte-auth-secrets dataplane-client-id)"; do
+          echo 'Waiting for db-migrations to register the dataplane' >&2
+          sleep 10
+        done
+        DATAPLANE_CLIENT_SECRET="$$(java -cp "$$FAKEK8S_CP" FakeK8s get-secret airbyte-auth-secrets dataplane-client-secret)"
+        export DATAPLANE_CLIENT_ID DATAPLANE_CLIENT_SECRET
+        java -cp "$$FAKEK8S_CP" FakeK8s & FAKE_K8S_PID=$$!
         trap 'kill $$FAKE_K8S_PID 2>/dev/null || true' EXIT
         exec airbyte-app/bin/airbyte-workload-launcher
     deploy:
@@ -279,9 +272,6 @@ services:
   server:
     image: {{ $serverImage }}
     networks: [airbyte, {{ .Values.database.network }}]
-    volumes:
-      - {{ .Values.persistence.workspaceVolume }}:/data
-      - {{ .Values.persistence.configVolume }}:/config
     secrets:
       - {{ .Values.database.userSecretName }}
       - {{ .Values.database.passwordSecretName }}
@@ -313,8 +303,6 @@ services:
       AIRBYTE_URL: {{ printf "%s://%s" $scheme .Values.exposure.host | quote }}
       AIRBYTE_API_HOST: http://localhost:8001/api/public
       CONNECTOR_BUILDER_SERVER_API_HOST: http://connector-builder-server:8080
-      CONFIG_ROOT: /config
-      JAVA_OPTS: -Dairbyte.config.root=/config
       WORKSPACE_ROOT: /data/workspace
       SECRET_PERSISTENCE: TESTING_CONFIG_DB_TABLE
     command: [/bin/bash, -c, 'export DATABASE_USER="$$(cat /run/secrets/{{ .Values.database.userSecretName }})" DATABASE_PASSWORD="$$(cat /run/secrets/{{ .Values.database.passwordSecretName }})" AWS_ACCESS_KEY_ID="$$(cat /run/secrets/{{ .Values.storage.accessKeySecretName }})" AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/{{ .Values.storage.secretKeySecretName }})"; export DATABASE_URL="jdbc:postgresql://$${DATABASE_HOST}:$${DATABASE_PORT}/$${DATABASE_DB}"; exec airbyte-app/bin/airbyte-server']
@@ -327,9 +315,6 @@ services:
   connector-builder-server:
     image: {{ .Values.connectorBuilderServer.image.repository }}:{{ .Values.connectorBuilderServer.image.tag | default $airbyteVersion }}
     networks: [airbyte, {{ .Values.database.network }}]
-    volumes:
-      - {{ .Values.persistence.workspaceVolume }}:/data
-      - {{ .Values.persistence.configVolume }}:/config
     secrets:
       - {{ .Values.database.userSecretName }}
       - {{ .Values.database.passwordSecretName }}
@@ -350,7 +335,6 @@ services:
       STORAGE_BUCKET_AUDIT_LOGGING: {{ .Values.storage.bucket | quote }}
       S3_PATH_STYLE_ACCESS: "true"
       TEMPORAL_HOST: temporal:7233
-      CONFIG_ROOT: /config
       WORKSPACE_ROOT: /data/workspace
     command: [/bin/bash, -c, 'export DATABASE_USER="$$(cat /run/secrets/{{ .Values.database.userSecretName }})" DATABASE_PASSWORD="$$(cat /run/secrets/{{ .Values.database.passwordSecretName }})" AWS_ACCESS_KEY_ID="$$(cat /run/secrets/{{ .Values.storage.accessKeySecretName }})" AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/{{ .Values.storage.secretKeySecretName }})"; exec airbyte-app/bin/airbyte-connector-builder-server']
     deploy:
@@ -362,9 +346,6 @@ services:
   worker:
     image: {{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag | default $airbyteVersion }}
     networks: [airbyte, {{ .Values.database.network }}]
-    volumes:
-      - {{ .Values.persistence.workspaceVolume }}:/data
-      - {{ .Values.persistence.configVolume }}:/config
     secrets:
       - {{ .Values.database.userSecretName }}
       - {{ .Values.database.passwordSecretName }}
@@ -388,8 +369,6 @@ services:
       AIRBYTE_URL: {{ printf "%s://%s" $scheme .Values.exposure.host | quote }}
       INTERNAL_API_HOST: http://server:8001
       WORKLOAD_API_HOST: http://workload-api-server:8007
-      CONFIG_ROOT: /config
-      JAVA_OPTS: -Dairbyte.config.root=/config
       WORKSPACE_ROOT: /data/workspace
       SECRET_PERSISTENCE: TESTING_CONFIG_DB_TABLE
       SHOULD_RUN_CONNECTION_MANAGER_WORKFLOWS: "true"
@@ -403,10 +382,52 @@ services:
 
   temporal:
     image: {{ .Values.temporal.image.repository }}:{{ .Values.temporal.image.tag }}
-    command: [server, start-dev, --ip, 0.0.0.0, --db-filename, /home/temporal/temporal.db]
-    networks: [airbyte]
-    volumes:
-      - {{ .Values.persistence.temporalVolume }}:/home/temporal
+    networks: [airbyte, {{ .Values.database.network }}]
+    secrets:
+      - {{ .Values.database.userSecretName }}
+      - {{ .Values.database.passwordSecretName }}
+    configs:
+      - source: temporal-dynamicconfig
+        target: /etc/temporal/config/dynamicconfig/development.yaml
+        mode: 0444
+    environment:
+      AUTO_SETUP: "true"
+      DB: postgres12
+      POSTGRES_SEEDS: {{ .Values.database.host | quote }}
+      DB_PORT: {{ .Values.database.port | quote }}
+      SKIP_DB_CREATE: {{ ternary "false" "true" .Values.temporal.createDatabases | quote }}
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development.yaml
+      # The task sits on two overlays and its hostname resolves to one of them.
+      BIND_ON_IP: 0.0.0.0
+    entrypoint:
+      - /bin/sh
+      - -c
+      - 'export POSTGRES_USER="$$(cat /run/secrets/{{ .Values.database.userSecretName }})" POSTGRES_PWD="$$(cat /run/secrets/{{ .Values.database.passwordSecretName }})"; exec /etc/temporal/entrypoint.sh autosetup'
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+{{ toYaml $constraints | indent 10 }}
+
+  cron:
+    image: {{ .Values.cron.image.repository }}:{{ .Values.cron.image.tag | default $airbyteVersion }}
+    networks: [airbyte, {{ .Values.database.network }}]
+    secrets:
+      - {{ .Values.database.userSecretName }}
+      - {{ .Values.database.passwordSecretName }}
+    environment:
+      AIRBYTE_VERSION: {{ $airbyteVersion | quote }}
+      AIRBYTE_EDITION: community
+      DATABASE_HOST: {{ .Values.database.host | quote }}
+      DATABASE_PORT: {{ .Values.database.port | quote }}
+      DATABASE_DB: {{ .Values.database.name | quote }}
+      CONFIGS_DATABASE_MINIMUM_FLYWAY_MIGRATION_VERSION: {{ .Values.flyway.configsMinimumMigrationVersion | quote }}
+      MICRONAUT_ENVIRONMENTS: control-plane
+      TEMPORAL_HOST: temporal:7233
+      WORKLOAD_API_HOST: http://workload-api-server:8007
+      WORKSPACE_ROOT: /data/workspace
+      SECRET_PERSISTENCE: TESTING_CONFIG_DB_TABLE
+    command: [/bin/bash, -c, 'export DATABASE_USER="$$(cat /run/secrets/{{ .Values.database.userSecretName }})" DATABASE_PASSWORD="$$(cat /run/secrets/{{ .Values.database.passwordSecretName }})"; export DATABASE_URL="jdbc:postgresql://$${DATABASE_HOST}:$${DATABASE_PORT}/$${DATABASE_DB}"; exec airbyte-app/bin/airbyte-cron']
     deploy:
       replicas: 1
       placement:
@@ -414,15 +435,15 @@ services:
 {{ toYaml $constraints | indent 10 }}
 
 volumes:
-  {{ .Values.persistence.workspaceVolume }}: {}
-  {{ .Values.persistence.configVolume }}: {}
-  {{ .Values.persistence.temporalVolume }}: {}
   {{ .Values.persistence.oauthRedisVolume }}: {}
 
 configs:
   fakek8s:
     name: "{{ .Release.Name }}_fakek8s_{{ .Chart.Version }}{{ with .Values.fakeK8sConfigVersion }}_{{ . }}{{ end }}"
     file: files/FakeK8s.java
+  temporal-dynamicconfig:
+    name: "{{ .Release.Name }}_temporal-dynamicconfig_{{ .Chart.Version }}"
+    file: files/temporal-dynamicconfig.yaml
 
 secrets:
   {{ .Values.database.userSecretName }}:
@@ -432,10 +453,6 @@ secrets:
   {{ .Values.storage.accessKeySecretName }}:
     external: true
   {{ .Values.storage.secretKeySecretName }}:
-    external: true
-  {{ .Values.dataplane.clientIdSecretName }}:
-    external: true
-  {{ .Values.dataplane.clientSecretSecretName }}:
     external: true
   {{ .Values.oauth2.clientSecretName }}:
     external: true
