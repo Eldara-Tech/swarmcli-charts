@@ -7,6 +7,7 @@
 {{- range .Values.workloadLauncher.extraNetworks }}{{ $workloadNetworks = append $workloadNetworks . }}{{- end }}
 {{- $workloadNetworks = $workloadNetworks | uniq }}
 {{- $router := .Release.Name }}
+{{- $scheme := ternary "https" "http" .Values.exposure.tls }}
 version: "3.9"
 
 services:
@@ -95,7 +96,7 @@ services:
       - {{ printf "--cookie-name=%s" .Values.oauth2.cookieName | quote }}
       - --cookie-secure={{ .Values.exposure.tls }}
       - {{ printf "--cookie-domain=%s" .Values.exposure.host | quote }}
-      - {{ printf "--redirect-url=https://%s/oauth2/callback" .Values.exposure.host | quote }}
+      - {{ printf "--redirect-url=%s://%s/oauth2/callback" $scheme .Values.exposure.host | quote }}
       - {{ printf "--email-domain=%s" .Values.oauth2.emailDomain | quote }}
       - --session-store-type=redis
       - --redis-connection-url=redis://oauth2-redis:6379
@@ -307,7 +308,7 @@ services:
       STORAGE_BUCKET_AUDIT_LOGGING: {{ .Values.storage.bucket | quote }}
       S3_PATH_STYLE_ACCESS: "true"
       TEMPORAL_HOST: temporal:7233
-      AIRBYTE_URL: {{ printf "https://%s" .Values.exposure.host | quote }}
+      AIRBYTE_URL: {{ printf "%s://%s" $scheme .Values.exposure.host | quote }}
       CONFIG_ROOT: /config
       JAVA_OPTS: -Dairbyte.config.root=/config
       WORKSPACE_ROOT: /data/workspace
@@ -381,7 +382,7 @@ services:
       STORAGE_BUCKET_AUDIT_LOGGING: {{ .Values.storage.bucket | quote }}
       S3_PATH_STYLE_ACCESS: "true"
       TEMPORAL_HOST: temporal:7233
-      AIRBYTE_URL: {{ printf "https://%s" .Values.exposure.host | quote }}
+      AIRBYTE_URL: {{ printf "%s://%s" $scheme .Values.exposure.host | quote }}
       INTERNAL_API_HOST: http://server:8001
       WORKLOAD_API_HOST: http://workload-api-server:8007
       CONFIG_ROOT: /config

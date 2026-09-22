@@ -113,7 +113,7 @@ oauth2:
   trustedProxyIp: 10.0.0.0/8
   scope: "openid email"
   skipJwtBearerTokens: true
-  sslInsecureSkipVerify: true
+  sslInsecureSkipVerify: false
   upstreamTimeout: 300s
 
 traefik:
