@@ -4,6 +4,13 @@ import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
+import java.nio.charset.StandardCharsets;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
 
 /**
  * Fake Kubernetes API server for Airbyte workload-launcher on Docker Swarm.
@@ -64,6 +71,15 @@ public class FakeK8s {
     static final String APPS_RESOURCE_LIST =
         "{\"kind\":\"APIResourceList\",\"apiVersion\":\"v1\"," +
         "\"groupVersion\":\"apps/v1\",\"resources\":[]}";
+
+    // Label value on every container and volume FakeK8s creates, so a restarted launcher can
+    // find and remove what its previous run left behind. Empty (db-migrations): no sweep.
+    static final String OWNER = System.getenv().getOrDefault("FAKEK8S_OWNER", "");
+
+    static String labelsJson(String podName) {
+        return "\"Labels\":{\"airbyte.fakek8s/owner\":\"" + esc(OWNER)
+            + "\",\"airbyte.fakek8s/pod\":\"" + esc(podName) + "\"}";
+    }
 
     // ── Pod registry ──────────────────────────────────────────────────────
     // podName → PodState
@@ -653,6 +669,7 @@ public class FakeK8s {
     ) {
         StringBuilder body = new StringBuilder();
         body.append("{\"Image\":\"").append(esc(image)).append("\",");
+        body.append(labelsJson(podName)).append(",");
         if (workingDir != null && !workingDir.isEmpty()) {
             body.append("\"WorkingDir\":\"").append(esc(workingDir)).append("\",");
         }
@@ -951,7 +968,7 @@ public class FakeK8s {
             String dockerVol = "airbyte-emptydir-" + podSafe + "-" + volName.replaceAll("[^a-zA-Z0-9_.-]", "_");
             emptyDirVolumes.put(volName, dockerVol);
             try {
-                dockerPost("/v1.41/volumes/create", "{\"Name\":\"" + esc(dockerVol) + "\"}");
+                dockerPost("/v1.41/volumes/create", "{\"Name\":\"" + esc(dockerVol) + "\"," + labelsJson(podName) + "}");
                 log("  emptyDir volume=" + dockerVol + " created (k8s=" + volName + ")");
             } catch (Exception e) {
                 err("  emptyDir volume create failed: " + e);
@@ -1175,6 +1192,93 @@ public class FakeK8s {
         }
     }
 
+    // ── Secrets, kept in the Airbyte database ─────────────────────────────
+    // The bootloader stores the dataplane credentials it creates in the Secret
+    // airbyte-auth-secrets and verifies them on every later run; the launcher reads them
+    // back. Airbyte's own Postgres (DATABASE_URL/USER/PASSWORD, exported by both services
+    // that run FakeK8s) gives the two processes one durable store and no node-local state.
+    static Connection db() throws SQLException {
+        Connection c = DriverManager.getConnection(System.getenv("DATABASE_URL"),
+            System.getenv("DATABASE_USER"), System.getenv("DATABASE_PASSWORD"));
+        try (Statement st = c.createStatement()) {
+            st.execute("CREATE TABLE IF NOT EXISTS fakek8s_secrets (name TEXT PRIMARY KEY, data TEXT NOT NULL)");
+        }
+        return c;
+    }
+
+    // The Secret's data object ({"key":"<base64>",...}), or null when it does not exist.
+    static String secretData(String name) throws SQLException {
+        try (Connection c = db();
+             PreparedStatement q = c.prepareStatement("SELECT data FROM fakek8s_secrets WHERE name = ?")) {
+            q.setString(1, name);
+            try (ResultSet r = q.executeQuery()) { return r.next() ? r.getString(1) : null; }
+        }
+    }
+
+    static void putSecret(String name, String data) throws SQLException {
+        try (Connection c = db();
+             PreparedStatement q = c.prepareStatement("INSERT INTO fakek8s_secrets (name, data) VALUES (?, ?) "
+                 + "ON CONFLICT (name) DO UPDATE SET data = EXCLUDED.data")) {
+            q.setString(1, name);
+            q.setString(2, data);
+            q.executeUpdate();
+        }
+    }
+
+    static void deleteSecret(String name) throws SQLException {
+        try (Connection c = db();
+             PreparedStatement q = c.prepareStatement("DELETE FROM fakek8s_secrets WHERE name = ?")) {
+            q.setString(1, name);
+            q.executeUpdate();
+        }
+    }
+
+    static String secretValue(String name, String key) throws SQLException {
+        String data = secretData(name);
+        String b64 = data == null ? "" : jsonStr(data, key);
+        return b64.isEmpty() ? null : new String(Base64.getDecoder().decode(b64), StandardCharsets.UTF_8);
+    }
+
+    static String secretJson(String name, String data) {
+        return "{\"apiVersion\":\"v1\",\"kind\":\"Secret\",\"type\":\"Opaque\",\"metadata\":{\"name\":\""
+            + esc(name) + "\",\"namespace\":\"default\",\"resourceVersion\":\"" + RV.incrementAndGet()
+            + "\"},\"data\":" + data + "}";
+    }
+
+    // The object value of "key" (first occurrence), or null. Brace matching is enough for a
+    // Secret's data, whose values are base64.
+    static String jsonObject(String json, String key) {
+        int k = json.indexOf("\"" + key + "\":{");
+        if (k < 0) return null;
+        int start = json.indexOf('{', k), depth = 0;
+        for (int i = start; i < json.length(); i++) {
+            char c = json.charAt(i);
+            if (c == '{') depth++;
+            else if (c == '}' && --depth == 0) return json.substring(start, i + 1);
+        }
+        return null;
+    }
+
+    static void sweepLeftovers() {
+        try {
+            String filter = URLEncoder.encode("{\"label\":[\"airbyte.fakek8s/owner=" + esc(OWNER) + "\"]}", "UTF-8");
+            java.util.regex.Matcher c = java.util.regex.Pattern.compile("\"Id\":\"([a-f0-9]+)\"")
+                .matcher(dockerGet("/v1.41/containers/json?all=true&filters=" + filter));
+            while (c.find()) {
+                dockerDelete("/v1.41/containers/" + c.group(1) + "?force=true");
+                log("removed leftover container " + c.group(1).substring(0, Math.min(12, c.group(1).length())));
+            }
+            java.util.regex.Matcher v = java.util.regex.Pattern.compile("\"Name\":\"([^\"]+)\"")
+                .matcher(dockerGet("/v1.41/volumes?filters=" + filter));
+            while (v.find()) {
+                dockerDelete("/v1.41/volumes/" + v.group(1));
+                log("removed leftover volume " + v.group(1));
+            }
+        } catch (Exception e) {
+            err("Leftover sweep failed: " + e);
+        }
+    }
+
     // ── SSE watch notification ────────────────────────────────────────────
     static void notifyWatchers(String podName, String eventType, PodState pod) {
         pod.resourceVersion = Long.toString(RV.incrementAndGet());
@@ -1357,6 +1461,44 @@ public class FakeK8s {
                 sendJson(sock.getOutputStream(), 200, APPS_RESOURCE_LIST); return;
             }
 
+            // Secrets (the bootloader's dataplane credentials), stored in the Airbyte database
+            if (path.startsWith("/api/v1/namespaces/default/secrets")) {
+                String prefix = "/api/v1/namespaces/default/secrets/";
+                String name = "POST".equals(method) ? jsonStr(body, "name")   // metadata.name comes first
+                    : (path.startsWith(prefix) ? path.substring(prefix.length()) : "");
+                try {
+                    if ("GET".equals(method) && !name.isEmpty()) {
+                        String data = secretData(name);
+                        if (data == null) {
+                            sendJson(sock.getOutputStream(), 404,
+                                "{\"apiVersion\":\"v1\",\"kind\":\"Status\",\"status\":\"Failure\"," +
+                                "\"message\":\"secrets \\\"" + esc(name) + "\\\" not found\"," +
+                                "\"reason\":\"NotFound\",\"code\":404}");
+                        } else {
+                            sendJson(sock.getOutputStream(), 200, secretJson(name, data));
+                        }
+                    } else if (!name.isEmpty() && ("POST".equals(method) || "PUT".equals(method) || "PATCH".equals(method))) {
+                        String data = jsonObject(body, "data");
+                        if (data == null) data = "{}";
+                        putSecret(name, data);
+                        log("secret " + name + " stored");
+                        sendJson(sock.getOutputStream(), "POST".equals(method) ? 201 : 200, secretJson(name, data));
+                    } else if ("DELETE".equals(method) && !name.isEmpty()) {
+                        deleteSecret(name);
+                        sendJson(sock.getOutputStream(), 200,
+                            "{\"apiVersion\":\"v1\",\"kind\":\"Status\",\"status\":\"Success\"}");
+                    } else {
+                        sendJson(sock.getOutputStream(), 200,
+                            "{\"apiVersion\":\"v1\",\"kind\":\"SecretList\",\"metadata\":{},\"items\":[]}");
+                    }
+                } catch (SQLException e) {
+                    err("secret " + name + " store failed: " + e.getMessage());
+                    sendJson(sock.getOutputStream(), 500,
+                        "{\"apiVersion\":\"v1\",\"kind\":\"Status\",\"status\":\"Failure\",\"code\":500}");
+                }
+                return;
+            }
+
             // Namespace
             if ("GET".equals(method) && path.startsWith("/api/v1/namespaces/default") && !path.contains("/pods")) {
                 sendJson(sock.getOutputStream(), 200,
@@ -1384,8 +1526,8 @@ public class FakeK8s {
                 return;
             }
 
-            // Secrets / ConfigMaps (launcher may create them for connector config)
-            if (path.contains("/secrets") || path.contains("/configmaps")) {
+            // ConfigMaps (launcher may create them for connector config)
+            if (path.contains("/configmaps")) {
                 if ("POST".equals(method)) {
                     String name = jsonStr(body, "name");
                     if (name.isEmpty()) name = "resource-" + System.currentTimeMillis();
@@ -1486,7 +1628,8 @@ public class FakeK8s {
                     exec.submit(() -> {
                         try {
                             String resp = dockerGet("/v1.41/containers/json?all=true&filters=" +
-                                URLEncoder.encode("{\"name\":[\"" + esc("^/" + podName.replaceAll("[^a-zA-Z0-9_.-]", "_").replace(".", "\\.") + "-") + "\"]}", "UTF-8"));
+                                URLEncoder.encode("{\"label\":[\"airbyte.fakek8s/owner=" + esc(OWNER)
+                                    + "\",\"airbyte.fakek8s/pod=" + esc(podName) + "\"]}", "UTF-8"));
                             // Extract IDs and stop them
                             java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"Id\":\"([a-f0-9]+)\"").matcher(resp);
                             while (m.find()) {
@@ -1542,6 +1685,17 @@ public class FakeK8s {
     }
 
     public static void main(String[] args) throws Exception {
+        // `FakeK8s get-secret <name> <key>` prints one decoded value, or exits 1 while it
+        // does not exist yet (the launcher waits on it for the dataplane credentials).
+        if (args.length == 3 && "get-secret".equals(args[0])) {
+            String value = null;
+            try { value = secretValue(args[1], args[2]); }
+            catch (SQLException e) { System.err.println("[FakeK8s] get-secret: " + e.getMessage()); }
+            if (value == null) System.exit(1);
+            System.out.print(value);
+            return;
+        }
+        if (!OWNER.isEmpty()) sweepLeftovers();
         log("Starting fake Kubernetes API on :6443");
         ServerSocket ss = new ServerSocket(6443, 128, InetAddress.getLoopbackAddress());
         while (true) {
