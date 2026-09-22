@@ -1,4 +1,5 @@
-{{- $serverImage := printf "%s:%s" .Values.image.repository (.Values.image.tag | default .Chart.AppVersion) }}
+{{- $airbyteVersion := .Values.image.tag | default .Chart.AppVersion }}
+{{- $serverImage := printf "%s:%s" .Values.image.repository $airbyteVersion }}
 {{- $constraints := .Values.placement.constraints }}
 {{- if .Values.persistence.nodeLabel }}{{ $constraints = append $constraints (printf "node.labels.%s == true" .Values.persistence.nodeLabel) }}{{- end }}
 {{- $proxyNetworks := list "airbyte" .Values.oauth2.redisNetwork }}
@@ -12,7 +13,7 @@ version: "3.9"
 
 services:
   db-migrations:
-    image: {{ .Values.bootloader.repository }}:{{ .Values.bootloader.tag }}
+    image: {{ .Values.bootloader.image.repository }}:{{ .Values.bootloader.image.tag | default $airbyteVersion }}
     networks:
       - airbyte
       - {{ .Values.database.network }}
@@ -27,7 +28,7 @@ services:
       DATABASE_HOST: {{ .Values.database.host | quote }}
       DATABASE_PORT: {{ .Values.database.port | quote }}
       DATABASE_DB: {{ .Values.database.name | quote }}
-      AIRBYTE_VERSION: {{ .Chart.AppVersion | quote }}
+      AIRBYTE_VERSION: {{ $airbyteVersion | quote }}
       RUN_DATABASE_MIGRATION_ON_STARTUP: "true"
       SECRET_PERSISTENCE: TESTING_CONFIG_DB_TABLE
       MICRONAUT_ENVIRONMENTS: docker
@@ -67,7 +68,7 @@ services:
         condition: on-failure
 
   oauth2-redis:
-    image: {{ .Values.redis.repository }}:{{ .Values.redis.tag }}
+    image: {{ .Values.redis.image.repository }}:{{ .Values.redis.image.tag }}
     command: [redis-server, --appendonly, "yes"]
     networks:
       - {{ .Values.oauth2.redisNetwork }}
@@ -80,7 +81,7 @@ services:
 {{ toYaml $constraints | indent 10 }}
 
   oauth2-proxy:
-    image: {{ .Values.oauth2Proxy.repository }}:{{ .Values.oauth2Proxy.tag }}
+    image: {{ .Values.oauth2Proxy.image.repository }}:{{ .Values.oauth2Proxy.image.tag }}
     networks:
 {{ toYaml $proxyNetworks | indent 6 }}
     secrets:
@@ -153,7 +154,7 @@ services:
 {{- end }}
 
   webapp:
-    image: {{ .Values.webapp.repository }}:{{ .Values.webapp.tag }}
+    image: {{ .Values.webapp.image.repository }}:{{ .Values.webapp.image.tag }}
     networks: [airbyte]
     environment:
       AIRBYTE_SERVER_HOST: server:8001
@@ -166,7 +167,7 @@ services:
 {{ toYaml $constraints | indent 10 }}
 
   workload-launcher:
-    image: {{ .Values.workloadLauncher.image.repository }}:{{ .Values.workloadLauncher.image.tag }}
+    image: {{ .Values.workloadLauncher.image.repository }}:{{ .Values.workloadLauncher.image.tag | default $airbyteVersion }}
     user: "0"
     networks: [airbyte, {{ .Values.database.network }}]
     volumes:
@@ -184,7 +185,7 @@ services:
       - {{ .Values.dataplane.clientIdSecretName }}
       - {{ .Values.dataplane.clientSecretSecretName }}
     environment:
-      AIRBYTE_VERSION: {{ .Chart.AppVersion | quote }}
+      AIRBYTE_VERSION: {{ $airbyteVersion | quote }}
       DATABASE_HOST: {{ .Values.database.host | quote }}
       DATABASE_PORT: {{ .Values.database.port | quote }}
       DATABASE_DB: {{ .Values.database.name | quote }}
@@ -203,6 +204,7 @@ services:
       DATAPLANE_CLIENT_ID_SECRET_KEY: DATAPLANE_CLIENT_ID
       DATAPLANE_CLIENT_SECRET_SECRET_NAME: dataplane-credentials
       DATAPLANE_CLIENT_SECRET_SECRET_KEY: DATAPLANE_CLIENT_SECRET
+      FAKEK8S_POD_NETWORK: "{{ .Release.Name }}_airbyte"
       FAKEK8S_POD_EXTRA_NETWORKS: {{ $workloadNetworks | join "," | quote }}
       WORKSPACE_ROOT: /data/workspace
       LOCAL_ROOT: /tmp/airbyte_local
@@ -245,7 +247,7 @@ services:
           memory: {{ .Values.workloadLauncher.memoryLimit | quote }}
 
   workload-api-server:
-    image: {{ .Values.workloadApiServer.repository }}:{{ .Values.workloadApiServer.tag }}
+    image: {{ .Values.workloadApiServer.image.repository }}:{{ .Values.workloadApiServer.image.tag | default $airbyteVersion }}
     networks: [airbyte, {{ .Values.database.network }}]
     secrets:
       - {{ .Values.database.userSecretName }}
@@ -253,7 +255,7 @@ services:
       - {{ .Values.storage.accessKeySecretName }}
       - {{ .Values.storage.secretKeySecretName }}
     environment:
-      AIRBYTE_VERSION: {{ .Chart.AppVersion | quote }}
+      AIRBYTE_VERSION: {{ $airbyteVersion | quote }}
       DATABASE_HOST: {{ .Values.database.host | quote }}
       DATABASE_PORT: {{ .Values.database.port | quote }}
       DATABASE_DB: {{ .Values.database.name | quote }}
@@ -286,7 +288,7 @@ services:
       - {{ .Values.storage.accessKeySecretName }}
       - {{ .Values.storage.secretKeySecretName }}
     environment:
-      AIRBYTE_VERSION: {{ .Chart.AppVersion | quote }}
+      AIRBYTE_VERSION: {{ $airbyteVersion | quote }}
       AIRBYTE_EDITION: community
       DATABASE_HOST: {{ .Values.database.host | quote }}
       DATABASE_PORT: {{ .Values.database.port | quote }}
@@ -309,6 +311,8 @@ services:
       S3_PATH_STYLE_ACCESS: "true"
       TEMPORAL_HOST: temporal:7233
       AIRBYTE_URL: {{ printf "%s://%s" $scheme .Values.exposure.host | quote }}
+      AIRBYTE_API_HOST: http://localhost:8001/api/public
+      CONNECTOR_BUILDER_SERVER_API_HOST: http://connector-builder-server:8080
       CONFIG_ROOT: /config
       JAVA_OPTS: -Dairbyte.config.root=/config
       WORKSPACE_ROOT: /data/workspace
@@ -321,7 +325,7 @@ services:
 {{ toYaml $constraints | indent 10 }}
 
   connector-builder-server:
-    image: {{ .Values.connectorBuilderServer.repository }}:{{ .Values.connectorBuilderServer.tag }}
+    image: {{ .Values.connectorBuilderServer.image.repository }}:{{ .Values.connectorBuilderServer.image.tag | default $airbyteVersion }}
     networks: [airbyte, {{ .Values.database.network }}]
     volumes:
       - {{ .Values.persistence.workspaceVolume }}:/data
@@ -332,7 +336,7 @@ services:
       - {{ .Values.storage.accessKeySecretName }}
       - {{ .Values.storage.secretKeySecretName }}
     environment:
-      AIRBYTE_VERSION: {{ .Chart.AppVersion | quote }}
+      AIRBYTE_VERSION: {{ $airbyteVersion | quote }}
       DATABASE_HOST: {{ .Values.database.host | quote }}
       DATABASE_PORT: {{ .Values.database.port | quote }}
       DATABASE_DB: {{ .Values.database.name | quote }}
@@ -356,19 +360,18 @@ services:
 {{ toYaml $constraints | indent 10 }}
 
   worker:
-    image: {{ .Values.worker.repository }}:{{ .Values.worker.tag }}
+    image: {{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag | default $airbyteVersion }}
     networks: [airbyte, {{ .Values.database.network }}]
     volumes:
       - {{ .Values.persistence.workspaceVolume }}:/data
       - {{ .Values.persistence.configVolume }}:/config
-      - /var/run/docker.sock:/var/run/docker.sock
     secrets:
       - {{ .Values.database.userSecretName }}
       - {{ .Values.database.passwordSecretName }}
       - {{ .Values.storage.accessKeySecretName }}
       - {{ .Values.storage.secretKeySecretName }}
     environment:
-      AIRBYTE_VERSION: {{ .Chart.AppVersion | quote }}
+      AIRBYTE_VERSION: {{ $airbyteVersion | quote }}
       DATABASE_HOST: {{ .Values.database.host | quote }}
       DATABASE_PORT: {{ .Values.database.port | quote }}
       DATABASE_DB: {{ .Values.database.name | quote }}
@@ -399,7 +402,7 @@ services:
 {{ toYaml $constraints | indent 10 }}
 
   temporal:
-    image: {{ .Values.temporal.repository }}:{{ .Values.temporal.tag }}
+    image: {{ .Values.temporal.image.repository }}:{{ .Values.temporal.image.tag }}
     command: [server, start-dev, --ip, 0.0.0.0, --db-filename, /home/temporal/temporal.db]
     networks: [airbyte]
     volumes:

@@ -85,28 +85,29 @@ the external network without adding Traefik labels so another proxy can reach it
 The OAuth2 callback is `https://<exposure.host>/oauth2/callback` (`http://` when
 `exposure.tls` is false). Register that exact redirect URI with the OIDC
 provider, and set `oauth2.clientId` and `oauth2.issuerUrl` to match the
-provider. The client and cookie secret names are
-always real external secret names. OAuth2 Proxy reads them directly from their
-mounted files; the cookie secret must be exactly 16, 24, or 32 raw bytes.
+provider. The client and cookie secret names are always real external secret
+names. OAuth2 Proxy reads them directly from their mounted files; the cookie
+secret must be exactly 16, 24, or 32 raw bytes.
 
 ## Workload Launcher Security
 
-Airbyte launches connector workloads dynamically. The worker and workload launcher
-therefore mount `/var/run/docker.sock`, which grants effective control of the
-Docker daemon on their scheduled node. The chart declares this explicitly in
-`Chart.yaml` for the repository security scanner. Use a dedicated, trusted node
-for `persistence.nodeLabel`; do not relax its access controls.
+Airbyte launches connector workloads dynamically. The workload launcher
+therefore mounts `/var/run/docker.sock`, which grants effective control of the
+Docker daemon on its scheduled node. The connector containers it starts get only
+their own emptyDir volumes, never the socket. The chart declares this explicitly
+in `Chart.yaml` for the repository security scanner. Use a dedicated, trusted
+node for `persistence.nodeLabel`; do not relax its access controls.
 
 ## Values
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `image.repository` / `.tag` | `airbyte/server` / `""` | Airbyte server image; tag defaults to `appVersion` in Chart.yaml |
-| `bootloader.*`, `worker.*`, `connectorBuilderServer.*` | `airbyte/*` / `1.8.1` | Dedicated migration, worker, and connector-builder images |
-| `workloadApiServer.*`, `workloadLauncher.image.*` | `airbyte/*` / `1.8.1` | Dedicated workload API and launcher images |
-| `webapp.*` | `airbyte/webapp` / `1.7.8` | Web UI image and tag |
-| `oauth2Proxy.*` | `quay.io/oauth2-proxy/oauth2-proxy` | OIDC reverse-proxy image and tag |
-| `redis.*` / `temporal.*` | see `values.yaml` | In-stack session Redis and Temporal images |
+| `bootloader.image.*`, `worker.image.*`, `connectorBuilderServer.image.*` | `airbyte/*` / `""` | Migration, worker, and connector-builder images; an empty tag follows `image.tag` |
+| `workloadApiServer.image.*`, `workloadLauncher.image.*` | `airbyte/*` / `""` | Workload API and launcher images; an empty tag follows `image.tag` |
+| `webapp.image.*` | `airbyte/webapp` / `1.7.8` | Web UI image and tag |
+| `oauth2Proxy.image.*` | `quay.io/oauth2-proxy/oauth2-proxy` | OIDC reverse-proxy image and tag |
+| `redis.image.*` / `temporal.image.*` | see `values.yaml` | In-stack session Redis and Temporal images |
 | `fakeK8sConfigVersion` | `""` | Optional local-testing rotation key for the immutable FakeK8s config |
 | `persistence.*` | see `values.yaml` | Named volumes and the node label that pins stateful services |
 | `database.host` / `.port` / `.name` | `postgres` / `5432` / `airbyte` | External PostgreSQL endpoint and database |
@@ -115,7 +116,7 @@ for `persistence.nodeLabel`; do not relax its access controls.
 | `storage.endpoint` / `.bucket` | `https://minio.example.com` / `airbyte-storage` | S3-compatible endpoint and bucket |
 | `storage.accessKeySecretName` / `.secretKeySecretName` | `airbyte_s3_access_key` / `airbyte_s3_secret_key` | External S3 credential secrets |
 | `connectorRegistry.enterpriseSourceStubsUrl` | see `values.yaml` | Connector-registry Enterprise source stubs URL |
-| `flyway.configsMinimumMigrationVersion` / `.jobsMinimumMigrationVersion` | `0.0.0.001` / `0.0.0.001` | Minimum required Flyway migration for the configs and jobs databases |
+| `flyway.configsMinimumMigrationVersion` / `.jobsMinimumMigrationVersion` | `0.35.15.001` / `0.29.15.001` | Minimum required Flyway migration for the configs and jobs databases |
 | `dataplane.clientIdSecretName` / `.clientSecretSecretName` | `airbyte_dataplane_client_id` / `airbyte_dataplane_client_secret` | External credentials used by the workload launcher to request control-plane tokens |
 | `exposure.mode` | `traefik` | `traefik`, `published`, or `none` |
 | `exposure.network` / `.host` / `.tls` | `traefik-public` / `airbyte.example.com` / `true` | Ingress overlay and public address |

@@ -23,5 +23,16 @@ grep -q -- "--redirect-url=$scheme://airbyte.example.com/oauth2/callback" "$out"
 grep -q -- '--ssl-insecure-skip-verify=false' "$out" \
   || { echo "  FAIL($case): oauth2-proxy skips TLS verification by default"; fail=1; }
 
+# One Airbyte release everywhere: every platform image (the webapp is published separately)
+# carries the tag AIRBYTE_VERSION names, or a Renovate bump of appVersion runs mixed versions.
+versions="$(sed -n 's/^ *AIRBYTE_VERSION: *"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$out" | sort -u)"
+tags="$(grep -v '^ *image: airbyte/webapp:' "$out" | sed -n 's/^ *image: airbyte\/[a-z-]*:\(.*\)$/\1/p' | sort -u)"
+{ [ "$(printf '%s\n' "$versions" | wc -l)" -eq 1 ] && [ "$tags" = "$versions" ]; } \
+  || { echo "  FAIL($case): platform image tags [$(echo $tags)] != AIRBYTE_VERSION [$(echo $versions)]"; fail=1; }
+
+# Only the workload launcher holds the Docker socket; the worker never starts containers.
+[ "$(grep -c '/var/run/docker.sock:/var/run/docker.sock' "$out")" -eq 1 ] \
+  || { echo "  FAIL($case): docker.sock is mounted into more than the workload launcher"; fail=1; }
+
 [ "$fail" -eq 0 ] || exit 1
-echo "  $case: public URLs use $scheme://, issuer TLS verified"
+echo "  $case: public URLs use $scheme://, issuer TLS verified, one Airbyte version, one socket mount"

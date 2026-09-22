@@ -8,24 +8,29 @@ image:
   repository: airbyte/server
   tag: ""  # defaults to appVersion from Chart.yaml
 
-# The control-plane services are separate Airbyte images. Keep their tags aligned
-# with the matching Airbyte release; the webapp is intentionally separate.
+# The other platform images must run the same Airbyte release as the server: an
+# empty tag follows image.tag, and so does AIRBYTE_VERSION, which picks the job
+# images the launcher starts.
 bootloader:
-  repository: airbyte/bootloader
-  tag: "1.8.1"
+  image:
+    repository: airbyte/bootloader
+    tag: ""
 worker:
-  repository: airbyte/worker
-  tag: "1.8.1"
+  image:
+    repository: airbyte/worker
+    tag: ""
 connectorBuilderServer:
-  repository: airbyte/connector-builder-server
-  tag: "1.8.1"
+  image:
+    repository: airbyte/connector-builder-server
+    tag: ""
 workloadApiServer:
-  repository: airbyte/workload-api-server
-  tag: "1.8.1"
+  image:
+    repository: airbyte/workload-api-server
+    tag: ""
 workloadLauncher:
   image:
     repository: airbyte/workload-launcher
-    tag: "1.8.1"
+    tag: ""
   replicas: 1
   memoryReservation: 1G
   memoryLimit: 4G
@@ -39,18 +44,23 @@ workloadLauncher:
 dataplane:
   clientIdSecretName: airbyte_dataplane_client_id
   clientSecretSecretName: airbyte_dataplane_client_secret
+# Pinned separately; Renovate tracks each image: {repository, tag} block.
 webapp:
-  repository: airbyte/webapp
-  tag: "1.7.8"
+  image:
+    repository: airbyte/webapp
+    tag: "1.7.8"
 oauth2Proxy:
-  repository: quay.io/oauth2-proxy/oauth2-proxy
-  tag: "v7.15.4"
+  image:
+    repository: quay.io/oauth2-proxy/oauth2-proxy
+    tag: "v7.15.4"
 redis:
-  repository: redis
-  tag: "7.4.7-alpine"
+  image:
+    repository: redis
+    tag: "7.4.7-alpine"
 temporal:
-  repository: temporalio/temporal
-  tag: "1.9.1"
+  image:
+    repository: temporalio/temporal
+    tag: "1.9.1"
 
 # Leave empty for released charts: Chart.Version rotates the immutable config.
 # For a local upgrade after changing files/FakeK8s.java, set a new value such as
@@ -88,10 +98,11 @@ storage:
 connectorRegistry:
   enterpriseSourceStubsUrl: https://connectors.airbyte.com/files/resources/connector_stubs/v1/connector_stubs.json
 
-# Airbyte server refuses to start until both database schemas meet these floors.
+# Airbyte server refuses to start until both database schemas meet these floors
+# (Airbyte's own chart defaults), so it waits for db-migrations on a fresh database.
 flyway:
-  configsMinimumMigrationVersion: "0.0.0.001"
-  jobsMinimumMigrationVersion: "0.0.0.001"
+  configsMinimumMigrationVersion: "0.35.15.001"
+  jobsMinimumMigrationVersion: "0.29.15.001"
 
 # Web exposure through the oauth2-proxy. The client and cookie secrets are
 # external Swarm secrets. Set exposure.mode: published for a private direct port.
