@@ -30,4 +30,8 @@ secrets:
     description: "OIDC client secret for oauth2-proxy"
   - name: "{{ .Values.oauth2.cookieSecretName }}"
     description: "Cookie encryption secret for oauth2-proxy"
+{{- with .Values.workloadLauncher.registryAuthSecretName }}
+  - name: "{{ . }}"
+    description: "Docker config.json with credentials for private connector registries"
+{{- end }}
 configs: []

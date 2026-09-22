@@ -10,3 +10,7 @@ default
 extra-network
 none
 published
+
+# Needs a private registry to prove anything at deploy time; ci/render-check.sh asserts the
+# secret mount and FAKEK8S_REGISTRY_AUTH_FILE agree.
+registry-auth

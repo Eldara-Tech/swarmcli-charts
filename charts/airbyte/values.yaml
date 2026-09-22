@@ -41,6 +41,10 @@ workloadLauncher:
   # target database's shared-services network. database.network is included
   # automatically; do not repeat it here.
   extraNetworks: []
+  # Optional external Swarm secret holding a Docker config.json whose "auths"
+  # entries carry inline "auth" credentials; connector images from those
+  # registries are pulled with them. Empty: public images only.
+  registryAuthSecretName: ""
 # Pinned separately; Renovate tracks each image: {repository, tag} block.
 oauth2Proxy:
   image:

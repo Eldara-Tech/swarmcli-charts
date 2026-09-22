@@ -106,7 +106,25 @@ The launcher translates Airbyte's Kubernetes calls into Docker ones with a small
 shim, `files/FakeK8s.java`. It keeps the Secret Airbyte's bootloader writes (the
 dataplane credentials) in a `fakek8s_secrets` table in the Airbyte database, and
 labels every container and volume it creates, so a restarted launcher removes
-what its previous run left behind.
+what its previous run left behind. Connector containers get the memory and CPU
+limits Airbyte sets on the pod (without swap, as on Kubernetes).
+
+## Private connector registries
+
+Connector images from a private registry need credentials, and Docker's pull API does
+not read the node's `docker login`. Put a Docker `config.json` in a Swarm secret and
+name it in `workloadLauncher.registryAuthSecretName`; FakeK8s sends the matching
+`auths` entry with each pull. Entries need an inline `auth` (base64 `user:password`),
+so write the file by hand or take it from a login without a credential helper:
+
+```bash
+printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$(printf 'user:token' | base64)" \
+  | docker secret create airbyte_registry_auth -
+```
+
+An image already on the launcher's node is used as it is. A pull is abandoned
+after 30 minutes, and a pod whose image is still missing then fails. Kubernetes
+`imagePullSecrets` in Airbyte's configuration are ignored.
 
 ## Values
 
@@ -138,5 +156,6 @@ what its previous run left behind.
 | `oauth2.redisNetwork` | `airbyte-oauth` | Chart-managed OAuth2 proxy/Redis overlay |
 | `traefik.*` | see `values.yaml` | Traefik router settings; defaults match this repository's Traefik chart |
 | `workloadLauncher.*` | see `values.yaml` | Single launcher replica, memory limits, and connector-only `extraNetworks` |
+| `workloadLauncher.registryAuthSecretName` | `""` | External secret with a Docker `config.json` for private connector registries |
 | `placement.constraints` | `[]` | Extra constraints for the Airbyte services and the session Redis |
 | `labels` | `{}` | Extra deploy labels applied to the OAuth2 proxy |

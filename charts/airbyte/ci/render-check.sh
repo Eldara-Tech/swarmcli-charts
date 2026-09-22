@@ -34,6 +34,16 @@ tags="$(sed -n 's/^ *image: airbyte\/[a-z-]*:\(.*\)$/\1/p' "$out" | sort -u)"
 [ "$(grep -c '/var/run/docker.sock:/var/run/docker.sock' "$out")" -eq 1 ] \
   || { echo "  FAIL($case): docker.sock is mounted into more than the workload launcher"; fail=1; }
 
+# A private registry's config.json reaches FakeK8s: the launcher mounts the secret and names
+# the same path in FAKEK8S_REGISTRY_AUTH_FILE; without the value, neither appears.
+if [ "$case" = "registry-auth" ]; then
+  grep -q 'FAKEK8S_REGISTRY_AUTH_FILE: "\{0,1\}/run/secrets/airbyte_registry_auth"\{0,1\}$' "$out" \
+    && grep -q '^ *- airbyte_registry_auth$' "$out" \
+    || { echo "  FAIL($case): registry auth secret not mounted where FAKEK8S_REGISTRY_AUTH_FILE points"; fail=1; }
+elif grep -q 'FAKEK8S_REGISTRY_AUTH_FILE' "$out"; then
+  echo "  FAIL($case): FAKEK8S_REGISTRY_AUTH_FILE set without workloadLauncher.registryAuthSecretName"; fail=1
+fi
+
 # The data pin follows the one named volume (the session Redis) and nothing else, and goes
 # away with nodeLabel: "".
 pins=1

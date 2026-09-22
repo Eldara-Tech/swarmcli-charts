@@ -76,5 +76,21 @@ const check = await request(`${server}/api/v1/scheduler/sources/check_connection
 if (check.status !== 200) throw new Error(`check_connection: HTTP ${check.status} ${check.text}`);
 const result = JSON.parse(check.text);
 if (result.status !== 'succeeded') throw new Error(`check_connection: ${result.status} ${result.message || ''}`);
-console.log('  source-faker check_connection: succeeded (launcher -> FakeK8s -> Docker -> MinIO)');
+console.log('  source-faker check_connection: succeeded');
 JS
+
+# The check can only succeed through FakeK8s; show it from the launcher's own log as well.
+# Captured to a file and matched with -F rather than piped: `docker service logs` can lag the
+# process, so retry for a while.
+log="$(mktemp)"
+trap 'rm -f "$log"' EXIT
+for _ in $(seq 1 12); do
+  docker service logs --raw "${release}_workload-launcher" >"$log" 2>&1 || true
+  if grep -F 'DONE  phase=Succeeded' "$log" >/dev/null; then
+    echo "  workload-launcher: $(grep -F 'DONE  phase=Succeeded' "$log" | sed -n 1p | sed 's/^.*POD /FakeK8s ran pod /')"
+    exit 0
+  fi
+  sleep 5
+done
+echo "  FAIL: the launcher log shows no pod FakeK8s ran to success"
+exit 1
