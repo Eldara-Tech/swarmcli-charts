@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+#
+# e2e smoke check for the airbyte chart, run by scripts/e2e-test.sh after the release
+# converges:   $1 = release name   $2 = chart directory   $3 = fixture case name
+#
+# Convergence proves little here: every Airbyte service reports Running long before it
+# serves, and the workload launcher is Running while it still waits for the dataplane
+# credentials. So this drives the one path that crosses every part of the chart — a
+# connection check for source-faker. The server hands it to a worker through Temporal, the
+# launcher claims it with the credentials FakeK8s stored in Postgres, and FakeK8s turns the
+# pod into Docker containers whose output lands in MinIO. On the way it also asserts that
+# the server serves the UI and that oauth2-proxy stands in front of it.
+#
+# Runs from a throwaway node:22-alpine container on the release's attachable overlay; node's
+# core http has no response timeout, and the check waits on image pulls.
+set -euo pipefail
+
+release="$1"
+
+docker run --rm -i --network "${release}_airbyte" -e RELEASE="$release" node:22-alpine \
+  node --input-type=module - <<'JS'
+import http from 'node:http';
+
+const server = `http://${process.env.RELEASE}_server:8001`;
+const proxy = `http://${process.env.RELEASE}_oauth2-proxy:4180`;
+const FAKER = 'dfd88b22-b603-4c3d-aad7-3701784586b1';        // source-faker, in Airbyte's seed registry
+const DEFAULT_ORG = '00000000-0000-0000-0000-000000000000';   // the bootloader's default workspace lives here
+
+function request(url, body) {
+  return new Promise((resolve, reject) => {
+    const data = body === undefined ? undefined : JSON.stringify(body);
+    const req = http.request(url, {
+      method: data === undefined ? 'GET' : 'POST',
+      headers: data === undefined ? {} : { 'Content-Type': 'application/json' },
+    }, (res) => {
+      let text = '';
+      res.on('data', (c) => { text += c; });
+      res.on('end', () => resolve({ status: res.statusCode, text }));
+    });
+    req.on('error', reject);
+    req.end(data);
+  });
+}
+
+async function until(what, probe, seconds) {
+  const deadline = Date.now() + seconds * 1000;
+  let last = '';
+  while (Date.now() < deadline) {
+    try { if (await probe()) return; } catch (e) { last = e.message; }
+    await new Promise((r) => setTimeout(r, 5000));
+  }
+  throw new Error(`${what}: not within ${seconds}s ${last}`);
+}
+
+await until('server health', async () => {
+  const r = await request(`${server}/api/v1/health`);
+  return r.status === 200 && JSON.parse(r.text).available === true;
+}, 600);
+console.log('  server: healthy');
+
+const ui = await request(`${server}/`);
+if (ui.status !== 200 || !/<html/i.test(ui.text)) throw new Error(`server UI: HTTP ${ui.status}`);
+console.log('  server: serves the UI');
+
+const gate = await request(`${proxy}/`);
+if (gate.status !== 403 && gate.status !== 302) throw new Error(`oauth2-proxy let an anonymous request through: HTTP ${gate.status}`);
+console.log(`  oauth2-proxy: anonymous request refused (HTTP ${gate.status})`);
+
+const list = await request(`${server}/api/v1/workspaces/list_by_organization_id`, { organizationId: DEFAULT_ORG });
+if (list.status !== 200) throw new Error(`workspaces: HTTP ${list.status} ${list.text}`);
+const workspaceId = JSON.parse(list.text).workspaces[0].workspaceId;
+
+const check = await request(`${server}/api/v1/scheduler/sources/check_connection`, {
+  workspaceId, sourceDefinitionId: FAKER, connectionConfiguration: { count: 10 },
+});
+if (check.status !== 200) throw new Error(`check_connection: HTTP ${check.status} ${check.text}`);
+const result = JSON.parse(check.text);
+if (result.status !== 'succeeded') throw new Error(`check_connection: ${result.status} ${result.message || ''}`);
+console.log('  source-faker check_connection: succeeded (launcher -> FakeK8s -> Docker -> MinIO)');
+JS

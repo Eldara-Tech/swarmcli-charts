@@ -1,0 +1,12 @@
+# Fixtures that render and validate in scripts/test-charts.sh but are skipped by the default
+# all-fixtures `make e2e` sweep. One case name per line; scripts/e2e-test.sh still runs them
+# when E2E_CASES names them explicitly.
+
+# These point oauth2-proxy at keycloak.example.com, which does not resolve, so the proxy
+# fails its OIDC discovery and never converges. Their differences (exposure mode, TLS,
+# extra networks, the data pin) are render-time contracts ci/render-check.sh asserts; the
+# mock fixture is the one that deploys.
+default
+extra-network
+none
+published

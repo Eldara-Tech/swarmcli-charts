@@ -13,6 +13,11 @@ include:
   # regression guard and picks up the #63 edge-routing fixture automatically. Its
   # >=2 GB image + 120s health start period needs the 10m per-fixture budget.
   - { chart: openclaw,      cases: "",                                                                                timeout: 10m }
+  # airbyte: the mock fixture only, against the throwaway PostgreSQL, MinIO and OIDC mock its
+  # ci/e2e-setup.sh stands up; ci/e2e-check.sh then runs a source-faker connection check through
+  # the launcher and FakeK8s. Nine JVM/Temporal images plus the connector images it pulls on
+  # demand need the long budget.
+  - { chart: airbyte,       cases: "mock",                                                                            timeout: 15m }
   # gitlab-runner: the three fixtures that prove something a render cannot. `mock` stands up
   # a mock GitLab on the release's own overlay (ci/e2e-check.sh, after install — that overlay
   # does not exist before it) and asserts the runner authenticated with exactly the token
