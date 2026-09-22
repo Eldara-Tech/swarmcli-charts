@@ -272,35 +272,39 @@ public class FakeK8s {
     }
 
     // ── Docker socket helpers ─────────────────────────────────────────────
-    static String dockerGet(String path) throws Exception {
-        Process proc = new ProcessBuilder(
-            "curl", "-sf", "--unix-socket", "/var/run/docker.sock",
-            "http://localhost" + path
-        ).redirectErrorStream(true).start();
-        String out = new String(proc.getInputStream().readAllBytes());
-        proc.waitFor(10, TimeUnit.SECONDS);
+    // curl bounds each call with --max-time (seconds; 0 = unbounded, for /wait only, which
+    // lasts as long as the container runs) and reads the request body — or, with stdinIsConfig,
+    // extra curl options such as a credential header — from stdin rather than argv.
+    static String curl(String method, String path, String stdin, boolean stdinIsConfig, int maxTime,
+                       String... extra) throws Exception {
+        List<String> cmd = new ArrayList<>(List.of("curl", "-s", "--unix-socket", "/var/run/docker.sock", "-X", method));
+        if (maxTime > 0) cmd.addAll(List.of("--max-time", Integer.toString(maxTime)));
+        cmd.addAll(Arrays.asList(extra));
+        if (stdin != null) cmd.addAll(stdinIsConfig ? List.of("-K", "-") : List.of("--data-binary", "@-"));
+        cmd.add("http://localhost" + path);
+        Process proc = new ProcessBuilder(cmd).redirectErrorStream(true).start();
+        try (OutputStream in = proc.getOutputStream()) {
+            if (stdin != null) in.write(stdin.getBytes(StandardCharsets.UTF_8));
+        }
+        String out = new String(proc.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        proc.waitFor();
         return out;
+    }
+
+    static String dockerGet(String path) throws Exception {
+        return curl("GET", path, null, false, 60, "-f");
     }
 
     static String dockerPost(String path, String body) throws Exception {
-        Process proc = new ProcessBuilder(
-            "curl", "-s", "--unix-socket", "/var/run/docker.sock",
-            "-X", "POST",
-            "-H", "Content-Type: application/json",
-            "-d", body,
-            "http://localhost" + path
-        ).redirectErrorStream(true).start();
-        String out = new String(proc.getInputStream().readAllBytes());
-        proc.waitFor(30, TimeUnit.SECONDS);
-        return out;
+        return dockerPost(path, body, 120);
+    }
+
+    static String dockerPost(String path, String body, int maxTime) throws Exception {
+        return curl("POST", path, body, false, maxTime, "-H", "Content-Type: application/json");
     }
 
     static void dockerDelete(String path) throws Exception {
-        new ProcessBuilder(
-            "curl", "-sf", "--unix-socket", "/var/run/docker.sock",
-            "-X", "DELETE",
-            "http://localhost" + path
-        ).redirectErrorStream(true).start().waitFor(10, TimeUnit.SECONDS);
+        curl("DELETE", path, null, false, 60, "-f");
     }
 
     // Simple JSON string extraction: get value of "key" from flat JSON
@@ -376,6 +380,7 @@ public class FakeK8s {
                     // Extract args (K8s args → Docker Cmd) and command (K8s command → Docker Entrypoint)
                     m.put("argsJson", extractArgsJson(obj));
                     m.put("commandJson", extractCommandJson(obj));
+                    m.put("resourcesJson", jsonObject(obj, "resources"));
                     result.add(m);
                     objStart = -1;
                 }
@@ -665,7 +670,8 @@ public class FakeK8s {
         boolean detach,
         List<String> cmdArgs,
         List<String> entrypoint,
-        String workingDir
+        String workingDir,
+        String resourcesJson
     ) {
         StringBuilder body = new StringBuilder();
         body.append("{\"Image\":\"").append(esc(image)).append("\",");
@@ -705,6 +711,7 @@ public class FakeK8s {
         if (networkName != null) {
             body.append("\"NetworkMode\":\"").append(esc(networkName)).append("\",");
         }
+        body.append(resourceLimitsJson(resourcesJson));
         body.append("\"AutoRemove\":false},");
         // For container: network mode, EndpointsConfig causes errors — skip it
         boolean isContainerNet = networkName != null && networkName.startsWith("container:");
@@ -757,10 +764,51 @@ public class FakeK8s {
         }
     }
 
+    // HostConfig limits from a container's Kubernetes resources: limits.memory -> Memory (and
+    // MemorySwap, so there is no swap, as on Kubernetes), requests.memory -> MemoryReservation,
+    // limits.cpu -> NanoCpus. CPU requests only steer the Kubernetes scheduler; Docker has none.
+    static String resourceLimitsJson(String resourcesJson) {
+        if (resourcesJson == null) return "";
+        String limits = jsonObject(resourcesJson, "limits");
+        String requests = jsonObject(resourcesJson, "requests");
+        long memory = (long) quantity(limits == null ? null : jsonStr(limits, "memory"));
+        long reservation = (long) quantity(requests == null ? null : jsonStr(requests, "memory"));
+        double cpus = quantity(limits == null ? null : jsonStr(limits, "cpu"));
+        StringBuilder sb = new StringBuilder();
+        if (memory > 0) sb.append("\"Memory\":").append(memory).append(",\"MemorySwap\":").append(memory).append(",");
+        if (reservation > 0 && (memory <= 0 || reservation <= memory)) {
+            sb.append("\"MemoryReservation\":").append(reservation).append(",");
+        }
+        if (cpus > 0) sb.append("\"NanoCpus\":").append((long) (cpus * 1e9)).append(",");
+        return sb.toString();
+    }
+
+    // A Kubernetes quantity ("2Gi", "512M", "1.5", "250m") in base units; -1 when absent or
+    // not understood, which leaves that limit unset.
+    static double quantity(String q) {
+        if (q == null) return -1;
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("([0-9]+(?:\\.[0-9]+)?)([a-zA-Z]*)").matcher(q.trim());
+        if (!m.matches()) return -1;
+        double v = Double.parseDouble(m.group(1));
+        switch (m.group(2)) {
+            case "":   return v;
+            case "m":  return v / 1000;
+            case "k":  return v * 1e3;
+            case "M":  return v * 1e6;
+            case "G":  return v * 1e9;
+            case "T":  return v * 1e12;
+            case "Ki": return v * 1024;
+            case "Mi": return v * Math.pow(1024, 2);
+            case "Gi": return v * Math.pow(1024, 3);
+            case "Ti": return v * Math.pow(1024, 4);
+            default:   return -1;
+        }
+    }
+
     // Wait for a container to finish and return its exit code
     static int waitContainer(String containerId) {
         try {
-            String resp = dockerPost("/v1.41/containers/" + containerId + "/wait", "{}");
+            String resp = dockerPost("/v1.41/containers/" + containerId + "/wait", "{}", 0);
             java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\\"StatusCode\\\"\\s*:\\s*(\\d+)").matcher(resp);
             if (!m.find()) {
                 err("  [wait] container " + containerId.substring(0, Math.min(12, containerId.length()))
@@ -787,7 +835,7 @@ public class FakeK8s {
     static void dumpContainerLogs(String containerId, String label) {
         try {
             Process proc = new ProcessBuilder(
-                "curl", "-s", "--unix-socket", "/var/run/docker.sock",
+                "curl", "-s", "--unix-socket", "/var/run/docker.sock", "--max-time", "60",
                 "http://localhost/v1.41/containers/" + containerId + "/logs?stdout=1&stderr=1&tail=100"
             ).redirectErrorStream(true).start();
             byte[] raw = proc.getInputStream().readAllBytes();
@@ -813,40 +861,72 @@ public class FakeK8s {
         }
     }
 
-    // Pull image if not present (best effort)
+    // Pull an image unless it is present. The whole reference goes to Docker, so digests and
+    // registry ports survive; one without a tag gets :latest, since an empty tag makes Docker
+    // pull every tag. Best effort: a pull that fails leaves the image missing, and creating
+    // its container then fails the pod.
     static void pullImage(String image) {
+        String last = image.substring(image.lastIndexOf('/') + 1);
+        String ref = (image.contains("@") || last.contains(":")) ? image : image + ":latest";
         try {
-            // Check if image already exists locally before pulling
-            String imgName = image.contains(":") ? image.substring(0, image.lastIndexOf(':')) : image;
-            String imgTag  = image.contains(":") ? image.substring(image.lastIndexOf(':') + 1) : "latest";
-            String checkResp = dockerGet("/v1.41/images/" + imgName + ":" + imgTag + "/json");
-            if (!checkResp.contains("\"error\"") && checkResp.contains("\"Id\"")) {
-                log("  [pull] image already present locally: " + image);
+            if (imagePresent(ref)) {
+                log("  [pull] image already present locally: " + ref);
                 return;
             }
-            String url = "http://localhost/v1.41/images/create?fromImage=" + imgName + "&tag=" + imgTag;
+            String auth = registryAuthHeader(ref);
             long t0 = System.currentTimeMillis();
-            log("  [pull] PULLING " + image + "...");
-            Process proc = new ProcessBuilder(
-                "curl", "-s", "--unix-socket", "/var/run/docker.sock",
-                "-X", "POST", url
-            ).redirectErrorStream(true).start();
-            // Must consume stdout or the pipe buffer fills and curl blocks
-            String pullOutput = new String(proc.getInputStream().readAllBytes());
-            boolean done = proc.waitFor(300, TimeUnit.SECONDS);
+            log("  [pull] PULLING " + ref + (auth == null ? "" : " (with registry credentials)"));
+            String out = curl("POST", "/v1.41/images/create?fromImage=" + URLEncoder.encode(ref, "UTF-8"),
+                auth, true, PULL_TIMEOUT);
             long elapsed = System.currentTimeMillis() - t0;
-            if (!done) {
-                proc.destroyForcibly();
-                err("  [pull] TIMED OUT for " + image + " after " + elapsed + "ms");
-            } else if (pullOutput.contains("\"error\"")) {
-                err("  [pull] FAILED for " + image + " (" + elapsed + "ms): "
-                    + pullOutput.substring(0, Math.min(300, pullOutput.length())));
+            if (imagePresent(ref)) {
+                log("  [pull] OK " + ref + " (" + elapsed + "ms)");
             } else {
-                log("  [pull] OK " + image + " (" + elapsed + "ms)");
+                err("  [pull] FAILED for " + ref + " (" + elapsed + "ms): "
+                    + out.substring(Math.max(0, out.length() - 300)));
             }
         } catch (Exception e) {
-            err("  [pull] exception for " + image + ": " + e);
+            err("  [pull] exception for " + ref + ": " + e);
         }
+    }
+
+    static final int PULL_TIMEOUT =
+        Integer.parseInt(System.getenv().getOrDefault("FAKEK8S_PULL_TIMEOUT_SECONDS", "1800"));
+
+    static boolean imagePresent(String ref) throws Exception {
+        return dockerGet("/v1.41/images/" + ref + "/json").contains("\"Id\"");
+    }
+
+    // Credentials for ref's registry from the Docker config.json at FAKEK8S_REGISTRY_AUTH_FILE
+    // (its "auths": {"<registry>": {"auth": "<base64 user:pass>"}}), as a curl config line
+    // carrying the X-Registry-Auth header; null when there is no file or no matching entry.
+    static String registryAuthHeader(String ref) {
+        String file = System.getenv("FAKEK8S_REGISTRY_AUTH_FILE");
+        if (file == null || file.isEmpty()) return null;
+        int slash = ref.indexOf('/');
+        String first = slash < 0 ? "" : ref.substring(0, slash);
+        String registry = (first.contains(".") || first.contains(":") || first.equals("localhost"))
+            ? first : "docker.io";
+        try {
+            String config = new String(Files.readAllBytes(Paths.get(file)), StandardCharsets.UTF_8);
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("\"([^\"]+)\"\\s*:\\s*\\{[^{}]*\"auth\"\\s*:\\s*\"([^\"]+)\"").matcher(config);
+            while (m.find()) {
+                String host = m.group(1).replaceFirst("^https?://", "").replaceFirst("/.*$", "");
+                if (host.equals("index.docker.io") || host.equals("registry-1.docker.io")) host = "docker.io";
+                if (!host.equals(registry)) continue;
+                String userPass = new String(Base64.getDecoder().decode(m.group(2)), StandardCharsets.UTF_8);
+                int colon = userPass.indexOf(':');
+                if (colon < 0) continue;
+                String json = "{\"username\":\"" + esc(userPass.substring(0, colon)) + "\",\"password\":\""
+                    + esc(userPass.substring(colon + 1)) + "\",\"serveraddress\":\"" + esc(m.group(1)) + "\"}";
+                return "header = \"X-Registry-Auth: "
+                    + Base64.getUrlEncoder().encodeToString(json.getBytes(StandardCharsets.UTF_8)) + "\"\n";
+            }
+        } catch (Exception e) {
+            err("  [pull] could not read registry credentials from " + file + ": " + e.getMessage());
+        }
+        return null;
     }
 
     // ── Pod execution ─────────────────────────────────────────────────────
@@ -978,7 +1058,7 @@ public class FakeK8s {
                 String chmodId = runDockerContainer(podName, "emptydir-chmod-" + volName.replaceAll("[^a-zA-Z0-9]", "-"),
                     "busybox:1.37.0", Collections.emptyList(),
                     List.of(dockerVol + ":/mnt"), null, Collections.emptyList(), false,
-                    Collections.emptyList(), List.of("chmod", "777", "/mnt"), null);
+                    Collections.emptyList(), List.of("chmod", "777", "/mnt"), null, null);
                 if (!chmodId.isEmpty()) {
                     waitContainer(chmodId);
                     removeContainer(chmodId);
@@ -1055,7 +1135,8 @@ public class FakeK8s {
             List<String> initArgs = jsonArrayToStringList(c.get("argsJson"));
             List<String> initCmd = jsonArrayToStringList(c.get("commandJson"));
             log("  [init] " + cname + " binds=" + binds + " cmd=" + initCmd + " args=" + initArgs);
-            String id = runDockerContainer(podName, cname, img, envs, binds, podNetworkMode, extraNetworks, false, initArgs, initCmd, null);
+            String id = runDockerContainer(podName, cname, img, envs, binds, podNetworkMode, extraNetworks, false, initArgs, initCmd, null,
+                c.get("resourcesJson"));
             if (!id.isEmpty()) {
                 log("  [init] " + cname + " running id=" + id.substring(0, Math.min(12, id.length())) + " — waiting...");
                 int code = waitContainer(id);
@@ -1099,6 +1180,7 @@ public class FakeK8s {
 
         List<String> containerIds = new ArrayList<>();
         List<String> containerNames = new ArrayList<>();
+        boolean mainCreateFailed = false;
         for (Map<String,String> c : mainContainers) {
             String img = c.get("image");
             String cname = c.get("name");
@@ -1154,19 +1236,21 @@ public class FakeK8s {
                 mainArgs = forceMicronautRandomPort(mainArgs);
                 mainCmd = forceOrchestratorPortInCommand(mainCmd);
             }
-            String id = runDockerContainer(podName, cname, img, envs, binds, podNetworkMode, extraNetworks, true, mainArgs, mainCmd, wdir);
+            String id = runDockerContainer(podName, cname, img, envs, binds, podNetworkMode, extraNetworks, true, mainArgs, mainCmd, wdir,
+                c.get("resourcesJson"));
             if (!id.isEmpty()) {
                 containerIds.add(id);
                 containerNames.add(cname);
                 log("  [main] " + cname + " started id=" + id.substring(0, Math.min(12, id.length())));
             } else {
-                err("  [main] " + cname + " failed to start");
+                err("  [main] " + cname + " failed to start → pod=Failed");
+                mainCreateFailed = true;
             }
         }
 
         log("POD " + podName + " → waiting for " + containerIds.size() + " main container(s)");
         // Wait for all main containers to complete
-        int exitCode = 0;
+        int exitCode = mainCreateFailed ? 1 : 0;
         for (int i = 0; i < containerIds.size(); i++) {
             String id = containerIds.get(i);
             String cname = i < containerNames.size() ? containerNames.get(i) : id.substring(0, Math.min(12, id.length()));
