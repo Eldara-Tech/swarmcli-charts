@@ -85,6 +85,7 @@
       "semanticCommitScope": "gitlab"
     },
     { "matchFileNames": ["charts/airbyte/**"], "semanticCommitScope": "airbyte" },
+    { "matchFileNames": ["charts/gitlab-runner/**"], "semanticCommitScope": "gitlab-runner" },
     { "matchFileNames": ["charts/keycloak/**"], "semanticCommitScope": "keycloak" },
     { "matchFileNames": ["charts/loki/**"], "semanticCommitScope": "loki" },
     { "matchFileNames": ["charts/mariadb/**"], "semanticCommitScope": "mariadb" },

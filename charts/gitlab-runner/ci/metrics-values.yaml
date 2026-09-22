@@ -1,0 +1,6 @@
+# Metrics on, and the healthcheck that probes them (it renders only with metrics.enabled).
+metrics:
+  enabled: true
+  port: 9252
+healthcheck:
+  enabled: true

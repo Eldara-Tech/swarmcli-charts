@@ -1,0 +1,6 @@
+# Host-path persistence: exercises the host-mount acknowledgment, and the branch where
+# the named-volume declaration is suppressed.
+persistence:
+  enabled: true
+  volumePath: /tmp/gitlab-runner-e2e/config
+  nodeLabel: runner-node

@@ -1,0 +1,15 @@
+# The e2e fixture. Points the runner at the mock GitLab that ci/e2e-check.sh stands up on
+# this release's own overlay, so the smoke check can prove the token reached an
+# authenticated API call — which convergence alone never shows (a runner with an empty or
+# bogus token reports Running just the same). Metrics and the healthcheck are on so
+# convergence also means the process is serving, not merely started.
+gitlab:
+  url: http://mock-gitlab:8080/
+  name: e2e-probe
+metrics:
+  enabled: true
+healthcheck:
+  enabled: true
+  startPeriod: 10s
+  interval: 5s
+  monitor: 30s

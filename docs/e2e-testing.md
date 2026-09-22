@@ -254,6 +254,21 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   reconfigure time, so a wrong path or mount raises in Ruby and the task never converges —
   convergence *is* the assertion that the secret plumbing works.
 
+- **gitlab-runner** — the runner authentication-token secret + the `gitlab-runner-data` node
+  label, plus the two S3 cache secrets for the `cache` fixture (their values deliberately
+  contain the `/` and `+` of a real base64 key, so the TOML quoting is exercised). The mock
+  GitLab is the one hook that does **not** live in setup: it has to join the release's own
+  overlay (`<release>_default`), which does not exist until the stack is deployed, so
+  `ci/e2e-check.sh` creates it after install and removes it again. It is there because
+  convergence is a weak signal for this chart — a runner with an empty token, a bogus token or
+  an unresolvable url starts, mints a system ID and reports Running — so the check reads the
+  token back out of the mock's log and compares it with the mounted secret. Note that the
+  fixtures outside the CI subset keep their own `gitlab.url`, so a local `make e2e` will have
+  those runners poll it with a dummy token until the case is torn down. `bind-mount` is
+  `ci/e2e-render-only`: Swarm refuses a task whose bind source does not exist on the node, and
+  the hook's `mkdir` only reaches the node where the node *is* the host — not on a VM-backed
+  engine, whose `/tmp` is its own.
+
 `whoami` and `swarm-cronjob` converge solo and ship no hooks.
 
 > **Asserting what the secret wrapper actually produced.** Several charts export a

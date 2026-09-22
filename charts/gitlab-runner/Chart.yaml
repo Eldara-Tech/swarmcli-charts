@@ -1,0 +1,31 @@
+name: gitlab-runner
+description: GitLab Runner for Docker Swarm — docker executor on the node's own engine, authentication token from a Swarm secret
+# version is a placeholder — the git tag (gitlab-runner/vX.Y.Z) sets the real version at release.
+version: 0.1.0
+# appVersion is the default image tag for gitlab/gitlab-runner.
+# renovate: image=gitlab/gitlab-runner
+appVersion: "v19.4.0"
+# Oldest swarmcli whose chart engine renders this chart; verified by
+# scripts/floor-check.sh against a real binary of that version.
+swarmcliVersion: ">= 1.11.0"
+maintainers:
+  - name: Eldara
+    url: https://github.com/Eldara-Tech
+keywords:
+  - gitlab
+  - gitlab-runner
+  - ci-cd
+  - runner
+home: https://github.com/Eldara-Tech/swarmcli-charts
+sources:
+  - https://gitlab.com/gitlab-org/gitlab-runner
+  - https://docs.gitlab.com/runner/
+# docker-socket is the workload: the runner has no Swarm-aware executor, so it creates a
+# container per job on the node's own engine and must reach that engine's socket.
+# host-mount covers the opt-in persistence.volumePath bind mount only.
+# privileged is acknowledged even though the security scan cannot see it: docker.privileged
+# puts PRIVILEGED JOB containers on the node, and that setting travels inside the generated
+# config.toml (`privileged = true`) rather than as a compose `privileged:` key, so nothing
+# in the rendered stack would flag it. See the chart README's security section.
+annotations:
+  swarmcli-charts/allow: "docker-socket,host-mount,privileged"

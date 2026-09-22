@@ -1,0 +1,10 @@
+# persistence off: no volume, no named-volume declaration, and no node pin at all —
+# the shape a single-node swarm installs. .runner_system_id is then re-minted per task.
+persistence:
+  enabled: false
+  nodeLabel: ""
+
+# Deployed in CI (e2e), so the url is deliberately non-routable: this fixture is about
+# scheduling with no volume and no node pin, and a runner polls an unreachable instance harmlessly.
+gitlab:
+  url: http://gitlab.invalid/

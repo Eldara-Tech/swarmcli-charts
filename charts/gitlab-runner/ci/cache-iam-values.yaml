@@ -1,0 +1,12 @@
+# Cache with an instance role instead of keys: no cache secrets are mounted or declared,
+# and nothing is appended to config.toml. Also the `virtual` addressing override, which is
+# what AWS serves and what `auto` would have chosen here anyway.
+cache:
+  enabled: true
+  shared: false
+  s3:
+    server: s3.amazonaws.com
+    bucket: runner-cache
+    location: eu-central-1
+    addressing: virtual
+    authenticationType: iam

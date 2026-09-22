@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": { "type": "string" },
+        "tag": { "type": "string" }
+      },
+      "required": ["repository"]
+    },
+    "replicas": { "type": "integer", "minimum": 1 },
+    "gitlab": {
+      "type": "object",
+      "properties": {
+        "url": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" }
+      },
+      "required": ["url"]
+    },
+    "auth": {
+      "type": "object",
+      "properties": {
+        "tokenSecret": { "type": "string", "minLength": 1 }
+      },
+      "required": ["tokenSecret"]
+    },
+    "concurrent": { "type": "integer", "minimum": 1 },
+    "checkInterval": { "type": "integer", "minimum": 1 },
+    "logLevel": {
+      "type": "string",
+      "enum": ["panic", "fatal", "error", "warning", "info", "debug"]
+    },
+    "logFormat": { "type": "string", "enum": ["runner", "text", "json"] },
+    "shutdownTimeout": { "type": "integer", "minimum": 0 },
+    "runner": {
+      "type": "object",
+      "properties": {
+        "requestConcurrency": { "type": "integer", "minimum": 1 },
+        "limit": { "type": "integer", "minimum": 0 },
+        "outputLimit": { "type": "integer", "minimum": 0 },
+        "environment": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "docker": {
+      "type": "object",
+      "properties": {
+        "image": { "type": "string", "minLength": 1 },
+        "pullPolicy": {
+          "type": "string",
+          "enum": ["always", "if-not-present", "never"]
+        },
+        "mountSocketInJobs": { "type": "boolean" },
+        "privileged": { "type": "boolean" },
+        "volumes": { "type": "array", "items": { "type": "string" } },
+        "allowedImages": { "type": "array", "items": { "type": "string" } },
+        "networkMode": { "type": "string" },
+        "memory": { "type": "string" },
+        "cpus": { "type": "string" }
+      },
+      "required": ["image"]
+    },
+    "cache": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "shared": { "type": "boolean" },
+        "path": { "type": "string" },
+        "s3": {
+          "type": "object",
+          "properties": {
+            "server": { "type": "string" },
+            "bucket": { "type": "string" },
+            "location": { "type": "string" },
+            "insecure": { "type": "boolean" },
+            "addressing": {
+              "type": "string",
+              "enum": ["auto", "path", "virtual"]
+            },
+            "authenticationType": {
+              "type": "string",
+              "enum": ["access-key", "iam"]
+            },
+            "accessKeySecret": { "type": "string", "minLength": 1 },
+            "secretKeySecret": { "type": "string", "minLength": 1 }
+          },
+          "required": ["accessKeySecret", "secretKeySecret"]
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "healthcheck": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "interval": { "type": "string" },
+        "timeout": { "type": "string" },
+        "retries": { "type": "integer", "minimum": 1 },
+        "startPeriod": { "type": "string" },
+        "monitor": { "type": "string" }
+      }
+    },
+    "stopGracePeriod": { "type": "string", "minLength": 1 },
+    "persistence": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "volumeName": { "type": "string" },
+        "volumePath": { "type": "string" },
+        "nodeLabel": { "type": "string" }
+      }
+    },
+    "placement": {
+      "type": "object",
+      "properties": {
+        "constraints": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "limits": {
+          "type": "object",
+          "properties": { "memory": { "type": "string" } }
+        },
+        "reservations": {
+          "type": "object",
+          "properties": { "memory": { "type": "string" } }
+        }
+      }
+    },
+    "config": {
+      "type": "object",
+      "properties": {
+        "extraGlobalToml": { "type": "string" },
+        "extraDockerToml": { "type": "string" }
+      }
+    },
+    "labels": { "type": "object" },
+    "extraEnv": { "type": "object" }
+  },
+  "required": ["image", "gitlab", "auth", "docker"]
+}

@@ -1,0 +1,15 @@
+# Fixtures that render and validate in scripts/test-charts.sh but are skipped by the default
+# all-fixtures `make e2e` sweep. One case name per line; scripts/e2e-test.sh still runs them
+# when E2E_CASES names them explicitly.
+
+# Host-path persistence needs its bind source to exist ON THE NODE, and Swarm refuses the
+# task rather than creating it ("bind source path does not exist"). ci/e2e-setup.sh does
+# create the directory, which is enough where the node IS the host — so an explicit run on a
+# Linux box works — but not where the node is a VM (colima, Docker Desktop), whose /tmp is
+# not the host's. The host-mount acknowledgment and the volumePath render contract are what
+# this fixture is for, and charts.yml plus ci/render-check.sh assert both.
+bind-mount
+
+# The `path` addressing override renders PathStyle = true and changes nothing else: there is
+# no deploy-time behaviour to observe, and ci/render-check.sh asserts the render.
+cache-path
