@@ -68,6 +68,7 @@ public class FakeK8s {
     // ── Pod registry ──────────────────────────────────────────────────────
     // podName → PodState
     static final ConcurrentMap<String, PodState> pods = new ConcurrentHashMap<>();
+    static final AtomicLong RV = new AtomicLong(1);
     // podName → list of SSE watch connections waiting for events
     static final ConcurrentMap<String, List<PrintWriter>> watchers = new ConcurrentHashMap<>();
 
@@ -83,6 +84,8 @@ public class FakeK8s {
         String startTime;
         String completionTime;
         Map<String,String> labels = new HashMap<>();
+        volatile String resourceVersion = "1";
+        volatile int initExitCode = 0;
 
         PodState(String name, String podJson) {
             this.name = name;
@@ -134,13 +137,17 @@ public class FakeK8s {
             sb.append("\"").append(esc(e.getKey())).append("\":\"").append(esc(e.getValue())).append("\"");
             first = false;
         }
-        sb.append("},\"resourceVersion\":\"1\",\"uid\":\"").append(p.name).append("-uid\"},");
+        sb.append("},\"resourceVersion\":\"").append(p.resourceVersion).append("\",\"uid\":\"").append(p.name).append("-uid\"},");
         sb.append("\"spec\":{\"containers\":[]},");
         sb.append("\"status\":{\"phase\":\"").append(esc(p.phase)).append("\",");
         sb.append("\"startTime\":\"").append(esc(p.startTime)).append("\",");
         // init container statuses
         if (!p.initDone) {
-            if ("Running".equals(p.initPhase)) {
+            if ("Failed".equals(p.phase)) {
+                sb.append("\"initContainerStatuses\":[{\"name\":\"init\",\"ready\":false,");
+                sb.append("\"state\":{\"terminated\":{\"exitCode\":").append(p.initExitCode).append(",\"reason\":\"Error\",");
+                sb.append("\"finishedAt\":\"").append(esc(p.completionTime != null ? p.completionTime : iso8601Now())).append("\"}}}],");
+            } else if ("Running".equals(p.initPhase)) {
                 sb.append("\"initContainerStatuses\":[{\"name\":\"init\",\"ready\":false,");
                 sb.append("\"state\":{\"running\":{\"startedAt\":\"").append(esc(p.creationTimestamp)).append("\"}}}],");
             } else {
@@ -193,7 +200,7 @@ public class FakeK8s {
     static String podListJson(Collection<PodState> list) {
         StringBuilder sb = new StringBuilder();
         sb.append("{\"apiVersion\":\"v1\",\"kind\":\"PodList\",");
-        sb.append("\"metadata\":{\"resourceVersion\":\"1\"},\"items\":[");
+        sb.append("\"metadata\":{\"resourceVersion\":\"").append(RV.get()).append("\"},\"items\":[");
         boolean first = true;
         for (PodState p : list) {
             if (!first) sb.append(",");
@@ -213,6 +220,18 @@ public class FakeK8s {
                 } catch (Exception ignored) {}
                 break;
             }
+        }
+        for (String part : query.split("&")) {
+            if (!part.startsWith("fieldSelector=")) continue;
+            try {
+                String fields = URLDecoder.decode(part.substring("fieldSelector=".length()), "UTF-8");
+                for (String field : fields.split(",")) {
+                    if (field.startsWith("metadata.name=")) {
+                        PodState only = pods.get(field.substring("metadata.name=".length()));
+                        return only == null ? List.of() : List.of(only);
+                    }
+                }
+            } catch (Exception ignored) {}
         }
         if (selector.isEmpty()) return pods.values();
 
@@ -684,11 +703,8 @@ public class FakeK8s {
             String resp = dockerPost("/v1.41/containers/create?name=" + cname, body.toString());
             String id = jsonStr(resp, "Id");
             if (id.isEmpty()) {
-                String bodySnip = body.toString();
-                if (bodySnip.length() > 600) bodySnip = bodySnip.substring(0, 600) + "...";
                 err("Failed to create container " + cname
-                    + "\n  docker response: " + resp
-                    + "\n  request body: " + bodySnip);
+                    + "\n  docker response: " + resp);
                 return "";
             }
 
@@ -728,9 +744,13 @@ public class FakeK8s {
     static int waitContainer(String containerId) {
         try {
             String resp = dockerPost("/v1.41/containers/" + containerId + "/wait", "{}");
-            int parsedCode = 0;
             java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\\"StatusCode\\\"\\s*:\\s*(\\d+)").matcher(resp);
-            if (m.find()) parsedCode = Integer.parseInt(m.group(1));
+            if (!m.find()) {
+                err("  [wait] container " + containerId.substring(0, Math.min(12, containerId.length()))
+                    + " returned no exit code: " + resp);
+                return 1;
+            }
+            int parsedCode = Integer.parseInt(m.group(1));
             if (resp.contains("\"Error\"") && !resp.contains("\"Error\":null")) {
                 err("  [wait] container " + containerId.substring(0, Math.min(12, containerId.length()))
                     + " wait response had error: " + resp);
@@ -812,29 +832,6 @@ public class FakeK8s {
         }
     }
 
-    // Get the volume mounted at /data in this launcher task. Stack names prefix
-    // volumes, so relying on a particular release name breaks reusable charts.
-    static String workspaceVolumeName() {
-        String launcherHostname = System.getenv("HOSTNAME");
-        if (launcherHostname != null && !launcherHostname.isEmpty()) {
-            try {
-                String inspect = dockerGet("/v1.41/containers/" + launcherHostname + "/json");
-                java.util.regex.Matcher mount = java.util.regex.Pattern
-                    .compile("\\\"Name\\\":\\\"([^\\\"]+)\\\"[^}]*\\\"Destination\\\":\\\"/data\\\"")
-                    .matcher(inspect);
-                if (mount.find()) return mount.group(1);
-            } catch (Exception ignored) {}
-        }
-        try {
-            String resp = dockerGet("/v1.41/volumes");
-            // Compatibility fallback for stacks deployed with the original name.
-            for (String candidate : new String[]{"eldara-airbyte_airbyte_workspace","airbyte_workspace"}) {
-                if (resp.contains("\"" + candidate + "\"")) return candidate;
-            }
-        } catch (Exception ignored) {}
-        return "eldara-airbyte_airbyte_workspace";
-    }
-
     // ── Pod execution ─────────────────────────────────────────────────────
     static final ExecutorService exec = Executors.newCachedThreadPool();
 
@@ -876,7 +873,6 @@ public class FakeK8s {
             for (String n : names) if (n.endsWith("_airbyte-v2")) return n;
             for (String n : names) if (n.endsWith("-v2")) return n;
             for (String n : names) if (n.endsWith("_default")) return n;
-            for (String n : names) if (n.contains("eldara-airbyte")) return n;
             return names.get(0);
         } catch (Exception e) {
             err("Failed to detect launcher network: " + e);
@@ -943,8 +939,6 @@ public class FakeK8s {
         for (var c : initContainers) log("  [init] " + c.get("name") + "  image=" + c.get("image"));
         for (var c : mainContainers) log("  [main] " + c.get("name") + "  image=" + c.get("image"));
 
-        String wsVolume = workspaceVolumeName();
-        log("  workspace volume=" + wsVolume);
         // Create one Docker volume per K8s emptyDir volume name.
         // Using a single shared volume caused all mount paths (e.g. /source, /dest, /config)
         // to share the same filesystem root, making init-written files overwrite each other.
@@ -993,9 +987,6 @@ public class FakeK8s {
                     }
                 }
             }
-            // Always bind the airbyte workspace volume and docker socket
-            binds.add(wsVolume + ":/data");
-            binds.add("/var/run/docker.sock:/var/run/docker.sock");
             return binds;
         };
 
@@ -1028,16 +1019,21 @@ public class FakeK8s {
             }
 
             pullImage(img);
+            if (pods.get(podName) != pod) {
+                log("Pod " + podName + " was deleted before init container '" + cname + "' started");
+                deleteVolumes(emptyDirVolumes.values());
+                return;
+            }
             pod.phase = "Pending";
             pod.initPhase = "Running";
             notifyWatchers(podName, "MODIFIED", pod);
 
             List<String> envs = envJsonToDockerEnv(c.get("envJson"));
             // Log key env vars to diagnose missing config
-            for (String e : envs) if (e.startsWith("INTERNAL_API_HOST") || e.startsWith("WORKLOAD_API_HOST") || e.startsWith("AIRBYTE_INTERNAL") || e.startsWith("AIRBYTE_WORKLOAD") || e.startsWith("MICRONAUT_CONFIG") || e.startsWith("DATAPLANE_CLIENT_ID=") || e.startsWith("CONTROL_PLANE"))
+            for (String e : envs) if (e.startsWith("INTERNAL_API_HOST") || e.startsWith("WORKLOAD_API_HOST") || e.startsWith("AIRBYTE_INTERNAL") || e.startsWith("AIRBYTE_WORKLOAD") || e.startsWith("MICRONAUT_CONFIG") || e.startsWith("CONTROL_PLANE"))
                 log("  [init] key env: " + e);
             if (envs.stream().noneMatch(e -> e.startsWith("INTERNAL_API_HOST")))
-                err("INTERNAL_API_HOST not in init env! envJson snippet: " + (c.get("envJson") != null ? c.get("envJson").substring(0, Math.min(500, c.get("envJson").length())) : "null"));
+                err("INTERNAL_API_HOST not in init env!");
             List<String> binds = buildBinds.apply(c);
             List<String> initArgs = jsonArrayToStringList(c.get("argsJson"));
             List<String> initCmd = jsonArrayToStringList(c.get("commandJson"));
@@ -1051,20 +1047,24 @@ public class FakeK8s {
                 removeContainer(id);
                 if (code != 0) {
                     err("Pod " + podName + " init container '" + cname + "' FAILED (exit " + code + ") → pod=Failed");
+                    pod.initExitCode = code;
                     pod.phase = "Failed";
                     pod.completionTime = iso8601Now();
                     pod.initDone = false;
                     notifyWatchers(podName, "MODIFIED", pod);
+                    deleteVolumes(emptyDirVolumes.values());
                     return;
                 }
                 log("  [init] " + cname + " completed successfully");
             } else {
                 // Container creation failed — abort pod
                 err("Pod " + podName + " init container '" + cname + "' could not be created → pod=Failed");
+                pod.initExitCode = 1;
                 pod.phase = "Failed";
                 pod.completionTime = iso8601Now();
                 pod.initDone = false;
                 notifyWatchers(podName, "MODIFIED", pod);
+                deleteVolumes(emptyDirVolumes.values());
                 return;
             }
         }
@@ -1091,6 +1091,10 @@ public class FakeK8s {
             }
 
             pullImage(img);
+            if (pods.get(podName) != pod) {
+                log("Pod " + podName + " was deleted before container '" + cname + "' started");
+                break;
+            }
             List<String> envs = envJsonToDockerEnv(c.get("envJson"));
             List<String> binds = buildBinds.apply(c);
             List<String> mainArgs = jsonArrayToStringList(c.get("argsJson"));
@@ -1156,11 +1160,7 @@ public class FakeK8s {
             removeContainer(id);
         }
 
-        // Clean up all emptyDir volumes
-        for (String dockerVol : emptyDirVolumes.values()) {
-            try { dockerDelete("/v1.41/volumes/" + dockerVol); log("  emptyDir volume " + dockerVol + " deleted"); }
-            catch (Exception ignored) {}
-        }
+        deleteVolumes(emptyDirVolumes.values());
         pod.phase = exitCode == 0 ? "Succeeded" : "Failed";
         pod.completionTime = iso8601Now();
         pod.mainRunning = false;
@@ -1168,8 +1168,16 @@ public class FakeK8s {
         log("POD " + podName + " DONE  phase=" + pod.phase + "  (overall exit=" + exitCode + ")");
     }
 
+    static void deleteVolumes(Collection<String> dockerVols) {
+        for (String dockerVol : dockerVols) {
+            try { dockerDelete("/v1.41/volumes/" + dockerVol); log("  emptyDir volume " + dockerVol + " deleted"); }
+            catch (Exception ignored) {}
+        }
+    }
+
     // ── SSE watch notification ────────────────────────────────────────────
     static void notifyWatchers(String podName, String eventType, PodState pod) {
+        pod.resourceVersion = Long.toString(RV.incrementAndGet());
         String event = watchEvent(eventType, pod) + "\n";
         List<PrintWriter> ws = watchers.get(podName);
         if (ws != null) {
@@ -1290,11 +1298,21 @@ public class FakeK8s {
         } catch (Exception ignored) {}
     }
 
+    // One header line, without its CRLF; null at end of stream.
+    static String readLine(InputStream in) throws IOException {
+        ByteArrayOutputStream line = new ByteArrayOutputStream();
+        int b;
+        while ((b = in.read()) != -1 && b != '\n') line.write(b);
+        if (b == -1 && line.size() == 0) return null;
+        String s = line.toString("UTF-8");
+        return s.endsWith("\r") ? s.substring(0, s.length() - 1) : s;
+    }
+
     static void handleConnection(Socket sock) {
         try (sock) {
             sock.setSoTimeout(60_000);
-            BufferedReader br = new BufferedReader(new InputStreamReader(sock.getInputStream(), "UTF-8"));
-            String requestLine = br.readLine();
+            InputStream in = new BufferedInputStream(sock.getInputStream());
+            String requestLine = readLine(in);
             if (requestLine == null || requestLine.isEmpty()) return;
 
             String method = requestLine.split(" ")[0];
@@ -1305,7 +1323,7 @@ public class FakeK8s {
             // Read headers
             Map<String,String> headers = new LinkedHashMap<>();
             String line;
-            while ((line = br.readLine()) != null && !line.isEmpty()) {
+            while ((line = readLine(in)) != null && !line.isEmpty()) {
                 int colon = line.indexOf(':');
                 if (colon > 0) headers.put(line.substring(0, colon).trim().toLowerCase(), line.substring(colon + 1).trim());
             }
@@ -1314,9 +1332,7 @@ public class FakeK8s {
             String body = "";
             if (headers.containsKey("content-length")) {
                 int len = Integer.parseInt(headers.get("content-length"));
-                char[] buf = new char[len];
-                br.read(buf, 0, len);
-                body = new String(buf);
+                body = new String(in.readNBytes(len), "UTF-8");
             }
 
             System.out.println("[FakeK8s] " + method + " " + fullPath);
@@ -1470,7 +1486,7 @@ public class FakeK8s {
                     exec.submit(() -> {
                         try {
                             String resp = dockerGet("/v1.41/containers/json?all=true&filters=" +
-                                URLEncoder.encode("{\"name\":[\"" + podName + "\"]}", "UTF-8"));
+                                URLEncoder.encode("{\"name\":[\"" + esc("^/" + podName.replaceAll("[^a-zA-Z0-9_.-]", "_").replace(".", "\\.") + "-") + "\"]}", "UTF-8"));
                             // Extract IDs and stop them
                             java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"Id\":\"([a-f0-9]+)\"").matcher(resp);
                             while (m.find()) {
@@ -1496,12 +1512,6 @@ public class FakeK8s {
                     // Use the URL-path pod name as authoritative — do NOT rely on
                     // extractPodName(body) which can pick up a wrong nested "name" field.
                     log(">>> POD CREATE PATCH (server-side apply): " + podName);
-                    // Log a snippet of the body to diagnose args extraction
-                    int mainIdx = body.indexOf("\"containers\":[");
-                    if (mainIdx >= 0) {
-                        String snip = body.substring(mainIdx, Math.min(mainIdx + 600, body.length()));
-                        log("  [debug] containers snippet: " + snip);
-                    }
                     // Log images for debugging
                     List<Map<String,String>> ic = extractContainers(body, "initContainers");
                     List<Map<String,String>> mc = extractContainers(body, "containers");
