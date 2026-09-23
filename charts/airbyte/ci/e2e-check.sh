@@ -75,6 +75,11 @@ const list = await request(`${server}/api/v1/workspaces/list_by_organization_id`
 if (list.status !== 200) throw new Error(`workspaces: HTTP ${list.status} ${list.text}`);
 const workspaceId = JSON.parse(list.text).workspaces[0].workspaceId;
 
+// The server reports healthy once the schemas are migrated, which can be before db-migrations
+// has finished seeding the connector registry.
+await until('source-faker definition seeded', async () =>
+  (await request(`${server}/api/v1/source_definitions/get`, { sourceDefinitionId: FAKER })).status === 200, 600);
+
 const check = await request(`${server}/api/v1/scheduler/sources/check_connection`, {
   workspaceId, sourceDefinitionId: FAKER, connectionConfiguration: { count: 10 },
 });
