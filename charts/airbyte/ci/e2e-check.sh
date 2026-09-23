@@ -26,7 +26,7 @@ if [ "$case" = "login" ]; then
   net="$EDGE_NETWORK"
 fi
 
-docker run --rm -i --network "$net" -e RELEASE="$release" -e CASE="$case" \
+if ! docker run --rm -i --network "$net" -e RELEASE="$release" -e CASE="$case" \
   -e EDGE_TARGET="${EDGE_TARGET:-}" node:22-alpine \
   node --input-type=module - <<'JS'
 import http from 'node:http';
@@ -111,6 +111,9 @@ if (login) {
   console.log('  airbyte login: wrong password refused, admin password accepted');
 
   // The UI calls the connector builder directly with the JWT cookie, never a bearer token.
+  // Its JVM can still be starting after the server is up; its health endpoint is anonymous.
+  await until('connector builder health', async () =>
+    (await request(`${server}/api/v1/connector_builder/health`, undefined, { anonymous: true })).status === 200, 300);
   const resolve = `${server}/api/v1/connector_builder/manifest/resolve`;
   const builderAnon = await request(resolve, { manifest: {} }, { anonymous: true });
   if (builderAnon.status !== 401) throw new Error(`anonymous connector builder call: HTTP ${builderAnon.status}, expected 401`);
@@ -149,6 +152,13 @@ if (login) {
   console.log(`  note: anonymous setup after setup -> HTTP ${again.status}`);
 }
 JS
+then
+  # The builder is the one service only this check reaches; show why it did not answer.
+  echo "  --- connector-builder-server ---"
+  docker service ps --no-trunc "${release}_connector-builder-server" 2>&1 | sed -n '1,4p' | sed 's/^/    /'
+  docker service logs --tail 60 "${release}_connector-builder-server" 2>&1 | sed 's/^/    /'
+  exit 1
+fi
 
 # auth.mode none: through the traefik edge, basic auth refuses an anonymous request, and an
 # authenticated one reaches the server's API and UI and the connector builder's own router.
