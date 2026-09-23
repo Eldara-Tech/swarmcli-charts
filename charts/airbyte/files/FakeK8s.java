@@ -641,6 +641,26 @@ public class FakeK8s {
         return result;
     }
 
+    // Forgets a pod, tells its watchers, and removes the Docker containers it ran.
+    static void deletePod(String podName) {
+        PodState pod = pods.remove(podName);
+        if (pod == null) return;
+        notifyWatchers(podName, "DELETED", pod);
+        exec.submit(() -> {
+            try {
+                String resp = dockerGet("/v1.41/containers/json?all=true&filters=" +
+                    URLEncoder.encode("{\"label\":[\"airbyte.fakek8s/owner=" + esc(OWNER)
+                        + "\",\"airbyte.fakek8s/pod=" + esc(podName) + "\"]}", "UTF-8"));
+                java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"Id\":\"([a-f0-9]+)\"").matcher(resp);
+                while (m.find()) {
+                    String cid = m.group(1);
+                    dockerPost("/v1.41/containers/" + cid + "/stop", "{}");
+                    dockerDelete("/v1.41/containers/" + cid + "?force=true");
+                }
+            } catch (Exception ignored) {}
+        });
+    }
+
     // Applies the label changes of a JSON Patch ([{"op":"add","path":"/metadata/labels/k",...}])
     // or a merge patch ({"metadata":{"labels":{...}}}) to a tracked pod; other fields are ignored.
     static void applyLabelPatch(PodState pod, String patch) {
@@ -1716,25 +1736,17 @@ public class FakeK8s {
 
             // Pod DELETE
             if ("DELETE".equals(method) && path.startsWith("/api/v1/namespaces/default/pods/")) {
-                String podName = path.substring("/api/v1/namespaces/default/pods/".length());
-                PodState pod = pods.remove(podName);
-                if (pod != null) {
-                    notifyWatchers(podName, "DELETED", pod);
-                    // Stop any Docker containers for this pod
-                    exec.submit(() -> {
-                        try {
-                            String resp = dockerGet("/v1.41/containers/json?all=true&filters=" +
-                                URLEncoder.encode("{\"label\":[\"airbyte.fakek8s/owner=" + esc(OWNER)
-                                    + "\",\"airbyte.fakek8s/pod=" + esc(podName) + "\"]}", "UTF-8"));
-                            // Extract IDs and stop them
-                            java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"Id\":\"([a-f0-9]+)\"").matcher(resp);
-                            while (m.find()) {
-                                String cid = m.group(1);
-                                dockerPost("/v1.41/containers/" + cid + "/stop", "{}");
-                                dockerDelete("/v1.41/containers/" + cid + "?force=true");
-                            }
-                        } catch (Exception ignored) {}
-                    });
+                deletePod(path.substring("/api/v1/namespaces/default/pods/".length()));
+                sendJson(sock.getOutputStream(), 200,
+                    "{\"apiVersion\":\"v1\",\"kind\":\"Status\",\"status\":\"Success\"}");
+                return;
+            }
+
+            // Pod collection DELETE by label (Airbyte 2.x's RunawayPodSweeper). Without a selector
+            // it deletes nothing, unlike Kubernetes, which would delete every pod.
+            if ("DELETE".equals(method) && path.equals("/api/v1/namespaces/default/pods")) {
+                if (query.contains("labelSelector=")) {
+                    for (PodState pod : new ArrayList<>(podsMatchingLabelSelector(query))) deletePod(pod.name);
                 }
                 sendJson(sock.getOutputStream(), 200,
                     "{\"apiVersion\":\"v1\",\"kind\":\"Status\",\"status\":\"Success\"}");
