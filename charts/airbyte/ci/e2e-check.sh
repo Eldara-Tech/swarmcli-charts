@@ -191,7 +191,7 @@ fi
 # The Connector Builder's backend answers on the internal overlay (the server is its only caller).
 code=""
 for _ in $(seq 1 40); do
-  code="$(docker run --rm --network "${release}_airbyte" curlimages/curl:latest -s -o /dev/null \
+  code="$(docker run --rm --network "${release}_airbyte" curlimages/curl:latest -sL -o /dev/null \
     -w '%{http_code}' --max-time 10 "http://${release}_manifest-server:8080/health" 2>/dev/null || true)"
   [ "$code" = 200 ] && break
   sleep 3
