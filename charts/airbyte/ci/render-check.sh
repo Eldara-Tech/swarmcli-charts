@@ -51,6 +51,11 @@ case "$case" in
         && yq -e ".services[\"$svc\"].secrets[] | select(. == \"airbyte_jwt_signature_secret\")" "$out" >/dev/null 2>&1 \
         || { echo "  FAIL($case): $svc does not read the JWT signing secret"; fail=1; }
     done
+    # 1.8.1's worker and cron authenticate to the workload API with a static bearer token.
+    for svc in worker workload-api-server cron; do
+      yq -r ".services[\"$svc\"].command[2]" "$out" | grep -F 'WORKLOAD_API_BEARER_TOKEN="$${AB_JWT_SIGNATURE_SECRET}"' >/dev/null \
+        || { echo "  FAIL($case): $svc has no WORKLOAD_API_BEARER_TOKEN"; fail=1; }
+    done
     for svc in server workload-api-server connector-builder-server; do
       [ "$(yq -r ".services[\"$svc\"].environment.API_AUTHORIZATION_ENABLED" "$out")" = true ] \
         || { echo "  FAIL($case): $svc does not enforce authorization"; fail=1; }

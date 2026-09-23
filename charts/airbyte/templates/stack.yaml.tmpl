@@ -20,9 +20,11 @@
 {{- end }}
 {{- /* auth.mode airbyte: Airbyte's own login. Every service that mints or checks Airbyte's
        JWTs (server, worker, workload-api-server, cron, connector builder) reads the same
-       signing secret; the server also reads the admin password. */}}
+       signing secret; the server also reads the admin password. In 1.8.1 the worker and cron
+       call the workload API with a static WORKLOAD_API_BEARER_TOKEN rather than a JWT, which
+       the workload API compares with its own, so the same value doubles as that token. */}}
 {{- $jwtExport := "" }}
-{{- if $airbyteAuth }}{{ $jwtExport = printf "export AB_JWT_SIGNATURE_SECRET=\"$$(cat /run/secrets/%s)\"; " .Values.auth.airbyte.jwtSecretName }}{{- end }}
+{{- if $airbyteAuth }}{{ $jwtExport = printf "export AB_JWT_SIGNATURE_SECRET=\"$$(cat /run/secrets/%s)\"; export WORKLOAD_API_BEARER_TOKEN=\"$${AB_JWT_SIGNATURE_SECRET}\"; " .Values.auth.airbyte.jwtSecretName }}{{- end }}
 {{- /* The public entry point is oauth2-proxy, or with auth.mode none/airbyte the server itself, plus
        a second router for the connector builder's path, which oauth2-proxy otherwise routes. */}}
 {{- $serverPublic := and (not $oauth) (or (eq .Values.exposure.mode "traefik") (eq .Values.exposure.mode "none")) }}
