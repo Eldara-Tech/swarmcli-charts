@@ -115,16 +115,6 @@ if (login) {
   await signIn();
   console.log('  airbyte login: wrong password refused, admin password accepted');
 
-  // The UI calls the connector builder directly with the JWT cookie, never a bearer token.
-  // Its JVM can still be starting after the server is up; its health endpoint is anonymous.
-  await until('connector builder health', async () =>
-    (await request(`${server}/api/v1/connector_builder/health`, undefined, { anonymous: true })).status === 200, 300);
-  const resolve = `${server}/api/v1/connector_builder/manifest/resolve`;
-  const builderAnon = await request(resolve, { manifest: {} }, { anonymous: true });
-  if (builderAnon.status !== 401) throw new Error(`anonymous connector builder call: HTTP ${builderAnon.status}, expected 401`);
-  const builder = await request(resolve, { manifest: {} });
-  if (builder.status === 401 || builder.status === 403) throw new Error(`connector builder refused the login cookie: HTTP ${builder.status}`);
-  console.log(`  connector builder: anonymous refused (401), login cookie accepted (HTTP ${builder.status})`);
 }
 
 // The server reports healthy once the schemas are migrated, which can be before db-migrations
@@ -165,7 +155,7 @@ JS
 then
   # Show where the request died: each service's state and its errors, including the 401/403s
   # an auth mismatch between services produces.
-  for svc in server connector-builder-server worker workload-api-server workload-launcher; do
+  for svc in server manifest-server worker workload-api-server workload-launcher; do
     echo "  --- $svc ---"
     docker service ps --no-trunc "${release}_$svc" 2>&1 | sed -n '1,3p' | sed 's/^/    /'
     docker service logs --raw "${release}_$svc" 2>&1 \
@@ -175,11 +165,11 @@ then
 fi
 
 # auth.mode none: through the traefik edge, basic auth refuses an anonymous request, and an
-# authenticated one reaches the server's API and UI and the connector builder's own router.
+# authenticated one reaches the server's API and UI.
 if [ "$case" = "noauth" ]; then
   . "$2/../../scripts/e2e-edge/traefik-edge.sh"
   edge_assert_routed airbyte.e2e.test /api/v1/health 401 || exit 1
-  for path in /api/v1/health / /api/v1/connector_builder/health; do
+  for path in /api/v1/health /; do
     code=""
     for _ in $(seq 1 30); do
       code="$(docker run --rm --network "$EDGE_NETWORK" "$EDGE_CURL_IMAGE" -s -o /dev/null \
@@ -192,6 +182,17 @@ if [ "$case" = "noauth" ]; then
     echo "  edge: authenticated $path -> HTTP 200"
   done
 fi
+
+# The Connector Builder's backend answers on the internal overlay (the server is its only caller).
+code=""
+for _ in $(seq 1 40); do
+  code="$(docker run --rm --network "${release}_airbyte" curlimages/curl:latest -s -o /dev/null \
+    -w '%{http_code}' --max-time 10 "http://${release}_manifest-server:8080/health" 2>/dev/null || true)"
+  [ "$code" = 200 ] && break
+  sleep 3
+done
+[ "$code" = 200 ] || { echo "  FAIL: manifest-server /health returned ${code:-<none>}, not 200"; exit 1; }
+echo "  manifest-server: healthy"
 
 # The check can only succeed through FakeK8s; show it from the launcher's own log as well.
 # Captured to a file and matched with -F rather than piped: `docker service logs` can lag the

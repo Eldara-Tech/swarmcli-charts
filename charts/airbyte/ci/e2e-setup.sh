@@ -83,7 +83,7 @@ for _ in $(seq 1 40); do
 done
 
 # --- noauth and login: stand up the traefik chart as a real edge on traefik-public, so
-# ci/e2e-check.sh can prove what guards the server and the connector builder through it.
+# ci/e2e-check.sh can prove what guards the server through it.
 if [ "${3:-}" = "noauth" ] || [ "${3:-}" = "login" ]; then
   . "$chart_dir/../../scripts/e2e-edge/traefik-edge.sh"
   edge_up || exit 1

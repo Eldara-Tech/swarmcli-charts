@@ -1,5 +1,5 @@
-# No login in the chart: Traefik routes straight to the server and the connector builder,
-# behind a basic-auth middleware. Deploys against the same throwaway PostgreSQL and MinIO
+# No login in the chart: Traefik routes straight to the server, behind a basic-auth
+# middleware. Deploys against the same throwaway PostgreSQL and MinIO
 # as the mock fixture, with the in-repo traefik chart stood up as a real edge
 # (ci/e2e-setup.sh). Plain HTTP (tls:false): CI cannot issue an ACME certificate.
 #

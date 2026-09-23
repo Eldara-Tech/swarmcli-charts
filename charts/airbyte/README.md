@@ -28,9 +28,10 @@ do not repeat it in this list.
 ## Prerequisites
 
 Create the two external overlays used by the default configuration, then create
-the six secrets. `requirements.yaml` validates all of them before deployment. The
-two `airbyte_oauth_*` secrets are only needed with the default `auth.mode: oauth2`;
-`auth.mode: airbyte` needs its own two instead (see
+the seven secrets. `requirements.yaml` validates all of them before deployment.
+Every Airbyte service signs its internal calls with the JWT secret, whatever the
+auth mode. The two `airbyte_oauth_*` secrets are only needed with the default
+`auth.mode: oauth2`; `auth.mode: airbyte` needs an admin password instead (see
 [Airbyte's own login](#airbytes-own-login)).
 
 ```bash
@@ -43,6 +44,7 @@ printf 'storage-access-key' | docker secret create airbyte_s3_access_key -
 printf 'storage-secret-key' | docker secret create airbyte_s3_secret_key -
 printf 'oidc-client-secret' | docker secret create airbyte_oauth_client_secret -
 head -c 32 /dev/urandom | docker secret create airbyte_oauth_cookie_secret -
+head -c 32 /dev/urandom | base64 | docker secret create airbyte_jwt_signature_secret -
 ```
 
 The database must already contain an empty `airbyte` database which the secret
@@ -99,19 +101,16 @@ secret must be exactly 16, 24, or 32 raw bytes.
 login, as `global.auth.enabled` does in Airbyte's Helm chart. The first visitor
 sees Airbyte's setup screen and chooses the login email there, so open the
 instance yourself right after installing. The password comes from a Swarm
-secret, and every Airbyte service signs and checks its tokens with a shared
-secret of at least 32 random characters:
+secret, and the logins are signed with the JWT secret every service already
+shares:
 
 ```bash
 printf 'admin-password' | docker secret create airbyte_admin_password -
-head -c 32 /dev/urandom | base64 | docker secret create airbyte_jwt_signature_secret -
 ```
 
-It works in every exposure mode. With `exposure.mode: published` the server
-itself owns the port, and the Connector Builder UI then needs a proxy in front
-that routes `/api/v1/connector_builder/` to
-`<release>_connector-builder-server:8080`, because the UI calls it on the same
-origin. The login cookies are `Secure` only when `exposure.tls` is true.
+It works in every exposure mode; with `exposure.mode: published` the server
+itself owns the port. The login cookies are `Secure` only when `exposure.tls` is
+true.
 
 Airbyte keeps the setup endpoint (`/api/v1/instance_configuration/setup`) open to
 anonymous callers even after setup, and it replaces the login email. Once you
@@ -121,20 +120,17 @@ published port cannot be protected this way, so keep it on a trusted network.
 
 ## Without OAuth
 
-`auth.mode: none` drops oauth2-proxy and its Redis and routes the server directly,
-with a second router for the connector builder's `/api/v1/connector_builder/`
-path. Airbyte then logs nobody in, and it runs any connector image it is given
+`auth.mode: none` drops oauth2-proxy and its Redis and routes the server directly.
+Airbyte then logs nobody in, and it runs any connector image it is given
 next to your database, so the chart refuses to render unless something else
 authenticates:
 
 - `exposure.mode: traefik` requires `traefik.basicAuthUsers`, a basic-auth
-  middleware on both routers. Generate the entry with
+  middleware on the router. Generate the entry with
   `htpasswd -nbB <user> <password>` and **double every `$`**, because Compose
   eats single ones.
-- `exposure.mode: none` joins the server and the connector builder to
-  `exposure.network` for your own proxy, which must authenticate and route
-  `/api/v1/connector_builder/` to `<release>_connector-builder-server:8080` and
-  everything else to `<release>_server:8001`.
+- `exposure.mode: none` joins the server to `exposure.network` for your own
+  proxy, which must authenticate and route to `<release>_server:8001`.
 - `exposure.mode: published` is refused.
 
 ```yaml
@@ -183,7 +179,8 @@ after 30 minutes, and a pod whose image is still missing then fails. Kubernetes
 | Key | Default | Description |
 |-----|---------|-------------|
 | `image.repository` / `.tag` | `airbyte/server` / `""` | Airbyte server image; tag defaults to `appVersion` in Chart.yaml |
-| `bootloader.image.*`, `worker.image.*`, `connectorBuilderServer.image.*` | `airbyte/*` / `""` | Migration, worker, and connector-builder images; an empty tag follows `image.tag` |
+| `bootloader.image.*`, `worker.image.*` | `airbyte/*` / `""` | Migration and worker images; an empty tag follows `image.tag` |
+| `manifestServer.image.*` | `airbyte/manifest-server` / `7.28.2` | Connector Builder backend; versioned with Airbyte's Python CDK, so pinned separately |
 | `workloadApiServer.image.*`, `workloadLauncher.image.*` | `airbyte/*` / `""` | Workload API and launcher images; an empty tag follows `image.tag` |
 | `cron.image.*` | `airbyte/cron` / `""` | Cron image; an empty tag follows `image.tag` |
 | `oauth2Proxy.image.*` | `quay.io/oauth2-proxy/oauth2-proxy` | OIDC reverse-proxy image and tag |
@@ -198,7 +195,8 @@ after 30 minutes, and a pod whose image is still missing then fails. Kubernetes
 | `connectorRegistry.enterpriseSourceStubsUrl` | see `values.yaml` | Connector-registry Enterprise source stubs URL |
 | `flyway.configsMinimumMigrationVersion` / `.jobsMinimumMigrationVersion` | `0.35.15.001` / `0.29.15.001` | Minimum required Flyway migration for the configs and jobs databases |
 | `auth.mode` | `oauth2` | `oauth2` (oauth2-proxy in front), `airbyte` (see [Airbyte's own login](#airbytes-own-login)) or `none` (see [Without OAuth](#without-oauth)) |
-| `auth.airbyte.passwordSecretName` / `.jwtSecretName` | `airbyte_admin_password` / `airbyte_jwt_signature_secret` | External secrets for `auth.mode: airbyte`: the admin password and the JWT signing secret |
+| `auth.jwtSecretName` | `airbyte_jwt_signature_secret` | External JWT signing secret (32+ random characters) every Airbyte service signs internal calls with |
+| `auth.airbyte.passwordSecretName` | `airbyte_admin_password` | External admin-password secret for `auth.mode: airbyte` |
 | `auth.airbyte.setupComplete` | `false` | After the setup screen is done: refuse Airbyte's anonymous setup endpoint at Traefik |
 | `exposure.mode` | `traefik` | `traefik`, `published`, or `none` |
 | `exposure.network` / `.host` / `.tls` | `traefik-public` / `airbyte.example.com` / `true` | Ingress overlay and public address |

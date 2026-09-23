@@ -32,8 +32,8 @@ secrets:
     description: "Cookie encryption secret for oauth2-proxy"
   - name: "{{ .Values.auth.airbyte.passwordSecretName }}"
     description: "Airbyte admin password for auth.mode airbyte"
-  - name: "{{ .Values.auth.airbyte.jwtSecretName }}"
-    description: "Airbyte JWT signing secret (32+ random characters) for auth.mode airbyte"
+  - name: "{{ .Values.auth.jwtSecretName }}"
+    description: "Airbyte JWT signing secret (32+ random characters) its services sign internal calls with"
 {{- with .Values.workloadLauncher.registryAuthSecretName }}
   - name: "{{ . }}"
     description: "Docker config.json with credentials for private connector registries"

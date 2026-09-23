@@ -18,14 +18,16 @@ worker:
   image:
     repository: airbyte/worker
     tag: ""
-connectorBuilderServer:
-  image:
-    repository: airbyte/connector-builder-server
-    tag: ""
 workloadApiServer:
   image:
     repository: airbyte/workload-api-server
     tag: ""
+# Airbyte's Connector Builder backend, released with the Python CDK rather than the platform,
+# so its tag is pinned here instead of following image.tag.
+manifestServer:
+  image:
+    repository: airbyte/manifest-server
+    tag: "7.28.2"
 cron:
   image:
     repository: airbyte/cron
@@ -107,19 +109,18 @@ flyway:
 #            Its client and cookie secrets are external Swarm secrets.
 #   airbyte - Airbyte's own email/password login. The email is set on the first visit
 #            (setup screen); the password is the external secret passwordSecretName.
-#            Every service shares the JWT signing secret jwtSecretName, 32+ random
-#            characters. Works in every exposure mode, though with published the
-#            Connector Builder needs a proxy that routes its path (see README).
-#   none   - no login in the chart: the server and the connector builder are routed
-#            directly. Airbyte runs any connector image it is given next to your
+#            Works in every exposure mode.
+#   none   - no login in the chart: the server is routed directly. Airbyte runs any connector image it is given next to your
 #            database, so the chart refuses this unless something else authenticates:
 #            exposure.mode traefik with traefik.basicAuthUsers, or exposure.mode none
 #            behind your own authenticating proxy. exposure.mode published is refused.
+# jwtSecretName: the external secret, 32+ random characters, that every Airbyte service
+# signs its internal calls with, in every mode.
 auth:
   mode: oauth2
+  jwtSecretName: airbyte_jwt_signature_secret
   airbyte:
     passwordSecretName: airbyte_admin_password
-    jwtSecretName: airbyte_jwt_signature_secret
     # Set true once the setup screen is done: Airbyte keeps that endpoint anonymous and lets it
     # replace the login email later, so Traefik then refuses it (traefik mode only).
     setupComplete: false

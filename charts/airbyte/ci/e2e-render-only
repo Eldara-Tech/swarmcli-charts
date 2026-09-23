@@ -12,7 +12,7 @@ none
 published
 
 # Points at the operator's own proxy, which CI does not have; ci/render-check.sh asserts the
-# server and builder join exposure.network with no Traefik labels.
+# server joins exposure.network with no Traefik labels.
 noauth-proxy
 
 # Publishes a node port; ci/render-check.sh asserts the server, not a proxy, owns it and that

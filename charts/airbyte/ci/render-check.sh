@@ -23,45 +23,40 @@ fail=0
 [ "$(grep -c "AIRBYTE_URL: $scheme://$host" "$out")" -eq 2 ] \
   || { echo "  FAIL($case): server and worker AIRBYTE_URL are not both $scheme://"; fail=1; }
 
+# Every mode: each service that signs or checks Airbyte's internal JWTs reads the one secret
+# (2.3's worker refuses to start without it), and the Connector Builder's manifest server
+# stays on the internal overlay, reachable only from the server.
+for svc in server worker workload-api-server cron manifest-server; do
+  yq -r ".services[\"$svc\"].command[2]" "$out" | grep -F 'AB_JWT_SIGNATURE_SECRET="$$(cat /run/secrets/airbyte_jwt_signature_secret)"' >/dev/null \
+    && yq -e ".services[\"$svc\"].secrets[] | select(. == \"airbyte_jwt_signature_secret\")" "$out" >/dev/null 2>&1 \
+    || { echo "  FAIL($case): $svc does not read the JWT signing secret"; fail=1; }
+done
+[ "$(yq -o=json -I=0 '.services["manifest-server"].networks' "$out")" = '["airbyte"]' ] \
+  || { echo "  FAIL($case): the manifest server is not on the internal overlay alone"; fail=1; }
+
 case "$case" in
   noauth*)
     # auth.mode none: no oauth2-proxy, nothing of its session store, and in traefik mode the
-    # basic-auth middleware on BOTH public routers (server and connector builder) — the
-    # builder router is the one that would otherwise slip past the login.
+    # basic-auth middleware on the public router.
     yq -e '.services | has("oauth2-proxy") or has("oauth2-redis")' "$out" >/dev/null 2>&1 \
       && { echo "  FAIL($case): oauth2-proxy or its Redis rendered with auth.mode none"; fail=1; }
     if [ "$case" = "noauth" ]; then
-      [ "$(grep -cE 'traefik\.http\.routers\.[^.]+-http\.middlewares=[^ ]+-auth$' "$out")" -eq 2 ] \
-        || { echo "  FAIL($case): the server and builder routers do not both carry the basic-auth middleware"; fail=1; }
-      grep -qF 'PathPrefix(`/api/v1/connector_builder/`)' "$out" \
-        || { echo "  FAIL($case): no router for the connector builder's path"; fail=1; }
+      [ "$(grep -cE 'traefik\.http\.routers\.[^.]+-http\.middlewares=[^ ]+-auth$' "$out")" -eq 1 ] \
+        || { echo "  FAIL($case): the public router does not carry the basic-auth middleware"; fail=1; }
     else
       grep -q 'traefik\.' "$out" && { echo "  FAIL($case): Traefik labels rendered with exposure.mode none"; fail=1; }
-      [ "$(yq '[.services.server.networks[], .services["connector-builder-server"].networks[]] | map(select(. == "traefik-public")) | length' "$out")" -eq 2 ] \
-        || { echo "  FAIL($case): the server and builder do not both join exposure.network"; fail=1; }
+      [ "$(yq '.services.server.networks | map(select(. == "traefik-public")) | length' "$out")" -eq 1 ] \
+        || { echo "  FAIL($case): the server does not join exposure.network"; fail=1; }
     fi
     ;;
   login*)
-    # auth.mode airbyte: no oauth2-proxy; the server logs users in, and every service that
-    # mints or checks Airbyte's JWTs reads the one signing secret.
+    # auth.mode airbyte: no oauth2-proxy; the server logs users in.
     yq -e '.services | has("oauth2-proxy") or has("oauth2-redis")' "$out" >/dev/null 2>&1 \
       && { echo "  FAIL($case): oauth2-proxy or its Redis rendered with auth.mode airbyte"; fail=1; }
-    for svc in server worker workload-api-server cron connector-builder-server; do
-      yq -r ".services[\"$svc\"].command[2]" "$out" | grep -F 'AB_JWT_SIGNATURE_SECRET="$$(cat /run/secrets/airbyte_jwt_signature_secret)"' >/dev/null \
-        && yq -e ".services[\"$svc\"].secrets[] | select(. == \"airbyte_jwt_signature_secret\")" "$out" >/dev/null 2>&1 \
-        || { echo "  FAIL($case): $svc does not read the JWT signing secret"; fail=1; }
-    done
-    # 1.8.1's worker and cron authenticate to the workload API with a static bearer token.
-    for svc in worker workload-api-server cron; do
-      yq -r ".services[\"$svc\"].command[2]" "$out" | grep -F 'WORKLOAD_API_BEARER_TOKEN="$${AB_JWT_SIGNATURE_SECRET}"' >/dev/null \
-        || { echo "  FAIL($case): $svc has no WORKLOAD_API_BEARER_TOKEN"; fail=1; }
-    done
-    for svc in server workload-api-server connector-builder-server; do
+    for svc in server workload-api-server; do
       [ "$(yq -r ".services[\"$svc\"].environment.API_AUTHORIZATION_ENABLED" "$out")" = true ] \
         || { echo "  FAIL($case): $svc does not enforce authorization"; fail=1; }
     done
-    [ "$(yq -r '.services["connector-builder-server"].environment.MICRONAUT_SECURITY_AUTHENTICATION' "$out")" = cookie ] \
-      || { echo "  FAIL($case): the connector builder cannot read the login cookie"; fail=1; }
     yq -r '.services.server.command[2]' "$out" | grep -F 'AB_INSTANCE_ADMIN_PASSWORD="$$(cat /run/secrets/airbyte_admin_password)"' >/dev/null \
       || { echo "  FAIL($case): the server does not read the admin password"; fail=1; }
     # Secure cookies are dropped over plain http, so the login would silently never stick.
@@ -108,9 +103,10 @@ if [ "$case" = "default" ]; then
 fi
 
 # One Airbyte release everywhere: every platform image carries the tag AIRBYTE_VERSION names,
-# or a Renovate bump of appVersion runs mixed versions.
+# or a Renovate bump of appVersion runs mixed versions. The manifest server is the one exception:
+# it ships with Airbyte's Python CDK, on its own version line.
 versions="$(sed -n 's/^ *AIRBYTE_VERSION: *"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$out" | sort -u)"
-tags="$(sed -n 's/^ *image: airbyte\/[a-z-]*:\(.*\)$/\1/p' "$out" | sort -u)"
+tags="$(grep -v 'image: airbyte/manifest-server:' "$out" | sed -n 's/^ *image: airbyte\/[a-z-]*:\(.*\)$/\1/p' | sort -u)"
 { [ "$(printf '%s\n' "$versions" | wc -l)" -eq 1 ] && [ "$tags" = "$versions" ]; } \
   || { echo "  FAIL($case): platform image tags [$(echo $tags)] != AIRBYTE_VERSION [$(echo $versions)]"; fail=1; }
 

@@ -1,5 +1,5 @@
-# No login in the chart, behind the operator's own authenticating proxy: the server and the
-# connector builder join exposure.network with no Traefik labels.
+# No login in the chart, behind the operator's own authenticating proxy: the server joins
+# exposure.network with no Traefik labels.
 auth:
   mode: none
 exposure:

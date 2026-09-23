@@ -18,23 +18,18 @@
 {{- if and (eq .Values.auth.mode "none") (eq .Values.exposure.mode "traefik") (not .Values.traefik.basicAuthUsers) }}
 {{- fail "auth.mode none with exposure.mode traefik needs traefik.basicAuthUsers: without it, anyone who resolves exposure.host can run connector images next to your database." -}}
 {{- end }}
-{{- /* auth.mode airbyte: Airbyte's own login. Every service that mints or checks Airbyte's
-       JWTs (server, worker, workload-api-server, cron, connector builder) reads the same
-       signing secret; the server also reads the admin password. In 1.8.1 the worker and cron
-       call the workload API with a static WORKLOAD_API_BEARER_TOKEN rather than a JWT, which
-       the workload API compares with its own, so the same value doubles as that token. */}}
-{{- $jwtExport := "" }}
-{{- if $airbyteAuth }}{{ $jwtExport = printf "export AB_JWT_SIGNATURE_SECRET=\"$$(cat /run/secrets/%s)\"; export WORKLOAD_API_BEARER_TOKEN=\"$${AB_JWT_SIGNATURE_SECRET}\"; " .Values.auth.airbyte.jwtSecretName }}{{- end }}
-{{- /* The public entry point is oauth2-proxy, or with auth.mode none/airbyte the server itself, plus
-       a second router for the connector builder's path, which oauth2-proxy otherwise routes. */}}
+{{- /* Airbyte signs every internal call (worker, cron, workload API, manifest server) with one
+       JWT signing secret, in every auth mode; the worker refuses to start without it. With
+       auth.mode airbyte the server also signs its logins with it and reads the admin password. */}}
+{{- $jwtExport := printf "export AB_JWT_SIGNATURE_SECRET=\"$$(cat /run/secrets/%s)\"; " .Values.auth.jwtSecretName }}
+{{- /* The public entry point is oauth2-proxy, or with auth.mode none/airbyte the server itself. */}}
 {{- $serverPublic := and (not $oauth) (or (eq .Values.exposure.mode "traefik") (eq .Values.exposure.mode "none")) }}
 {{- $authMiddleware := "" }}
 {{- if .Values.traefik.basicAuthUsers }}{{ $authMiddleware = printf "%s-auth" $router }}{{- end }}
-{{- $traefikLabels := dict "entry" (list) "builder" (list) }}
+{{- $traefikLabels := dict "entry" (list) }}
 {{- if eq .Values.exposure.mode "traefik" }}
 {{- $hostRule := printf "Host(`%s`)" .Values.exposure.host }}
 {{- $targets := list (list "entry" $router $hostRule (ternary 4180 8001 $oauth)) }}
-{{- if not $oauth }}{{ $targets = append $targets (list "builder" (printf "%s-builder" $router) (printf "%s && PathPrefix(`/api/v1/connector_builder/`)" $hostRule) 8080) }}{{- end }}
 {{- range $targets }}
 {{- $name := index . 1 }}
 {{- $l := list "traefik.enable=true" (printf "traefik.swarm.network=%s" $.Values.exposure.network) (printf "traefik.constraint-label=%s" $.Values.traefik.constraintLabel) }}
@@ -183,7 +178,6 @@ services:
       - --code-challenge-method=S256
       - {{ printf "--scope=%s" .Values.oauth2.scope | quote }}
       - --upstream=http://server:8001/
-      - --upstream=http://connector-builder-server:8080/api/v1/connector_builder/
       - --skip-jwt-bearer-tokens={{ .Values.oauth2.skipJwtBearerTokens }}
       - {{ printf "--extra-jwt-issuers=%s=%s" .Values.oauth2.issuerUrl .Values.oauth2.clientId | quote }}
       - --ssl-insecure-skip-verify={{ .Values.oauth2.sslInsecureSkipVerify }}
@@ -305,9 +299,7 @@ services:
       - {{ .Values.database.passwordSecretName }}
       - {{ .Values.storage.accessKeySecretName }}
       - {{ .Values.storage.secretKeySecretName }}
-{{- if $airbyteAuth }}
-      - {{ .Values.auth.airbyte.jwtSecretName }}
-{{- end }}
+      - {{ .Values.auth.jwtSecretName }}
     environment:
       AIRBYTE_VERSION: {{ $airbyteVersion | quote }}
       DATABASE_HOST: {{ .Values.database.host | quote }}
@@ -341,8 +333,8 @@ services:
       - {{ .Values.database.passwordSecretName }}
       - {{ .Values.storage.accessKeySecretName }}
       - {{ .Values.storage.secretKeySecretName }}
+      - {{ .Values.auth.jwtSecretName }}
 {{- if $airbyteAuth }}
-      - {{ .Values.auth.airbyte.jwtSecretName }}
       - {{ .Values.auth.airbyte.passwordSecretName }}
 {{- end }}
     environment:
@@ -372,14 +364,13 @@ services:
       AIRBYTE_API_HOST: http://localhost:8001/api/public
 {{- if $airbyteAuth }}
       API_AUTHORIZATION_ENABLED: "true"
-      # The login's token issuer; the cookies are Secure only when the public URL is https.
-      WEBAPP_URL: {{ printf "%s://%s" $scheme .Values.exposure.host | quote }}
+      # AIRBYTE_URL is the login's token issuer; the cookies are Secure only over https.
       AB_COOKIE_SECURE: {{ .Values.exposure.tls | quote }}
 {{- end }}
-      CONNECTOR_BUILDER_SERVER_API_HOST: http://connector-builder-server:8080
+      MANIFEST_SERVER_API_HOST: http://manifest-server:8080
       WORKSPACE_ROOT: /data/workspace
       SECRET_PERSISTENCE: TESTING_CONFIG_DB_TABLE
-    command: [/bin/bash, -c, 'export DATABASE_USER="$$(cat /run/secrets/{{ .Values.database.userSecretName }})" DATABASE_PASSWORD="$$(cat /run/secrets/{{ .Values.database.passwordSecretName }})" AWS_ACCESS_KEY_ID="$$(cat /run/secrets/{{ .Values.storage.accessKeySecretName }})" AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/{{ .Values.storage.secretKeySecretName }})"; export DATABASE_URL="jdbc:postgresql://$${DATABASE_HOST}:$${DATABASE_PORT}/$${DATABASE_DB}"; {{ $jwtExport }}{{ if $airbyteAuth }}export AB_INSTANCE_ADMIN_PASSWORD="$$(cat /run/secrets/{{ .Values.auth.airbyte.passwordSecretName }})"; {{ end }}exec airbyte-app/bin/airbyte-server']
+    command: [/bin/bash, -c, 'export DATABASE_USER="$$(cat /run/secrets/{{ .Values.database.userSecretName }})" DATABASE_PASSWORD="$$(cat /run/secrets/{{ .Values.database.passwordSecretName }})" AWS_ACCESS_KEY_ID="$$(cat /run/secrets/{{ .Values.storage.accessKeySecretName }})" AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/{{ .Values.storage.secretKeySecretName }})"; export DATABASE_URL="jdbc:postgresql://$${DATABASE_HOST}:$${DATABASE_PORT}/$${DATABASE_DB}"; export CONFIG_DATABASE_REPLICA_URL="$${DATABASE_URL}" CONFIG_DATABASE_REPLICA_USER="$${DATABASE_USER}" CONFIG_DATABASE_REPLICA_PASSWORD="$${DATABASE_PASSWORD}"; {{ $jwtExport }}{{ if $airbyteAuth }}export AB_INSTANCE_ADMIN_PASSWORD="$$(cat /run/secrets/{{ .Values.auth.airbyte.passwordSecretName }})"; {{ end }}exec airbyte-app/bin/airbyte-server']
     deploy:
       replicas: 1
       placement:
@@ -399,50 +390,19 @@ services:
 {{- end }}
 {{- end }}
 
-  connector-builder-server:
-    image: {{ .Values.connectorBuilderServer.image.repository }}:{{ .Values.connectorBuilderServer.image.tag | default $airbyteVersion }}
-    networks: [airbyte, {{ .Values.database.network }}{{ if $serverPublic }}, {{ .Values.exposure.network }}{{ end }}]
+  # The Connector Builder's backend since Airbyte 2.1; only the server calls it, signed with the
+  # JWT secret, so it stays on the internal overlay.
+  manifest-server:
+    image: {{ .Values.manifestServer.image.repository }}:{{ .Values.manifestServer.image.tag }}
+    networks: [airbyte]
     secrets:
-      - {{ .Values.database.userSecretName }}
-      - {{ .Values.database.passwordSecretName }}
-      - {{ .Values.storage.accessKeySecretName }}
-      - {{ .Values.storage.secretKeySecretName }}
-{{- if $airbyteAuth }}
-      - {{ .Values.auth.airbyte.jwtSecretName }}
-{{- end }}
-    environment:
-      AIRBYTE_VERSION: {{ $airbyteVersion | quote }}
-      DATABASE_HOST: {{ .Values.database.host | quote }}
-      DATABASE_PORT: {{ .Values.database.port | quote }}
-      DATABASE_DB: {{ .Values.database.name | quote }}
-      ENTERPRISE_SOURCE_STUBS_URL: {{ .Values.connectorRegistry.enterpriseSourceStubsUrl | quote }}
-      STORAGE_TYPE: minio
-      MINIO_ENDPOINT: {{ .Values.storage.endpoint | quote }}
-      STORAGE_BUCKET_LOG: {{ .Values.storage.bucket | quote }}
-      STORAGE_BUCKET_STATE: {{ .Values.storage.bucket | quote }}
-      STORAGE_BUCKET_WORKLOAD_OUTPUT: {{ .Values.storage.bucket | quote }}
-      STORAGE_BUCKET_ACTIVITY_PAYLOAD: {{ .Values.storage.bucket | quote }}
-      STORAGE_BUCKET_AUDIT_LOGGING: {{ .Values.storage.bucket | quote }}
-      S3_PATH_STYLE_ACCESS: "true"
-      TEMPORAL_HOST: temporal:7233
-      WORKSPACE_ROOT: /data/workspace
-{{- if $airbyteAuth }}
-      # The UI sends Airbyte's login as the JWT cookie, never as a bearer token, and Micronaut
-      # reads a token from a cookie only in cookie authentication mode, as the server runs.
-      API_AUTHORIZATION_ENABLED: "true"
-      MICRONAUT_SECURITY_AUTHENTICATION: cookie
-      MICRONAUT_SECURITY_REDIRECT_ENABLED: "false"
-{{- end }}
-    command: [/bin/bash, -c, 'export DATABASE_USER="$$(cat /run/secrets/{{ .Values.database.userSecretName }})" DATABASE_PASSWORD="$$(cat /run/secrets/{{ .Values.database.passwordSecretName }})" AWS_ACCESS_KEY_ID="$$(cat /run/secrets/{{ .Values.storage.accessKeySecretName }})" AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/{{ .Values.storage.secretKeySecretName }})"; {{ $jwtExport }}exec airbyte-app/bin/airbyte-connector-builder-server']
+      - {{ .Values.auth.jwtSecretName }}
+    command: [/bin/sh, -c, '{{ $jwtExport }}exec uvicorn airbyte_cdk.manifest_server.app:app --host 0.0.0.0 --port 8080']
     deploy:
       replicas: 1
       placement:
         constraints:
 {{ toYaml $constraints | indent 10 }}
-{{- with get $traefikLabels "builder" }}
-      labels:
-{{ toYaml . | indent 8 }}
-{{- end }}
 
   worker:
     image: {{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag | default $airbyteVersion }}
@@ -452,9 +412,7 @@ services:
       - {{ .Values.database.passwordSecretName }}
       - {{ .Values.storage.accessKeySecretName }}
       - {{ .Values.storage.secretKeySecretName }}
-{{- if $airbyteAuth }}
-      - {{ .Values.auth.airbyte.jwtSecretName }}
-{{- end }}
+      - {{ .Values.auth.jwtSecretName }}
     environment:
       AIRBYTE_VERSION: {{ $airbyteVersion | quote }}
       DATABASE_HOST: {{ .Values.database.host | quote }}
@@ -502,9 +460,7 @@ services:
     secrets:
       - {{ .Values.database.userSecretName }}
       - {{ .Values.database.passwordSecretName }}
-{{- if $airbyteAuth }}
-      - {{ .Values.auth.airbyte.jwtSecretName }}
-{{- end }}
+      - {{ .Values.auth.jwtSecretName }}
     environment:
       AIRBYTE_VERSION: {{ $airbyteVersion | quote }}
       AIRBYTE_EDITION: community
@@ -514,6 +470,7 @@ services:
       CONFIGS_DATABASE_MINIMUM_FLYWAY_MIGRATION_VERSION: {{ .Values.flyway.configsMinimumMigrationVersion | quote }}
       MICRONAUT_ENVIRONMENTS: control-plane
       TEMPORAL_HOST: temporal:7233
+      INTERNAL_API_HOST: http://server:8001
       WORKLOAD_API_HOST: http://workload-api-server:8007
       WORKSPACE_ROOT: /data/workspace
       SECRET_PERSISTENCE: TESTING_CONFIG_DB_TABLE
@@ -554,10 +511,10 @@ secrets:
   {{ . }}:
     external: true
 {{- end }}
+  {{ .Values.auth.jwtSecretName }}:
+    external: true
 {{- if $airbyteAuth }}
   {{ .Values.auth.airbyte.passwordSecretName }}:
-    external: true
-  {{ .Values.auth.airbyte.jwtSecretName }}:
     external: true
 {{- end }}
 
