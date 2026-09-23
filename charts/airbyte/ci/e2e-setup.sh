@@ -6,9 +6,8 @@
 # Only the mock fixture deploys (the rest are ci/e2e-render-only). It needs everything the
 # chart treats as external, so this hook provides, with dummy values:
 #   * the six operator secrets and the airbyte-db-net / traefik-public overlays;
-#   * the airbyte-data node label the session Redis is pinned to;
-#   * PostgreSQL (airbyte-e2e-postgres) on airbyte-db-net. Its user is a superuser, so
-#     Temporal's auto-setup can create its temporal and temporal_visibility databases;
+#   * the airbyte-data node label the session Redis and Temporal are pinned to;
+#   * PostgreSQL (airbyte-e2e-postgres) on airbyte-db-net;
 #   * MinIO (airbyte-e2e-minio) as the S3 endpoint. Airbyte creates its bucket itself;
 #   * an OIDC discovery mock (airbyte-e2e-oidc, ci/mock-oidc.js) on traefik-public, without
 #     which oauth2-proxy exits at startup.

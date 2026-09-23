@@ -54,10 +54,8 @@ redis:
   image:
     repository: redis
     tag: "7.4.7-alpine"
-# Temporal runs against database.host, as Airbyte's own chart runs it, and keeps
-# its state in the databases temporal and temporal_visibility. With
-# createDatabases the database user needs CREATEDB; set it to false when you
-# create both databases yourself.
+# Temporal runs its development server and keeps its SQLite state on
+# persistence.temporalVolume.
 temporal:
   image:
     repository: temporalio/temporal
@@ -68,8 +66,9 @@ temporal:
 # "dev-3" in the release values so Swarm creates a new config object.
 fakeK8sConfigVersion: ""
 
-# The OAuth2 session cache uses a node-local named volume. Pin it to exactly one
-# node with this label before deploying, or set nodeLabel: "" on a single-node swarm.
+# The OAuth2 session cache and Temporal use node-local named volumes. Pin them to
+# exactly one node with this label before deploying, or set nodeLabel: "" on a
+# single-node swarm.
 persistence:
   oauthRedisVolume: airbyte_oauth2_redis
   nodeLabel: airbyte-data

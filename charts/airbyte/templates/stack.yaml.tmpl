@@ -396,7 +396,7 @@ services:
       replicas: 1
       placement:
         constraints:
-{{ toYaml $constraints | indent 10 }}
+{{ toYaml $dataConstraints | indent 10 }}
 
   cron:
     image: {{ .Values.cron.image.repository }}:{{ .Values.cron.image.tag | default $airbyteVersion }}
@@ -431,9 +431,6 @@ configs:
   fakek8s:
     name: "{{ .Release.Name }}_fakek8s_{{ .Chart.Version }}{{ with .Values.fakeK8sConfigVersion }}_{{ . }}{{ end }}"
     file: files/FakeK8s.java
-  temporal-dynamicconfig:
-    name: "{{ .Release.Name }}_temporal-dynamicconfig_{{ .Chart.Version }}"
-    file: files/temporal-dynamicconfig.yaml
 
 secrets:
   {{ .Values.database.userSecretName }}:

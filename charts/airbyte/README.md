@@ -3,9 +3,8 @@
 Airbyte Community Platform for Docker Swarm. This chart runs the Airbyte control
 plane, worker, cron, Temporal, OAuth2 proxy and its session Redis. PostgreSQL and
 S3-compatible storage are external, so the operator controls their durability and
-backups: Airbyte's metadata, Temporal's workflow state and the dataplane
-credentials all live in PostgreSQL. Only the session Redis keeps a node-local
-volume.
+backups: Airbyte's metadata and the dataplane credentials live in PostgreSQL.
+Temporal's workflow state and the session Redis keep node-local volumes.
 
 The chart-managed `airbyte` overlay is attachable so the workload launcher can
 start connector containers through Docker and join them to the Airbyte services.
@@ -43,15 +42,13 @@ head -c 32 /dev/urandom | docker secret create airbyte_oauth_cookie_secret -
 ```
 
 The database must already contain an empty `airbyte` database which the secret
-user can migrate. Temporal keeps its state in two more databases on the same
-server, `temporal` and `temporal_visibility`; it creates them itself when the user
-has `CREATEDB`, otherwise create both and set `temporal.createDatabases: false`.
+user can migrate.
 `storage.endpoint` must reach an S3-compatible endpoint and `storage.bucket` must
 exist (or be provisioned according to your storage policy).
 Set `database.host` to the database's stack-qualified Swarm service name when it
 lives in another stack, for example `postgres_postgres`.
 
-Label the one node that carries the session Redis volume before installing:
+Label the one node that carries the session Redis and Temporal volumes before installing:
 
 ```bash
 docker node update --label-add airbyte-data=true <node>
@@ -136,9 +133,8 @@ after 30 minutes, and a pod whose image is still missing then fails. Kubernetes
 | `cron.image.*` | `airbyte/cron` / `""` | Cron image; an empty tag follows `image.tag` |
 | `oauth2Proxy.image.*` | `quay.io/oauth2-proxy/oauth2-proxy` | OIDC reverse-proxy image and tag |
 | `redis.image.*` / `temporal.image.*` | see `values.yaml` | In-stack session Redis and Temporal images |
-| `temporal.createDatabases` | `true` | Let Temporal create its `temporal` and `temporal_visibility` databases (needs `CREATEDB`) |
 | `fakeK8sConfigVersion` | `""` | Optional local-testing rotation key for the immutable FakeK8s config |
-| `persistence.*` | see `values.yaml` | Session Redis volume and the node label that pins it |
+| `persistence.*` | see `values.yaml` | Session Redis and Temporal volumes and the node label that pins them |
 | `database.host` / `.port` / `.name` | `postgres` / `5432` / `airbyte` | External PostgreSQL endpoint and database |
 | `database.userSecretName` / `.passwordSecretName` | `airbyte_db_user` / `airbyte_db_password` | External secrets for PostgreSQL credentials |
 | `database.network` | `airbyte-db-net` | External overlay PostgreSQL is reachable on |

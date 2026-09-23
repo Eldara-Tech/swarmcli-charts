@@ -44,12 +44,12 @@ elif grep -q 'FAKEK8S_REGISTRY_AUTH_FILE' "$out"; then
   echo "  FAIL($case): FAKEK8S_REGISTRY_AUTH_FILE set without workloadLauncher.registryAuthSecretName"; fail=1
 fi
 
-# The data pin follows the one named volume (the session Redis) and nothing else, and goes
-# away with nodeLabel: "".
-pins=1
+# The data pin follows the two named volumes (session Redis and Temporal) and nothing else,
+# and goes away with nodeLabel: "".
+pins=2
 [ "$case" = "published" ] && pins=0
 [ "$(grep -c 'node.labels.airbyte-data == true' "$out")" -eq "$pins" ] \
-  || { echo "  FAIL($case): expected $pins data-node pin(s), the session Redis only"; fail=1; }
+  || { echo "  FAIL($case): expected $pins data-node pin(s), session Redis and Temporal"; fail=1; }
 
 [ "$fail" -eq 0 ] || exit 1
 echo "  $case: public URLs use $scheme://, issuer TLS verified, one Airbyte version, one socket mount, $pins data pin"
