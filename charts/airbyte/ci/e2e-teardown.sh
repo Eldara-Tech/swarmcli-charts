@@ -30,9 +30,16 @@ for s in airbyte_db_user airbyte_db_password airbyte_s3_access_key airbyte_s3_se
   docker secret rm "$s" >/dev/null 2>&1 || true
 done
 
-# The overlay can linger "in use" for a moment after the services detach; retry a few.
+# The overlay can linger "in use" for a moment after the services detach; retry a few. Swarm
+# then deletes it asynchronously, so wait until it is gone: the next fixture's setup would
+# otherwise "create" it onto the dying object and attach its services to a vanished ID
+# ("network … not found").
 for _ in $(seq 1 10); do
   docker network rm airbyte-db-net >/dev/null 2>&1 && break
+  sleep 1
+done
+for _ in $(seq 1 30); do
+  docker network inspect airbyte-db-net >/dev/null 2>&1 || break
   sleep 1
 done
 
