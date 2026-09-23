@@ -158,8 +158,13 @@ then
   for svc in server manifest-server worker workload-api-server workload-launcher; do
     echo "  --- $svc ---"
     docker service ps --no-trunc "${release}_$svc" 2>&1 | sed -n '1,3p' | sed 's/^/    /'
-    docker service logs --raw "${release}_$svc" 2>&1 \
-      | grep -E 'ERROR|WARN|Exception|401|403|Unauthorized|Forbidden' | tail -n 25 | sed 's/^/    /' || true
+    if docker service ps "${release}_$svc" --format '{{.CurrentState}}' 2>/dev/null | grep '^Failed' >/dev/null; then
+      # A crash-looping service: its last words, unfiltered, across its tasks.
+      docker service logs --raw --tail 40 "${release}_$svc" 2>&1 | sed 's/^/    /' || true
+    else
+      docker service logs --raw "${release}_$svc" 2>&1 \
+        | grep -E 'ERROR|WARN|Exception|401|403|Unauthorized|Forbidden' | tail -n 25 | sed 's/^/    /' || true
+    fi
   done
   exit 1
 fi
