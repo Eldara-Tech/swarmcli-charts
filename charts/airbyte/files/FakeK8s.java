@@ -641,6 +641,26 @@ public class FakeK8s {
         return result;
     }
 
+    // Applies the label changes of a JSON Patch ([{"op":"add","path":"/metadata/labels/k",...}])
+    // or a merge patch ({"metadata":{"labels":{...}}}) to a tracked pod; other fields are ignored.
+    static void applyLabelPatch(PodState pod, String patch) {
+        String t = patch.trim();
+        if (!t.startsWith("[")) {
+            pod.labels.putAll(extractLabels(t));
+            return;
+        }
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\{[^{}]*\\}").matcher(t);
+        while (m.find()) {
+            String op = m.group();
+            String path = jsonStr(op, "path");
+            if (!path.startsWith("/metadata/labels/")) continue;
+            String key = path.substring("/metadata/labels/".length()).replace("~1", "/").replace("~0", "~");
+            String kind = jsonStr(op, "op");
+            if ("remove".equals(kind)) pod.labels.remove(key);
+            else if ("add".equals(kind) || "replace".equals(kind)) pod.labels.put(key, jsonStr(op, "value"));
+        }
+    }
+
     static String extractPodName(String podJson) {
         // Extract metadata.name at depth 0 of the metadata object only,
         // to avoid matching "name" fields inside nested objects (managedFields, etc.)
@@ -1721,12 +1741,16 @@ public class FakeK8s {
                 return;
             }
 
-            // Pod PATCH (launcher uses server-side apply / PATCH?fieldManager=fabric8 to create pods)
+            // Pod PATCH. The launcher creates pods by server-side apply (PATCH?fieldManager=fabric8)
+            // and, since Airbyte 2.x, labels a leftover pod with fabric8 edit() (GET, then a JSON
+            // Patch) before deleting it by that label. Only a full pod spec creates a pod.
             if ("PATCH".equals(method) && path.startsWith("/api/v1/namespaces/default/pods/")) {
                 String podName = path.substring("/api/v1/namespaces/default/pods/".length());
                 if (podName.contains("/")) podName = podName.substring(0, podName.indexOf('/'));
                 PodState pod = pods.get(podName);
-                if (pod == null && body != null && !body.isEmpty()) {
+                if (pod != null && body != null && !body.isEmpty()) {
+                    applyLabelPatch(pod, body);
+                } else if (pod == null && body != null && body.contains("\"containers\"")) {
                     // Server-side apply CREATE: treat as pod creation.
                     // Use the URL-path pod name as authoritative — do NOT rely on
                     // extractPodName(body) which can pick up a wrong nested "name" field.
