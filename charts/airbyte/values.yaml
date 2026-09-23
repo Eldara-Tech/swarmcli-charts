@@ -102,8 +102,19 @@ flyway:
   configsMinimumMigrationVersion: "0.35.15.001"
   jobsMinimumMigrationVersion: "0.29.15.001"
 
-# Web exposure through the oauth2-proxy. The client and cookie secrets are
-# external Swarm secrets. Set exposure.mode: published for a private direct port.
+# Who logs users in before they reach Airbyte.
+#   oauth2 - oauth2-proxy in front of Airbyte, against the OIDC issuer in oauth2.
+#            Its client and cookie secrets are external Swarm secrets.
+#   none   - no login in the chart: the server and the connector builder are routed
+#            directly. Airbyte runs any connector image it is given next to your
+#            database, so the chart refuses this unless something else authenticates:
+#            exposure.mode traefik with traefik.basicAuthUsers, or exposure.mode none
+#            behind your own authenticating proxy. exposure.mode published is refused.
+auth:
+  mode: oauth2
+
+# Web exposure of the entry point (oauth2-proxy, or the server with auth.mode none).
+# Set exposure.mode: published for a private direct port.
 exposure:
   mode: traefik
   network: traefik-public
@@ -129,6 +140,11 @@ traefik:
   certResolver: le
   constraintLabel: traefik-public
   redirectMiddleware: https-redirect
+  # htpasswd users for a basic-auth middleware on the public routers, required with
+  # auth.mode none in traefik mode. Generate the entry with
+  # `htpasswd -nbB <user> <password>` and DOUBLE every `$` (Compose eats single ones),
+  # e.g. "ops:$$2y$$05$$…". Empty => no middleware.
+  basicAuthUsers: ""
   entrypoints:
     http: http
     https: https
@@ -143,5 +159,6 @@ traefik:
 placement:
   constraints: []
 
-# Extra deploy labels for the OAuth2 proxy service.
+# Extra deploy labels for the entry service: oauth2-proxy, or the server with
+# auth.mode none.
 labels: {}

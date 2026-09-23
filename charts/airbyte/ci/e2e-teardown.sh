@@ -6,13 +6,17 @@
 # Removes what ci/e2e-setup.sh created — the three backing services, the mock's config, the
 # six secrets and the airbyte-db-net overlay — plus any connector container or volume the
 # release's FakeK8s left behind (they carry airbyte.fakek8s/owner=<release>; a clean run
-# leaves none). Leaves the shared traefik-public overlay.
+# leaves none), and for noauth the traefik edge. Leaves the shared traefik-public overlay.
 # Best-effort: every step tolerates already-gone resources.
 set -uo pipefail
 
 release="$1"
 
 docker service rm airbyte-e2e-postgres airbyte-e2e-minio airbyte-e2e-oidc >/dev/null 2>&1 || true
+if [ "${3:-}" = "noauth" ]; then
+  . "$2/../../scripts/e2e-edge/traefik-edge.sh"
+  edge_down
+fi
 docker config rm airbyte-e2e-mock-oidc >/dev/null 2>&1 || true
 
 leftovers="$(docker ps -aq -f "label=airbyte.fakek8s/owner=$release")"

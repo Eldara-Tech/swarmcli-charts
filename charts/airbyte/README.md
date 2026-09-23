@@ -1,7 +1,8 @@
 # airbyte
 
 Airbyte Community Platform for Docker Swarm. This chart runs the Airbyte control
-plane, worker, cron, Temporal, OAuth2 proxy and its session Redis. PostgreSQL and
+plane, worker, cron, Temporal, and by default an OAuth2 proxy with its session
+Redis. PostgreSQL and
 S3-compatible storage are external, so the operator controls their durability and
 backups: Airbyte's metadata and the dataplane credentials live in PostgreSQL.
 Temporal's workflow state and the session Redis keep node-local volumes.
@@ -27,7 +28,8 @@ do not repeat it in this list.
 ## Prerequisites
 
 Create the two external overlays used by the default configuration, then create
-the six secrets. `requirements.yaml` validates all of them before deployment.
+the six secrets. `requirements.yaml` validates all of them before deployment. With
+`auth.mode: none` the two `airbyte_oauth_*` secrets are not needed.
 
 ```bash
 docker network create -d overlay --attachable airbyte-db-net
@@ -89,6 +91,31 @@ provider. The client and cookie secret names are always real external secret
 names. OAuth2 Proxy reads them directly from their mounted files; the cookie
 secret must be exactly 16, 24, or 32 raw bytes.
 
+## Without OAuth
+
+`auth.mode: none` drops oauth2-proxy and its Redis and routes the server directly,
+with a second router for the connector builder's `/api/v1/connector_builder/`
+path. Airbyte then logs nobody in, and it runs any connector image it is given
+next to your database, so the chart refuses to render unless something else
+authenticates:
+
+- `exposure.mode: traefik` requires `traefik.basicAuthUsers`, a basic-auth
+  middleware on both routers. Generate the entry with
+  `htpasswd -nbB <user> <password>` and **double every `$`**, because Compose
+  eats single ones.
+- `exposure.mode: none` joins the server and the connector builder to
+  `exposure.network` for your own proxy, which must authenticate and route
+  `/api/v1/connector_builder/` to `<release>_connector-builder-server:8080` and
+  everything else to `<release>_server:8001`.
+- `exposure.mode: published` is refused.
+
+```yaml
+auth:
+  mode: none
+traefik:
+  basicAuthUsers: "ops:$$2y$$05$$Q3Z…"
+```
+
 ## Workload Launcher Security
 
 Airbyte launches connector workloads dynamically. The workload launcher
@@ -142,9 +169,11 @@ after 30 minutes, and a pod whose image is still missing then fails. Kubernetes
 | `storage.accessKeySecretName` / `.secretKeySecretName` | `airbyte_s3_access_key` / `airbyte_s3_secret_key` | External S3 credential secrets |
 | `connectorRegistry.enterpriseSourceStubsUrl` | see `values.yaml` | Connector-registry Enterprise source stubs URL |
 | `flyway.configsMinimumMigrationVersion` / `.jobsMinimumMigrationVersion` | `0.35.15.001` / `0.29.15.001` | Minimum required Flyway migration for the configs and jobs databases |
+| `auth.mode` | `oauth2` | `oauth2` (oauth2-proxy in front) or `none` (see [Without OAuth](#without-oauth)) |
 | `exposure.mode` | `traefik` | `traefik`, `published`, or `none` |
 | `exposure.network` / `.host` / `.tls` | `traefik-public` / `airbyte.example.com` / `true` | Ingress overlay and public address |
 | `exposure.publishedPort` | `8080` | Direct OAuth2-proxy port when mode is `published` |
+| `traefik.basicAuthUsers` | `""` | htpasswd users for a basic-auth middleware on the public routers; required with `auth.mode: none` in traefik mode |
 | `oauth2.issuerUrl` / `.clientId` | see `values.yaml` | OIDC discovery issuer and client ID |
 | `oauth2.clientSecretName` / `.cookieSecretName` | see `values.yaml` | External OIDC client and cookie-encryption secrets |
 | `oauth2.cookieName`, `.emailDomain`, `.trustedProxyIp`, `.scope` | see `values.yaml` | OAuth2 proxy cookie and OIDC request settings |
@@ -154,4 +183,4 @@ after 30 minutes, and a pod whose image is still missing then fails. Kubernetes
 | `workloadLauncher.*` | see `values.yaml` | Single launcher replica, memory limits, and connector-only `extraNetworks` |
 | `workloadLauncher.registryAuthSecretName` | `""` | External secret with a Docker `config.json` for private connector registries |
 | `placement.constraints` | `[]` | Extra constraints for the Airbyte services and the session Redis |
-| `labels` | `{}` | Extra deploy labels applied to the OAuth2 proxy |
+| `labels` | `{}` | Extra deploy labels for the entry service: the OAuth2 proxy, or the server with `auth.mode: none` |

@@ -12,16 +12,60 @@ out="$1"
 case="${2:-}"
 
 scheme=https
-[ "$case" = "published" ] && scheme=http
+host=airbyte.example.com
+case "$case" in
+  published) scheme=http ;;
+  noauth) scheme=http; host=airbyte.e2e.test ;;
+esac
 
 fail=0
 
-grep -q -- "--redirect-url=$scheme://airbyte.example.com/oauth2/callback" "$out" \
-  || { echo "  FAIL($case): oauth2-proxy redirect-url is not $scheme://"; fail=1; }
-[ "$(grep -c "AIRBYTE_URL: $scheme://airbyte.example.com" "$out")" -eq 2 ] \
+[ "$(grep -c "AIRBYTE_URL: $scheme://$host" "$out")" -eq 2 ] \
   || { echo "  FAIL($case): server and worker AIRBYTE_URL are not both $scheme://"; fail=1; }
-grep -q -- '--ssl-insecure-skip-verify=false' "$out" \
-  || { echo "  FAIL($case): oauth2-proxy skips TLS verification by default"; fail=1; }
+
+case "$case" in
+  noauth*)
+    # auth.mode none: no oauth2-proxy, nothing of its session store, and in traefik mode the
+    # basic-auth middleware on BOTH public routers (server and connector builder) — the
+    # builder router is the one that would otherwise slip past the login.
+    yq -e '.services | has("oauth2-proxy") or has("oauth2-redis")' "$out" >/dev/null 2>&1 \
+      && { echo "  FAIL($case): oauth2-proxy or its Redis rendered with auth.mode none"; fail=1; }
+    if [ "$case" = "noauth" ]; then
+      [ "$(grep -cE 'traefik\.http\.routers\.[^.]+-http\.middlewares=[^ ]+-auth$' "$out")" -eq 2 ] \
+        || { echo "  FAIL($case): the server and builder routers do not both carry the basic-auth middleware"; fail=1; }
+      grep -qF 'PathPrefix(`/api/v1/connector_builder/`)' "$out" \
+        || { echo "  FAIL($case): no router for the connector builder's path"; fail=1; }
+    else
+      grep -q 'traefik\.' "$out" && { echo "  FAIL($case): Traefik labels rendered with exposure.mode none"; fail=1; }
+      [ "$(yq '[.services.server.networks[], .services["connector-builder-server"].networks[]] | map(select(. == "traefik-public")) | length' "$out")" -eq 2 ] \
+        || { echo "  FAIL($case): the server and builder do not both join exposure.network"; fail=1; }
+    fi
+    ;;
+  *)
+    grep -q -- "--redirect-url=$scheme://$host/oauth2/callback" "$out" \
+      || { echo "  FAIL($case): oauth2-proxy redirect-url is not $scheme://"; fail=1; }
+    grep -q -- '--ssl-insecure-skip-verify=false' "$out" \
+      || { echo "  FAIL($case): oauth2-proxy skips TLS verification by default"; fail=1; }
+    ;;
+esac
+
+# auth.mode none refuses to serve Airbyte where nothing authenticates. Checked once, from the
+# default fixture, by rendering the two refused combinations.
+if [ "$case" = "default" ]; then
+  chart="$(cd "$(dirname "$0")/.." && pwd)"
+  refused() {
+    local want="$1"; shift
+    if "${SWARMCLI:?render-check needs SWARMCLI to test the refusals}" charts template r "$chart" "$@" >/dev/null 2>"$out.refusal"; then
+      echo "  FAIL($case): rendered with $* — it must be refused"; fail=1
+    elif ! grep -qF "$want" "$out.refusal"; then
+      echo "  FAIL($case): $* failed, but not with \"$want\":"; sed 's/^/    /' "$out.refusal"; fail=1
+    fi
+    rm -f "$out.refusal"
+  }
+  refused 'needs traefik.basicAuthUsers' --set auth.mode=none
+  refused 'cannot use exposure.mode published' --set auth.mode=none --set exposure.mode=published \
+    --set 'traefik.basicAuthUsers=u:$$apr1$$x$$y'
+fi
 
 # One Airbyte release everywhere: every platform image carries the tag AIRBYTE_VERSION names,
 # or a Renovate bump of appVersion runs mixed versions.
@@ -44,12 +88,15 @@ elif grep -q 'FAKEK8S_REGISTRY_AUTH_FILE' "$out"; then
   echo "  FAIL($case): FAKEK8S_REGISTRY_AUTH_FILE set without workloadLauncher.registryAuthSecretName"; fail=1
 fi
 
-# The data pin follows the two named volumes (session Redis and Temporal) and nothing else,
-# and goes away with nodeLabel: "".
-pins=2
-[ "$case" = "published" ] && pins=0
+# The data pin follows the named volumes (session Redis and Temporal; Temporal alone with
+# auth.mode none) and nothing else, and goes away with nodeLabel: "".
+case "$case" in
+  published) pins=0 ;;
+  noauth*) pins=1 ;;
+  *) pins=2 ;;
+esac
 [ "$(grep -c 'node.labels.airbyte-data == true' "$out")" -eq "$pins" ] \
-  || { echo "  FAIL($case): expected $pins data-node pin(s), session Redis and Temporal"; fail=1; }
+  || { echo "  FAIL($case): expected $pins data-node pin(s), one per named volume"; fail=1; }
 
 [ "$fail" -eq 0 ] || exit 1
-echo "  $case: public URLs use $scheme://, issuer TLS verified, one Airbyte version, one socket mount, $pins data pin"
+echo "  $case: public URLs use $scheme://, auth.mode wiring checked, one Airbyte version, one socket mount, $pins data pin"

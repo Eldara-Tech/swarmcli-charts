@@ -9,15 +9,18 @@
 # connection check for source-faker. The server hands it to a worker through Temporal, the
 # launcher claims it with the credentials FakeK8s stored in Postgres, and FakeK8s turns the
 # pod into Docker containers whose output lands in MinIO. On the way it also asserts that
-# the server serves the UI and that oauth2-proxy stands in front of it.
+# the server serves the UI and that oauth2-proxy stands in front of it (mock), or, with
+# auth.mode none (noauth), that Traefik's basic auth stands in front of the server and the
+# connector builder.
 #
 # Runs from a throwaway node:22-alpine container on the release's attachable overlay; node's
 # core http has no response timeout, and the check waits on image pulls.
 set -euo pipefail
 
 release="$1"
+case="${3:-}"
 
-docker run --rm -i --network "${release}_airbyte" -e RELEASE="$release" node:22-alpine \
+docker run --rm -i --network "${release}_airbyte" -e RELEASE="$release" -e CASE="$case" node:22-alpine \
   node --input-type=module - <<'JS'
 import http from 'node:http';
 
@@ -62,9 +65,11 @@ const ui = await request(`${server}/`);
 if (ui.status !== 200 || !/<html/i.test(ui.text)) throw new Error(`server UI: HTTP ${ui.status}`);
 console.log('  server: serves the UI');
 
-const gate = await request(`${proxy}/`);
-if (gate.status !== 403 && gate.status !== 302) throw new Error(`oauth2-proxy let an anonymous request through: HTTP ${gate.status}`);
-console.log(`  oauth2-proxy: anonymous request refused (HTTP ${gate.status})`);
+if (process.env.CASE !== 'noauth') {
+  const gate = await request(`${proxy}/`);
+  if (gate.status !== 403 && gate.status !== 302) throw new Error(`oauth2-proxy let an anonymous request through: HTTP ${gate.status}`);
+  console.log(`  oauth2-proxy: anonymous request refused (HTTP ${gate.status})`);
+}
 
 const list = await request(`${server}/api/v1/workspaces/list_by_organization_id`, { organizationId: DEFAULT_ORG });
 if (list.status !== 200) throw new Error(`workspaces: HTTP ${list.status} ${list.text}`);
@@ -78,6 +83,25 @@ const result = JSON.parse(check.text);
 if (result.status !== 'succeeded') throw new Error(`check_connection: ${result.status} ${result.message || ''}`);
 console.log('  source-faker check_connection: succeeded');
 JS
+
+# auth.mode none: through the traefik edge, basic auth refuses an anonymous request, and an
+# authenticated one reaches the server's API and UI and the connector builder's own router.
+if [ "$case" = "noauth" ]; then
+  . "$2/../../scripts/e2e-edge/traefik-edge.sh"
+  edge_assert_routed airbyte.e2e.test /api/v1/health 401 || exit 1
+  for path in /api/v1/health / /api/v1/connector_builder/health; do
+    code=""
+    for _ in $(seq 1 30); do
+      code="$(docker run --rm --network "$EDGE_NETWORK" "$EDGE_CURL_IMAGE" -s -o /dev/null \
+        -w '%{http_code}' --max-time 15 -u e2e:e2e-secret -H 'Host: airbyte.e2e.test' \
+        "http://${EDGE_TARGET}:80$path" 2>/dev/null || true)"
+      [ "$code" = 200 ] && break
+      sleep 3
+    done
+    [ "$code" = 200 ] || { echo "  FAIL: authenticated $path through the edge returned ${code:-<none>}, not 200"; exit 1; }
+    echo "  edge: authenticated $path -> HTTP 200"
+  done
+fi
 
 # The check can only succeed through FakeK8s; show it from the launcher's own log as well.
 # Captured to a file and matched with -F rather than piped: `docker service logs` can lag the

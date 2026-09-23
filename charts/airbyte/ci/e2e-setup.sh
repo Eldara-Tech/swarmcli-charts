@@ -3,14 +3,15 @@
 # e2e setup for the airbyte chart. scripts/e2e-test.sh runs this BEFORE `swarmcli charts
 # install`, once per fixture:
 #   $1 = release name   $2 = chart directory   $3 = fixture case name
-# Only the mock fixture deploys (the rest are ci/e2e-render-only). It needs everything the
-# chart treats as external, so this hook provides, with dummy values:
+# The mock and noauth fixtures deploy (the rest are ci/e2e-render-only). They need everything
+# the chart treats as external, so this hook provides, with dummy values:
 #   * the six operator secrets and the airbyte-db-net / traefik-public overlays;
 #   * the airbyte-data node label the session Redis and Temporal are pinned to;
 #   * PostgreSQL (airbyte-e2e-postgres) on airbyte-db-net;
 #   * MinIO (airbyte-e2e-minio) as the S3 endpoint. Airbyte creates its bucket itself;
 #   * an OIDC discovery mock (airbyte-e2e-oidc, ci/mock-oidc.js) on traefik-public, without
-#     which oauth2-proxy exits at startup.
+#     which oauth2-proxy exits at startup;
+#   * for noauth only, the in-repo traefik chart as a real edge (scripts/e2e-edge).
 # ci/e2e-teardown.sh removes everything created here except the shared traefik-public.
 #
 # INVARIANT: the Postgres user/password and the MinIO root user/password equal the values of
@@ -77,3 +78,11 @@ for _ in $(seq 1 40); do
   fi
   sleep 3
 done
+
+# --- noauth: stand up the traefik chart as a real edge on traefik-public, so ci/e2e-check.sh
+# can prove the basic-auth middleware refuses an anonymous request and routes an
+# authenticated one to the server and the connector builder.
+if [ "${3:-}" = "noauth" ]; then
+  . "$chart_dir/../../scripts/e2e-edge/traefik-edge.sh"
+  edge_up || exit 1
+fi

@@ -10,6 +10,53 @@
 {{- $workloadNetworks = $workloadNetworks | uniq }}
 {{- $router := .Release.Name }}
 {{- $scheme := ternary "https" "http" .Values.exposure.tls }}
+{{- $oauth := eq .Values.auth.mode "oauth2" }}
+{{- if and (not $oauth) (eq .Values.exposure.mode "published") }}
+{{- fail "auth.mode none cannot use exposure.mode published: the port would serve Airbyte, which runs any connector image it is given next to your database, to anyone who reaches it. Use exposure.mode traefik with traefik.basicAuthUsers, or exposure.mode none behind a proxy that authenticates." -}}
+{{- end }}
+{{- if and (not $oauth) (eq .Values.exposure.mode "traefik") (not .Values.traefik.basicAuthUsers) }}
+{{- fail "auth.mode none with exposure.mode traefik needs traefik.basicAuthUsers: without it, anyone who resolves exposure.host can run connector images next to your database." -}}
+{{- end }}
+{{- /* The public entry point is oauth2-proxy, or with auth.mode none the server itself, plus
+       a second router for the connector builder's path, which oauth2-proxy otherwise routes. */}}
+{{- $serverPublic := and (not $oauth) (or (eq .Values.exposure.mode "traefik") (eq .Values.exposure.mode "none")) }}
+{{- $authMiddleware := "" }}
+{{- if .Values.traefik.basicAuthUsers }}{{ $authMiddleware = printf "%s-auth" $router }}{{- end }}
+{{- $traefikLabels := dict "entry" (list) "builder" (list) }}
+{{- if eq .Values.exposure.mode "traefik" }}
+{{- $hostRule := printf "Host(`%s`)" .Values.exposure.host }}
+{{- $targets := list (list "entry" $router $hostRule (ternary 4180 8001 $oauth)) }}
+{{- if not $oauth }}{{ $targets = append $targets (list "builder" (printf "%s-builder" $router) (printf "%s && PathPrefix(`/api/v1/connector_builder/`)" $hostRule) 8080) }}{{- end }}
+{{- range $targets }}
+{{- $name := index . 1 }}
+{{- $l := list "traefik.enable=true" (printf "traefik.swarm.network=%s" $.Values.exposure.network) (printf "traefik.constraint-label=%s" $.Values.traefik.constraintLabel) }}
+{{- $l = append $l (printf "traefik.http.routers.%s-http.rule=%s" $name (index . 2)) }}
+{{- $l = append $l (printf "traefik.http.routers.%s-http.entrypoints=%s" $name $.Values.traefik.entrypoints.http) }}
+{{- if $.Values.exposure.tls }}
+{{- $l = append $l (printf "traefik.http.routers.%s-http.middlewares=%s" $name $.Values.traefik.redirectMiddleware) }}
+{{- $l = append $l (printf "traefik.http.routers.%s-https.rule=%s" $name (index . 2)) }}
+{{- $l = append $l (printf "traefik.http.routers.%s-https.entrypoints=%s" $name $.Values.traefik.entrypoints.https) }}
+{{- $l = append $l (printf "traefik.http.routers.%s-https.tls=true" $name) }}
+{{- $l = append $l (printf "traefik.http.routers.%s-https.tls.certresolver=%s" $name $.Values.traefik.certResolver) }}
+{{- $l = append $l (printf "traefik.http.routers.%s-https.middlewares=%s" $name (compact (list $authMiddleware (printf "%s-headers" $router)) | join ",")) }}
+{{- else if $authMiddleware }}
+{{- $l = append $l (printf "traefik.http.routers.%s-http.middlewares=%s" $name $authMiddleware) }}
+{{- end }}
+{{- $l = append $l (printf "traefik.http.services.%s.loadbalancer.server.port=%v" $name (index . 3)) }}
+{{- $_ := set $traefikLabels (index . 0) $l }}
+{{- end }}
+{{- $entry := get $traefikLabels "entry" }}
+{{- if $authMiddleware }}
+{{- $entry = append $entry (printf "traefik.http.middlewares.%s.basicauth.users=%s" $authMiddleware .Values.traefik.basicAuthUsers) }}
+{{- end }}
+{{- if .Values.exposure.tls }}
+{{- $entry = append $entry (printf "traefik.http.middlewares.%s-headers.headers.customrequestheaders.X-Forwarded-Host=%s" $router .Values.exposure.host) }}
+{{- $entry = append $entry (printf "traefik.http.middlewares.%s-headers.headers.customrequestheaders.X-Forwarded-Proto=https" $router) }}
+{{- end }}
+{{- $_ := set $traefikLabels "entry" $entry }}
+{{- end }}
+{{- $entryLabels := get $traefikLabels "entry" }}
+{{- range $key, $value := .Values.labels }}{{ $entryLabels = append $entryLabels (printf "%s=%s" $key $value) }}{{- end }}
 version: "3.9"
 
 services:
@@ -68,6 +115,8 @@ services:
       restart_policy:
         condition: on-failure
 
+{{- if $oauth }}
+
   oauth2-redis:
     image: {{ .Values.redis.image.repository }}:{{ .Values.redis.image.tag }}
     command: [redis-server, --appendonly, "yes"]
@@ -123,29 +172,9 @@ services:
       replicas: 1
       restart_policy:
         condition: any
-{{- if or (eq .Values.exposure.mode "traefik") .Values.labels }}
+{{- with $entryLabels }}
       labels:
-{{- if eq .Values.exposure.mode "traefik" }}
-        - "traefik.enable=true"
-        - "traefik.swarm.network={{ .Values.exposure.network }}"
-        - "traefik.constraint-label={{ .Values.traefik.constraintLabel }}"
-        - "traefik.http.routers.{{ $router }}-http.rule=Host(`{{ .Values.exposure.host }}`)"
-        - "traefik.http.routers.{{ $router }}-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
-{{- if .Values.exposure.tls }}
-        - "traefik.http.routers.{{ $router }}-http.middlewares={{ .Values.traefik.redirectMiddleware }}"
-        - "traefik.http.routers.{{ $router }}-https.rule=Host(`{{ .Values.exposure.host }}`)"
-        - "traefik.http.routers.{{ $router }}-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
-        - "traefik.http.routers.{{ $router }}-https.tls=true"
-        - "traefik.http.routers.{{ $router }}-https.tls.certresolver={{ .Values.traefik.certResolver }}"
-        - "traefik.http.routers.{{ $router }}-https.middlewares={{ $router }}-headers"
-        - "traefik.http.middlewares.{{ $router }}-headers.headers.customrequestheaders.X-Forwarded-Host={{ .Values.exposure.host }}"
-        - "traefik.http.middlewares.{{ $router }}-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
-{{- end }}
-        - "traefik.http.services.{{ $router }}.loadbalancer.server.port=4180"
-{{- end }}
-{{- range $key, $value := .Values.labels }}
-        - "{{ $key }}={{ $value }}"
-{{- end }}
+{{ toYaml . | indent 8 }}
 {{- end }}
 {{- if eq .Values.exposure.mode "published" }}
     ports:
@@ -153,6 +182,7 @@ services:
         published: {{ .Values.exposure.publishedPort }}
         protocol: tcp
         mode: ingress
+{{- end }}
 {{- end }}
 
   workload-launcher:
@@ -277,7 +307,7 @@ services:
 
   server:
     image: {{ $serverImage }}
-    networks: [airbyte, {{ .Values.database.network }}]
+    networks: [airbyte, {{ .Values.database.network }}{{ if $serverPublic }}, {{ .Values.exposure.network }}{{ end }}]
     secrets:
       - {{ .Values.database.userSecretName }}
       - {{ .Values.database.passwordSecretName }}
@@ -317,10 +347,16 @@ services:
       placement:
         constraints:
 {{ toYaml $constraints | indent 10 }}
+{{- if not $oauth }}
+{{- with $entryLabels }}
+      labels:
+{{ toYaml . | indent 8 }}
+{{- end }}
+{{- end }}
 
   connector-builder-server:
     image: {{ .Values.connectorBuilderServer.image.repository }}:{{ .Values.connectorBuilderServer.image.tag | default $airbyteVersion }}
-    networks: [airbyte, {{ .Values.database.network }}]
+    networks: [airbyte, {{ .Values.database.network }}{{ if $serverPublic }}, {{ .Values.exposure.network }}{{ end }}]
     secrets:
       - {{ .Values.database.userSecretName }}
       - {{ .Values.database.passwordSecretName }}
@@ -348,6 +384,10 @@ services:
       placement:
         constraints:
 {{ toYaml $constraints | indent 10 }}
+{{- with get $traefikLabels "builder" }}
+      labels:
+{{ toYaml . | indent 8 }}
+{{- end }}
 
   worker:
     image: {{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag | default $airbyteVersion }}
@@ -424,7 +464,9 @@ services:
 {{ toYaml $constraints | indent 10 }}
 
 volumes:
+{{- if $oauth }}
   {{ .Values.persistence.oauthRedisVolume }}: {}
+{{- end }}
   {{ .Values.persistence.temporalVolume }}: {}
 
 configs:
@@ -441,10 +483,12 @@ secrets:
     external: true
   {{ .Values.storage.secretKeySecretName }}:
     external: true
+{{- if $oauth }}
   {{ .Values.oauth2.clientSecretName }}:
     external: true
   {{ .Values.oauth2.cookieSecretName }}:
     external: true
+{{- end }}
 {{- with .Values.workloadLauncher.registryAuthSecretName }}
   {{ . }}:
     external: true
@@ -454,7 +498,9 @@ networks:
   airbyte:
     driver: overlay
     attachable: true
+{{- if $oauth }}
   {{ .Values.oauth2.redisNetwork }}: {}
+{{- end }}
   {{ .Values.database.network }}:
     external: true
 {{- if or (eq .Values.exposure.mode "traefik") (eq .Values.exposure.mode "none") }}
