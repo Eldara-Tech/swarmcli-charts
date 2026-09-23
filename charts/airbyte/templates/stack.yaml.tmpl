@@ -221,6 +221,9 @@ services:
 {{- end }}
     environment:
       AIRBYTE_VERSION: {{ $airbyteVersion | quote }}
+      # 2.3's launcher reads log-level as ${LOG_LEVEL:}, so an unset one is empty, not INFO,
+      # and it fails to start (AirbyteLoggingConfig: "parameter logLevel" is null).
+      LOG_LEVEL: INFO
       DATABASE_HOST: {{ .Values.database.host | quote }}
       DATABASE_PORT: {{ .Values.database.port | quote }}
       DATABASE_DB: {{ .Values.database.name | quote }}
