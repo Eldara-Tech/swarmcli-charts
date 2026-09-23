@@ -159,7 +159,7 @@ then
     echo "  --- $svc ---"
     docker service ps --no-trunc "${release}_$svc" 2>&1 | sed -n '1,3p' | sed 's/^/    /'
     docker service logs --raw "${release}_$svc" 2>&1 \
-      | grep -E 'ERROR|WARN|Exception|401|403|Unauthorized|Forbidden' | tail -n 25 | sed 's/^/    /'
+      | grep -E 'ERROR|WARN|Exception|401|403|Unauthorized|Forbidden' | tail -n 25 | sed 's/^/    /' || true
   done
   exit 1
 fi
