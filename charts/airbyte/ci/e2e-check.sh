@@ -153,10 +153,14 @@ if (login) {
 }
 JS
 then
-  # The builder is the one service only this check reaches; show why it did not answer.
-  echo "  --- connector-builder-server ---"
-  docker service ps --no-trunc "${release}_connector-builder-server" 2>&1 | sed -n '1,4p' | sed 's/^/    /'
-  docker service logs --tail 60 "${release}_connector-builder-server" 2>&1 | sed 's/^/    /'
+  # Show where the request died: each service's state and its errors, including the 401/403s
+  # an auth mismatch between services produces.
+  for svc in server connector-builder-server worker workload-api-server workload-launcher; do
+    echo "  --- $svc ---"
+    docker service ps --no-trunc "${release}_$svc" 2>&1 | sed -n '1,3p' | sed 's/^/    /'
+    docker service logs --raw "${release}_$svc" 2>&1 \
+      | grep -E 'ERROR|WARN|Exception|401|403|Unauthorized|Forbidden' | tail -n 25 | sed 's/^/    /'
+  done
   exit 1
 fi
 
