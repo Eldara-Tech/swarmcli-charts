@@ -127,13 +127,15 @@ if (login) {
   console.log(`  connector builder: anonymous refused (401), login cookie accepted (HTTP ${builder.status})`);
 }
 
-await signIn();
-const list = await request(`${server}/api/v1/workspaces/list_by_organization_id`, { organizationId: DEFAULT_ORG });
-if (list.status !== 200) throw new Error(`workspaces: HTTP ${list.status} ${list.text}`);
-const workspaceId = JSON.parse(list.text).workspaces[0].workspaceId;
-
 // The server reports healthy once the schemas are migrated, which can be before db-migrations
-// has finished seeding the connector registry.
+// has created the default workspace or finished seeding the connector registry.
+let workspaceId;
+await until('default workspace created', async () => {
+  await signIn();
+  const list = await request(`${server}/api/v1/workspaces/list_by_organization_id`, { organizationId: DEFAULT_ORG });
+  workspaceId = list.status === 200 ? JSON.parse(list.text).workspaces?.[0]?.workspaceId : undefined;
+  return workspaceId !== undefined;
+}, 600);
 await until('source-faker definition seeded', async () => {
   await signIn();
   return (await request(`${server}/api/v1/source_definitions/get`, { sourceDefinitionId: FAKER })).status === 200;
