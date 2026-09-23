@@ -11,13 +11,19 @@
 {{- $router := .Release.Name }}
 {{- $scheme := ternary "https" "http" .Values.exposure.tls }}
 {{- $oauth := eq .Values.auth.mode "oauth2" }}
-{{- if and (not $oauth) (eq .Values.exposure.mode "published") }}
+{{- $airbyteAuth := eq .Values.auth.mode "airbyte" }}
+{{- if and (eq .Values.auth.mode "none") (eq .Values.exposure.mode "published") }}
 {{- fail "auth.mode none cannot use exposure.mode published: the port would serve Airbyte, which runs any connector image it is given next to your database, to anyone who reaches it. Use exposure.mode traefik with traefik.basicAuthUsers, or exposure.mode none behind a proxy that authenticates." -}}
 {{- end }}
-{{- if and (not $oauth) (eq .Values.exposure.mode "traefik") (not .Values.traefik.basicAuthUsers) }}
+{{- if and (eq .Values.auth.mode "none") (eq .Values.exposure.mode "traefik") (not .Values.traefik.basicAuthUsers) }}
 {{- fail "auth.mode none with exposure.mode traefik needs traefik.basicAuthUsers: without it, anyone who resolves exposure.host can run connector images next to your database." -}}
 {{- end }}
-{{- /* The public entry point is oauth2-proxy, or with auth.mode none the server itself, plus
+{{- /* auth.mode airbyte: Airbyte's own login. Every service that mints or checks Airbyte's
+       JWTs (server, worker, workload-api-server, cron, connector builder) reads the same
+       signing secret; the server also reads the admin password. */}}
+{{- $jwtExport := "" }}
+{{- if $airbyteAuth }}{{ $jwtExport = printf "export AB_JWT_SIGNATURE_SECRET=\"$$(cat /run/secrets/%s)\"; " .Values.auth.airbyte.jwtSecretName }}{{- end }}
+{{- /* The public entry point is oauth2-proxy, or with auth.mode none/airbyte the server itself, plus
        a second router for the connector builder's path, which oauth2-proxy otherwise routes. */}}
 {{- $serverPublic := and (not $oauth) (or (eq .Values.exposure.mode "traefik") (eq .Values.exposure.mode "none")) }}
 {{- $authMiddleware := "" }}
@@ -283,6 +289,9 @@ services:
       - {{ .Values.database.passwordSecretName }}
       - {{ .Values.storage.accessKeySecretName }}
       - {{ .Values.storage.secretKeySecretName }}
+{{- if $airbyteAuth }}
+      - {{ .Values.auth.airbyte.jwtSecretName }}
+{{- end }}
     environment:
       AIRBYTE_VERSION: {{ $airbyteVersion | quote }}
       DATABASE_HOST: {{ .Values.database.host | quote }}
@@ -298,7 +307,10 @@ services:
       S3_PATH_STYLE_ACCESS: "true"
       INTERNAL_API_HOST: http://server:8001
       MICRONAUT_ENVIRONMENTS: docker
-    command: [/bin/bash, -c, 'export DATABASE_USER="$$(cat /run/secrets/{{ .Values.database.userSecretName }})" DATABASE_PASSWORD="$$(cat /run/secrets/{{ .Values.database.passwordSecretName }})" AWS_ACCESS_KEY_ID="$$(cat /run/secrets/{{ .Values.storage.accessKeySecretName }})" AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/{{ .Values.storage.secretKeySecretName }})"; export DATABASE_URL="jdbc:postgresql://$${DATABASE_HOST}:$${DATABASE_PORT}/$${DATABASE_DB}"; exec airbyte-app/bin/airbyte-workload-api-server']
+{{- if $airbyteAuth }}
+      API_AUTHORIZATION_ENABLED: "true"
+{{- end }}
+    command: [/bin/bash, -c, 'export DATABASE_USER="$$(cat /run/secrets/{{ .Values.database.userSecretName }})" DATABASE_PASSWORD="$$(cat /run/secrets/{{ .Values.database.passwordSecretName }})" AWS_ACCESS_KEY_ID="$$(cat /run/secrets/{{ .Values.storage.accessKeySecretName }})" AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/{{ .Values.storage.secretKeySecretName }})"; export DATABASE_URL="jdbc:postgresql://$${DATABASE_HOST}:$${DATABASE_PORT}/$${DATABASE_DB}"; {{ $jwtExport }}exec airbyte-app/bin/airbyte-workload-api-server']
     deploy:
       replicas: 1
       placement:
@@ -313,6 +325,10 @@ services:
       - {{ .Values.database.passwordSecretName }}
       - {{ .Values.storage.accessKeySecretName }}
       - {{ .Values.storage.secretKeySecretName }}
+{{- if $airbyteAuth }}
+      - {{ .Values.auth.airbyte.jwtSecretName }}
+      - {{ .Values.auth.airbyte.passwordSecretName }}
+{{- end }}
     environment:
       AIRBYTE_VERSION: {{ $airbyteVersion | quote }}
       AIRBYTE_EDITION: community
@@ -338,10 +354,16 @@ services:
       TEMPORAL_HOST: temporal:7233
       AIRBYTE_URL: {{ printf "%s://%s" $scheme .Values.exposure.host | quote }}
       AIRBYTE_API_HOST: http://localhost:8001/api/public
+{{- if $airbyteAuth }}
+      API_AUTHORIZATION_ENABLED: "true"
+      # The login's token issuer; the cookies are Secure only when the public URL is https.
+      WEBAPP_URL: {{ printf "%s://%s" $scheme .Values.exposure.host | quote }}
+      AB_COOKIE_SECURE: {{ .Values.exposure.tls | quote }}
+{{- end }}
       CONNECTOR_BUILDER_SERVER_API_HOST: http://connector-builder-server:8080
       WORKSPACE_ROOT: /data/workspace
       SECRET_PERSISTENCE: TESTING_CONFIG_DB_TABLE
-    command: [/bin/bash, -c, 'export DATABASE_USER="$$(cat /run/secrets/{{ .Values.database.userSecretName }})" DATABASE_PASSWORD="$$(cat /run/secrets/{{ .Values.database.passwordSecretName }})" AWS_ACCESS_KEY_ID="$$(cat /run/secrets/{{ .Values.storage.accessKeySecretName }})" AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/{{ .Values.storage.secretKeySecretName }})"; export DATABASE_URL="jdbc:postgresql://$${DATABASE_HOST}:$${DATABASE_PORT}/$${DATABASE_DB}"; exec airbyte-app/bin/airbyte-server']
+    command: [/bin/bash, -c, 'export DATABASE_USER="$$(cat /run/secrets/{{ .Values.database.userSecretName }})" DATABASE_PASSWORD="$$(cat /run/secrets/{{ .Values.database.passwordSecretName }})" AWS_ACCESS_KEY_ID="$$(cat /run/secrets/{{ .Values.storage.accessKeySecretName }})" AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/{{ .Values.storage.secretKeySecretName }})"; export DATABASE_URL="jdbc:postgresql://$${DATABASE_HOST}:$${DATABASE_PORT}/$${DATABASE_DB}"; {{ $jwtExport }}{{ if $airbyteAuth }}export AB_INSTANCE_ADMIN_PASSWORD="$$(cat /run/secrets/{{ .Values.auth.airbyte.passwordSecretName }})"; {{ end }}exec airbyte-app/bin/airbyte-server']
     deploy:
       replicas: 1
       placement:
@@ -351,6 +373,13 @@ services:
 {{- with $entryLabels }}
       labels:
 {{ toYaml . | indent 8 }}
+{{- end }}
+{{- if eq .Values.exposure.mode "published" }}
+    ports:
+      - target: 8001
+        published: {{ .Values.exposure.publishedPort }}
+        protocol: tcp
+        mode: ingress
 {{- end }}
 {{- end }}
 
@@ -362,6 +391,9 @@ services:
       - {{ .Values.database.passwordSecretName }}
       - {{ .Values.storage.accessKeySecretName }}
       - {{ .Values.storage.secretKeySecretName }}
+{{- if $airbyteAuth }}
+      - {{ .Values.auth.airbyte.jwtSecretName }}
+{{- end }}
     environment:
       AIRBYTE_VERSION: {{ $airbyteVersion | quote }}
       DATABASE_HOST: {{ .Values.database.host | quote }}
@@ -378,7 +410,12 @@ services:
       S3_PATH_STYLE_ACCESS: "true"
       TEMPORAL_HOST: temporal:7233
       WORKSPACE_ROOT: /data/workspace
-    command: [/bin/bash, -c, 'export DATABASE_USER="$$(cat /run/secrets/{{ .Values.database.userSecretName }})" DATABASE_PASSWORD="$$(cat /run/secrets/{{ .Values.database.passwordSecretName }})" AWS_ACCESS_KEY_ID="$$(cat /run/secrets/{{ .Values.storage.accessKeySecretName }})" AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/{{ .Values.storage.secretKeySecretName }})"; exec airbyte-app/bin/airbyte-connector-builder-server']
+{{- if $airbyteAuth }}
+      # The UI sends Airbyte's login as the JWT cookie, never as a bearer token.
+      API_AUTHORIZATION_ENABLED: "true"
+      MICRONAUT_SECURITY_TOKEN_COOKIE_ENABLED: "true"
+{{- end }}
+    command: [/bin/bash, -c, 'export DATABASE_USER="$$(cat /run/secrets/{{ .Values.database.userSecretName }})" DATABASE_PASSWORD="$$(cat /run/secrets/{{ .Values.database.passwordSecretName }})" AWS_ACCESS_KEY_ID="$$(cat /run/secrets/{{ .Values.storage.accessKeySecretName }})" AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/{{ .Values.storage.secretKeySecretName }})"; {{ $jwtExport }}exec airbyte-app/bin/airbyte-connector-builder-server']
     deploy:
       replicas: 1
       placement:
@@ -397,6 +434,9 @@ services:
       - {{ .Values.database.passwordSecretName }}
       - {{ .Values.storage.accessKeySecretName }}
       - {{ .Values.storage.secretKeySecretName }}
+{{- if $airbyteAuth }}
+      - {{ .Values.auth.airbyte.jwtSecretName }}
+{{- end }}
     environment:
       AIRBYTE_VERSION: {{ $airbyteVersion | quote }}
       DATABASE_HOST: {{ .Values.database.host | quote }}
@@ -419,7 +459,7 @@ services:
       SECRET_PERSISTENCE: TESTING_CONFIG_DB_TABLE
       SHOULD_RUN_CONNECTION_MANAGER_WORKFLOWS: "true"
       MICRONAUT_ENVIRONMENTS: docker,control-plane
-    command: [/bin/bash, -c, 'export DATABASE_USER="$$(cat /run/secrets/{{ .Values.database.userSecretName }})" DATABASE_PASSWORD="$$(cat /run/secrets/{{ .Values.database.passwordSecretName }})" AWS_ACCESS_KEY_ID="$$(cat /run/secrets/{{ .Values.storage.accessKeySecretName }})" AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/{{ .Values.storage.secretKeySecretName }})"; export DATABASE_URL="jdbc:postgresql://$${DATABASE_HOST}:$${DATABASE_PORT}/$${DATABASE_DB}"; exec airbyte-app/bin/airbyte-workers']
+    command: [/bin/bash, -c, 'export DATABASE_USER="$$(cat /run/secrets/{{ .Values.database.userSecretName }})" DATABASE_PASSWORD="$$(cat /run/secrets/{{ .Values.database.passwordSecretName }})" AWS_ACCESS_KEY_ID="$$(cat /run/secrets/{{ .Values.storage.accessKeySecretName }})" AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/{{ .Values.storage.secretKeySecretName }})"; export DATABASE_URL="jdbc:postgresql://$${DATABASE_HOST}:$${DATABASE_PORT}/$${DATABASE_DB}"; {{ $jwtExport }}exec airbyte-app/bin/airbyte-workers']
     deploy:
       replicas: 1
       placement:
@@ -444,6 +484,9 @@ services:
     secrets:
       - {{ .Values.database.userSecretName }}
       - {{ .Values.database.passwordSecretName }}
+{{- if $airbyteAuth }}
+      - {{ .Values.auth.airbyte.jwtSecretName }}
+{{- end }}
     environment:
       AIRBYTE_VERSION: {{ $airbyteVersion | quote }}
       AIRBYTE_EDITION: community
@@ -456,7 +499,7 @@ services:
       WORKLOAD_API_HOST: http://workload-api-server:8007
       WORKSPACE_ROOT: /data/workspace
       SECRET_PERSISTENCE: TESTING_CONFIG_DB_TABLE
-    command: [/bin/bash, -c, 'export DATABASE_USER="$$(cat /run/secrets/{{ .Values.database.userSecretName }})" DATABASE_PASSWORD="$$(cat /run/secrets/{{ .Values.database.passwordSecretName }})"; export DATABASE_URL="jdbc:postgresql://$${DATABASE_HOST}:$${DATABASE_PORT}/$${DATABASE_DB}"; exec airbyte-app/bin/airbyte-cron']
+    command: [/bin/bash, -c, 'export DATABASE_USER="$$(cat /run/secrets/{{ .Values.database.userSecretName }})" DATABASE_PASSWORD="$$(cat /run/secrets/{{ .Values.database.passwordSecretName }})"; export DATABASE_URL="jdbc:postgresql://$${DATABASE_HOST}:$${DATABASE_PORT}/$${DATABASE_DB}"; {{ $jwtExport }}exec airbyte-app/bin/airbyte-cron']
     deploy:
       replicas: 1
       placement:
@@ -491,6 +534,12 @@ secrets:
 {{- end }}
 {{- with .Values.workloadLauncher.registryAuthSecretName }}
   {{ . }}:
+    external: true
+{{- end }}
+{{- if $airbyteAuth }}
+  {{ .Values.auth.airbyte.passwordSecretName }}:
+    external: true
+  {{ .Values.auth.airbyte.jwtSecretName }}:
     external: true
 {{- end }}
 

@@ -105,6 +105,11 @@ flyway:
 # Who logs users in before they reach Airbyte.
 #   oauth2 - oauth2-proxy in front of Airbyte, against the OIDC issuer in oauth2.
 #            Its client and cookie secrets are external Swarm secrets.
+#   airbyte - Airbyte's own email/password login. The email is set on the first visit
+#            (setup screen); the password is the external secret passwordSecretName.
+#            Every service shares the JWT signing secret jwtSecretName, 32+ random
+#            characters. Works in every exposure mode, though with published the
+#            Connector Builder needs a proxy that routes its path (see README).
 #   none   - no login in the chart: the server and the connector builder are routed
 #            directly. Airbyte runs any connector image it is given next to your
 #            database, so the chart refuses this unless something else authenticates:
@@ -112,8 +117,11 @@ flyway:
 #            behind your own authenticating proxy. exposure.mode published is refused.
 auth:
   mode: oauth2
+  airbyte:
+    passwordSecretName: airbyte_admin_password
+    jwtSecretName: airbyte_jwt_signature_secret
 
-# Web exposure of the entry point (oauth2-proxy, or the server with auth.mode none).
+# Web exposure of the entry point (oauth2-proxy, or the server otherwise).
 # Set exposure.mode: published for a private direct port.
 exposure:
   mode: traefik
@@ -159,6 +167,6 @@ traefik:
 placement:
   constraints: []
 
-# Extra deploy labels for the entry service: oauth2-proxy, or the server with
-# auth.mode none.
+# Extra deploy labels for the entry service: oauth2-proxy, or the server when
+# auth.mode is not oauth2.
 labels: {}

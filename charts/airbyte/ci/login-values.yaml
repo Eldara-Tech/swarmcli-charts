@@ -1,0 +1,13 @@
+# Airbyte's own email/password login, routed by the in-repo traefik chart as a real edge
+# (ci/e2e-setup.sh), against the same throwaway PostgreSQL and MinIO as the mock fixture.
+# Plain HTTP (tls:false): CI cannot issue an ACME certificate, and it makes the login
+# cookies non-Secure. The password and JWT secrets are throwaways ci/e2e-setup.sh creates.
+auth:
+  mode: airbyte
+database:
+  host: airbyte-e2e-postgres
+storage:
+  endpoint: http://airbyte-e2e-minio:9000
+exposure:
+  host: airbyte.e2e.test
+  tls: false

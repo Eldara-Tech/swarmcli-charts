@@ -14,8 +14,8 @@ case="${2:-}"
 scheme=https
 host=airbyte.example.com
 case "$case" in
-  published) scheme=http ;;
-  noauth) scheme=http; host=airbyte.e2e.test ;;
+  published|login-published) scheme=http ;;
+  noauth|login) scheme=http; host=airbyte.e2e.test ;;
 esac
 
 fail=0
@@ -39,6 +39,32 @@ case "$case" in
       grep -q 'traefik\.' "$out" && { echo "  FAIL($case): Traefik labels rendered with exposure.mode none"; fail=1; }
       [ "$(yq '[.services.server.networks[], .services["connector-builder-server"].networks[]] | map(select(. == "traefik-public")) | length' "$out")" -eq 2 ] \
         || { echo "  FAIL($case): the server and builder do not both join exposure.network"; fail=1; }
+    fi
+    ;;
+  login*)
+    # auth.mode airbyte: no oauth2-proxy; the server logs users in, and every service that
+    # mints or checks Airbyte's JWTs reads the one signing secret.
+    yq -e '.services | has("oauth2-proxy") or has("oauth2-redis")' "$out" >/dev/null 2>&1 \
+      && { echo "  FAIL($case): oauth2-proxy or its Redis rendered with auth.mode airbyte"; fail=1; }
+    for svc in server worker workload-api-server cron connector-builder-server; do
+      yq -r ".services[\"$svc\"].command[2]" "$out" | grep -F 'AB_JWT_SIGNATURE_SECRET="$$(cat /run/secrets/airbyte_jwt_signature_secret)"' >/dev/null \
+        && yq -e ".services[\"$svc\"].secrets[] | select(. == \"airbyte_jwt_signature_secret\")" "$out" >/dev/null 2>&1 \
+        || { echo "  FAIL($case): $svc does not read the JWT signing secret"; fail=1; }
+    done
+    for svc in server workload-api-server connector-builder-server; do
+      [ "$(yq -r ".services[\"$svc\"].environment.API_AUTHORIZATION_ENABLED" "$out")" = true ] \
+        || { echo "  FAIL($case): $svc does not enforce authorization"; fail=1; }
+    done
+    [ "$(yq -r '.services["connector-builder-server"].environment.MICRONAUT_SECURITY_TOKEN_COOKIE_ENABLED' "$out")" = true ] \
+      || { echo "  FAIL($case): the connector builder cannot read the login cookie"; fail=1; }
+    yq -r '.services.server.command[2]' "$out" | grep -F 'AB_INSTANCE_ADMIN_PASSWORD="$$(cat /run/secrets/airbyte_admin_password)"' >/dev/null \
+      || { echo "  FAIL($case): the server does not read the admin password"; fail=1; }
+    # Secure cookies are dropped over plain http, so the login would silently never stick.
+    [ "$(yq -r '.services.server.environment.AB_COOKIE_SECURE' "$out")" = "$([ "$scheme" = https ] && echo true || echo false)" ] \
+      || { echo "  FAIL($case): AB_COOKIE_SECURE does not follow the public scheme ($scheme)"; fail=1; }
+    if [ "$case" = "login-published" ]; then
+      [ "$(yq '.services.server.ports[0].target' "$out")" = 8001 ] \
+        || { echo "  FAIL($case): the server does not own the published port"; fail=1; }
     fi
     ;;
   *)
@@ -91,8 +117,8 @@ fi
 # The data pin follows the named volumes (session Redis and Temporal; Temporal alone with
 # auth.mode none) and nothing else, and goes away with nodeLabel: "".
 case "$case" in
-  published) pins=0 ;;
-  noauth*) pins=1 ;;
+  published|login-published) pins=0 ;;
+  noauth*|login*) pins=1 ;;
   *) pins=2 ;;
 esac
 [ "$(grep -c 'node.labels.airbyte-data == true' "$out")" -eq "$pins" ] \

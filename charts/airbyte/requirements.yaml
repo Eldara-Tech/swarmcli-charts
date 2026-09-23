@@ -30,6 +30,10 @@ secrets:
     description: "OIDC client secret for oauth2-proxy"
   - name: "{{ .Values.oauth2.cookieSecretName }}"
     description: "Cookie encryption secret for oauth2-proxy"
+  - name: "{{ .Values.auth.airbyte.passwordSecretName }}"
+    description: "Airbyte admin password for auth.mode airbyte"
+  - name: "{{ .Values.auth.airbyte.jwtSecretName }}"
+    description: "Airbyte JWT signing secret (32+ random characters) for auth.mode airbyte"
 {{- with .Values.workloadLauncher.registryAuthSecretName }}
   - name: "{{ . }}"
     description: "Docker config.json with credentials for private connector registries"

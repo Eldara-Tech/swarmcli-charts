@@ -15,6 +15,10 @@ published
 # server and builder join exposure.network with no Traefik labels.
 noauth-proxy
 
+# Publishes a node port; ci/render-check.sh asserts the server, not a proxy, owns it and that
+# the login cookies drop Secure over http. The login fixture deploys the same auth wiring.
+login-published
+
 # Needs a private registry to prove anything at deploy time; ci/render-check.sh asserts the
 # secret mount and FAKEK8S_REGISTRY_AUTH_FILE agree.
 registry-auth

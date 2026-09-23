@@ -3,15 +3,16 @@
 # e2e setup for the airbyte chart. scripts/e2e-test.sh runs this BEFORE `swarmcli charts
 # install`, once per fixture:
 #   $1 = release name   $2 = chart directory   $3 = fixture case name
-# The mock and noauth fixtures deploy (the rest are ci/e2e-render-only). They need everything
+# The mock, noauth and login fixtures deploy (the rest are ci/e2e-render-only). They need everything
 # the chart treats as external, so this hook provides, with dummy values:
-#   * the six operator secrets and the airbyte-db-net / traefik-public overlays;
+#   * the eight operator secrets and the airbyte-db-net / traefik-public overlays;
 #   * the airbyte-data node label the session Redis and Temporal are pinned to;
 #   * PostgreSQL (airbyte-e2e-postgres) on airbyte-db-net;
 #   * MinIO (airbyte-e2e-minio) as the S3 endpoint. Airbyte creates its bucket itself;
 #   * an OIDC discovery mock (airbyte-e2e-oidc, ci/mock-oidc.js) on traefik-public, without
 #     which oauth2-proxy exits at startup;
-#   * for noauth only, the in-repo traefik chart as a real edge (scripts/e2e-edge).
+#   * for noauth and login, the in-repo traefik chart as a real edge (scripts/e2e-edge);
+#   * for login, the admin password and JWT signing secret of auth.mode airbyte.
 # ci/e2e-teardown.sh removes everything created here except the shared traefik-public.
 #
 # INVARIANT: the Postgres user/password and the MinIO root user/password equal the values of
@@ -36,6 +37,8 @@ secret airbyte_db_password "$DB_PW"
 secret airbyte_s3_access_key "$S3_KEY"
 secret airbyte_s3_secret_key "$S3_SECRET"
 secret airbyte_oauth_client_secret test
+secret airbyte_admin_password e2e-admin-password                  # == ci/e2e-check.sh ADMIN_PASSWORD
+secret airbyte_jwt_signature_secret e2e-jwt-signing-secret-not-a-real-one
 docker secret inspect airbyte_oauth_cookie_secret >/dev/null 2>&1 \
   || dd if=/dev/urandom bs=32 count=1 2>/dev/null | docker secret create airbyte_oauth_cookie_secret - >/dev/null
 
@@ -79,10 +82,9 @@ for _ in $(seq 1 40); do
   sleep 3
 done
 
-# --- noauth: stand up the traefik chart as a real edge on traefik-public, so ci/e2e-check.sh
-# can prove the basic-auth middleware refuses an anonymous request and routes an
-# authenticated one to the server and the connector builder.
-if [ "${3:-}" = "noauth" ]; then
+# --- noauth and login: stand up the traefik chart as a real edge on traefik-public, so
+# ci/e2e-check.sh can prove what guards the server and the connector builder through it.
+if [ "${3:-}" = "noauth" ] || [ "${3:-}" = "login" ]; then
   . "$chart_dir/../../scripts/e2e-edge/traefik-edge.sh"
   edge_up || exit 1
 fi
