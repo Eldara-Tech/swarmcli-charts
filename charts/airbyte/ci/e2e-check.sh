@@ -36,6 +36,8 @@ const login = process.env.CASE === 'login';
 const server = login ? `http://${process.env.EDGE_TARGET}:80` : `http://${process.env.RELEASE}_server:8001`;
 const host = login ? { Host: 'airbyte.e2e.test' } : {};
 const proxy = `http://${process.env.RELEASE}_oauth2-proxy:4180`;
+// login: the server itself, which also sits on the edge's overlay, bypassing Traefik.
+const direct = `http://${process.env.RELEASE}_server:8001`;
 const FAKER = 'dfd88b22-b603-4c3d-aad7-3701784586b1';        // source-faker, in Airbyte's seed registry
 const DEFAULT_ORG = '00000000-0000-0000-0000-000000000000';   // the bootloader's default workspace lives here
 const ADMIN_EMAIL = 'e2e@example.com';
@@ -99,11 +101,14 @@ if (login) {
   if (anon.status !== 401) throw new Error(`anonymous API call: HTTP ${anon.status}, expected 401`);
   console.log('  airbyte login: anonymous API call refused (HTTP 401)');
 
-  // The first visitor's setup screen names the login email.
-  const setup = await request(`${server}/api/v1/instance_configuration/setup`, {
-    email: ADMIN_EMAIL, anonymousDataCollection: false, initialSetupComplete: true, displaySetupWizard: false,
-  });
+  // The first visitor's setup screen names the login email. The fixture sets setupComplete, so
+  // the edge refuses that endpoint: run setup on the server directly, then prove the refusal.
+  const setupBody = { email: ADMIN_EMAIL, anonymousDataCollection: false, initialSetupComplete: true, displaySetupWizard: false };
+  const setup = await request(`${direct}/api/v1/instance_configuration/setup`, setupBody);
   if (setup.status !== 200) throw new Error(`instance setup: HTTP ${setup.status} ${setup.text}`);
+  const closed = await request(`${server}/api/v1/instance_configuration/setup`, { ...setupBody, email: 'intruder@example.com' }, { anonymous: true });
+  if (closed.status !== 403) throw new Error(`setup endpoint through the edge after setup: HTTP ${closed.status}, expected 403`);
+  console.log('  airbyte login: setup endpoint closed at the edge (HTTP 403)');
 
   const wrong = await request(`${server}/api/login`, { username: ADMIN_EMAIL, password: 'wrong' }, { anonymous: true });
   if (wrong.status !== 401) throw new Error(`login with a wrong password: HTTP ${wrong.status}, expected 401`);
@@ -143,13 +148,16 @@ const result = JSON.parse(check.text);
 if (result.status !== 'succeeded') throw new Error(`check_connection: ${result.status} ${result.message || ''}`);
 console.log('  source-faker check_connection: succeeded');
 
-// Airbyte's setup endpoint is anonymous; record whether it still accepts a new login email once
-// setup is complete. Last on purpose: if it does, the admin email above no longer signs in.
+// Why setupComplete exists: behind the edge, Airbyte's own setup endpoint still accepts an
+// anonymous caller after setup. Record what that does to the login. Last on purpose: when it
+// replaces the email, the admin email above no longer signs in.
 if (login) {
-  const again = await request(`${server}/api/v1/instance_configuration/setup`, {
+  const again = await request(`${direct}/api/v1/instance_configuration/setup`, {
     email: 'second-visitor@example.com', anonymousDataCollection: false, initialSetupComplete: true, displaySetupWizard: false,
   }, { anonymous: true });
-  console.log(`  note: anonymous setup after setup -> HTTP ${again.status}`);
+  const oldLogin = await request(`${server}/api/login`, { username: ADMIN_EMAIL, password: ADMIN_PASSWORD }, { anonymous: true });
+  const newLogin = await request(`${server}/api/login`, { username: 'second-visitor@example.com', password: ADMIN_PASSWORD }, { anonymous: true });
+  console.log(`  note: anonymous setup after setup -> HTTP ${again.status}; login with the original email -> HTTP ${oldLogin.status}, with the new one -> HTTP ${newLogin.status}`);
 }
 JS
 then

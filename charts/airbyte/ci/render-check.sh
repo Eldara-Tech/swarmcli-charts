@@ -67,6 +67,15 @@ case "$case" in
     # Secure cookies are dropped over plain http, so the login would silently never stick.
     [ "$(yq -r '.services.server.environment.AB_COOKIE_SECURE' "$out")" = "$([ "$scheme" = https ] && echo true || echo false)" ] \
       || { echo "  FAIL($case): AB_COOKIE_SECURE does not follow the public scheme ($scheme)"; fail=1; }
+    # setupComplete closes Airbyte's anonymous setup endpoint at the public router.
+    if [ "$case" = "login" ]; then
+      grep -E 'traefik\.http\.routers\.[^.]+-setup-http\.rule=.*Path\(`/api/v1/instance_configuration/setup`\)' "$out" >/dev/null \
+        && grep -E 'traefik\.http\.routers\.[^.]+-setup-http\.middlewares=[^ ]+-setup-closed$' "$out" >/dev/null \
+        && grep -F 'setup-closed.ipallowlist.sourcerange=127.0.0.1/32' "$out" >/dev/null \
+        || { echo "  FAIL($case): setupComplete does not close the setup endpoint at Traefik"; fail=1; }
+    elif grep -F 'instance_configuration/setup' "$out" >/dev/null; then
+      echo "  FAIL($case): the setup endpoint is closed without auth.airbyte.setupComplete"; fail=1
+    fi
     if [ "$case" = "login-published" ]; then
       [ "$(yq '.services.server.ports[0].target' "$out")" = 8001 ] \
         || { echo "  FAIL($case): the server does not own the published port"; fail=1; }

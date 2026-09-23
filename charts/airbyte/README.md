@@ -113,6 +113,12 @@ that routes `/api/v1/connector_builder/` to
 `<release>_connector-builder-server:8080`, because the UI calls it on the same
 origin. The login cookies are `Secure` only when `exposure.tls` is true.
 
+Airbyte keeps the setup endpoint (`/api/v1/instance_configuration/setup`) open to
+anonymous callers even after setup, and it replaces the login email. Once you
+have completed the setup screen, set `auth.airbyte.setupComplete: true` and
+upgrade: in traefik mode the chart then refuses that path with a 403. A
+published port cannot be protected this way, so keep it on a trusted network.
+
 ## Without OAuth
 
 `auth.mode: none` drops oauth2-proxy and its Redis and routes the server directly,
@@ -193,6 +199,7 @@ after 30 minutes, and a pod whose image is still missing then fails. Kubernetes
 | `flyway.configsMinimumMigrationVersion` / `.jobsMinimumMigrationVersion` | `0.35.15.001` / `0.29.15.001` | Minimum required Flyway migration for the configs and jobs databases |
 | `auth.mode` | `oauth2` | `oauth2` (oauth2-proxy in front), `airbyte` (see [Airbyte's own login](#airbytes-own-login)) or `none` (see [Without OAuth](#without-oauth)) |
 | `auth.airbyte.passwordSecretName` / `.jwtSecretName` | `airbyte_admin_password` / `airbyte_jwt_signature_secret` | External secrets for `auth.mode: airbyte`: the admin password and the JWT signing secret |
+| `auth.airbyte.setupComplete` | `false` | After the setup screen is done: refuse Airbyte's anonymous setup endpoint at Traefik |
 | `exposure.mode` | `traefik` | `traefik`, `published`, or `none` |
 | `exposure.network` / `.host` / `.tls` | `traefik-public` / `airbyte.example.com` / `true` | Ingress overlay and public address |
 | `exposure.publishedPort` | `8080` | Direct port of the entry service (OAuth2 proxy or server) when mode is `published` |

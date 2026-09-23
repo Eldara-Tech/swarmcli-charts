@@ -120,6 +120,9 @@ auth:
   airbyte:
     passwordSecretName: airbyte_admin_password
     jwtSecretName: airbyte_jwt_signature_secret
+    # Set true once the setup screen is done: Airbyte keeps that endpoint anonymous and lets it
+    # replace the login email later, so Traefik then refuses it (traefik mode only).
+    setupComplete: false
 
 # Web exposure of the entry point (oauth2-proxy, or the server otherwise).
 # Set exposure.mode: published for a private direct port.

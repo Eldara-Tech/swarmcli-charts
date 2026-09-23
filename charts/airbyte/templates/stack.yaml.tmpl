@@ -54,6 +54,20 @@
 {{- $_ := set $traefikLabels (index . 0) $l }}
 {{- end }}
 {{- $entry := get $traefikLabels "entry" }}
+{{- if and $airbyteAuth .Values.auth.airbyte.setupComplete }}
+{{- /* Airbyte's setup endpoint is anonymous and still rewrites the login email after setup, so
+       once it is done, the public router refuses that one path (an allow-list of nobody). */}}
+{{- $setup := printf "%s-setup-%s" $router (ternary "https" "http" .Values.exposure.tls) }}
+{{- $entry = append $entry (printf "traefik.http.routers.%s.rule=Host(`%s`) && Path(`/api/v1/instance_configuration/setup`)" $setup .Values.exposure.host) }}
+{{- $entry = append $entry (printf "traefik.http.routers.%s.entrypoints=%s" $setup (ternary .Values.traefik.entrypoints.https .Values.traefik.entrypoints.http .Values.exposure.tls)) }}
+{{- if .Values.exposure.tls }}
+{{- $entry = append $entry (printf "traefik.http.routers.%s.tls=true" $setup) }}
+{{- $entry = append $entry (printf "traefik.http.routers.%s.tls.certresolver=%s" $setup .Values.traefik.certResolver) }}
+{{- end }}
+{{- $entry = append $entry (printf "traefik.http.routers.%s.middlewares=%s-setup-closed" $setup $router) }}
+{{- $entry = append $entry (printf "traefik.http.routers.%s.service=%s" $setup $router) }}
+{{- $entry = append $entry (printf "traefik.http.middlewares.%s-setup-closed.ipallowlist.sourcerange=127.0.0.1/32" $router) }}
+{{- end }}
 {{- if $authMiddleware }}
 {{- $entry = append $entry (printf "traefik.http.middlewares.%s.basicauth.users=%s" $authMiddleware .Values.traefik.basicAuthUsers) }}
 {{- end }}

@@ -4,6 +4,8 @@
 # cookies non-Secure. The password and JWT secrets are throwaways ci/e2e-setup.sh creates.
 auth:
   mode: airbyte
+  airbyte:
+    setupComplete: true   # ci/e2e-check.sh runs setup on the server directly, then probes the edge
 database:
   host: airbyte-e2e-postgres
 storage:
