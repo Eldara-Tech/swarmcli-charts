@@ -88,6 +88,11 @@ for _ in $(seq 1 12); do
   docker service logs --raw "${release}_workload-launcher" >"$log" 2>&1 || true
   if grep -F 'DONE  phase=Succeeded' "$log" >/dev/null; then
     echo "  workload-launcher: $(grep -F 'DONE  phase=Succeeded' "$log" | sed -n 1p | sed 's/^.*POD /FakeK8s ran pod /')"
+    # Fabric8 cancelling a pod watch must not trip okio's timeout check (see FakeK8s sendWatch).
+    if grep -F 'Unbalanced enter/exit' "$log" >/dev/null; then
+      echo "  FAIL: the launcher log shows $(grep -cF 'Unbalanced enter/exit' "$log") 'Unbalanced enter/exit' trace(s) from a cancelled watch"
+      exit 1
+    fi
     exit 0
   fi
   sleep 5
