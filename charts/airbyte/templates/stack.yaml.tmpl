@@ -411,9 +411,11 @@ services:
       TEMPORAL_HOST: temporal:7233
       WORKSPACE_ROOT: /data/workspace
 {{- if $airbyteAuth }}
-      # The UI sends Airbyte's login as the JWT cookie, never as a bearer token.
+      # The UI sends Airbyte's login as the JWT cookie, never as a bearer token, and Micronaut
+      # reads a token from a cookie only in cookie authentication mode, as the server runs.
       API_AUTHORIZATION_ENABLED: "true"
-      MICRONAUT_SECURITY_TOKEN_COOKIE_ENABLED: "true"
+      MICRONAUT_SECURITY_AUTHENTICATION: cookie
+      MICRONAUT_SECURITY_REDIRECT_ENABLED: "false"
 {{- end }}
     command: [/bin/bash, -c, 'export DATABASE_USER="$$(cat /run/secrets/{{ .Values.database.userSecretName }})" DATABASE_PASSWORD="$$(cat /run/secrets/{{ .Values.database.passwordSecretName }})" AWS_ACCESS_KEY_ID="$$(cat /run/secrets/{{ .Values.storage.accessKeySecretName }})" AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/{{ .Values.storage.secretKeySecretName }})"; {{ $jwtExport }}exec airbyte-app/bin/airbyte-connector-builder-server']
     deploy:

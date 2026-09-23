@@ -55,7 +55,7 @@ case "$case" in
       [ "$(yq -r ".services[\"$svc\"].environment.API_AUTHORIZATION_ENABLED" "$out")" = true ] \
         || { echo "  FAIL($case): $svc does not enforce authorization"; fail=1; }
     done
-    [ "$(yq -r '.services["connector-builder-server"].environment.MICRONAUT_SECURITY_TOKEN_COOKIE_ENABLED' "$out")" = true ] \
+    [ "$(yq -r '.services["connector-builder-server"].environment.MICRONAUT_SECURITY_AUTHENTICATION' "$out")" = cookie ] \
       || { echo "  FAIL($case): the connector builder cannot read the login cookie"; fail=1; }
     yq -r '.services.server.command[2]' "$out" | grep -F 'AB_INSTANCE_ADMIN_PASSWORD="$$(cat /run/secrets/airbyte_admin_password)"' >/dev/null \
       || { echo "  FAIL($case): the server does not read the admin password"; fail=1; }
