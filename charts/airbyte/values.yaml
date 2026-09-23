@@ -60,9 +60,8 @@ redis:
 # create both databases yourself.
 temporal:
   image:
-    repository: temporalio/auto-setup
-    tag: "1.27.2"
-  createDatabases: true
+    repository: temporalio/temporal
+    tag: "1.9.1"
 
 # Leave empty for released charts: Chart.Version rotates the immutable config.
 # For a local upgrade after changing files/FakeK8s.java, set a new value such as
@@ -74,6 +73,7 @@ fakeK8sConfigVersion: ""
 persistence:
   oauthRedisVolume: airbyte_oauth2_redis
   nodeLabel: airbyte-data
+  temporalVolume: temporal_data
 
 # Airbyte metadata database. The username/password are external Swarm secrets;
 # the database and network are supplied by the operator.

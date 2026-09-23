@@ -388,27 +388,10 @@ services:
 
   temporal:
     image: {{ .Values.temporal.image.repository }}:{{ .Values.temporal.image.tag }}
-    networks: [airbyte, {{ .Values.database.network }}]
-    secrets:
-      - {{ .Values.database.userSecretName }}
-      - {{ .Values.database.passwordSecretName }}
-    configs:
-      - source: temporal-dynamicconfig
-        target: /etc/temporal/config/dynamicconfig/development.yaml
-        mode: 0444
-    environment:
-      AUTO_SETUP: "true"
-      DB: postgres12
-      POSTGRES_SEEDS: {{ .Values.database.host | quote }}
-      DB_PORT: {{ .Values.database.port | quote }}
-      SKIP_DB_CREATE: {{ ternary "false" "true" .Values.temporal.createDatabases | quote }}
-      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development.yaml
-      # The task sits on two overlays and its hostname resolves to one of them.
-      BIND_ON_IP: 0.0.0.0
-    entrypoint:
-      - /bin/sh
-      - -c
-      - 'export POSTGRES_USER="$$(cat /run/secrets/{{ .Values.database.userSecretName }})" POSTGRES_PWD="$$(cat /run/secrets/{{ .Values.database.passwordSecretName }})"; exec /etc/temporal/entrypoint.sh autosetup'
+    command: [server, start-dev, --ip, 0.0.0.0, --db-filename, /home/temporal/temporal.db]
+    networks: [airbyte]
+    volumes:
+      - {{ .Values.persistence.temporalVolume }}:/home/temporal
     deploy:
       replicas: 1
       placement:
@@ -442,6 +425,7 @@ services:
 
 volumes:
   {{ .Values.persistence.oauthRedisVolume }}: {}
+  {{ .Values.persistence.temporalVolume }}: {}
 
 configs:
   fakek8s:
