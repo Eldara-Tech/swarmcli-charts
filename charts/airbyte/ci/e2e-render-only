@@ -19,6 +19,10 @@ noauth-proxy
 # the login cookies drop Secure over http. The login fixture deploys the same auth wiring.
 login-published
 
+# Points at airbyte.example.com over TLS; ci/render-check.sh asserts the setup endpoint stays open
+# before setupComplete and the cookies are Secure. The login fixture deploys the same wiring.
+login-tls
+
 # Needs a private registry to prove anything at deploy time; ci/render-check.sh asserts the
 # secret mount and FAKEK8S_REGISTRY_AUTH_FILE agree.
 registry-auth
