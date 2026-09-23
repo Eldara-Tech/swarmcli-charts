@@ -1409,22 +1409,20 @@ public class FakeK8s {
     }
 
     static void sendWatch(Socket sock, String podName, String query) throws Exception {
-        // Send chunked response headers
+        // The body ends when the socket closes, not chunked: when Fabric8 cancels a watch it
+        // closes the response on one thread while another is still reading it, and OkHttp's
+        // close drains a chunked body, which okio rejects ("Unbalanced enter/exit").
         PrintStream hdr = new PrintStream(sock.getOutputStream(), false, "UTF-8");
         hdr.print("HTTP/1.1 200 OK\r\n");
         hdr.print("Content-Type: application/json\r\n");
-        hdr.print("Transfer-Encoding: chunked\r\n");
-        hdr.print("Connection: keep-alive\r\n\r\n");
+        hdr.print("Connection: close\r\n\r\n");
         hdr.flush();
 
         PrintWriter pw = new PrintWriter(new OutputStreamWriter(sock.getOutputStream(), "UTF-8"), true) {
             @Override
             public void print(String s) {
                 try {
-                    byte[] b = s.getBytes("UTF-8");
-                    // Chunked encoding: size\r\ndata\r\n
-                    String chunk = Integer.toHexString(b.length) + "\r\n" + s + "\r\n";
-                    sock.getOutputStream().write(chunk.getBytes("UTF-8"));
+                    sock.getOutputStream().write(s.getBytes("UTF-8"));
                     sock.getOutputStream().flush();
                 } catch (Exception e) { setError(); }
             }
@@ -1478,12 +1476,6 @@ public class FakeK8s {
 
         List<PrintWriter> registered = watchers.get(podName);
         if (registered != null) registered.remove(pw);
-
-        // Send terminal chunk
-        try {
-            sock.getOutputStream().write("0\r\n\r\n".getBytes("UTF-8"));
-            sock.getOutputStream().flush();
-        } catch (Exception ignored) {}
     }
 
     // One header line, without its CRLF; null at end of stream.
