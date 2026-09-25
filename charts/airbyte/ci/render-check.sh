@@ -102,7 +102,7 @@ if [ "$case" = "default" ]; then
     --set 'traefik.basicAuthUsers=u:$$apr1$$x$$y'
 fi
 
-# placement.constraints reaches every service that runs an Airbyte platform image: since 2.1 they
+# placement.constraints reaches every service that runs an Airbyte platform image: since 2.3.0 they
 # all need an x86-64-v2 CPU, so one left unpinned can land on a node where glibc refuses to start.
 if [ "$case" = "placement" ]; then
   for svc in db-migrations server worker workload-api-server workload-launcher cron; do
