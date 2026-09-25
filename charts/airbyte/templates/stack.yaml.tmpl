@@ -131,6 +131,9 @@ services:
       replicas: 1
       restart_policy:
         condition: on-failure
+      placement:
+        constraints:
+{{ toYaml $constraints | indent 10 }}
 
 {{- if $oauth }}
 

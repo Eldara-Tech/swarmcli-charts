@@ -102,6 +102,15 @@ if [ "$case" = "default" ]; then
     --set 'traefik.basicAuthUsers=u:$$apr1$$x$$y'
 fi
 
+# placement.constraints reaches every service that runs an Airbyte platform image: since 2.1 they
+# all need an x86-64-v2 CPU, so one left unpinned can land on a node where glibc refuses to start.
+if [ "$case" = "placement" ]; then
+  for svc in db-migrations server worker workload-api-server workload-launcher cron; do
+    yq -e ".services[\"$svc\"].deploy.placement.constraints[] | select(. == \"node.labels.x86-64-v2 == true\")" "$out" >/dev/null 2>&1 \
+      || { echo "  FAIL($case): $svc does not carry placement.constraints"; fail=1; }
+  done
+fi
+
 # One Airbyte release everywhere: every platform image carries the tag AIRBYTE_VERSION names,
 # or a Renovate bump of appVersion runs mixed versions. The manifest server is the one exception:
 # it ships with Airbyte's Python CDK, on its own version line.

@@ -27,6 +27,24 @@ do not repeat it in this list.
 
 ## Prerequisites
 
+Every node that may run an Airbyte service needs an **x86-64-v2 CPU** (SSE4.2,
+POPCNT). Airbyte's images are built on Amazon Linux 2023 since 2.1, and its glibc
+refuses to start without it: the service exits at once with `Fatal glibc error:
+CPU does not support x86-64-v2`. Physical CPUs from the last decade qualify; a VM
+qualifies only if the hypervisor passes the capability through, which the generic
+`kvm64`/`qemu64` CPU models do not (on Proxmox, use `host` or `x86-64-v2-AES`).
+Check a node with `grep -q sse4_2 /proc/cpuinfo && echo ok`. If some nodes lack
+it, label the capable ones and pin Airbyte to them with `placement.constraints`:
+
+```bash
+docker node update --label-add x86-64-v2=true <node>
+```
+
+```yaml
+placement:
+  constraints: ["node.labels.x86-64-v2 == true"]
+```
+
 Create the two external overlays used by the default configuration, then create
 the seven secrets. `requirements.yaml` validates all of them before deployment.
 Every Airbyte service signs its internal calls with the JWT secret, whatever the
@@ -210,5 +228,5 @@ after 30 minutes, and a pod whose image is still missing then fails. Kubernetes
 | `traefik.*` | see `values.yaml` | Traefik router settings; defaults match this repository's Traefik chart |
 | `workloadLauncher.*` | see `values.yaml` | Single launcher replica, memory limits, and connector-only `extraNetworks` |
 | `workloadLauncher.registryAuthSecretName` | `""` | External secret with a Docker `config.json` for private connector registries |
-| `placement.constraints` | `[]` | Extra constraints for the Airbyte services and the session Redis |
+| `placement.constraints` | `[]` | Extra constraints for the Airbyte services and the session Redis, e.g. to keep them on x86-64-v2 nodes |
 | `labels` | `{}` | Extra deploy labels for the entry service: the OAuth2 proxy, or the server when `auth.mode` is not `oauth2` |

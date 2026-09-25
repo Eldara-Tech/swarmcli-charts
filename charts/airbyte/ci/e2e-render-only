@@ -19,6 +19,10 @@ noauth-proxy
 # the login cookies drop Secure over http. The login fixture deploys the same auth wiring.
 login-published
 
+# Needs a node labelled x86-64-v2; ci/render-check.sh asserts every Airbyte Java service
+# carries the constraint.
+placement
+
 # Points at airbyte.example.com over TLS; ci/render-check.sh asserts the setup endpoint stays open
 # before setupComplete and the cookies are Secure. The login fixture deploys the same wiring.
 login-tls

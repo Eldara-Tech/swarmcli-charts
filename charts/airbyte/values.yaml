@@ -167,7 +167,8 @@ traefik:
 
 # Optional extra constraints for the Airbyte services and the session Redis. The
 # workload launcher runs connector containers on its own node, so this is where
-# to keep it on a dedicated, trusted node.
+# to keep it on a dedicated, trusted node, and where to keep Airbyte off nodes
+# without an x86-64-v2 CPU (see README), e.g. "node.labels.x86-64-v2 == true".
 placement:
   constraints: []
 
