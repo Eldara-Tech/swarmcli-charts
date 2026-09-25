@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+#
+# e2e setup for the airbyte chart. scripts/e2e-test.sh runs this BEFORE `swarmcli charts
+# install`, once per fixture:
+#   $1 = release name   $2 = chart directory   $3 = fixture case name
+# The mock, noauth and login fixtures deploy (the rest are ci/e2e-render-only). They need everything
+# the chart treats as external, so this hook provides, with dummy values:
+#   * the eight operator secrets and the airbyte-db-net / traefik-public overlays;
+#   * the airbyte-data node label the session Redis and Temporal are pinned to;
+#   * PostgreSQL (airbyte-e2e-postgres) on airbyte-db-net;
+#   * SeaweedFS (airbyte-e2e-s3) as the S3 endpoint. Airbyte creates its bucket itself;
+#   * an OIDC discovery mock (airbyte-e2e-oidc, ci/mock-oidc.js) on traefik-public, without
+#     which oauth2-proxy exits at startup;
+#   * for noauth and login, the in-repo traefik chart as a real edge (scripts/e2e-edge);
+#   * for login, the admin password and JWT signing secret of auth.mode airbyte.
+# ci/e2e-teardown.sh removes everything created here except the shared traefik-public.
+#
+# INVARIANT: the Postgres user/password and the SeaweedFS S3 admin key equal the values of the
+# airbyte_db_* and airbyte_s3_* secrets; the hook owns both sides. SeaweedFS turns
+# AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY into its only identity and then enforces signatures.
+#
+# Idempotent: safe to re-run after a crashed run.
+set -euo pipefail
+
+chart_dir="$2"
+DB_USER=airbyte
+DB_PW=test
+S3_KEY=airbyte-e2e
+S3_SECRET=airbyte-e2e-secret
+ISSUER=http://airbyte-e2e-oidc:8080/realms/airbyte   # == ci/mock-values.yaml oauth2.issuerUrl
+
+secret() {
+  docker secret inspect "$1" >/dev/null 2>&1 \
+    || printf '%s' "$2" | docker secret create "$1" - >/dev/null
+}
+secret airbyte_db_user "$DB_USER"
+secret airbyte_db_password "$DB_PW"
+secret airbyte_s3_access_key "$S3_KEY"
+secret airbyte_s3_secret_key "$S3_SECRET"
+secret airbyte_oauth_client_secret test
+secret airbyte_admin_password e2e-admin-password                  # == ci/e2e-check.sh ADMIN_PASSWORD
+secret airbyte_jwt_signature_secret e2e-jwt-signing-secret-not-a-real-one
+docker secret inspect airbyte_oauth_cookie_secret >/dev/null 2>&1 \
+  || dd if=/dev/urandom bs=32 count=1 2>/dev/null | docker secret create airbyte_oauth_cookie_secret - >/dev/null
+
+docker network create --driver overlay --attachable airbyte-db-net >/dev/null 2>&1 || true
+docker network create --driver overlay --attachable traefik-public >/dev/null 2>&1 || true
+
+node="$(docker node ls --format '{{.ID}} {{.Self}}' 2>/dev/null | awk '$2=="true"{print $1; exit}')"
+[ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | sed -n 1p)"
+[ -n "$node" ] && docker node update --label-add airbyte-data=true "$node" >/dev/null
+
+docker service rm airbyte-e2e-postgres airbyte-e2e-s3 airbyte-e2e-oidc >/dev/null 2>&1 || true
+docker config rm airbyte-e2e-mock-oidc >/dev/null 2>&1 || true
+docker config create airbyte-e2e-mock-oidc "$chart_dir/ci/mock-oidc.js" >/dev/null
+
+# --detach: without it `docker service create` waits for convergence and never returns when an
+# image cannot be pulled (MinIO's were gone from every registry by 2026-09-25, and the job sat
+# until its 75-minute cap). The bounded wait below reports it instead.
+docker service create --detach --name airbyte-e2e-postgres --network airbyte-db-net \
+  --env POSTGRES_DB=airbyte --env POSTGRES_USER="$DB_USER" --env POSTGRES_PASSWORD="$DB_PW" \
+  postgres:17-alpine >/dev/null
+docker service create --detach --name airbyte-e2e-s3 --network airbyte-db-net \
+  --env AWS_ACCESS_KEY_ID="$S3_KEY" --env AWS_SECRET_ACCESS_KEY="$S3_SECRET" \
+  chrislusf/seaweedfs:4.47 server -s3 >/dev/null
+docker service create --detach --name airbyte-e2e-oidc --network traefik-public \
+  --config source=airbyte-e2e-mock-oidc,target=/mock.js --env ISSUER="$ISSUER" \
+  node:22-alpine node /mock.js >/dev/null
+
+# Wait for all three to run (image pulls), then until Postgres accepts TCP connections: during
+# first init the entrypoint's temporary server listens on the socket only, so a socket probe
+# would report ready while initdb is still running.
+for svc in airbyte-e2e-postgres airbyte-e2e-s3 airbyte-e2e-oidc; do
+  state=""
+  for _ in $(seq 1 60); do
+    state="$(docker service ps "$svc" --filter desired-state=running \
+      --format '{{.CurrentState}}' 2>/dev/null | sed -n 1p)"
+    case "$state" in Running*) break ;; esac
+    sleep 3
+  done
+  case "$state" in
+    Running*) ;;
+    *) echo "  FAIL: $svc never reached Running (last: ${state:-<none>})"
+       docker service ps --no-trunc "$svc" 2>&1 | sed -n '1,4p' | sed 's/^/    /'
+       exit 1 ;;
+  esac
+done
+for _ in $(seq 1 40); do
+  cid="$(docker ps -q -f label=com.docker.swarm.service.name=airbyte-e2e-postgres | sed -n 1p)"
+  if [ -n "$cid" ] && docker exec "$cid" pg_isready -h 127.0.0.1 -U "$DB_USER" -d airbyte >/dev/null 2>&1; then
+    break
+  fi
+  sleep 3
+done
+
+# --- noauth and login: stand up the traefik chart as a real edge on traefik-public, so
+# ci/e2e-check.sh can prove what guards the server through it.
+if [ "${3:-}" = "noauth" ] || [ "${3:-}" = "login" ]; then
+  . "$chart_dir/../../scripts/e2e-edge/traefik-edge.sh"
+  edge_up || exit 1
+fi
