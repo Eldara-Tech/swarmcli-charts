@@ -1,8 +1,8 @@
 # The e2e fixture: every external dependency is a throwaway ci/e2e-setup.sh stands up —
-# PostgreSQL, a MinIO S3 endpoint and an OIDC discovery mock for oauth2-proxy.
+# PostgreSQL, a SeaweedFS S3 endpoint and an OIDC discovery mock for oauth2-proxy.
 database:
   host: airbyte-e2e-postgres
 storage:
-  endpoint: http://airbyte-e2e-minio:9000
+  endpoint: http://airbyte-e2e-s3:8333
 oauth2:
   issuerUrl: http://airbyte-e2e-oidc:8080/realms/airbyte

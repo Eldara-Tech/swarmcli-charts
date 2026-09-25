@@ -14,8 +14,8 @@ include:
   # >=2 GB image + 120s health start period needs the 10m per-fixture budget.
   - { chart: openclaw,      cases: "",                                                                                timeout: 10m }
   # airbyte: mock (oauth2-proxy), noauth (auth.mode none behind the traefik edge's basic auth)
-  # and login (Airbyte's own login through the edge), against the throwaway PostgreSQL, MinIO
-  # and OIDC mock its ci/e2e-setup.sh stands up;
+  # and login (Airbyte's own login through the edge), against the throwaway PostgreSQL, S3
+  # (SeaweedFS) and OIDC mock its ci/e2e-setup.sh stands up;
   # ci/e2e-check.sh then runs a source-faker connection check through the launcher and FakeK8s.
   # Nine JVM/Temporal images plus the connector images it pulls on demand need the long budget.
   - { chart: airbyte,       cases: "mock noauth login",                                                               timeout: 15m }

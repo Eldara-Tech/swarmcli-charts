@@ -1,5 +1,5 @@
 # No login in the chart: Traefik routes straight to the server, behind a basic-auth
-# middleware. Deploys against the same throwaway PostgreSQL and MinIO
+# middleware. Deploys against the same throwaway PostgreSQL and S3
 # as the mock fixture, with the in-repo traefik chart stood up as a real edge
 # (ci/e2e-setup.sh). Plain HTTP (tls:false): CI cannot issue an ACME certificate.
 #
@@ -10,7 +10,7 @@ auth:
 database:
   host: airbyte-e2e-postgres
 storage:
-  endpoint: http://airbyte-e2e-minio:9000
+  endpoint: http://airbyte-e2e-s3:8333
 exposure:
   host: airbyte.e2e.test
   tls: false

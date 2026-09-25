@@ -8,15 +8,16 @@
 #   * the eight operator secrets and the airbyte-db-net / traefik-public overlays;
 #   * the airbyte-data node label the session Redis and Temporal are pinned to;
 #   * PostgreSQL (airbyte-e2e-postgres) on airbyte-db-net;
-#   * MinIO (airbyte-e2e-minio) as the S3 endpoint. Airbyte creates its bucket itself;
+#   * SeaweedFS (airbyte-e2e-s3) as the S3 endpoint. Airbyte creates its bucket itself;
 #   * an OIDC discovery mock (airbyte-e2e-oidc, ci/mock-oidc.js) on traefik-public, without
 #     which oauth2-proxy exits at startup;
 #   * for noauth and login, the in-repo traefik chart as a real edge (scripts/e2e-edge);
 #   * for login, the admin password and JWT signing secret of auth.mode airbyte.
 # ci/e2e-teardown.sh removes everything created here except the shared traefik-public.
 #
-# INVARIANT: the Postgres user/password and the MinIO root user/password equal the values of
-# the airbyte_db_* and airbyte_s3_* secrets; the hook owns both sides.
+# INVARIANT: the Postgres user/password and the SeaweedFS S3 admin key equal the values of the
+# airbyte_db_* and airbyte_s3_* secrets; the hook owns both sides. SeaweedFS turns
+# AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY into its only identity and then enforces signatures.
 #
 # Idempotent: safe to re-run after a crashed run.
 set -euo pipefail
@@ -49,30 +50,40 @@ node="$(docker node ls --format '{{.ID}} {{.Self}}' 2>/dev/null | awk '$2=="true
 [ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | sed -n 1p)"
 [ -n "$node" ] && docker node update --label-add airbyte-data=true "$node" >/dev/null
 
-docker service rm airbyte-e2e-postgres airbyte-e2e-minio airbyte-e2e-oidc >/dev/null 2>&1 || true
+docker service rm airbyte-e2e-postgres airbyte-e2e-s3 airbyte-e2e-oidc >/dev/null 2>&1 || true
 docker config rm airbyte-e2e-mock-oidc >/dev/null 2>&1 || true
 docker config create airbyte-e2e-mock-oidc "$chart_dir/ci/mock-oidc.js" >/dev/null
 
-docker service create --name airbyte-e2e-postgres --network airbyte-db-net \
+# --detach: without it `docker service create` waits for convergence and never returns when an
+# image cannot be pulled (MinIO's were gone from every registry by 2026-09-25, and the job sat
+# until its 75-minute cap). The bounded wait below reports it instead.
+docker service create --detach --name airbyte-e2e-postgres --network airbyte-db-net \
   --env POSTGRES_DB=airbyte --env POSTGRES_USER="$DB_USER" --env POSTGRES_PASSWORD="$DB_PW" \
   postgres:17-alpine >/dev/null
-docker service create --name airbyte-e2e-minio --network airbyte-db-net \
-  --env MINIO_ROOT_USER="$S3_KEY" --env MINIO_ROOT_PASSWORD="$S3_SECRET" \
-  quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data >/dev/null
-docker service create --name airbyte-e2e-oidc --network traefik-public \
+docker service create --detach --name airbyte-e2e-s3 --network airbyte-db-net \
+  --env AWS_ACCESS_KEY_ID="$S3_KEY" --env AWS_SECRET_ACCESS_KEY="$S3_SECRET" \
+  chrislusf/seaweedfs:4.47 server -s3 >/dev/null
+docker service create --detach --name airbyte-e2e-oidc --network traefik-public \
   --config source=airbyte-e2e-mock-oidc,target=/mock.js --env ISSUER="$ISSUER" \
   node:22-alpine node /mock.js >/dev/null
 
 # Wait for all three to run (image pulls), then until Postgres accepts TCP connections: during
 # first init the entrypoint's temporary server listens on the socket only, so a socket probe
 # would report ready while initdb is still running.
-for svc in airbyte-e2e-postgres airbyte-e2e-minio airbyte-e2e-oidc; do
+for svc in airbyte-e2e-postgres airbyte-e2e-s3 airbyte-e2e-oidc; do
+  state=""
   for _ in $(seq 1 60); do
     state="$(docker service ps "$svc" --filter desired-state=running \
       --format '{{.CurrentState}}' 2>/dev/null | sed -n 1p)"
     case "$state" in Running*) break ;; esac
     sleep 3
   done
+  case "$state" in
+    Running*) ;;
+    *) echo "  FAIL: $svc never reached Running (last: ${state:-<none>})"
+       docker service ps --no-trunc "$svc" 2>&1 | sed -n '1,4p' | sed 's/^/    /'
+       exit 1 ;;
+  esac
 done
 for _ in $(seq 1 40); do
   cid="$(docker ps -q -f label=com.docker.swarm.service.name=airbyte-e2e-postgres | sed -n 1p)"

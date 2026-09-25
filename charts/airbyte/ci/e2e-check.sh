@@ -8,7 +8,7 @@
 # credentials. So this drives the one path that crosses every part of the chart — a
 # connection check for source-faker. The server hands it to a worker through Temporal, the
 # launcher claims it with the credentials FakeK8s stored in Postgres, and FakeK8s turns the
-# pod into Docker containers whose output lands in MinIO. On the way it also asserts that
+# pod into Docker containers whose output lands in S3 (SeaweedFS). On the way it also asserts that
 # the server serves the UI and what guards it: oauth2-proxy (mock), Traefik's basic auth with
 # auth.mode none (noauth), or Airbyte's own login with auth.mode airbyte (login).
 #

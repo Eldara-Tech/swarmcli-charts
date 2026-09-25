@@ -12,7 +12,7 @@ set -uo pipefail
 
 release="$1"
 
-docker service rm airbyte-e2e-postgres airbyte-e2e-minio airbyte-e2e-oidc >/dev/null 2>&1 || true
+docker service rm airbyte-e2e-postgres airbyte-e2e-s3 airbyte-e2e-oidc >/dev/null 2>&1 || true
 if [ "${3:-}" = "noauth" ] || [ "${3:-}" = "login" ]; then
   . "$2/../../scripts/e2e-edge/traefik-edge.sh"
   edge_down
