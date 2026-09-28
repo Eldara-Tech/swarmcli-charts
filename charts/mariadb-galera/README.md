@@ -128,6 +128,11 @@ refuses to start rather than join with one nothing can dial.
 publishes the same port, and several services cannot each claim it on the ingress
 routing mesh. Port 3306 on a node then reaches the peer running there.
 
+With `proxy.enabled` as well, the port is published on the proxy instead, through
+the ingress mesh: port 3306 on any node reaches the proxy, which routes to a
+`Synced` peer. The peers then publish nothing, so no external client can bypass
+the proxy's health checks, and `exposure.mode` does not apply.
+
 ## Values
 
 | Key | Default | Description |
@@ -157,10 +162,10 @@ routing mesh. Port 3306 on a node then reaches the peer running there.
 | `proxy.replicas` | `2` | Proxy replicas — stateless, so more than one is safe and recommended. |
 | `proxy.checkPort` | `9200` | Port the Synced responder listens on inside each peer; never published. |
 | `proxy.resources.limits.memory` | `""` | Proxy memory limit. Rendered only when set. |
-| `exposure.enabled` | `false` | Publish the SQL port on each peer's own node. |
+| `exposure.enabled` | `false` | Publish the SQL port on each peer's own node, or on the proxy when `proxy.enabled`. |
 | `exposure.port` | `3306` | Published port. |
 | `exposure.protocol` | `tcp` | Published protocol. |
-| `exposure.mode` | `host` | Only `host` is valid — see *Connecting*. |
+| `exposure.mode` | `host` | Only `host` is valid — see *Connecting*. Unused when `proxy.enabled`. |
 | `resources.limits.memory` | `""` | Per-peer memory limit, e.g. `512M`. Rendered only when set. |
 | `healthcheck.enabled` | `true` | Container healthcheck — `healthcheck.sh --su-mysql --connect --galera_ready`. |
 | `healthcheck.interval` | `10s` | Probe interval. |

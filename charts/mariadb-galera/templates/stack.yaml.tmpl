@@ -84,8 +84,10 @@ services:
           - {{ $.Values.network.clientAlias }}
 {{- end }}
 
-{{- if $.Values.exposure.enabled }}
+{{- if and $.Values.exposure.enabled (not $.Values.proxy.enabled) }}
     # host mode only — see the exposure.mode guard at the top of this template.
+    # With proxy.enabled the port is published on the proxy instead: exposing the
+    # peers too would let external clients bypass its health checks.
     # Galera's own ports (4567/4568/4444) are deliberately NOT published: peers
     # reach each other over the overlay, so replication never touches the host.
     ports:
@@ -375,6 +377,18 @@ services:
           # The client endpoint moves here when the proxy is on: one name, backed
           # by health checks that follow Galera's state rather than DNS.
           - {{ .Values.network.clientAlias }}
+{{- end }}
+{{- if .Values.exposure.enabled }}
+
+    # The one external endpoint when the proxy is on. Ingress, not exposure.mode:
+    # the proxy is a single replicated service, so the routing mesh can share the
+    # port across its replicas, where host mode would strand a second replica on
+    # a node whose port the first already holds.
+    ports:
+      - target: {{ .Values.exposure.port }}
+        published: {{ .Values.exposure.port }}
+        protocol: {{ .Values.exposure.protocol | default "tcp" }}
+        mode: ingress
 {{- end }}
 
     # The config travels in an env var and is written out at every start, the same
