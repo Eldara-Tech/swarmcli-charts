@@ -138,3 +138,13 @@ include:
   # already at 0/5/64MB and the time goes to Chef reconfigure and database migrations.
   # The 75m job backstop still covers it comfortably.
   - { chart: gitlab,        cases: "minimal",                                                                       timeout: 30m }
+  # prometheus-stack: the six fixtures that prove what a render cannot. `default` follows the
+  # data end to end — exporters discovered through the socket-proxy and scraped, the Watchdog
+  # alert in Alertmanager, Grafana's datasources and dashboards, the proxy's allow-list — and
+  # runs promtool/amtool on the configs the tasks actually loaded (only Swarm can render
+  # prometheus.yml). `discovery` counts the targets found before relabelling against the
+  # opted-in tasks, proving an unlabelled service on the same network never reaches Prometheus.
+  # `edge` routes Grafana and a basic-auth Prometheus through the traefik chart. bind-mount,
+  # published, loki and extras run in a local `make e2e`. Six services and six images per
+  # fixture, hence the 10m convergence budget.
+  - { chart: prometheus-stack, cases: "default minimal discovery edge ephemeral alertmanager-config", timeout: 10m }
