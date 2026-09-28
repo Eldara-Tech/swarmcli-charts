@@ -89,11 +89,18 @@ Prometheus scrapes any task whose **service** carries these deploy labels:
 | `prometheus.io/job` | no | the `job` label, default the service name |
 
 Most charts in this repository render a free-form `labels:` map as deploy labels,
-so opting a release in is a values change:
+so opting a release in is a values change. Use a values file: `--set` splits its key
+on every `.`, so it cannot name a label containing one.
+
+```yaml
+# app-values.yaml
+labels:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9090"
+```
 
 ```bash
-swarmcli charts upgrade app swarmcli-charts/<chart> \
-  --set 'labels.prometheus\.io/scrape=true' --set 'labels.prometheus\.io/port=9090'
+swarmcli charts upgrade app swarmcli-charts/<chart> --reuse-values -f app-values.yaml
 ```
 
 Prometheus can only reach a service it shares an overlay with. Put the service on
@@ -111,7 +118,7 @@ One job, `swarm-tasks`, discovers everything, the chart's exporters included.
 Custom targets that do not fit it go in a file of your own:
 
 ```bash
-swarmcli charts upgrade mon swarmcli-charts/prometheus-stack \
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --reuse-values \
   --set-file prometheus.extraScrapeConfigs=./scrape.yml   # a top-level `scrape_configs:` list
 ```
 
@@ -128,7 +135,7 @@ Nothing is published by default.
 
 ```bash
 # htpasswd -nbB ops '<password>', then DOUBLE every $ (Compose eats single ones)
-swarmcli charts upgrade mon swarmcli-charts/prometheus-stack \
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --reuse-values \
   --set prometheus.exposure.mode=traefik \
   --set prometheus.ingress.host=prometheus.example.com \
   --set 'prometheus.basicAuthUsers=ops:$$2y$$05$$…'
@@ -145,7 +152,7 @@ Give it yours, with credentials in Swarm secrets rather than in the file:
 
 ```bash
 printf '%s' 'https://hooks.slack.com/services/…' | docker secret create slack_webhook -
-swarmcli charts upgrade mon swarmcli-charts/prometheus-stack \
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --reuse-values \
   --set-file alertmanager.config=./alertmanager.yml \
   --set 'alertmanager.secrets={slack_webhook}'
 ```
@@ -171,7 +178,7 @@ rotates it.
 With the [loki chart](../loki) on the same swarm:
 
 ```bash
-swarmcli charts upgrade mon swarmcli-charts/prometheus-stack \
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --reuse-values \
   --set grafana.datasources.loki.enabled=true \
   --set grafana.datasources.loki.url=http://<loki-release>_loki:3100
 ```

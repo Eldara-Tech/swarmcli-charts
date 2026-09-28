@@ -64,8 +64,8 @@
 {{- $gfRouted := and $gf.enabled (eq $gf.exposure.mode "traefik") }}
 {{- $gfLoki := and $gf.enabled $gf.datasources.loki.enabled }}
 
-{{- /* An exporter nobody discovers is a root-privileged container doing nothing: the exporters
-       are found only through the socket-proxy, so they cannot outlive it. */ -}}
+{{- /* An exporter nobody discovers is host access granted for nothing: the exporters are found
+       only through the socket-proxy, so they cannot outlive it. */ -}}
 {{- if and (not $disc) (or .Values.nodeExporter.enabled .Values.cadvisor.enabled) }}
 {{-   fail "nodeExporter.enabled and cadvisor.enabled need discovery.enabled: Prometheus finds the exporters through the socket-proxy. Turn the exporters off as well, or leave discovery on." }}
 {{- end }}

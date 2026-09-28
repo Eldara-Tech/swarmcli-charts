@@ -53,6 +53,6 @@ sources:
 #                   acknowledged here and asserted by ci/render-check.sh instead.
 #                   The *.volumePath values add host-directory persistence.
 # nodeExporter.enabled, cadvisor.enabled and discovery.enabled switch these off;
-# with all three off the render carries neither.
+# with all three off and no volumePath the render carries neither.
 annotations:
   swarmcli-charts/allow: "docker-socket,host-mount"
