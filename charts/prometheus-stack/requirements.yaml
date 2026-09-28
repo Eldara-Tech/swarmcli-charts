@@ -1,0 +1,50 @@
+# yamllint disable-file
+#
+# External resources this chart needs. Authoritative: every external network/secret the
+# rendered stack references must be listed here (swarmcli pre-flights it;
+# scripts/requirements-check.sh enforces it at PR time). swarmcli renders this file with the
+# release's values, so every name below tracks whatever the release overrode.
+#
+# The fixed entries are declared UNCONDITIONALLY. The pre-flight is manifest-driven, so a
+# declaration the rendered stack does not reference is inert (traefik.network when nothing is
+# routed, the Grafana secrets when grafana.enabled is false).
+#
+# prometheus.extraNetworks, alertmanager.secrets and grafana.extraSecrets are USER-SUPPLIED
+# LISTS, which substitution cannot express, so this file needs `range` — and therefore the
+# `# yamllint disable-file` above: a template action on its own line is not parseable YAML.
+# requirements-check.sh parses the RENDERED file for every ci fixture instead.
+#
+# The chart-managed overlays (<release>_internal, <release>_discovery) are created by the stack
+# and are not listed here.
+networks:
+  - name: "{{ .Values.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: true
+    description: "Shared overlay Prometheus scrapes opted-in services on (network); Grafana joins it for the Loki datasource. Anything attached to it can query Prometheus"
+  - name: "{{ .Values.traefik.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "Shared ingress overlay the edge routes on (any component in exposure.mode traefik); provisioned by the traefik chart/operator"
+{{- range .Values.prometheus.extraNetworks }}
+  - name: "{{ . }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "prometheus.extraNetworks entry: an existing overlay Prometheus joins to scrape the opted-in services on it; never created here"
+{{- end }}
+secrets:
+  - name: "{{ .Values.grafana.adminPasswordSecret }}"
+    description: "Grafana admin password (grafana.adminPasswordSecret). Pre-create: docker secret create grafana_admin_password ./pw"
+  - name: "{{ .Values.grafana.secretKeySecret }}"
+    description: "Grafana secret key, which encrypts stored datasource credentials (grafana.secretKeySecret). Pre-create: openssl rand -base64 32 | docker secret create grafana_secret_key -"
+{{- range .Values.alertmanager.secrets }}
+  - name: "{{ . }}"
+    description: "alertmanager.secrets entry, mounted at /run/secrets/{{ . }} for the Alertmanager config's *_file fields"
+{{- end }}
+{{- range .Values.grafana.extraSecrets }}
+  - name: "{{ .name }}"
+    description: "grafana.extraSecrets entry, handed to Grafana as {{ .env }}__FILE"
+{{- end }}
+configs: []

@@ -1,0 +1,11 @@
+# Dashboards shipped by the chart, provisioned read-only from the files the chart
+# mounts under /etc/grafana/dashboards. Save a copy under another name to edit one.
+apiVersion: 1
+
+providers:
+  - name: prometheus-stack
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/dashboards

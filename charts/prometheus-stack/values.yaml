@@ -1,0 +1,228 @@
+# prometheus-stack chart default values.
+#
+# Six services, each with a fixed name (<release>_<service>):
+#   prometheus     scrapes, stores and evaluates alert rules
+#   alertmanager   routes alerts (to nowhere until you give it a config)
+#   grafana        dashboards; the only routed UI by default
+#   node-exporter  one task per node: host CPU, memory, disks, filesystems
+#   cadvisor       one task per node: per-container CPU, memory, network, block I/O
+#   socket-proxy   one task on a manager: a read-only Docker API allow-list that
+#                  Prometheus uses to discover what to scrape
+#
+# Prometheus finds its targets with Docker Swarm service discovery. Any service
+# carrying the deploy label prometheus.io/scrape=true (plus prometheus.io/port) is
+# scraped, provided Prometheus shares an overlay with it: `network` below, or one of
+# prometheus.extraNetworks. The chart's own exporters opt in the same way.
+#
+# Nothing is published by default. Grafana is routed through Traefik; Prometheus
+# and Alertmanager have no authentication of their own, so they stay on the
+# stack's overlays unless you route them behind basic auth.
+
+# Prometheus image. The other components each have their own <component>.image.
+image:
+  repository: prom/prometheus
+  tag: ""  # defaults to appVersion from Chart.yaml
+
+# The shared overlay Prometheus scrapes opted-in services on. It is the loki
+# chart's default network too, so Loki's own /metrics is found, and Grafana joins
+# it when grafana.datasources.loki.enabled. requirements.yaml declares it
+# autoCreate:true. Anything attached to it can query Prometheus: it is a trust zone.
+network: monitoring
+
+# Persistence for the three stateful services (Prometheus, Alertmanager, Grafana).
+# Each has its own volumeName / volumePath under its own key; this section holds
+# what they share. enabled:false => ephemeral: every series, silence and dashboard
+# edit is lost on restart.
+persistence:
+  enabled: true
+  # Node label pinning all three stateful services to the node holding their
+  # (node-local) volumes. Rendered as `node.labels.<nodeLabel> == true` while
+  # persistence is enabled, and dropped with it. Label exactly ONE node first:
+  #   docker node update --label-add prometheus-stack-data=true <node>
+  # Set "" to schedule unpinned even with persistence on (single-node swarm).
+  nodeLabel: prometheus-stack-data
+
+# Traefik routing, shared by every routed component. The defaults match the
+# traefik chart in this repository; adjust them to your Traefik if you run your own.
+traefik:
+  # External overlay the edge routes on. Routed components join it; none mode
+  # never touches it. requirements.yaml declares it autoCreate:false.
+  network: traefik-public
+  # Swarm-provider constraint label. The traefik chart runs exposedByDefault=false
+  # plus a constraint on this label, so a routed service must carry it.
+  constraintLabel: traefik-public
+  entrypoints:
+    http: http
+    https: https
+  certResolver: le
+  # Middleware on the HTTP router redirecting to HTTPS (when <component>.ingress.tls).
+  redirectMiddleware: https-redirect
+  # Base for router/service/middleware names: `<base>-<component>-http`,
+  # `<base>-<component>-https`, `<base>-<component>` and `<base>-<component>-auth`.
+  # Empty => the release name.
+  routerName: ""
+
+# Extra deploy labels (key: value) on the Prometheus service, after any Traefik labels.
+labels: {}
+
+prometheus:
+  # How long samples are kept. Written to storage.tsdb.retention.time in the config
+  # file. There is no size cap: the volume grows with the number of series.
+  retention: 15d
+  # How often every target is scraped and every rule evaluated.
+  scrapeInterval: 30s
+  volumeName: prometheus-data
+  # Host-path persistence: when set it TAKES PRECEDENCE over volumeName and /prometheus
+  # is bind-mounted from this absolute path on the pinned node. The directory must
+  # exist and be owned by 65534 (nobody), the user the image runs as. Acknowledged via
+  # host-mount in Chart.yaml. "" => the named volume.
+  volumePath: ""
+  # Further EXTERNAL overlays Prometheus joins to scrape opted-in services that are
+  # not on `network`. Each one must already exist (autoCreate:false) and widens who can
+  # reach Prometheus. Never list traefik-public: every routed service in the swarm
+  # could then query it. A service on two of Prometheus's networks is scraped twice.
+  extraNetworks: []
+  # Your own scrape jobs, as a file with a top-level `scrape_configs:` list, loaded
+  # through scrape_config_files: --set-file prometheus.extraScrapeConfigs=./scrape.yml
+  extraScrapeConfigs: ""
+  # Your own rules, as a Prometheus rule file (`groups:`):
+  #   --set-file prometheus.extraRules=./rules.yml
+  extraRules: ""
+  # Extra Prometheus flags, appended verbatim.
+  extraArgs: []
+  resources:
+    limits:
+      memory: ""
+    reservations:
+      memory: ""
+  # none (default) or traefik. Prometheus has no authentication, so traefik mode
+  # requires basicAuthUsers and the render fails without it.
+  exposure:
+    mode: none
+  ingress:
+    host: prometheus.example.com
+    tls: true
+  # htpasswd users for the basic-auth middleware on the public router. Generate with
+  # `htpasswd -nbB <user> <password>` and DOUBLE every `$` (Compose eats single ones).
+  basicAuthUsers: ""
+
+alertmanager:
+  enabled: true
+  image:
+    repository: prom/alertmanager
+    tag: "v0.34.1"
+  # Your Alertmanager configuration file; the default routes every alert to a
+  # receiver that sends nothing. --set-file alertmanager.config=./alertmanager.yml
+  # Reference credentials with the receivers' *_file / url_file fields, pointing at
+  # the secrets below — never inline them: values live in the release record.
+  config: ""
+  # Names of EXTERNAL Swarm secrets mounted at /run/secrets/<name>, for the config's
+  # *_file fields. Pre-create each: docker secret create <name> ./file
+  secrets: []
+  volumeName: alertmanager-data
+  # Host-path persistence, as prometheus.volumePath (owner 65534).
+  volumePath: ""
+  resources:
+    limits:
+      memory: ""
+    reservations:
+      memory: ""
+  # none (default) or traefik. Alertmanager has no authentication and can silence
+  # alerts, so traefik mode requires basicAuthUsers.
+  exposure:
+    mode: none
+  ingress:
+    host: alertmanager.example.com
+    tls: true
+  basicAuthUsers: ""
+
+grafana:
+  enabled: true
+  image:
+    repository: grafana/grafana
+    tag: "13.2.2"
+  adminUser: admin
+  # EXTERNAL Swarm secrets, both required. Pre-create them:
+  #   docker secret create grafana_admin_password ./pw
+  #   openssl rand -base64 32 | docker secret create grafana_secret_key -
+  # The secret key encrypts the datasource credentials Grafana stores. Its built-in
+  # default is a public constant, and changing it later breaks decryption of what is
+  # already stored, which is why it is required from the first start.
+  adminPasswordSecret: grafana_admin_password
+  secretKeySecret: grafana_secret_key
+  # traefik (default), published or none:
+  #   traefik   - Traefik deploy labels on traefik.network, TLS at the edge.
+  #   published - publish.port on the swarm. Plain HTTP.
+  #   none      - neither; Grafana is reachable only inside the stack.
+  exposure:
+    mode: traefik
+  publish:
+    port: 3000
+    # ingress (routing mesh, every node) or host (only the node running the task).
+    mode: ingress
+  ingress:
+    host: grafana.example.com
+    tls: true
+  volumeName: grafana-data
+  # Host-path persistence, as prometheus.volumePath, but owned by 472 (grafana).
+  volumePath: ""
+  datasources:
+    # A Loki datasource. Grafana then joins `network` to reach it. The default is the
+    # loki chart's short alias, which resolves to whichever `loki` service shares that
+    # overlay; set the full http://<loki-release>_loki:3100 to be exact.
+    loki:
+      enabled: false
+      url: http://loki:3100
+  # Extra Grafana environment (GF_<SECTION>_<KEY>: value), e.g. SMTP, OIDC or an
+  # external database. Never put a secret here — use extraSecrets.
+  extraEnv: {}
+  # EXTERNAL Swarm secrets handed to Grafana as <env>__FILE, e.g.
+  #   [{name: grafana_smtp_password, env: GF_SMTP_PASSWORD}]
+  extraSecrets: []
+  resources:
+    limits:
+      memory: ""
+    reservations:
+      memory: ""
+
+nodeExporter:
+  enabled: true
+  image:
+    repository: prom/node-exporter
+    tag: "v1.12.1"
+  # Extra node-exporter flags, appended verbatim.
+  extraArgs: []
+  resources:
+    limits:
+      memory: ""
+    reservations:
+      memory: ""
+
+cadvisor:
+  enabled: true
+  image:
+    repository: ghcr.io/google/cadvisor
+    tag: "v0.60.6"
+  housekeepingInterval: 30s
+  # Host path of containerd's socket. cAdvisor needs it as well as the Docker socket
+  # on Docker 29, or no series carries a container label.
+  containerdSocket: /run/containerd/containerd.sock
+  # Extra cAdvisor flags, appended verbatim.
+  extraArgs: []
+  resources:
+    limits:
+      memory: ""
+    reservations:
+      memory: ""
+
+# Service discovery through the socket-proxy. Off => no proxy, no discovery job,
+# and neither exporter (the render fails if one is left on): Prometheus scrapes
+# itself, Alertmanager and prometheus.extraScrapeConfigs only.
+discovery:
+  enabled: true
+  image:
+    repository: wollomatic/socket-proxy
+    tag: "1.13.1"
+  # Host path of the Docker socket, mounted read-only by the socket-proxy and by
+  # cAdvisor. Change it for a rootless daemon (/run/user/<uid>/docker.sock).
+  dockerSocket: /var/run/docker.sock

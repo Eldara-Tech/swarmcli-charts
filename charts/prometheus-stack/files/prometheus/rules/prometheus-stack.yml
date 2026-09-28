@@ -1,0 +1,87 @@
+# Alert rules shipped by the prometheus-stack chart. The node rules are derived from
+# the node-mixin in prometheus/node_exporter (Apache-2.0); the rest are this chart's.
+# Mounted WITHOUT a template driver: the annotations are Prometheus templates.
+#
+# Validate: docker run --rm --entrypoint promtool -v "$PWD/charts/prometheus-stack/files/prometheus/rules:/r:ro" \
+#             prom/prometheus:<appVersion> check rules /r/prometheus-stack.yml
+groups:
+  - name: prometheus-stack.targets
+    rules:
+      - alert: TargetDown
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.job }} target {{ $labels.instance }} is down'
+          description: 'Prometheus has not been able to scrape {{ $labels.instance }} (job {{ $labels.job }}) for 5 minutes.'
+
+  - name: prometheus-stack.node
+    rules:
+      - alert: NodeFilesystemAlmostOutOfSpace
+        expr: |
+          (
+            node_filesystem_avail_bytes{fstype!=""} / node_filesystem_size_bytes{fstype!=""} * 100 < 5
+          and
+            node_filesystem_readonly{fstype!=""} == 0
+          )
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Filesystem {{ $labels.mountpoint }} on {{ $labels.node }} has less than 5% space left'
+          description: 'Filesystem {{ $labels.mountpoint }} ({{ $labels.device }}) on {{ $labels.node }} has {{ printf "%.2f" $value }}% space left.'
+      - alert: NodeFilesystemFillingUp
+        expr: |
+          (
+            node_filesystem_avail_bytes{fstype!=""} / node_filesystem_size_bytes{fstype!=""} * 100 < 15
+          and
+            predict_linear(node_filesystem_avail_bytes{fstype!=""}[6h], 24*60*60) < 0
+          and
+            node_filesystem_readonly{fstype!=""} == 0
+          )
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Filesystem {{ $labels.mountpoint }} on {{ $labels.node }} is predicted to fill up within 24 hours'
+          description: 'Filesystem {{ $labels.mountpoint }} ({{ $labels.device }}) on {{ $labels.node }} has {{ printf "%.2f" $value }}% space left and is filling up.'
+      - alert: NodeMemoryHighUtilization
+        expr: 100 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes * 100) > 90
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Memory on {{ $labels.node }} is {{ printf "%.0f" $value }}% used'
+          description: 'Memory on {{ $labels.node }} has been more than 90% used for 15 minutes.'
+
+  - name: prometheus-stack.prometheus
+    rules:
+      - alert: PrometheusRuleFailures
+        expr: increase(prometheus_rule_evaluation_failures_total[5m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Prometheus failed to evaluate rules in {{ $labels.rule_group }}'
+          description: 'Prometheus failed to evaluate {{ printf "%.0f" $value }} rules in the last 5 minutes.'
+      - alert: PrometheusNotificationsFailing
+        expr: rate(prometheus_notifications_errors_total[5m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Prometheus fails to send alerts to {{ $labels.alertmanager }}'
+          description: 'Prometheus has been failing to deliver alerts to Alertmanager for 15 minutes.'
+
+  - name: prometheus-stack.meta
+    rules:
+      # Always firing. Its presence in Alertmanager proves the whole alert pipeline;
+      # route it to a dead man's switch, or leave it on the default null receiver.
+      - alert: Watchdog
+        expr: vector(1)
+        labels:
+          severity: none
+        annotations:
+          summary: 'Always firing: proves the alert pipeline end to end'
+          description: 'This alert fires permanently. If it stops arriving at your receiver, alerting is broken.'
