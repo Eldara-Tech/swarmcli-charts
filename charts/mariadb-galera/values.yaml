@@ -140,9 +140,11 @@ network:
 #
 # mode is host-only, on purpose: every peer publishes the same port, and three
 # services cannot each claim 3306 on the cluster-wide routing mesh. host mode
-# gives you "port 3306 on this node reaches the peer running here"; a single
-# load-balanced endpoint needs a health-aware proxy in front, which this chart
-# does not deploy.
+# gives you "port 3306 on this node reaches the peer running here".
+#
+# With proxy.enabled the port is published ONCE, on the proxy, through the ingress
+# mesh — one load-balanced endpoint on every node — and the peers publish nothing,
+# so no client can bypass the proxy's health checks. mode is then unused.
 exposure:
   enabled: false
   port: 3306

@@ -31,10 +31,10 @@ count() { if [ -z "$1" ]; then echo 0; else printf '%s\n' "$1" | wc -l | tr -d '
 want_peers=3
 if [ "$case_name" = "five-peers" ]; then want_peers=5; fi
 
-# The proxy fixture renders one extra service; every other fixture renders peers only.
+# The proxy fixtures render one extra service; every other fixture renders peers only.
 proxy_svc=""
 all="$(yq -r '.services | keys | .[]' "$f")"
-if [ "$case_name" = "proxy" ]; then
+if [ "$case_name" = "proxy" ] || [ "$case_name" = "proxy-published" ]; then
   proxy_svc="$(printf '%s\n' "$all" | { grep -E -- '-proxy$' || true; })"
   [ -n "$proxy_svc" ] || err "the proxy fixture rendered no proxy service"
 else
@@ -161,11 +161,27 @@ for s in $svcs; do
   fi
 done
 
-# Ports: never ingress (several peers publish the same port), and never Galera's own.
-pmodes="$(yq -r '.services.*.ports // [] | .[] | .mode' "$f")"
-for m in $pmodes; do
-  [ "$m" = "host" ] || err "port published in '$m' mode; only host mode can be repeated across peers"
+# Ports: a peer never publishes in ingress mode (several peers publish the same
+# port), and never Galera's own.
+for s in $svcs; do
+  for m in $(yq -r ".services.\"$s\".ports // [] | .[] | .mode" "$f"); do
+    [ "$m" = "host" ] || err "$s: port published in '$m' mode; only host mode can be repeated across peers"
+  done
 done
+# With the proxy on, the SQL port belongs to the proxy alone: a peer publishing it
+# too lets external clients bypass the proxy's health checks.
+if [ -n "$proxy_svc" ]; then
+  n_peer_ports="$(yq -r '[.services | to_entries | .[] | select(.key | test("-proxy$") | not) | .value.ports // [] | .[]] | length' "$f")"
+  [ "$n_peer_ports" -eq 0 ] \
+    || err "$n_peer_ports peer port(s) published with the proxy on; the proxy must be the only external endpoint"
+  pports="$(yq -r ".services.\"$proxy_svc\".ports // [] | .[] | (.published | tostring) + \"/\" + .mode" "$f")"
+  if [ "$case_name" = "proxy-published" ]; then
+    [ "$pports" = "3306/ingress" ] \
+      || err "proxy publishes '$(echo $pports)', expected exactly 3306/ingress"
+  else
+    [ -z "$pports" ] || err "proxy publishes '$(echo $pports)' with exposure disabled"
+  fi
+fi
 for p in $(yq -r '.services.*.ports // [] | .[] | .published' "$f"); do
   case "$p" in
     4567|4568|4444) err "Galera port $p is published; replication must stay on the overlay" ;;
