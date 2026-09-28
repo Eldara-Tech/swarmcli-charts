@@ -95,6 +95,12 @@ else
 fi
 csock="$(q '[.services | to_entries | .[] | select((.value.volumes // []) | map(select(test("containerd\.sock"))) | length > 0) | .key] | join(",")')"
 [ "$csock" = "$( [ "$on" = 1 ] && echo cadvisor)" ] || bad "the containerd socket is mounted by [$csock]"
+# The other half of the storage-driver split: on overlay2 cAdvisor finds each container's
+# layer under /rootfs/var/lib/docker, and drops every container it cannot (seen in CI).
+if [ "$on" = 1 ]; then
+  contains "$(lines '.services.cadvisor.volumes')" "/var/lib/docker:/rootfs/var/lib/docker:ro" \
+    || bad "cadvisor does not see /var/lib/docker, so on an overlay2 daemon no container is labelled"
+fi
 
 # node-exporter's bind of the host's whole root filesystem. The security scan cannot see it.
 root="$(q '[.services | to_entries | .[] | select((.value.volumes // []) | map(select(test("^/:"))) | length > 0) | .key] | join(",")')"

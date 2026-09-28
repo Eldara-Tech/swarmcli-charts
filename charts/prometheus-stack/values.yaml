@@ -160,6 +160,8 @@ grafana:
     port: 3000
     # ingress (routing mesh, every node) or host (only the node running the task).
     mode: ingress
+  # The public name. Grafana builds its links (GF_SERVER_ROOT_URL) from it in both the
+  # traefik and published modes: https?://<host>/, or http://<host>:<publish.port>/.
   ingress:
     host: grafana.example.com
     tls: true
@@ -204,8 +206,9 @@ cadvisor:
     repository: ghcr.io/google/cadvisor
     tag: "v0.60.6"
   housekeepingInterval: 30s
-  # Host path of containerd's socket. cAdvisor needs it as well as the Docker socket
-  # on Docker 29, or no series carries a container label.
+  # Host path of containerd's socket. On Docker's containerd image store cAdvisor needs
+  # it as well as the Docker socket, or no series carries a container label. (On the
+  # classic overlay2 driver it reads /var/lib/docker instead; the chart mounts both.)
   containerdSocket: /run/containerd/containerd.sock
   # Extra cAdvisor flags, appended verbatim.
   extraArgs: []

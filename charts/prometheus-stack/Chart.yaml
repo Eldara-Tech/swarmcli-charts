@@ -42,8 +42,8 @@ sources:
 #                   socket-proxy (one task, managers only) serves Prometheus a GET
 #                   allow-list of tasks/services/nodes/networks and nothing else.
 #                   `:ro` protects the socket file, not the API behind it.
-#   host-mount    — cAdvisor binds /sys, /proc (as /rootfs/proc) and the containerd
-#                   socket (cadvisor.containerdSocket, default
+#   host-mount    — cAdvisor binds /sys, plus /proc and /var/lib/docker under /rootfs,
+#                   and the containerd socket (cadvisor.containerdSocket, default
 #                   /run/containerd/containerd.sock). The scan files that socket
 #                   under host-mount, not docker-socket: it cannot tell it is an API
 #                   socket, and it grants the same root-equivalent reach.

@@ -36,8 +36,9 @@ swarmcli charts install mon swarmcli-charts/prometheus-stack \
 ```
 
 Log in to Grafana as `admin` with the password from the first secret. Without
-Traefik, publish Grafana instead (`--set grafana.exposure.mode=published`, see
-[Exposure](#exposure)).
+Traefik, add `--set grafana.exposure.mode=published` and point
+`grafana.ingress.host` at the name users reach a node by: Grafana builds its links
+from it, as `http://<host>:3000/` (see [Exposure](#exposure)).
 
 ## What you get
 
@@ -222,8 +223,8 @@ can reach them is the whole of their access control:
   Never list `traefik-public` in `prometheus.extraNetworks`.
 
 **Docker API holders.** cAdvisor runs as root on every node with the Docker and
-containerd sockets and read-only host binds, which lets it read every volume and
-secret on the node: a trust decision, switched off with `cadvisor.enabled: false`.
+containerd sockets and read-only binds of `/sys`, `/proc` and `/var/lib/docker`, which
+lets it read every volume and secret on the node: a trust decision, switched off with `cadvisor.enabled: false`.
 The socket-proxy runs on managers only, with a read-only root filesystem, alone
 with Prometheus on an `internal: true` overlay that has no route out. It answers
 `GET` on the task, service, node and network collections and the version ping —
@@ -365,7 +366,7 @@ application needs these `allow` entries in the app set:
 allow:
   # `/` alone already permits every path below; the rest are listed so the grant
   # can be read. Add any <component>.volumePath you set.
-  hostPaths: [/, /sys, /proc, /var/run/docker.sock, /run/containerd/containerd.sock]
+  hostPaths: [/, /sys, /proc, /var/lib/docker, /var/run/docker.sock, /run/containerd/containerd.sock]
   networks: [monitoring, traefik-public]   # plus every prometheus.extraNetworks entry
   secrets: [grafana_admin_password, grafana_secret_key]   # plus alertmanager.secrets and grafana.extraSecrets
 ```

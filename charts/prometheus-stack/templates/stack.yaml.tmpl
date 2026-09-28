@@ -406,8 +406,12 @@ services:
     volumes:
       # Root-equivalent access to this node's daemon; see Chart.yaml.
       - {{ .Values.discovery.dockerSocket }}:/var/run/docker.sock:ro
-      # Without containerd's socket no series carries a container label on Docker 29.
+      # Which of the next two cAdvisor needs depends on the daemon's storage: on the
+      # containerd image store (Docker 29's default for new installs) no series carries a
+      # container label without containerd's socket; on the classic overlay2 driver it reads
+      # each container's layer ID under <rootfs>/var/lib/docker, or drops the container.
       - {{ .Values.cadvisor.containerdSocket }}:/run/containerd/containerd.sock:ro
+      - /var/lib/docker:/rootfs/var/lib/docker:ro
       - /sys:/sys:ro
       - /proc:/rootfs/proc:ro
     networks:

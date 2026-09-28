@@ -42,7 +42,7 @@
         "retention": { "type": "string", "pattern": "^([0-9]+(ms|s|m|h|d|w|y))+$" },
         "scrapeInterval": { "type": "string", "pattern": "^([0-9]+(ms|s|m|h|d|w|y))+$" },
         "volumeName": { "type": "string", "pattern": "^[^/]+$" },
-        "volumePath": { "type": "string" },
+        "volumePath": { "type": "string", "pattern": "^(/.*)?$" },
         "extraNetworks": {
           "type": "array",
           "items": { "type": "string", "minLength": 1 }
@@ -104,7 +104,7 @@
           "items": { "type": "string", "minLength": 1 }
         },
         "volumeName": { "type": "string", "pattern": "^[^/]+$" },
-        "volumePath": { "type": "string" },
+        "volumePath": { "type": "string", "pattern": "^(/.*)?$" },
         "resources": {
           "type": "object",
           "properties": {
@@ -174,7 +174,7 @@
           }
         },
         "volumeName": { "type": "string", "pattern": "^[^/]+$" },
-        "volumePath": { "type": "string" },
+        "volumePath": { "type": "string", "pattern": "^(/.*)?$" },
         "datasources": {
           "type": "object",
           "properties": {
