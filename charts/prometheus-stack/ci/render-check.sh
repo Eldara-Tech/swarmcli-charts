@@ -1,0 +1,257 @@
+#!/usr/bin/env bash
+#
+# Render-time assertions for the prometheus-stack chart, run by scripts/test-charts.sh after a
+# fixture renders + validates:  $1 = rendered stack file   $2 = fixture case name
+# Exit 0 = OK, non-zero = fail. Data-only (no deploy), so every fixture is checked here,
+# including the ones e2e never deploys.
+#
+# What a render can get silently wrong and a deploy would not report:
+#   * a shipped config under a stable name, which turns the next edit into a failed upgrade;
+#   * the template driver on a rule file, where Swarm would eat the $labels templates;
+#   * who holds the Docker socket and the host's root filesystem. The security scan cannot
+#     see a `/` bind at all, and flags a socket without saying where it is;
+#   * the socket-proxy's reach: managers only, alone with Prometheus on an internal overlay,
+#     one anchored allow-list entry per path, callers limited to Prometheus's own tasks;
+#   * which components sit on the ingress overlay, and where basic auth lands;
+#   * peer addresses: a short alias on a shared overlay can resolve to another stack's service;
+#   * the discovery job's two gates on the chart's own prometheus.yml (see the end).
+#
+# Expectations come from the CASE NAME, not from the render, so a template that stops
+# honouring a value cannot make its own check pass.
+set -euo pipefail
+
+out="$1"
+case="${2:-}"
+rel="${RELEASE:-ci}"
+dir="$(cd "$(dirname "$0")/.." && pwd)"
+fail=0
+bad() { echo "  FAIL($case): $*"; fail=1; }
+
+if ! command -v yq >/dev/null 2>&1 || ! yq --version 2>/dev/null | grep -i mikefarah >/dev/null; then
+  echo "  FAIL: mikefarah yq v4 is required by the prometheus-stack render checks" >&2
+  exit 1
+fi
+
+# No check pipes into `grep -q` (a match reads as no match under pipefail; scripts/lint.sh
+# has the why). Values are collected first and matched with here-strings.
+q() { yq -r "$1" "$out"; }
+has_svc() { [ "$(q ".services | has(\"$1\")")" = "true" ]; }
+lines() { q "$1 // [] | .[]"; }
+contains() { grep -xF -- "$2" <<<"$1" >/dev/null; }
+
+# ------------------------------------------------------------------ expectations
+on=1; persist=1; gf_mode=traefik; prom_routed=0; am_routed=0; loki=0
+case "$case" in
+  minimal) on=0; gf_mode=off ;;
+  ephemeral) persist=0 ;;
+  published) gf_mode=published ;;
+  edge) prom_routed=1 ;;
+  extras) am_routed=1 ;;
+  loki) loki=1 ;;
+esac
+
+for svc in prometheus alertmanager grafana node-exporter cadvisor socket-proxy; do
+  want=$on; [ "$svc" = prometheus ] && want=1
+  if has_svc "$svc"; then got=1; else got=0; fi
+  [ "$got" = "$want" ] || bad "service $svc rendered=$got, expected $want"
+done
+
+# ------------------------------------------------ configs: rotation and the driver
+# A file the chart ships is named after the chart version; a file the operator supplies
+# (values/) after its content. Either way new content means a new name.
+cfgs="$(q '.configs // {} | to_entries | .[] | .value.file + " " + .value.name')"
+while read -r file name; do
+  [ -n "$file" ] || continue
+  case "$file" in
+    files/*) [[ "$name" =~ ^${rel}_[a-z-]+_[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+               || bad "config from $file is named '$name', not <release>_<x>_<semver>" ;;
+    values/*) [[ "$name" =~ ^${rel}_[a-z-]+_[0-9a-f]{12}$ ]] \
+               || bad "config from $file is named '$name', not <release>_<x>_<12 hex>" ;;
+    *) bad "config from '$file' is neither a chart file nor an operator value" ;;
+  esac
+done <<<"$cfgs"
+case "$case" in
+  extras) want_values="values/prometheus.extraRules values/prometheus.extraScrapeConfigs" ;;
+  alertmanager-config) want_values="values/alertmanager.config" ;;
+  *) want_values="" ;;
+esac
+for v in $want_values; do
+  contains "$(q '.configs[].file')" "$v" || bad "the operator's $v is not mounted"
+done
+
+# Only prometheus.yml is rendered by Swarm: the rule files contain $labels templates that
+# the golang driver would evaluate.
+[ "$(q '[.configs // {} | to_entries | .[] | select(.value.template_driver) | .key] | join(",")')" = "prometheus-config" ] \
+  || bad "template_driver is set on something other than exactly prometheus-config"
+[ "$(q '.configs.prometheus-config.template_driver + " " + .configs.prometheus-config.file')" = "golang files/prometheus/prometheus.yml" ] \
+  || bad "prometheus-config is not files/prometheus/prometheus.yml under the golang driver"
+
+# ----------------------------------------------------- Docker API and host access
+sock="$(q '[.services | to_entries | .[] | select((.value.volumes // []) | map(select(test("docker\.sock"))) | length > 0) | .key] | sort | join(",")')"
+if [ "$on" = 1 ]; then
+  [ "$sock" = "cadvisor,socket-proxy" ] || bad "the Docker socket is mounted by [$sock], expected exactly [cadvisor,socket-proxy]"
+else
+  [ "$sock" = "" ] || bad "the Docker socket is mounted by [$sock] with discovery and the exporters off"
+fi
+csock="$(q '[.services | to_entries | .[] | select((.value.volumes // []) | map(select(test("containerd\.sock"))) | length > 0) | .key] | join(",")')"
+[ "$csock" = "$( [ "$on" = 1 ] && echo cadvisor)" ] || bad "the containerd socket is mounted by [$csock]"
+
+# node-exporter's bind of the host's whole root filesystem. The security scan cannot see it.
+root="$(q '[.services | to_entries | .[] | select((.value.volumes // []) | map(select(test("^/:"))) | length > 0) | .key] | join(",")')"
+[ "$root" = "$( [ "$on" = 1 ] && echo node-exporter)" ] || bad "a / bind is on [$root]"
+
+if [ "$case" = minimal ]; then
+  grep -F 'docker.sock' "$out" >/dev/null && bad "minimal still references a Docker socket"
+  hostbinds="$(q '.services[].volumes // [] | .[] | select(test("^/"))')"
+  [ -z "$hostbinds" ] || bad "minimal still binds host paths: $(tr '\n' ' ' <<<"$hostbinds")"
+fi
+
+if [ "$on" = 1 ]; then
+  [ "$(q '.services.socket-proxy.deploy.placement.constraints | join(",")')" = "node.role == manager" ] \
+    || bad "the socket-proxy is not constrained to node.role == manager (only)"
+  [ "$(q '.services.socket-proxy.networks | join(",")')" = "discovery" ] \
+    || bad "the socket-proxy is on networks other than [discovery]"
+  [ "$(q '.networks.discovery.internal')" = "true" ] \
+    || bad "the discovery overlay is not internal: true"
+  pcmd="$(lines '.services.socket-proxy.command')"
+  # The caller check matches client IPs, which only works with dnsrr (a VIP hides them).
+  contains "$pcmd" "-allowfrom=tasks.${rel}_prometheus" || bad "the socket-proxy does not admit only tasks.${rel}_prometheus"
+  [ "$(q '.services.socket-proxy.deploy.endpoint_mode')" = "dnsrr" ] || bad "the socket-proxy is not endpoint_mode dnsrr"
+  # One anchored regex per path: a combined alternation let a logs path through (spike S2).
+  allows="$(grep -E '^-allow[A-Z]+=' <<<"$pcmd" || true)"
+  [ "$(wc -l <<<"$allows" | tr -d ' ')" = "6" ] || bad "the socket-proxy allow-list is not the six expected entries"
+  grep -F '|' <<<"$allows" >/dev/null && bad "a socket-proxy allow entry combines paths with |"
+  grep -vE '^-allow(GET|HEAD)=' <<<"$allows" >/dev/null && bad "the socket-proxy allows a method other than GET/HEAD"
+  [ "$(q '.services.node-exporter.hostname')" = '{{.Node.Hostname}}' ] \
+    || bad "node-exporter's hostname is not the literal {{.Node.Hostname}} Swarm template"
+fi
+
+# Nothing exposes Prometheus's lifecycle, admin or remote-write endpoints.
+grep -E -- '--web\.enable-(lifecycle|admin-api|remote-write-receiver)' "$out" >/dev/null \
+  && bad "a --web.enable-* flag is rendered"
+
+# ------------------------------------------------------------------ persistence
+pin="node.labels.prometheus-stack-data == true"
+for svc in prometheus alertmanager grafana; do
+  has_svc "$svc" || continue
+  cons="$(lines ".services.$svc.deploy.placement.constraints")"
+  if [ "$persist" = 1 ]; then
+    contains "$cons" "$pin" || bad "$svc is not pinned to the data node"
+  else
+    [ -z "$cons" ] || bad "$svc keeps a placement constraint with persistence off: $cons"
+    [ -z "$(lines ".services.$svc.volumes")" ] || bad "$svc mounts a volume with persistence off"
+  fi
+done
+for svc in node-exporter cadvisor; do
+  has_svc "$svc" || continue
+  [ "$(q ".services.$svc.deploy.placement.constraints | join(\",\")")" = "node.platform.os == linux" ] \
+    || bad "$svc (global) carries a constraint other than node.platform.os == linux"
+done
+if [ "$case" = bind-mount ]; then
+  for pair in prometheus:/prometheus alertmanager:/alertmanager grafana:/var/lib/grafana; do
+    svc="${pair%%:*}"
+    contains "$(lines ".services.$svc.volumes")" "/tmp/prometheus-stack-e2e/$svc:${pair#*:}" \
+      || bad "$svc is not bind-mounted from its volumePath"
+  done
+  [ "$(q '.volumes // "none"')" = "none" ] || bad "host-path persistence still declared named volumes"
+fi
+
+# ------------------------------------------------------------ exposure and routers
+tp="traefik-public"
+on_net() { contains "$(lines ".services.$1.networks")" "$2"; }
+labels_of() { lines ".services.$1.deploy.labels"; }
+for svc in prometheus alertmanager grafana; do
+  has_svc "$svc" || continue
+  case "$svc" in
+    prometheus) routed=$prom_routed ;;
+    alertmanager) routed=$am_routed ;;
+    grafana) routed=0; [ "$gf_mode" = traefik ] && routed=1 ;;
+  esac
+  l="$(labels_of "$svc")"
+  r="${rel}-${svc}"
+  if [ "$routed" = 0 ]; then
+    on_net "$svc" "$tp" && bad "$svc is not routed but sits on $tp"
+    grep -F 'traefik.' <<<"$l" >/dev/null && bad "$svc is not routed but carries Traefik labels"
+    continue
+  fi
+  on_net "$svc" "$tp" || bad "$svc is routed but not on $tp"
+  # Every router this service defines is <release>-<component>-(http|https).
+  routers="$(sed -nE 's/^traefik\.http\.routers\.([^.]+)\..*/\1/p' <<<"$l" | sort -u)"
+  while read -r name; do
+    [ -n "$name" ] || continue
+    [ "$name" = "$r-http" ] || [ "$name" = "$r-https" ] || bad "$svc defines router '$name', not $r-http/-https"
+  done <<<"$routers"
+  tls="$(q ".services.$svc.deploy.labels // [] | map(select(test(\"^traefik.http.routers.$r-https.tls=true\"))) | length")"
+  auth="$(grep -E "^traefik\.http\.routers\.[^.]+\.middlewares=$r-auth$" <<<"$l" || true)"
+  if [ "$svc" = grafana ]; then
+    [ -z "$auth" ] || bad "grafana carries a basic-auth middleware; it authenticates itself"
+  elif [ "$tls" = 1 ]; then
+    [ "$auth" = "traefik.http.routers.$r-https.middlewares=$r-auth" ] || bad "$svc basic auth is not on (only) the public HTTPS router"
+    contains "$l" "traefik.http.routers.$r-http.middlewares=https-redirect" || bad "$svc HTTP router does not redirect"
+  else
+    [ "$auth" = "traefik.http.routers.$r-http.middlewares=$r-auth" ] || bad "$svc basic auth is not on the public HTTP router"
+  fi
+done
+# Routers are distinct across components: one name owned by two services is a collision.
+dups="$(q '.services[].deploy.labels // [] | .[]' | sed -nE 's/^traefik\.http\.routers\.([^.]+)\.rule=.*/\1/p' | sort | uniq -d)"
+[ -z "$dups" ] || bad "router names collide across services: $dups"
+
+if has_svc grafana; then
+  if [ "$loki" = 1 ]; then on_net grafana monitoring || bad "the Loki datasource is on but grafana is not on monitoring"
+  else on_net grafana monitoring && bad "grafana is on monitoring without the Loki datasource"; fi
+  ports="$(q '.services.grafana.ports // [] | length')"
+  if [ "$gf_mode" = published ]; then
+    [ "$(q '.services.grafana.ports[0].published')" = "3000" ] || bad "published mode does not publish 3000"
+  else
+    [ "$ports" = 0 ] || bad "grafana publishes a port outside published mode"
+  fi
+fi
+[ "$case" != minimal ] && { on_net prometheus monitoring || bad "prometheus is not on monitoring"; }
+
+# ------------------------------------------------------------ secrets and peers
+if has_svc grafana; then
+  genv="$(q '.services.grafana.environment | to_entries | .[] | .key + "=" + .value')"
+  contains "$genv" "GF_SECURITY_ADMIN_PASSWORD__FILE=/run/secrets/grafana_admin_password" || bad "grafana does not read its admin password from the secret"
+  contains "$genv" "GF_SECURITY_SECRET_KEY__FILE=/run/secrets/grafana_secret_key" || bad "grafana does not read its secret key from the secret"
+  # Nothing credential-shaped is set in plain: every such key must be a __FILE.
+  plain="$(grep -E '^[A-Z0-9_]*(PASSWORD|SECRET|SECRET_KEY|TOKEN)=' <<<"$genv" || true)"
+  [ -z "$plain" ] || bad "grafana sets a credential in plain environment: $plain"
+  if [ "$case" = extras ]; then
+    contains "$genv" "GF_SMTP_PASSWORD__FILE=/run/secrets/prometheus-stack-e2e-smtp" || bad "extraSecrets did not become GF_SMTP_PASSWORD__FILE"
+  fi
+  contains "$genv" "PROMSTACK_PROMETHEUS_URL=http://${rel}_prometheus:9090" || bad "grafana does not address Prometheus by its full name"
+  if [ "$on" = 1 ]; then
+    contains "$genv" "PROMSTACK_ALERTMANAGER_URL=http://${rel}_alertmanager:9093" || bad "grafana does not address Alertmanager by its full name"
+  fi
+fi
+penv="$(q '.services.prometheus.environment | to_entries | .[] | .key + "=" + .value')"
+if [ "$on" = 1 ]; then
+  contains "$penv" "PROMSTACK_ALERTMANAGER=${rel}_alertmanager:9093" || bad "prometheus does not address Alertmanager by its full name"
+  contains "$penv" "PROMSTACK_SD_HOST=tcp://${rel}_socket-proxy:2375" || bad "prometheus does not address the socket-proxy by its full name"
+else
+  grep -E '^PROMSTACK_(ALERTMANAGER|SD_HOST)=' <<<"$penv" >/dev/null && bad "prometheus is handed a peer that is not deployed"
+fi
+if [ "$case" = discovery ]; then
+  contains "$penv" "PROMSTACK_SCRAPE_NETWORKS=${rel}_internal|monitoring|prometheus-stack-e2e-extra" \
+    || bad "the discovery job does not keep exactly the stack overlay, monitoring and the extra network"
+  on_net prometheus prometheus-stack-e2e-extra || bad "prometheus did not join prometheus.extraNetworks"
+fi
+# No in-stack peer by its short alias, in any service. The Loki URL is the operator's.
+short="$(q '.services[].environment // {} | to_entries | .[] | select(.key != "PROMSTACK_LOKI_URL") | .value' \
+  | grep -E '(^|[/@])(prometheus|alertmanager|grafana|socket-proxy|node-exporter|cadvisor):[0-9]' || true)"
+[ -z "$short" ] || bad "a peer is addressed by its short alias: $short"
+
+# ------------------------------------------- the discovery job, on the file itself
+# Only the golang driver can evaluate prometheus.yml, so no render shows the job. Check
+# the chart's file directly. The label filter keeps every non-opted-in task out of
+# Prometheus server-side; the relabel keep still gates if the filter is ever mistyped.
+# e2e cannot see the second while the first works.
+pf="$dir/files/prometheus/prometheus.yml"
+job='.scrape_configs[] | select(.job_name == "swarm-tasks")'
+filter="$(yq -r "$job | .dockerswarm_sd_configs[].filters // [] | .[] | select(.name == \"label\") | .values[]" "$pf")"
+contains "$filter" "prometheus.io/scrape=true" || bad "$pf: swarm-tasks has no label filter on prometheus.io/scrape=true"
+keep="$(yq -r "$job | .relabel_configs[] | select(.action == \"keep\" and .regex == \"true\") | .source_labels | join(\",\")" "$pf")"
+contains "$keep" "__meta_dockerswarm_service_label_prometheus_io_scrape" || bad "$pf: swarm-tasks has no relabel keep on prometheus_io_scrape"
+
+[ "$fail" -eq 0 ] || exit 1
+echo "  $case: render assertions OK"
