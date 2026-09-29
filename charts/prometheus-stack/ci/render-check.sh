@@ -157,6 +157,27 @@ if [ "$on" = 1 ]; then
     || bad "node-exporter's hostname is not the literal {{.Node.Hostname}} Swarm template"
 fi
 
+# Every service with a healthcheck keeps Swarm watching its rollout for at least as long as
+# the healthcheck needs to fail (start_period + interval x retries). Swarm's default
+# monitor is 5s, and past it an unhealthy task no longer fails the deploy.
+dur_s() {  # "1m30s" -> 90; prints -1 for anything it cannot read
+  local d="$1" t=0 n
+  while [[ $d =~ ^([0-9]+)(h|m|s)(.*)$ ]]; do
+    n="${BASH_REMATCH[1]}"
+    case "${BASH_REMATCH[2]}" in h) t=$((t + n * 3600)) ;; m) t=$((t + n * 60)) ;; s) t=$((t + n)) ;; esac
+    d="${BASH_REMATCH[3]}"
+  done
+  if [ -z "$d" ]; then echo "$t"; else echo -1; fi
+}
+for svc in $(q '.services | to_entries | .[] | select(.value.healthcheck) | .key'); do
+  hc="$(q ".services.\"$svc\".healthcheck | (.start_period // \"0s\") + \" \" + .interval + \" \" + (.retries | tostring)")"
+  read -r start interval retries <<<"$hc"
+  need=$(( $(dur_s "$start") + $(dur_s "$interval") * retries ))
+  mon="$(q ".services.\"$svc\".deploy.update_config.monitor // \"5s\"")"
+  [ "$(dur_s "$mon")" -ge "$need" ] \
+    || bad "$svc: update_config.monitor is $mon, shorter than the ${need}s its healthcheck needs to fail"
+done
+
 # Nothing exposes Prometheus's lifecycle, admin or remote-write endpoints.
 grep -E -- '--web\.enable-(lifecycle|admin-api|remote-write-receiver)' "$out" >/dev/null \
   && bad "a --web.enable-* flag is rendered"

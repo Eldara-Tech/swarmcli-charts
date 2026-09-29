@@ -36,9 +36,9 @@ networks:
 {{- end }}
 secrets:
   - name: "{{ .Values.grafana.adminPasswordSecret }}"
-    description: "Grafana admin password (grafana.adminPasswordSecret). Pre-create: docker secret create grafana_admin_password ./pw"
+    description: "Grafana admin password (grafana.adminPasswordSecret). Pre-create: docker secret create {{ .Values.grafana.adminPasswordSecret }} ./pw"
   - name: "{{ .Values.grafana.secretKeySecret }}"
-    description: "Grafana secret key, which encrypts stored datasource credentials (grafana.secretKeySecret). Pre-create: openssl rand -base64 32 | docker secret create grafana_secret_key -"
+    description: "Grafana secret key, which encrypts stored datasource credentials (grafana.secretKeySecret). Pre-create: openssl rand -base64 32 | docker secret create {{ .Values.grafana.secretKeySecret }} -"
 {{- range .Values.alertmanager.secrets }}
   - name: "{{ . }}"
     description: "alertmanager.secrets entry, mounted at /run/secrets/{{ . }} for the Alertmanager config's *_file fields"

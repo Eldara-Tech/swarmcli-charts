@@ -210,6 +210,13 @@ services:
       retries: 3
     deploy:
       replicas: 1
+{{- /* Swarm counts a task failure against the rollout only for `monitor` after creating the
+       task, and its default is 5s. The healthcheck above needs 0s start_period + 30s
+       interval x 3 retries = 90s to fail, so anything shorter lets a broken deploy report
+       success. Rounded up to 2m, which also leaves room for the image pull that runs
+       inside the window. Change it together with the healthcheck. */}}
+      update_config:
+        monitor: 2m
 {{- if $pin }}
       placement:
         constraints:
