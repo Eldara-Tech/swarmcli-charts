@@ -282,7 +282,7 @@ public class FakeK8s {
         if (maxTime > 0) cmd.addAll(List.of("--max-time", Integer.toString(maxTime)));
         cmd.addAll(Arrays.asList(extra));
         if (stdin != null) cmd.addAll(stdinIsConfig ? List.of("-K", "-") : List.of("--data-binary", "@-"));
-        cmd.add("http://localhost" + path);
+        cmd.add("http://localhost" + ("/version".equals(path) ? "" : apiPrefix()) + path);
         Process proc = new ProcessBuilder(cmd).redirectErrorStream(true).start();
         try (OutputStream in = proc.getOutputStream()) {
             if (stdin != null) in.write(stdin.getBytes(StandardCharsets.UTF_8));
@@ -290,6 +290,21 @@ public class FakeK8s {
         String out = new String(proc.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
         proc.waitFor();
         return out;
+    }
+
+    // The daemon's own API version, asked once. A pinned one breaks where the engine has
+    // dropped it (Engine 29 refuses anything below 1.44); /version answers unprefixed.
+    static volatile String apiPrefix;
+
+    static String apiPrefix() throws Exception {
+        if (apiPrefix == null) {
+            String out = dockerGet("/version");
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"ApiVersion\":\"([0-9.]+)\"").matcher(out);
+            if (!m.find()) throw new IOException("Docker /version has no ApiVersion: " + out);
+            apiPrefix = "/v" + m.group(1);
+            log("Docker API version " + m.group(1));
+        }
+        return apiPrefix;
     }
 
     static String dockerGet(String path) throws Exception {
@@ -649,14 +664,14 @@ public class FakeK8s {
         notifyWatchers(podName, "DELETED", pod);
         exec.submit(() -> {
             try {
-                String resp = dockerGet("/v1.41/containers/json?all=true&filters=" +
+                String resp = dockerGet("/containers/json?all=true&filters=" +
                     URLEncoder.encode("{\"label\":[\"airbyte.fakek8s/owner=" + esc(OWNER)
                         + "\",\"airbyte.fakek8s/pod=" + esc(podName) + "\"]}", "UTF-8"));
                 java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"Id\":\"([a-f0-9]+)\"").matcher(resp);
                 while (m.find()) {
                     String cid = m.group(1);
-                    dockerPost("/v1.41/containers/" + cid + "/stop", "{}");
-                    dockerDelete("/v1.41/containers/" + cid + "?force=true");
+                    dockerPost("/containers/" + cid + "/stop", "{}");
+                    dockerDelete("/containers/" + cid + "?force=true");
                 }
             } catch (Exception ignored) {}
         });
@@ -765,7 +780,7 @@ public class FakeK8s {
         String cname = (podName + "-" + containerName).replaceAll("[^a-zA-Z0-9_.-]", "_");
         try {
             // Create container
-            String resp = dockerPost("/v1.41/containers/create?name=" + cname, body.toString());
+            String resp = dockerPost("/containers/create?name=" + cname, body.toString());
             String id = jsonStr(resp, "Id");
             if (id.isEmpty()) {
                 err("Failed to create container " + cname
@@ -780,7 +795,7 @@ public class FakeK8s {
                     if (networkName != null && networkName.equals(net)) continue;
                     try {
                         String connectBody = "{\"Container\":\"" + esc(id) + "\"}";
-                        String connectResp = dockerPost("/v1.41/networks/" + net + "/connect", connectBody);
+                        String connectResp = dockerPost("/networks/" + net + "/connect", connectBody);
                         if (connectResp != null && !connectResp.isEmpty() && connectResp.contains("\"message\"")) {
                             err("Container " + cname + " network connect error (" + net + "): " + connectResp);
                         } else {
@@ -793,7 +808,7 @@ public class FakeK8s {
             }
 
             // Start container
-            String startResp = dockerPost("/v1.41/containers/" + id + "/start", "{}");
+            String startResp = dockerPost("/containers/" + id + "/start", "{}");
             if (startResp != null && !startResp.isEmpty() && startResp.contains("\"message\"")) {
                 err("Container " + cname + " start error: " + startResp);
             }
@@ -849,7 +864,7 @@ public class FakeK8s {
     // Wait for a container to finish and return its exit code
     static int waitContainer(String containerId) {
         try {
-            String resp = dockerPost("/v1.41/containers/" + containerId + "/wait", "{}", 0);
+            String resp = dockerPost("/containers/" + containerId + "/wait", "{}", 0);
             java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\\"StatusCode\\\"\\s*:\\s*(\\d+)").matcher(resp);
             if (!m.find()) {
                 err("  [wait] container " + containerId.substring(0, Math.min(12, containerId.length()))
@@ -869,12 +884,12 @@ public class FakeK8s {
     }
 
     static boolean oomKilled(String containerId) {
-        try { return dockerGet("/v1.41/containers/" + containerId + "/json").contains("\"OOMKilled\":true"); }
+        try { return dockerGet("/containers/" + containerId + "/json").contains("\"OOMKilled\":true"); }
         catch (Exception e) { return false; }
     }
 
     static void removeContainer(String containerId) {
-        try { dockerDelete("/v1.41/containers/" + containerId + "?force=true"); }
+        try { dockerDelete("/containers/" + containerId + "?force=true"); }
         catch (Exception ignored) {}
     }
 
@@ -882,7 +897,7 @@ public class FakeK8s {
         try {
             Process proc = new ProcessBuilder(
                 "curl", "-s", "--unix-socket", "/var/run/docker.sock", "--max-time", "60",
-                "http://localhost/v1.41/containers/" + containerId + "/logs?stdout=1&stderr=1&tail=100"
+                "http://localhost" + apiPrefix() + "/containers/" + containerId + "/logs?stdout=1&stderr=1&tail=100"
             ).redirectErrorStream(true).start();
             byte[] raw = proc.getInputStream().readAllBytes();
             proc.waitFor(10, TimeUnit.SECONDS);
@@ -922,7 +937,7 @@ public class FakeK8s {
             String auth = registryAuthHeader(ref);
             long t0 = System.currentTimeMillis();
             log("  [pull] PULLING " + ref + (auth == null ? "" : " (with registry credentials)"));
-            String out = curl("POST", "/v1.41/images/create?fromImage=" + URLEncoder.encode(ref, "UTF-8"),
+            String out = curl("POST", "/images/create?fromImage=" + URLEncoder.encode(ref, "UTF-8"),
                 auth, true, PULL_TIMEOUT);
             long elapsed = System.currentTimeMillis() - t0;
             if (imagePresent(ref)) {
@@ -940,7 +955,7 @@ public class FakeK8s {
         Integer.parseInt(System.getenv().getOrDefault("FAKEK8S_PULL_TIMEOUT_SECONDS", "1800"));
 
     static boolean imagePresent(String ref) throws Exception {
-        return dockerGet("/v1.41/images/" + ref + "/json").contains("\"Id\"");
+        return dockerGet("/images/" + ref + "/json").contains("\"Id\"");
     }
 
     // Credentials for ref's registry from the Docker config.json at FAKEK8S_REGISTRY_AUTH_FILE
@@ -984,7 +999,7 @@ public class FakeK8s {
         String launcherHostname = System.getenv("HOSTNAME");
         if (launcherHostname == null || launcherHostname.isEmpty()) return null;
         try {
-            String resp = dockerGet("/v1.41/containers/" + launcherHostname + "/json");
+            String resp = dockerGet("/containers/" + launcherHostname + "/json");
             java.util.regex.Matcher networkBlock = java.util.regex.Pattern
                 .compile("\\\"Networks\\\"\\s*:\\s*\\{")
                 .matcher(resp);
@@ -1094,7 +1109,7 @@ public class FakeK8s {
             String dockerVol = "airbyte-emptydir-" + podSafe + "-" + volName.replaceAll("[^a-zA-Z0-9_.-]", "_");
             emptyDirVolumes.put(volName, dockerVol);
             try {
-                dockerPost("/v1.41/volumes/create", "{\"Name\":\"" + esc(dockerVol) + "\"," + labelsJson(podName) + "}");
+                dockerPost("/volumes/create", "{\"Name\":\"" + esc(dockerVol) + "\"," + labelsJson(podName) + "}");
                 log("  emptyDir volume=" + dockerVol + " created (k8s=" + volName + ")");
             } catch (Exception e) {
                 err("  emptyDir volume create failed: " + e);
@@ -1320,7 +1335,7 @@ public class FakeK8s {
 
     static void deleteVolumes(Collection<String> dockerVols) {
         for (String dockerVol : dockerVols) {
-            try { dockerDelete("/v1.41/volumes/" + dockerVol); log("  emptyDir volume " + dockerVol + " deleted"); }
+            try { dockerDelete("/volumes/" + dockerVol); log("  emptyDir volume " + dockerVol + " deleted"); }
             catch (Exception ignored) {}
         }
     }
@@ -1396,15 +1411,15 @@ public class FakeK8s {
         try {
             String filter = URLEncoder.encode("{\"label\":[\"airbyte.fakek8s/owner=" + esc(OWNER) + "\"]}", "UTF-8");
             java.util.regex.Matcher c = java.util.regex.Pattern.compile("\"Id\":\"([a-f0-9]+)\"")
-                .matcher(dockerGet("/v1.41/containers/json?all=true&filters=" + filter));
+                .matcher(dockerGet("/containers/json?all=true&filters=" + filter));
             while (c.find()) {
-                dockerDelete("/v1.41/containers/" + c.group(1) + "?force=true");
+                dockerDelete("/containers/" + c.group(1) + "?force=true");
                 log("removed leftover container " + c.group(1).substring(0, Math.min(12, c.group(1).length())));
             }
             java.util.regex.Matcher v = java.util.regex.Pattern.compile("\"Name\":\"([^\"]+)\"")
-                .matcher(dockerGet("/v1.41/volumes?filters=" + filter));
+                .matcher(dockerGet("/volumes?filters=" + filter));
             while (v.find()) {
-                dockerDelete("/v1.41/volumes/" + v.group(1));
+                dockerDelete("/volumes/" + v.group(1));
                 log("removed leftover volume " + v.group(1));
             }
         } catch (Exception e) {
