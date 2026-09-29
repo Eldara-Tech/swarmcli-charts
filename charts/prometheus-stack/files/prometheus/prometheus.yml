@@ -62,6 +62,12 @@ scrape_configs:
     # Plenty of /metrics endpoints answer without a Content-Type, which Prometheus 3
     # refuses unless the job names a fallback.
     fallback_scrape_protocol: PrometheusText0.0.4
+    # Any service can opt in, so one runaway /metrics must not swamp the TSDB: a scrape
+    # over either limit is failed whole (up == 0, TargetDown). cAdvisor on a node with a
+    # few hundred containers stays well under both. A service that needs more should
+    # not opt in; scrape it with a job of its own in prometheus.extraScrapeConfigs.
+    sample_limit: 100000
+    label_limit: 64
     dockerswarm_sd_configs:
       - host: '{{ env "PROMSTACK_SD_HOST" }}'
         role: tasks

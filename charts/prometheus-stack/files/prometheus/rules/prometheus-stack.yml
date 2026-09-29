@@ -1,5 +1,8 @@
 # Alert rules shipped by the prometheus-stack chart. The node rules are derived from
-# the node-mixin in prometheus/node_exporter (Apache-2.0); the rest are this chart's.
+# the node-mixin in prometheus/node_exporter, and PrometheusRuleFailures from the
+# prometheus-mixin in prometheus/prometheus (both Apache-2.0); the rest are this chart's.
+# The exporter-absent alerts live in node-exporter.yml and cadvisor.yml beside this
+# file, each mounted only while its exporter is enabled.
 # Mounted WITHOUT a template driver: the annotations are Prometheus templates.
 #
 # Validate: docker run --rm --entrypoint promtool -v "$PWD/charts/prometheus-stack/files/prometheus/rules:/r:ro" \
@@ -65,6 +68,16 @@ groups:
         annotations:
           summary: 'Prometheus failed to evaluate rules in {{ $labels.rule_group }}'
           description: 'Prometheus failed to evaluate {{ printf "%.0f" $value }} rules in the last 5 minutes.'
+      # Discovery reaches the Docker API through the socket-proxy, which runs on a
+      # manager. A drained or lost manager, a proxy that refuses Prometheus, or anything
+      # else answering on the proxy's name shows up here first.
+      - alert: SwarmDiscoveryFailing
+        expr: increase(prometheus_sd_refresh_failures_total{mechanism="dockerswarm"}[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Swarm service discovery failed to refresh ({{ $labels.config }})'
+          description: 'Prometheus could not list swarm tasks through the socket-proxy in the last 15 minutes, so its targets may be stale. Check that the socket-proxy task is running on a manager.'
       - alert: PrometheusNotificationsFailing
         expr: rate(prometheus_notifications_errors_total[5m]) > 0
         for: 15m

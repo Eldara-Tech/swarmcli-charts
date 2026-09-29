@@ -207,9 +207,13 @@ cadvisor:
     tag: "v0.60.6"
   housekeepingInterval: 30s
   # Host path of containerd's socket. On Docker's containerd image store cAdvisor needs
-  # it as well as the Docker socket, or no series carries a container label. (On the
-  # classic overlay2 driver it reads /var/lib/docker instead; the chart mounts both.)
+  # it as well as the Docker socket, or no series carries a container label. A dockerd
+  # that runs its own containerd puts it at /var/run/docker/containerd/containerd.sock.
   containerdSocket: /run/containerd/containerd.sock
+  # The daemon's root directory (`docker info --format '{{.DockerRootDir}}'`), bound
+  # read-only. On the classic overlay2 driver cAdvisor reads each container's layer ID
+  # there and drops every container it cannot. Change it for a custom data-root.
+  dockerRoot: /var/lib/docker
   # Extra cAdvisor flags, appended verbatim.
   extraArgs: []
   resources:
@@ -226,6 +230,5 @@ discovery:
   image:
     repository: wollomatic/socket-proxy
     tag: "1.13.1"
-  # Host path of the Docker socket, mounted read-only by the socket-proxy and by
-  # cAdvisor. Change it for a rootless daemon (/run/user/<uid>/docker.sock).
+  # Host path of the Docker socket, mounted read-only by the socket-proxy and by cAdvisor.
   dockerSocket: /var/run/docker.sock

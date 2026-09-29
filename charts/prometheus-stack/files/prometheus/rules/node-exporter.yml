@@ -1,0 +1,13 @@
+# Mounted only while nodeExporter.enabled: fires when Prometheus has no node-exporter
+# target at all, which a per-target TargetDown cannot see (no target, nothing down).
+groups:
+  - name: prometheus-stack.node-exporter
+    rules:
+      - alert: NodeExporterAbsent
+        expr: absent(up{job="node-exporter"})
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Prometheus has no node-exporter target'
+          description: 'No node-exporter task has been discovered for 15 minutes: host metrics and the node alerts are blind. Check discovery (SwarmDiscoveryFailing) and the node-exporter service.'

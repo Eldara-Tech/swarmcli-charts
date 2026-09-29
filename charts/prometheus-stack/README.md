@@ -53,27 +53,34 @@ from it, as `http://<host>:3000/` (see [Exposure](#exposure)).
 
 Service names are fixed: `<release>_<service>`.
 
-**Dashboards**, provisioned read-only into Grafana against a Prometheus datasource
-with the fixed uid `prometheus`:
+**Dashboards**, provisioned read-only into Grafana. The chart provisions one
+Prometheus datasource, uid `prometheus`, as the default:
 
 - **Node Exporter Full**, dashboard 1860 by rfmoz, revision 45, vendored verbatim
   under the Apache-2.0 licence of
-  [rfmoz/grafana-dashboards](https://github.com/rfmoz/grafana-dashboards).
+  [rfmoz/grafana-dashboards](https://github.com/rfmoz/grafana-dashboards), shipped
+  beside it as [`files/grafana/dashboards/LICENSE`](files/grafana/dashboards/LICENSE).
   Source: `https://grafana.com/api/dashboards/1860/revisions/45/download`,
   sha256 `184c6b7409f306da75525d7772f71945b10cea23ad16b5d78c4698ea0ea51986`
-  (`files/grafana/dashboards/node-exporter-full.json`). Pick a node by its
-  `<hostname>:9100` instance.
-- **Swarm services**, written for this chart: CPU, memory, network and block I/O by
-  stack, service, task and node, from cAdvisor. Its panel set follows swarmprom's
+  (`files/grafana/dashboards/node-exporter-full.json`). It selects its datasource
+  through its own datasource variable, which starts on the default one. Pick a node
+  by its `<hostname>:9100` instance.
+- **Swarm services**, written for this chart, bound to the datasource by its uid:
+  CPU, memory, network and block I/O by stack, service, task and node, from
+  cAdvisor. Its panel set follows swarmprom's
   services dashboard (MIT); the queries are new, keyed on the four swarm labels
   cAdvisor keeps and the `node` label discovery adds.
 
-**Alerts** (`files/prometheus/rules/prometheus-stack.yml`), the node ones derived
-from the Apache-2.0 [node-mixin](https://github.com/prometheus/node_exporter/tree/master/docs/node-mixin):
-`TargetDown`, `NodeFilesystemAlmostOutOfSpace`, `NodeFilesystemFillingUp`,
-`NodeMemoryHighUtilization`, `PrometheusRuleFailures`,
-`PrometheusNotificationsFailing`, and `Watchdog`, which always fires so you can
-prove the pipeline end to end. No CPU alerts: busy is not broken.
+**Alerts** (`files/prometheus/rules/`): `TargetDown`,
+`NodeFilesystemAlmostOutOfSpace`, `NodeFilesystemFillingUp`,
+`NodeMemoryHighUtilization`, `PrometheusRuleFailures`, `SwarmDiscoveryFailing`,
+`PrometheusNotificationsFailing`, `NodeExporterAbsent` and `CadvisorAbsent` (each
+only while its exporter is enabled), and `Watchdog`, which always fires so you can
+prove the pipeline end to end. The node alerts are derived from the
+[node-mixin](https://github.com/prometheus/node_exporter/tree/master/docs/node-mixin)
+and `PrometheusRuleFailures` from the
+[prometheus-mixin](https://github.com/prometheus/prometheus/tree/main/documentation/prometheus-mixin),
+both Apache-2.0. No CPU alerts: busy is not broken.
 
 Every series from discovery carries a `node` label with the Swarm node's hostname,
 and the exporters' `instance` is `<hostname>:<port>`, so it survives a restart.
@@ -162,7 +169,12 @@ swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --reuse-values \
 # alertmanager.yml
 route:
   receiver: slack
+  routes:
+    # Watchdog always fires. Send it to a dead man's switch, or nowhere.
+    - matchers: ['alertname="Watchdog"']
+      receiver: "null"
 receivers:
+  - name: "null"
   - name: slack
     slack_configs:
       - api_url_file: /run/secrets/slack_webhook
@@ -222,9 +234,20 @@ can reach them is the whole of their access control:
   that overlay, bypassing it — for Alertmanager that includes silencing alerts.
   Never list `traefik-public` in `prometheus.extraNetworks`.
 
+The same overlays also carry name resolution. Peers address each other by full
+service name (`<release>_alertmanager`, `<release>_socket-proxy`, …), but Docker
+resolves a name on a network to every service there that declares it as a network
+alias. So a service on `monitoring`, an `extraNetworks` overlay or, when routed,
+`traefik-public` can declare a peer's name and receive some of the traffic meant for
+it: alerts sent to Alertmanager, Grafana's queries, or Prometheus's discovery
+requests. Attach only services you trust to those overlays. Discovery that fails, or
+that stops finding the exporters, raises `SwarmDiscoveryFailing`, `NodeExporterAbsent`
+or `CadvisorAbsent`.
+
 **Docker API holders.** cAdvisor runs as root on every node with the Docker and
-containerd sockets and read-only binds of `/sys`, `/proc` and `/var/lib/docker`, which
-lets it read every volume and secret on the node: a trust decision, switched off with `cadvisor.enabled: false`.
+containerd sockets and read-only binds of `/sys`, `/proc` and the daemon's root
+directory (`cadvisor.dockerRoot`), which lets it read every volume and secret on
+the node: a trust decision, switched off with `cadvisor.enabled: false`.
 The socket-proxy runs on managers only, with a read-only root filesystem, alone
 with Prometheus on an `internal: true` overlay that has no route out. It answers
 `GET` on the task, service, node and network collections and the version ping —
@@ -234,8 +257,9 @@ service specs, environment included; a compromised Prometheus can read them.
 
 **Prometheus** runs as `nobody` with no lifecycle, admin or remote-write endpoint.
 **Grafana** reads its password and secret key from Swarm secrets (`__FILE`), with
-sign-up, anonymous access, analytics, update checks, plugin preinstall and its own
-`/metrics` off. **No secret belongs in values**: values are stored in the release
+sign-up, anonymous access, analytics, update checks, plugin preinstall, external
+snapshot publishing and its own `/metrics` off, and secure-only cookies when it is
+routed over TLS. **No secret belongs in values**: values are stored in the release
 record, which anyone with Docker access can read. Use `alertmanager.secrets` and
 `grafana.extraSecrets`.
 
@@ -339,6 +363,7 @@ result there: `docker exec <prometheus container> promtool check config
 | `cadvisor.image.tag` | pinned in values.yaml | Kept fresh by Renovate |
 | `cadvisor.housekeepingInterval` | `30s` | How often cAdvisor collects |
 | `cadvisor.containerdSocket` | `/run/containerd/containerd.sock` | Host path of containerd's socket |
+| `cadvisor.dockerRoot` | `/var/lib/docker` | The daemon's root directory (`DockerRootDir`) |
 | `cadvisor.extraArgs` | `[]` | Extra cAdvisor flags |
 | `cadvisor.resources.limits.memory` / `.reservations.memory` | `""` | Optional memory limit / reservation |
 | `discovery.enabled` | `true` | Deploy the socket-proxy and the `swarm-tasks` job |
@@ -358,18 +383,36 @@ the container rather than the node; they are off, and Node Exporter Full's netwo
 traffic panels stay empty. Per-container network traffic from cAdvisor is on the
 Swarm services dashboard.
 
-**swarmcli-cd.** Deploying this chart through swarmcli-cd requires the release
-carrying swarmcli-cd#152 (Eldara-Tech/swarmcli-cd#304); minimum version: TBD. The
-application needs these `allow` entries in the app set:
+**swarmcli-cd.** Deploying this chart through swarmcli-cd requires the first
+swarmcli-cd release after v1.5.0-rc1 (carrying swarmcli-cd#152); minimum version:
+TBD. The application needs these `allow` entries in the app set:
 
 ```yaml
 allow:
   # `/` alone already permits every path below; the rest are listed so the grant
-  # can be read. Add any <component>.volumePath you set.
+  # can be read. Add any <component>.volumePath you set, and use your own paths if
+  # you changed cadvisor.dockerRoot or cadvisor.containerdSocket.
   hostPaths: [/, /sys, /proc, /var/lib/docker, /var/run/docker.sock, /run/containerd/containerd.sock]
   networks: [monitoring, traefik-public]   # plus every prometheus.extraNetworks entry
   secrets: [grafana_admin_password, grafana_secret_key]   # plus alertmanager.secrets and grafana.extraSecrets
 ```
+
+**Discovery needs a manager that is not drained.** The socket-proxy is constrained
+to managers. With every manager drained it cannot schedule, discovery stops, and
+`SwarmDiscoveryFailing` fires.
+
+**A custom Docker data-root, or a dockerd that runs its own containerd.** cAdvisor
+reads the daemon's root directory and containerd's socket from the host. If
+`docker info --format '{{.DockerRootDir}}'` is not `/var/lib/docker`, set
+`cadvisor.dockerRoot` to it; if containerd is the one dockerd starts itself, its
+socket is `/var/run/docker/containerd/containerd.sock`: set
+`cadvisor.containerdSocket`. With either wrong, container series lose their swarm
+labels and the Swarm services dashboard is empty.
+
+**Scrape limits.** The `swarm-tasks` job fails any scrape over 100000 samples or 64
+labels per series (`up` becomes 0 and `TargetDown` fires), so one runaway endpoint
+cannot flood the TSDB. A service that needs more should not opt in; scrape it with a
+job of its own in `prometheus.extraScrapeConfigs`.
 
 **Disabling a component leaves it running**, as [Upgrading](#upgrading) says:
 remove the service by hand.

@@ -86,6 +86,32 @@
 {{-   end }}
 {{- end }}
 
+{{- /* Every Swarm config name this chart can render. Swarm refuses a config name longer than 64
+       characters, and it says so only at deploy time, after the pre-flight passed. Checked
+       here for every name, used or not, so a release name that fits today cannot stop
+       fitting when a feature is switched on. Shipped files rotate with the chart version,
+       operator files (values/) with their content. */ -}}
+{{- $cfg := dict
+      "prometheus-config" (printf "%s_prometheus_%s" $rel $ver)
+      "prometheus-rules" (printf "%s_rules_%s" $rel $ver)
+      "prometheus-rules-node-exporter" (printf "%s_rules-node_%s" $rel $ver)
+      "prometheus-rules-cadvisor" (printf "%s_rules-cadvisor_%s" $rel $ver)
+      "prometheus-extra-rules" (printf "%s_xrules_%s" $rel ($prom.extraRules | sha256sum | trunc 12))
+      "prometheus-extra-scrape" (printf "%s_xscrape_%s" $rel ($prom.extraScrapeConfigs | sha256sum | trunc 12))
+      "alertmanager-config" (ternary (printf "%s_am_%s" $rel ($am.config | sha256sum | trunc 12)) (printf "%s_am_%s" $rel $ver) (ne $am.config ""))
+      "grafana-datasources" (printf "%s_gf-ds_%s" $rel $ver)
+      "grafana-datasources-alertmanager" (printf "%s_gf-ds-am_%s" $rel $ver)
+      "grafana-datasources-loki" (printf "%s_gf-ds-loki_%s" $rel $ver)
+      "grafana-dashboards" (printf "%s_gf-dash_%s" $rel $ver)
+      "dashboard-node-exporter-full" (printf "%s_dash-nodes_%s" $rel $ver)
+      "dashboard-swarm-services" (printf "%s_dash-swarm_%s" $rel $ver)
+}}
+{{- $longest := "" }}
+{{- range $k, $n := $cfg }}{{ if gt (len $n) (len $longest) }}{{ $longest = $n }}{{ end }}{{ end }}
+{{- if gt (len $longest) 64 }}
+{{-   fail (printf "release name %q is too long for this chart: its longest Swarm config name, %q, would be %d characters and Swarm allows 64. Use a release name of at most %d characters." $rel $longest (len $longest) (sub 64 (sub (len $longest) (len $rel)))) }}
+{{- end }}
+
 {{- /* The data pin for the three stateful services. It travels with persistence, so the
        ephemeral mode never leaves a task Pending on a node label nobody set (#55). The
        exporters and the proxy never get it. */ -}}
@@ -149,6 +175,15 @@ services:
         target: /etc/prometheus/prometheus.yml
       - source: prometheus-rules
         target: /etc/prometheus/rules/prometheus-stack.yml
+{{- /* An exporter's absent-alert exists only while the exporter does, or it would fire forever. */}}
+{{- if .Values.nodeExporter.enabled }}
+      - source: prometheus-rules-node-exporter
+        target: /etc/prometheus/rules/node-exporter.yml
+{{- end }}
+{{- if .Values.cadvisor.enabled }}
+      - source: prometheus-rules-cadvisor
+        target: /etc/prometheus/rules/cadvisor.yml
+{{- end }}
 {{- if $prom.extraRules }}
       - source: prometheus-extra-rules
         target: /etc/prometheus/rules/extra.yml
@@ -254,11 +289,17 @@ services:
       "GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES" "false"
       "GF_PLUGINS_PREINSTALL_DISABLED" "true"
       "GF_METRICS_ENABLED" "false"
+      "GF_SNAPSHOTS_EXTERNAL_ENABLED" "false"
       "PROMSTACK_PROMETHEUS_URL" (printf "http://%s_prometheus:9090" $rel)
       "PROMSTACK_SCRAPE_INTERVAL" $prom.scrapeInterval
 }}
 {{- if eq $gf.exposure.mode "traefik" }}
 {{-   $_ := set $gfEnv "GF_SERVER_ROOT_URL" (printf "%s://%s/" (ternary "https" "http" $gf.ingress.tls) $gf.ingress.host) }}
+{{- /*   Secure cookies only where users arrive over TLS. published mode is plain HTTP, and a
+         secure cookie there would never be sent back: nobody could log in. */}}
+{{-   if $gf.ingress.tls }}
+{{-     $_ := set $gfEnv "GF_SECURITY_COOKIE_SECURE" "true" }}
+{{-   end }}
 {{- else if eq $gf.exposure.mode "published" }}
 {{-   $_ := set $gfEnv "GF_SERVER_ROOT_URL" (printf "http://%s:%v/" $gf.ingress.host $gf.publish.port) }}
 {{- end }}
@@ -409,9 +450,10 @@ services:
       # Which of the next two cAdvisor needs depends on the daemon's storage: on the
       # containerd image store (Docker 29's default for new installs) no series carries a
       # container label without containerd's socket; on the classic overlay2 driver it reads
-      # each container's layer ID under <rootfs>/var/lib/docker, or drops the container.
+      # each container's layer ID under the daemon's root dir, or drops the container.
       - {{ .Values.cadvisor.containerdSocket }}:/run/containerd/containerd.sock:ro
-      - /var/lib/docker:/rootfs/var/lib/docker:ro
+      # cAdvisor looks for it under /rootfs at the path `docker info` reports as the root dir.
+      - {{ .Values.cadvisor.dockerRoot }}:/rootfs{{ .Values.cadvisor.dockerRoot }}:ro
       - /sys:/sys:ro
       - /proc:/rootfs/proc:ro
     networks:
@@ -468,55 +510,63 @@ services:
 
 configs:
   prometheus-config:
-    name: "{{ $rel }}_prometheus_{{ $ver }}"
+    name: {{ index $cfg "prometheus-config" | quote }}
     file: files/prometheus/prometheus.yml
     template_driver: golang
   prometheus-rules:
-    name: "{{ $rel }}_rules_{{ $ver }}"
+    name: {{ index $cfg "prometheus-rules" | quote }}
     file: files/prometheus/rules/prometheus-stack.yml
-{{- /* Operator-supplied files are content-named, so they rotate whenever they change. */}}
+{{- if .Values.nodeExporter.enabled }}
+  prometheus-rules-node-exporter:
+    name: {{ index $cfg "prometheus-rules-node-exporter" | quote }}
+    file: files/prometheus/rules/node-exporter.yml
+{{- end }}
+{{- if .Values.cadvisor.enabled }}
+  prometheus-rules-cadvisor:
+    name: {{ index $cfg "prometheus-rules-cadvisor" | quote }}
+    file: files/prometheus/rules/cadvisor.yml
+{{- end }}
 {{- if $prom.extraRules }}
   prometheus-extra-rules:
-    name: "{{ $rel }}_xrules_{{ $prom.extraRules | sha256sum | trunc 12 }}"
+    name: {{ index $cfg "prometheus-extra-rules" | quote }}
     file: values/prometheus.extraRules
 {{- end }}
 {{- if $prom.extraScrapeConfigs }}
   prometheus-extra-scrape:
-    name: "{{ $rel }}_xscrape_{{ $prom.extraScrapeConfigs | sha256sum | trunc 12 }}"
+    name: {{ index $cfg "prometheus-extra-scrape" | quote }}
     file: values/prometheus.extraScrapeConfigs
 {{- end }}
 {{- if $am.enabled }}
   alertmanager-config:
+    name: {{ index $cfg "alertmanager-config" | quote }}
 {{- if $am.config }}
-    name: "{{ $rel }}_am_{{ $am.config | sha256sum | trunc 12 }}"
     file: values/alertmanager.config
 {{- else }}
-    name: "{{ $rel }}_am_{{ $ver }}"
     file: files/alertmanager/alertmanager.yml
 {{- end }}
 {{- end }}
 {{- if $gf.enabled }}
   grafana-datasources:
-    name: "{{ $rel }}_gf-ds_{{ $ver }}"
+    name: {{ index $cfg "grafana-datasources" | quote }}
     file: files/grafana/datasources.yml
 {{- if $am.enabled }}
   grafana-datasources-alertmanager:
-    name: "{{ $rel }}_gf-ds-am_{{ $ver }}"
+    name: {{ index $cfg "grafana-datasources-alertmanager" | quote }}
     file: files/grafana/datasources-alertmanager.yml
 {{- end }}
 {{- if $gfLoki }}
   grafana-datasources-loki:
-    name: "{{ $rel }}_gf-ds-loki_{{ $ver }}"
+    name: {{ index $cfg "grafana-datasources-loki" | quote }}
     file: files/grafana/datasources-loki.yml
 {{- end }}
   grafana-dashboards:
-    name: "{{ $rel }}_gf-dash_{{ $ver }}"
+    name: {{ index $cfg "grafana-dashboards" | quote }}
     file: files/grafana/dashboards.yml
   dashboard-node-exporter-full:
-    name: "{{ $rel }}_dash-nodes_{{ $ver }}"
+    name: {{ index $cfg "dashboard-node-exporter-full" | quote }}
     file: files/grafana/dashboards/node-exporter-full.json
   dashboard-swarm-services:
-    name: "{{ $rel }}_dash-swarm_{{ $ver }}"
+    name: {{ index $cfg "dashboard-swarm-services" | quote }}
     file: files/grafana/dashboards/swarm-services.json
 {{- end }}
 

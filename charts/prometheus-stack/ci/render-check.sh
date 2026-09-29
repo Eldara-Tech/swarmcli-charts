@@ -79,6 +79,15 @@ for v in $want_values; do
   contains "$(q '.configs[].file')" "$v" || bad "the operator's $v is not mounted"
 done
 
+# Each exporter's absent-alert file is mounted exactly while the exporter is enabled: without
+# it an exporter that vanishes goes unnoticed, and with its exporter off it fires forever.
+rules="$(q '.services.prometheus.configs[] | .source + ">" + .target')"
+for pair in "node-exporter:prometheus-rules-node-exporter>/etc/prometheus/rules/node-exporter.yml" \
+            "cadvisor:prometheus-rules-cadvisor>/etc/prometheus/rules/cadvisor.yml"; do
+  if contains "$rules" "${pair#*:}"; then got=1; else got=0; fi
+  [ "$got" = "$on" ] || bad "the ${pair%%:*} absent-alert rule file mounted=$got, expected $on"
+done
+
 # Only prometheus.yml is rendered by Swarm: the rule files contain $labels templates that
 # the golang driver would evaluate.
 [ "$(q '[.configs // {} | to_entries | .[] | select(.value.template_driver) | .key] | join(",")')" = "prometheus-config" ] \
@@ -95,11 +104,24 @@ else
 fi
 csock="$(q '[.services | to_entries | .[] | select((.value.volumes // []) | map(select(test("containerd\.sock"))) | length > 0) | .key] | join(",")')"
 [ "$csock" = "$( [ "$on" = 1 ] && echo cadvisor)" ] || bad "the containerd socket is mounted by [$csock]"
-# The other half of the storage-driver split: on overlay2 cAdvisor finds each container's
-# layer under /rootfs/var/lib/docker, and drops every container it cannot (seen in CI).
+# The host binds of the three services that hold any, compared WHOLE: source, target and
+# mode. A dropped `:ro` (`/:/host:rslave` is the host root read-write), a widened source
+# or an extra bind all fail here. /var/lib/docker is the other half of the storage-driver
+# split: on overlay2 cAdvisor reads each container's layer there and drops every
+# container it cannot (seen in CI).
+want_binds() {  # want_binds <service> <expected bind>...
+  local svc="$1" got want
+  shift
+  got="$(lines ".services.$svc.volumes" | sort)"
+  want="$(printf '%s\n' "$@" | sort)"
+  [ "$got" = "$want" ] || bad "$svc binds [$(tr '\n' ' ' <<<"$got")], expected exactly [$(tr '\n' ' ' <<<"$want")]"
+}
 if [ "$on" = 1 ]; then
-  contains "$(lines '.services.cadvisor.volumes')" "/var/lib/docker:/rootfs/var/lib/docker:ro" \
-    || bad "cadvisor does not see /var/lib/docker, so on an overlay2 daemon no container is labelled"
+  want_binds node-exporter "/:/host:ro,rslave"
+  want_binds cadvisor "/var/run/docker.sock:/var/run/docker.sock:ro" \
+    "/run/containerd/containerd.sock:/run/containerd/containerd.sock:ro" \
+    "/var/lib/docker:/rootfs/var/lib/docker:ro" "/sys:/sys:ro" "/proc:/rootfs/proc:ro"
+  want_binds socket-proxy "/var/run/docker.sock:/var/run/docker.sock:ro"
 fi
 
 # node-exporter's bind of the host's whole root filesystem. The security scan cannot see it.
@@ -123,11 +145,14 @@ if [ "$on" = 1 ]; then
   # The caller check matches client IPs, which only works with dnsrr (a VIP hides them).
   contains "$pcmd" "-allowfrom=tasks.${rel}_prometheus" || bad "the socket-proxy does not admit only tasks.${rel}_prometheus"
   [ "$(q '.services.socket-proxy.deploy.endpoint_mode')" = "dnsrr" ] || bad "the socket-proxy is not endpoint_mode dnsrr"
-  # One anchored regex per path: a combined alternation let a logs path through (spike S2).
-  allows="$(grep -E '^-allow[A-Z]+=' <<<"$pcmd" || true)"
-  [ "$(wc -l <<<"$allows" | tr -d ' ')" = "6" ] || bad "the socket-proxy allow-list is not the six expected entries"
-  grep -F '|' <<<"$allows" >/dev/null && bad "a socket-proxy allow entry combines paths with |"
-  grep -vE '^-allow(GET|HEAD)=' <<<"$allows" >/dev/null && bad "the socket-proxy allows a method other than GET/HEAD"
+  # One anchored regex per path, compared literally: a combined alternation let a logs
+  # path through (spike S2), and any other method or path widens the proxy.
+  allows="$(grep -E '^-allow' <<<"$pcmd" || true)"
+  want_allows="$(printf '%s\n' '-allowfrom=tasks.'"$rel"'_prometheus' \
+    '-allowGET=/v1\.[0-9]+/tasks' '-allowGET=/v1\.[0-9]+/services' \
+    '-allowGET=/v1\.[0-9]+/nodes' '-allowGET=/v1\.[0-9]+/networks' \
+    '-allowGET=/_ping' '-allowHEAD=/_ping')"
+  [ "$allows" = "$want_allows" ] || bad "the socket-proxy allow-list is not exactly the expected seven lines: $(tr '\n' ' ' <<<"$allows")"
   [ "$(q '.services.node-exporter.hostname')" = '{{.Node.Hostname}}' ] \
     || bad "node-exporter's hostname is not the literal {{.Node.Hostname}} Swarm template"
 fi
@@ -226,6 +251,15 @@ if has_svc grafana; then
     contains "$genv" "GF_SMTP_PASSWORD__FILE=/run/secrets/prometheus-stack-e2e-smtp" || bad "extraSecrets did not become GF_SMTP_PASSWORD__FILE"
   fi
   contains "$genv" "PROMSTACK_PROMETHEUS_URL=http://${rel}_prometheus:9090" || bad "grafana does not address Prometheus by its full name"
+  contains "$genv" "GF_SNAPSHOTS_EXTERNAL_ENABLED=false" || bad "grafana may publish snapshots to an external service"
+  # Secure cookies exactly where users arrive over TLS: routed with tls. On plain HTTP a
+  # secure cookie is never sent back and nobody can log in.
+  cookie="$(grep -E '^GF_SECURITY_COOKIE_SECURE=' <<<"$genv" || true)"
+  if [ "$gf_mode" = traefik ] && [ "$case" != edge ]; then
+    [ "$cookie" = "GF_SECURITY_COOKIE_SECURE=true" ] || bad "grafana is routed over TLS without secure cookies"
+  else
+    [ -z "$cookie" ] || bad "grafana sets $cookie without TLS in front of it"
+  fi
   if [ "$on" = 1 ]; then
     contains "$genv" "PROMSTACK_ALERTMANAGER_URL=http://${rel}_alertmanager:9093" || bad "grafana does not address Alertmanager by its full name"
   fi
@@ -246,6 +280,10 @@ fi
 short="$(q '.services[].environment // {} | to_entries | .[] | select(.key != "PROMSTACK_LOKI_URL") | .value' \
   | grep -E '(^|[/@])(prometheus|alertmanager|grafana|socket-proxy|node-exporter|cadvisor):[0-9]' || true)"
 [ -z "$short" ] || bad "a peer is addressed by its short alias: $short"
+# The same in every file the chart ships.
+short="$(grep -rnE '(^|[^A-Za-z0-9_.-])(prometheus|alertmanager|grafana|socket-proxy|node-exporter|cadvisor):[0-9]' \
+  "$dir/files" || true)"
+[ -z "$short" ] || bad "a shipped file addresses a peer by its short alias: $short"
 
 # ------------------------------------------- the discovery job, on the file itself
 # Only the golang driver can evaluate prometheus.yml, so no render shows the job. Check

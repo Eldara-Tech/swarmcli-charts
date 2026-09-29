@@ -117,6 +117,18 @@ case "$case" in
     wait_for "node label: node-exporter on this node is node=\"$host\"" \
       prom_is "count(up{job=\"node-exporter\",node=\"$host\"} == 1)" 1
     wait_for "prometheus: one Alertmanager discovered" prom_is 'prometheus_notifications_alertmanagers_discovered' 1
+    # The series SwarmDiscoveryFailing is written against exists, so a rename upstream
+    # cannot silently turn the alert into one that never fires.
+    wait_for "prometheus: the swarm discovery failure counter exists" \
+      prom_is 'count(prometheus_sd_refresh_failures_total{mechanism="dockerswarm"}) > bool 0' 1
+    rules_loaded() {
+      local b n
+      b="$(in_ns prometheus http://127.0.0.1:9090/api/v1/rules 2>/dev/null || true)"
+      for n in SwarmDiscoveryFailing NodeExporterAbsent CadvisorAbsent; do
+        grep -F "\"name\":\"$n\"" <<<"$b" >/dev/null || return 1
+      done
+    }
+    wait_for "prometheus: SwarmDiscoveryFailing, NodeExporterAbsent and CadvisorAbsent are loaded" rules_loaded
     wait_for "alertmanager: the Watchdog alert arrived" \
       body_has '"alertname":"Watchdog"' in_ns alertmanager http://127.0.0.1:9093/api/v2/alerts
 
@@ -139,8 +151,8 @@ case "$case" in
     [ -n "$api" ] || fail "the socket-proxy's /_ping carries no Api-Version header"
     [ "$(code prometheus "$proxy/v$api/tasks")" = 200 ] || fail "the socket-proxy refuses GET /v$api/tasks"
     [ "$(code prometheus "$proxy/v$api/containers/json")" = 403 ] || fail "the socket-proxy serves /v$api/containers/json"
-    [ "$(code prometheus "$proxy/v$api/tasks/x/logs")" = 403 ] || fail "the socket-proxy serves a task logs path"
-    [ "$(code prometheus "$proxy/tasks")" = 403 ] || fail "the socket-proxy serves the unversioned /tasks: the allow-list is not anchored"
+    [ "$(code prometheus "$proxy/v$api/tasks/x/logs")" = 403 ] || fail "the socket-proxy serves a task logs path: the allow-list is not anchored at the end"
+    [ "$(code prometheus "$proxy/tasks")" = 403 ] || fail "the socket-proxy serves the unversioned /tasks"
     [ "$(code prometheus -X POST "$proxy/v$api/services/create")" = 405 ] || fail "the socket-proxy accepts a POST"
     echo "  socket-proxy: 200 on /v$api/tasks; 403 on containers, logs and unversioned paths; 405 on POST"
     ;;
