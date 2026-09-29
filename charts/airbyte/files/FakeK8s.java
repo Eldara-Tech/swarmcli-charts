@@ -102,6 +102,7 @@ public class FakeK8s {
         Map<String,String> labels = new HashMap<>();
         volatile String resourceVersion = "1";
         volatile int initExitCode = 0;
+        volatile String initReason = "Error";
 
         PodState(String name, String podJson) {
             this.name = name;
@@ -161,7 +162,7 @@ public class FakeK8s {
         if (!p.initDone) {
             if ("Failed".equals(p.phase)) {
                 sb.append("\"initContainerStatuses\":[{\"name\":\"init\",\"ready\":false,");
-                sb.append("\"state\":{\"terminated\":{\"exitCode\":").append(p.initExitCode).append(",\"reason\":\"Error\",");
+                sb.append("\"state\":{\"terminated\":{\"exitCode\":").append(p.initExitCode).append(",\"reason\":\"").append(p.initReason).append("\",");
                 sb.append("\"finishedAt\":\"").append(esc(p.completionTime != null ? p.completionTime : iso8601Now())).append("\"}}}],");
             } else if ("Running".equals(p.initPhase)) {
                 sb.append("\"initContainerStatuses\":[{\"name\":\"init\",\"ready\":false,");
@@ -867,6 +868,11 @@ public class FakeK8s {
         }
     }
 
+    static boolean oomKilled(String containerId) {
+        try { return dockerGet("/v1.41/containers/" + containerId + "/json").contains("\"OOMKilled\":true"); }
+        catch (Exception e) { return false; }
+    }
+
     static void removeContainer(String containerId) {
         try { dockerDelete("/v1.41/containers/" + containerId + "?force=true"); }
         catch (Exception ignored) {}
@@ -1180,12 +1186,15 @@ public class FakeK8s {
             if (!id.isEmpty()) {
                 log("  [init] " + cname + " running id=" + id.substring(0, Math.min(12, id.length())) + " — waiting...");
                 int code = waitContainer(id);
-                log("  [init] " + cname + " exited code=" + code);
+                // The launcher logs only the reason, so a memory kill must say so, as on Kubernetes.
+                boolean oom = code != 0 && oomKilled(id);
+                log("  [init] " + cname + " exited code=" + code + (oom ? " (OOMKilled)" : ""));
                 dumpContainerLogs(id, podName + "-init");
                 removeContainer(id);
                 if (code != 0) {
                     err("Pod " + podName + " init container '" + cname + "' FAILED (exit " + code + ") → pod=Failed");
                     pod.initExitCode = code;
+                    if (oom) pod.initReason = "OOMKilled";
                     pod.phase = "Failed";
                     pod.completionTime = iso8601Now();
                     pod.initDone = false;
