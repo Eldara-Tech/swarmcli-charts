@@ -1,0 +1,4 @@
+# A private connector registry: the launcher mounts the Docker config.json secret and
+# FakeK8s reads it from FAKEK8S_REGISTRY_AUTH_FILE.
+workloadLauncher:
+  registryAuthSecretName: airbyte_registry_auth

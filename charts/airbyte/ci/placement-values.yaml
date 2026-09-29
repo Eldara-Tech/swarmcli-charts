@@ -1,0 +1,5 @@
+# Airbyte pinned to labelled nodes, as on a swarm where only some CPUs have x86-64-v2:
+# ci/render-check.sh asserts every Airbyte Java service carries the constraint, db-migrations
+# included.
+placement:
+  constraints: ["node.labels.x86-64-v2 == true"]

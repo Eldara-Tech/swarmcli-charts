@@ -1,0 +1,177 @@
+# Airbyte Community Platform for Docker Swarm. Airbyte keeps its metadata, the
+# Temporal workflow state and the dataplane credentials in an external PostgreSQL
+# database, and sync artifacts in external S3-compatible object storage. Only the
+# OAuth2 session cache sits in a node-local named volume.
+
+image:
+  repository: airbyte/server
+  tag: ""  # defaults to appVersion from Chart.yaml
+
+# The other platform images must run the same Airbyte release as the server: an
+# empty tag follows image.tag, and so does AIRBYTE_VERSION, which picks the job
+# images the launcher starts.
+bootloader:
+  image:
+    repository: airbyte/bootloader
+    tag: ""
+worker:
+  image:
+    repository: airbyte/worker
+    tag: ""
+workloadApiServer:
+  image:
+    repository: airbyte/workload-api-server
+    tag: ""
+# Airbyte's Connector Builder backend, released with the Python CDK rather than the platform,
+# so its tag is pinned here instead of following image.tag.
+manifestServer:
+  image:
+    repository: airbyte/manifest-server
+    tag: "7.28.2"
+cron:
+  image:
+    repository: airbyte/cron
+    tag: ""
+workloadLauncher:
+  image:
+    repository: airbyte/workload-launcher
+    tag: ""
+  replicas: 1
+  memoryReservation: 1G
+  memoryLimit: 4G
+  # Extra EXTERNAL attachable overlays for connector containers, for example a
+  # target database's shared-services network. database.network is included
+  # automatically; do not repeat it here.
+  extraNetworks: []
+  # Optional external Swarm secret holding a Docker config.json whose "auths"
+  # entries carry inline "auth" credentials; connector images from those
+  # registries are pulled with them. Empty: public images only.
+  registryAuthSecretName: ""
+# Pinned separately; Renovate tracks each image: {repository, tag} block.
+oauth2Proxy:
+  image:
+    repository: quay.io/oauth2-proxy/oauth2-proxy
+    tag: "v7.15.4"
+redis:
+  image:
+    repository: redis
+    tag: "7.4.7-alpine"
+# Temporal runs its development server and keeps its SQLite state on
+# persistence.temporalVolume.
+temporal:
+  image:
+    repository: temporalio/temporal
+    tag: "1.9.1"
+
+# Leave empty for released charts: Chart.Version rotates the immutable config.
+# For a local upgrade after changing files/FakeK8s.java, set a new value such as
+# "dev-3" in the release values so Swarm creates a new config object.
+fakeK8sConfigVersion: ""
+
+# The OAuth2 session cache and Temporal use node-local named volumes. Pin them to
+# exactly one node with this label before deploying, or set nodeLabel: "" on a
+# single-node swarm.
+persistence:
+  oauthRedisVolume: airbyte_oauth2_redis
+  nodeLabel: airbyte-data
+  temporalVolume: temporal_data
+
+# Airbyte metadata database. The username/password are external Swarm secrets;
+# the database and network are supplied by the operator.
+database:
+  host: postgres
+  port: 5432
+  name: airbyte
+  userSecretName: airbyte_db_user
+  passwordSecretName: airbyte_db_password
+  network: airbyte-db-net
+
+# S3-compatible object storage for logs, state and workload payloads. Access
+# credentials are external secrets, never values.
+storage:
+  endpoint: https://minio.example.com
+  accessKeySecretName: airbyte_s3_access_key
+  secretKeySecretName: airbyte_s3_secret_key
+  bucket: airbyte-storage
+
+# Airbyte's connector registry loads Enterprise source stubs from this URL.
+connectorRegistry:
+  enterpriseSourceStubsUrl: https://connectors.airbyte.com/files/resources/connector_stubs/v1/connector_stubs.json
+
+# Airbyte server refuses to start until both database schemas meet these floors
+# (Airbyte's own chart defaults), so it waits for db-migrations on a fresh database.
+flyway:
+  configsMinimumMigrationVersion: "0.35.15.001"
+  jobsMinimumMigrationVersion: "0.29.15.001"
+
+# Who logs users in before they reach Airbyte.
+#   oauth2 - oauth2-proxy in front of Airbyte, against the OIDC issuer in oauth2.
+#            Its client and cookie secrets are external Swarm secrets.
+#   airbyte - Airbyte's own email/password login. The email is set on the first visit
+#            (setup screen); the password is the external secret passwordSecretName.
+#            Works in every exposure mode.
+#   none   - no login in the chart: the server is routed directly. Airbyte runs any connector image it is given next to your
+#            database, so the chart refuses this unless something else authenticates:
+#            exposure.mode traefik with traefik.basicAuthUsers, or exposure.mode none
+#            behind your own authenticating proxy. exposure.mode published is refused.
+# jwtSecretName: the external secret, 32+ random characters, that every Airbyte service
+# signs its internal calls with, in every mode.
+auth:
+  mode: oauth2
+  jwtSecretName: airbyte_jwt_signature_secret
+  airbyte:
+    passwordSecretName: airbyte_admin_password
+    # Set true once the setup screen is done: Airbyte keeps that endpoint anonymous and lets it
+    # replace the login email later, so Traefik then refuses it (traefik mode only).
+    setupComplete: false
+
+# Web exposure of the entry point (oauth2-proxy, or the server otherwise).
+# Set exposure.mode: published for a private direct port.
+exposure:
+  mode: traefik
+  network: traefik-public
+  host: airbyte.example.com
+  tls: true
+  publishedPort: 8080
+
+oauth2:
+  issuerUrl: https://keycloak.example.com/realms/airbyte
+  clientId: airbyte-client
+  clientSecretName: airbyte_oauth_client_secret
+  cookieSecretName: airbyte_oauth_cookie_secret
+  cookieName: _oauth2_proxy_airbyte
+  emailDomain: "*"
+  redisNetwork: airbyte-oauth
+  trustedProxyIp: 10.0.0.0/8
+  scope: "openid email"
+  skipJwtBearerTokens: true
+  sslInsecureSkipVerify: false
+  upstreamTimeout: 300s
+
+traefik:
+  certResolver: le
+  constraintLabel: traefik-public
+  redirectMiddleware: https-redirect
+  # htpasswd users for a basic-auth middleware on the public routers, required with
+  # auth.mode none in traefik mode. Generate the entry with
+  # `htpasswd -nbB <user> <password>` and DOUBLE every `$` (Compose eats single ones),
+  # e.g. "ops:$$2y$$05$$…". Empty => no middleware.
+  basicAuthUsers: ""
+  entrypoints:
+    http: http
+    https: https
+
+# The workload launcher translates Airbyte's Kubernetes job API into containers
+# through Docker's Unix socket. It is intentionally privileged access; Chart.yaml
+# acknowledges it for CI's security scan.
+
+# Optional extra constraints for the Airbyte services and the session Redis. The
+# workload launcher runs connector containers on its own node, so this is where
+# to keep it on a dedicated, trusted node, and where to keep Airbyte off nodes
+# without an x86-64-v2 CPU (see README), e.g. "node.labels.x86-64-v2 == true".
+placement:
+  constraints: []
+
+# Extra deploy labels for the entry service: oauth2-proxy, or the server when
+# auth.mode is not oauth2.
+labels: {}

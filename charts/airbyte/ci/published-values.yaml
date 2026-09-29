@@ -1,0 +1,7 @@
+# Direct port on a single-node swarm without TLS: no Traefik labels, no data-node
+# pin, and the OAuth2 callback and AIRBYTE_URL switch to http://.
+exposure:
+  mode: published
+  tls: false
+persistence:
+  nodeLabel: ""

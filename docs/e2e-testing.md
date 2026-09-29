@@ -276,6 +276,17 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   the hook's `mkdir` only reaches the node where the node *is* the host — not on a VM-backed
   engine, whose `/tmp` is its own.
 
+- **airbyte** — the eight operator secrets + `airbyte-db-net`/`traefik-public` + the
+  `airbyte-data` node label, and three throwaway backends: PostgreSQL, SeaweedFS for S3
+  (Airbyte creates its bucket itself; MinIO's images were gone from quay.io and Docker Hub by
+  2026-09-25) and an OIDC discovery mock (`ci/mock-oidc.js`) that oauth2-proxy needs to start
+  at all. The `mock`, `noauth` and `login` fixtures deploy against them; the others are
+  `ci/e2e-render-only`. Convergence is a weak
+  signal here too — every service reports Running long before it serves — so
+  `ci/e2e-check.sh` runs a source-faker connection check, the one request that crosses the
+  server, Temporal, the workload launcher, FakeK8s's Postgres-backed dataplane credentials,
+  Docker and S3.
+
 `whoami` and `swarm-cronjob` converge solo and ship no hooks.
 
 > **Asserting what the secret wrapper actually produced.** Several charts export a

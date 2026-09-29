@@ -1,0 +1,8 @@
+# Airbyte's own login on a direct port: the server itself is published, with no proxy.
+auth:
+  mode: airbyte
+exposure:
+  mode: published
+  tls: false
+persistence:
+  nodeLabel: ""

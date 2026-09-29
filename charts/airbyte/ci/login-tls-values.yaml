@@ -1,0 +1,4 @@
+# Airbyte's own login on the default traefik exposure with TLS, before setup is complete: the
+# setup endpoint stays reachable (the first visitor needs it) and the cookies are Secure.
+auth:
+  mode: airbyte
