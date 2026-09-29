@@ -140,6 +140,22 @@ const result = JSON.parse(check.text);
 if (result.status !== 'succeeded') throw new Error(`check_connection: ${result.status} ${result.message || ''}`);
 console.log('  source-faker check_connection: succeeded');
 
+// Every sync starts with a discover of the saved source, launched through its own pod.
+await signIn();
+const created = await request(`${server}/api/v1/sources/create`, {
+  workspaceId, sourceDefinitionId: FAKER, name: 'e2e-faker', connectionConfiguration: { count: 10 },
+});
+if (created.status !== 200) throw new Error(`sources/create: HTTP ${created.status} ${created.text}`);
+const discover = await request(`${server}/api/v1/sources/discover_schema`, {
+  sourceId: JSON.parse(created.text).sourceId, disable_cache: true,
+});
+if (discover.status !== 200) throw new Error(`discover_schema: HTTP ${discover.status} ${discover.text}`);
+const schema = JSON.parse(discover.text);
+if (!schema.jobInfo.succeeded || !schema.catalog?.streams?.length) {
+  throw new Error(`discover_schema: ${JSON.stringify(schema.jobInfo.failureReason ?? schema.catalog ?? {})}`);
+}
+console.log(`  source-faker discover_schema: ${schema.catalog.streams.length} streams`);
+
 // Why setupComplete exists: behind the edge, Airbyte's own setup endpoint still accepts an
 // anonymous caller after setup. Record what that does to the login. Last on purpose: when it
 // replaces the email, the admin email above no longer signs in.
