@@ -37,6 +37,23 @@ the volume).
 swarmcli charts install mariadb swarmcli-charts/mariadb
 ```
 
+### Deploying with swarmcli-cd
+
+[swarmcli-cd](https://github.com/Eldara-Tech/swarmcli-cd) deploys a release only if its
+application's `allow` names every `external:` secret, config, volume and network the release
+references, whatever its name. A default install needs:
+
+```yaml
+- name: mariadb           # an application in the swarmcli-cd app set
+  source: { ... }
+  allow:
+    secrets:  [mariadb_root_password, mariadb_password]
+    networks: [mariadb-net]
+```
+
+Each entry is the name itself, so an override in values needs the same change here. See
+[`allow`](https://github.com/Eldara-Tech/swarmcli-cd/blob/main/docs/configuration.md#allow-optional) in the swarmcli-cd docs.
+
 ## Connecting
 
 Attach an app service to the `mariadb-net` overlay and dial `mariadb:3306`,

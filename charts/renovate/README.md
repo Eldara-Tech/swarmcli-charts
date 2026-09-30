@@ -51,6 +51,24 @@ swarmcli charts upgrade renovate swarmcli-charts/renovate \
   --set repositories[0]=my-org/my-repo
 ```
 
+### Deploying with swarmcli-cd
+
+[swarmcli-cd](https://github.com/Eldara-Tech/swarmcli-cd) deploys a release only if its
+application's `allow` names every `external:` secret, config, volume and network the release
+references, whatever its name. A default install needs:
+
+```yaml
+- name: renovate          # an application in the swarmcli-cd app set
+  source: { ... }
+  allow:
+    secrets: [renovate_token]
+```
+
+`auth.githubComTokenSecret` adds that secret, and `configName` adds its config to `configs`,
+suffixed `_<configVersion>` when that is set. Each entry is the name itself, so an override
+in values needs the same change here. See
+[`allow`](https://github.com/Eldara-Tech/swarmcli-cd/blob/main/docs/configuration.md#allow-optional) in the swarmcli-cd docs.
+
 ## Keeping your SwarmCLI charts up to date
 
 Point Renovate at the repository holding your release file, and extend this repo's preset:

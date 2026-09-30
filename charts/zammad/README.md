@@ -78,6 +78,26 @@ swarmcli charts install zammad swarmcli-charts/zammad \
   --set exposure.mode=published --set ingress.host=support.example.com
 ```
 
+### Deploying with swarmcli-cd
+
+[swarmcli-cd](https://github.com/Eldara-Tech/swarmcli-cd) deploys a release only if its
+application's `allow` names every `external:` secret, config, volume and network the release
+references, whatever its name. A default install needs:
+
+```yaml
+- name: zammad            # an application in the swarmcli-cd app set
+  source: { ... }
+  allow:
+    secrets:  [zammad_db_password, zammad_redis_password]
+    networks: [postgres-net, redis-net, traefik-public]
+```
+
+`elasticsearch.mode: external` adds `elasticsearch.network` (`elasticsearch-net` by
+default) and, with `elasticsearch.auth.enabled`, `zammad_elasticsearch_password`; every
+`extraNetworks` overlay goes under `networks` too. Each entry is the name itself, so an
+override in values needs the same change here. See
+[`allow`](https://github.com/Eldara-Tech/swarmcli-cd/blob/main/docs/configuration.md#allow-optional) in the swarmcli-cd docs.
+
 ## Exposure
 
 `exposure.mode` controls how the `nginx` front door is reached:

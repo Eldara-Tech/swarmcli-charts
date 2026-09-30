@@ -71,6 +71,24 @@ swarmcli charts install openclaw swarmcli-charts/openclaw \
   --set resources.limits.memory=2G
 ```
 
+### Deploying with swarmcli-cd
+
+[swarmcli-cd](https://github.com/Eldara-Tech/swarmcli-cd) deploys a release only if its
+application's `allow` names every `external:` secret, config, volume and network the release
+references, whatever its name. A default install needs:
+
+```yaml
+- name: openclaw          # an application in the swarmcli-cd app set
+  source: { ... }
+  allow:
+    secrets:  [openclaw_gateway_token]
+    networks: [traefik-public]
+```
+
+`backend.enabled` adds `backend.network` (`openclaw-backend` by default) to `networks`. Each
+entry is the name itself, so an override in values needs the same change here. See
+[`allow`](https://github.com/Eldara-Tech/swarmcli-cd/blob/main/docs/configuration.md#allow-optional) in the swarmcli-cd docs.
+
 ## Exposure modes
 
 Set `exposure.mode`:
