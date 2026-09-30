@@ -4,7 +4,7 @@ description: GitLab Runner for Docker Swarm — docker executor on the node's ow
 version: 0.1.0
 # appVersion is the default image tag for gitlab/gitlab-runner.
 # renovate: image=gitlab/gitlab-runner
-appVersion: "v19.4.0"
+appVersion: "v19.4.1"
 # Oldest swarmcli whose chart engine renders this chart; verified by
 # scripts/floor-check.sh against a real binary of that version.
 swarmcliVersion: ">= 1.11.0"
