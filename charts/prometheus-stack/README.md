@@ -383,19 +383,37 @@ the container rather than the node; they are off, and Node Exporter Full's netwo
 traffic panels stay empty. Per-container network traffic from cAdvisor is on the
 Swarm services dashboard.
 
-**swarmcli-cd.** Deploying this chart through swarmcli-cd requires the first
-swarmcli-cd release after v1.5.0-rc1 (carrying swarmcli-cd#152); minimum version:
-TBD. The application needs these `allow` entries in the app set:
+**swarmcli-cd.** Deploying this chart through swarmcli-cd needs swarmcli-cd
+v1.5.0 or later (verified with v1.5.0-rc2): the release carrying swarmcli-cd#152 and
+the app-set allowlist rules. The application needs these `allow` entries in the app
+set:
 
 ```yaml
 allow:
-  # `/` alone already permits every path below; the rest are listed so the grant
-  # can be read. Add any <component>.volumePath you set, and use your own paths if
-  # you changed cadvisor.dockerRoot or cadvisor.containerdSocket.
-  hostPaths: [/, /sys, /proc, /var/lib/docker, /var/run/docker.sock, /run/containerd/containerd.sock]
-  networks: [monitoring, traefik-public]   # plus every prometheus.extraNetworks entry
-  secrets: [grafana_admin_password, grafana_secret_key]   # plus alertmanager.secrets and grafana.extraSecrets
+  # One entry per bind source in the default render. Each entry covers its own
+  # bind: `/` does not stand in for the others.
+  hostPaths:
+    - /                                # node-exporter: the host root, read-only at /host
+    - /sys                             # cAdvisor
+    - /proc                            # cAdvisor, at /rootfs/proc
+    - /var/lib/docker                  # cAdvisor: cadvisor.dockerRoot
+    - /var/run/docker.sock             # cAdvisor and the socket-proxy: discovery.dockerSocket
+    - /run/containerd/containerd.sock  # cAdvisor: cadvisor.containerdSocket
+  networks:
+    - monitoring       # `network`
+    - traefik-public   # traefik.network; only while a component is routed through Traefik
+  secrets:
+    - grafana_admin_password   # grafana.adminPasswordSecret
+    - grafana_secret_key       # grafana.secretKeySecret
 ```
+
+The entries must name what the release actually uses. If you override `network`,
+`traefik.network`, `grafana.adminPasswordSecret`, `grafana.secretKeySecret`, `cadvisor.dockerRoot`,
+`cadvisor.containerdSocket` or `discovery.dockerSocket`, list those names and paths
+instead. Add every `prometheus.extraNetworks` entry, every `alertmanager.secrets`
+and `grafana.extraSecrets` name, and every `<component>.volumePath` you set. The
+controller creates the `network` overlay itself when it does not exist yet; it
+still has to be allowed.
 
 **Discovery needs a manager that is not drained.** The socket-proxy is constrained
 to managers. With every manager drained it cannot schedule, discovery stops, and
