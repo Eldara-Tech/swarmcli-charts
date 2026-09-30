@@ -1,0 +1,15 @@
+# The Prometheus datasource. Grafana expands $VAR from its own environment, where
+# the chart sets the full <release>_prometheus address. The fixed uid is what the
+# shipped dashboards refer to.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: $PROMSTACK_PROMETHEUS_URL
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: $PROMSTACK_SCRAPE_INTERVAL

@@ -275,6 +275,18 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   `ci/e2e-render-only`: Swarm refuses a task whose bind source does not exist on the node, and
   the hook's `mkdir` only reaches the node where the node *is* the host — not on a VM-backed
   engine, whose `/tmp` is its own.
+- **prometheus-stack** — the two Grafana secrets + the `prometheus-stack-data` node label + the
+  `monitoring` and `traefik-public` overlays for every fixture; per fixture, the three host
+  directories created through the daemon and owned by the images' users (`bind-mount`), a real
+  Traefik edge (`edge`), the Alertmanager webhook's `url_file` secret (`alertmanager-config`),
+  the `grafana.extraSecrets` secret (`extras`), and — for `discovery` — the
+  `prometheus.extraNetworks` overlay plus three throwaway `/metrics` services: a labelled and an
+  unlabelled twin on `monitoring` and a labelled one on the extra overlay. Its
+  `ci/e2e-check.sh` then counts the targets Prometheus discovered before relabelling against
+  the opted-in tasks the daemon lists, which is what proves the unlabelled twin never reached
+  Prometheus at all. The `default` case follows the data end to end: exporters discovered
+  through the socket-proxy, the Watchdog alert in Alertmanager, Grafana's datasources and
+  dashboards, the proxy's allow-list, and `promtool`/`amtool` on the configs the tasks run.
 
 `whoami` and `swarm-cronjob` converge solo and ship no hooks.
 

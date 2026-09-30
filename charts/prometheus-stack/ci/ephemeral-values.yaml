@@ -1,0 +1,5 @@
+# Persistence off: no volumes, and no data-node pin either, so the three stateful
+# services schedule on a swarm where no node carries the prometheus-stack-data
+# label (#55).
+persistence:
+  enabled: false

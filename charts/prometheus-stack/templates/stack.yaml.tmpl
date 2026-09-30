@@ -1,0 +1,625 @@
+{{- /* prometheus-stack: Prometheus, Alertmanager and Grafana, plus node-exporter and cAdvisor on
+       every node and a read-only Docker API proxy that Prometheus discovers targets through.
+
+       Service names are fixed forever. Swarm refuses to change a service's mode, and an upgrade
+       never removes a service the new render drops, so a rename would strand the old one.
+
+       Peers address each other by FULL service name (<release>_<service>), never by the stack's
+       short alias. Prometheus and Grafana share overlays with other stacks (`network`,
+       prometheus.extraNetworks, traefik-public), where a short name such as `socket-proxy` or
+       `alertmanager` can resolve to someone else's service — at worst a more permissive Docker
+       API proxy answering Prometheus's discovery requests. */ -}}
+
+{{- /* Traefik deploy labels for one routed component. The HTTP router only redirects when TLS
+       is on, so basic auth goes on whichever router is public. */ -}}
+{{- define "prometheus-stack.traefik-labels" }}
+        - "traefik.enable=true"
+        - "traefik.swarm.network={{ .traefik.network }}"
+        - "traefik.constraint-label={{ .traefik.constraintLabel }}"
+{{- if .auth }}
+        - "traefik.http.middlewares.{{ .router }}-auth.basicauth.users={{ .auth }}"
+{{- end }}
+        - "traefik.http.routers.{{ .router }}-http.rule=Host(`{{ .ingress.host }}`)"
+        - "traefik.http.routers.{{ .router }}-http.entrypoints={{ .traefik.entrypoints.http }}"
+{{- if .ingress.tls }}
+        - "traefik.http.routers.{{ .router }}-http.middlewares={{ .traefik.redirectMiddleware }}"
+        - "traefik.http.routers.{{ .router }}-https.rule=Host(`{{ .ingress.host }}`)"
+        - "traefik.http.routers.{{ .router }}-https.entrypoints={{ .traefik.entrypoints.https }}"
+        - "traefik.http.routers.{{ .router }}-https.tls=true"
+        - "traefik.http.routers.{{ .router }}-https.tls.certresolver={{ .traefik.certResolver }}"
+{{- if .auth }}
+        - "traefik.http.routers.{{ .router }}-https.middlewares={{ .router }}-auth"
+{{- end }}
+{{- else if .auth }}
+        - "traefik.http.routers.{{ .router }}-http.middlewares={{ .router }}-auth"
+{{- end }}
+        - "traefik.http.services.{{ .router }}.loadbalancer.server.port={{ .port }}"
+{{- end }}
+
+{{- /* Swarm deploy resources, each rendered only when set. */ -}}
+{{- define "prometheus-stack.resources" }}
+{{- if or .limits.memory .reservations.memory }}
+      resources:
+{{- with .limits.memory }}
+        limits:
+          memory: {{ . | quote }}
+{{- end }}
+{{- with .reservations.memory }}
+        reservations:
+          memory: {{ . | quote }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- $rel := .Release.Name }}
+{{- $ver := .Chart.Version }}
+{{- $base := .Values.traefik.routerName | default $rel }}
+{{- $prom := .Values.prometheus }}
+{{- $am := .Values.alertmanager }}
+{{- $gf := .Values.grafana }}
+{{- $disc := .Values.discovery.enabled }}
+{{- $persist := .Values.persistence.enabled }}
+{{- $promRouted := eq $prom.exposure.mode "traefik" }}
+{{- $amRouted := and $am.enabled (eq $am.exposure.mode "traefik") }}
+{{- $gfRouted := and $gf.enabled (eq $gf.exposure.mode "traefik") }}
+{{- $gfLoki := and $gf.enabled $gf.datasources.loki.enabled }}
+
+{{- /* An exporter nobody discovers is host access granted for nothing: the exporters are found
+       only through the socket-proxy, so they cannot outlive it. */ -}}
+{{- if and (not $disc) (or .Values.nodeExporter.enabled .Values.cadvisor.enabled) }}
+{{-   fail "nodeExporter.enabled and cadvisor.enabled need discovery.enabled: Prometheus finds the exporters through the socket-proxy. Turn the exporters off as well, or leave discovery on." }}
+{{- end }}
+{{- /* Prometheus and Alertmanager authenticate nobody. Routing either without basic auth would
+       put the whole query API, or alert silencing, on a public hostname. */ -}}
+{{- if and $promRouted (not $prom.basicAuthUsers) }}
+{{-   fail "prometheus.exposure.mode traefik needs prometheus.basicAuthUsers: Prometheus has no authentication of its own." }}
+{{- end }}
+{{- if and $amRouted (not $am.basicAuthUsers) }}
+{{-   fail "alertmanager.exposure.mode traefik needs alertmanager.basicAuthUsers: Alertmanager has no authentication of its own, and anyone who reaches it can silence alerts." }}
+{{- end }}
+{{- /* Named-volume values must not be paths; a host directory goes in the matching volumePath. */ -}}
+{{- if $persist }}
+{{-   range $key, $c := dict "prometheus" $prom "alertmanager" $am "grafana" $gf }}
+{{-     if and (not $c.volumePath) (contains "/" $c.volumeName) }}
+{{-       fail (printf "%s.volumeName is a Docker named-volume name and cannot contain '/'. To store the data under a host directory, set %s.volumePath instead." $key $key) }}
+{{-     end }}
+{{-   end }}
+{{- end }}
+
+{{- /* Every Swarm config name this chart can render. Swarm refuses a config name longer than 64
+       characters, and it says so only at deploy time, after the pre-flight passed. Checked
+       here for every name, used or not, so a release name that fits today cannot stop
+       fitting when a feature is switched on. Shipped files rotate with the chart version,
+       operator files (values/) with their content. */ -}}
+{{- $cfg := dict
+      "prometheus-config" (printf "%s_prometheus_%s" $rel $ver)
+      "prometheus-rules" (printf "%s_rules_%s" $rel $ver)
+      "prometheus-rules-node-exporter" (printf "%s_rules-node_%s" $rel $ver)
+      "prometheus-rules-cadvisor" (printf "%s_rules-cadvisor_%s" $rel $ver)
+      "prometheus-extra-rules" (printf "%s_xrules_%s" $rel ($prom.extraRules | sha256sum | trunc 12))
+      "prometheus-extra-scrape" (printf "%s_xscrape_%s" $rel ($prom.extraScrapeConfigs | sha256sum | trunc 12))
+      "alertmanager-config" (ternary (printf "%s_am_%s" $rel ($am.config | sha256sum | trunc 12)) (printf "%s_am_%s" $rel $ver) (ne $am.config ""))
+      "grafana-datasources" (printf "%s_gf-ds_%s" $rel $ver)
+      "grafana-datasources-alertmanager" (printf "%s_gf-ds-am_%s" $rel $ver)
+      "grafana-datasources-loki" (printf "%s_gf-ds-loki_%s" $rel $ver)
+      "grafana-dashboards" (printf "%s_gf-dash_%s" $rel $ver)
+      "dashboard-node-exporter-full" (printf "%s_dash-nodes_%s" $rel $ver)
+      "dashboard-swarm-services" (printf "%s_dash-swarm_%s" $rel $ver)
+}}
+{{- $longest := "" }}
+{{- range $k, $n := $cfg }}{{ if gt (len $n) (len $longest) }}{{ $longest = $n }}{{ end }}{{ end }}
+{{- if gt (len $longest) 64 }}
+{{-   fail (printf "release name %q is too long for this chart: its longest Swarm config name, %q, would be %d characters and Swarm allows 64. Use a release name of at most %d characters." $rel $longest (len $longest) (sub 64 (sub (len $longest) (len $rel)))) }}
+{{- end }}
+
+{{- /* The data pin for the three stateful services. It travels with persistence, so the
+       ephemeral mode never leaves a task Pending on a node label nobody set (#55). The
+       exporters and the proxy never get it. */ -}}
+{{- $pin := "" }}
+{{- if and $persist .Values.persistence.nodeLabel }}
+{{-   $pin = printf "node.labels.%s == true" .Values.persistence.nodeLabel }}
+{{- end }}
+
+{{- /* Overlays Prometheus scrapes on. The discovery job keeps exactly these network names, so
+       every target it keeps is on a network Prometheus is actually attached to. Two releases
+       never scrape each other's exporters: each keeps only its own _internal. */ -}}
+{{- $scrapeNets := list (printf "%s_internal" $rel) .Values.network }}
+{{- range $prom.extraNetworks }}{{ $scrapeNets = append $scrapeNets . }}{{ end }}
+{{- $scrapeNets = $scrapeNets | uniq }}
+{{- $scrapeRegex := list }}
+{{- range $scrapeNets }}{{ $scrapeRegex = append $scrapeRegex (regexQuoteMeta .) }}{{ end }}
+
+{{- $promNets := list "internal" }}
+{{- if $disc }}{{ $promNets = append $promNets "discovery" }}{{ end }}
+{{- $promNets = append $promNets .Values.network }}
+{{- range $prom.extraNetworks }}{{ $promNets = append $promNets . }}{{ end }}
+{{- if $promRouted }}{{ $promNets = append $promNets .Values.traefik.network }}{{ end }}
+{{- $promNets = $promNets | uniq }}
+
+{{- $externalNets := list .Values.network }}
+{{- range $prom.extraNetworks }}{{ $externalNets = append $externalNets . }}{{ end }}
+{{- if or $promRouted $amRouted $gfRouted }}{{ $externalNets = append $externalNets .Values.traefik.network }}{{ end }}
+{{- $externalNets = $externalNets | uniq }}
+
+version: "3.9"
+
+services:
+
+  prometheus:
+    image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
+{{- /* Deliberately absent: --web.enable-lifecycle (reload/quit over HTTP),
+       --web.enable-admin-api (delete series, snapshot) and --web.enable-remote-write-receiver.
+       Anyone on the stack's overlays or the `network` trust zone can reach this API. */}}
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+{{- if $promRouted }}
+      - "--web.external-url={{ ternary "https" "http" $prom.ingress.tls }}://{{ $prom.ingress.host }}"
+{{- end }}
+{{- range $prom.extraArgs }}
+      - {{ . | quote }}
+{{- end }}
+{{- /* Read by the golang template driver on the prometheus-config config below. */}}
+    environment:
+      PROMSTACK_SCRAPE_INTERVAL: {{ $prom.scrapeInterval | quote }}
+      PROMSTACK_RETENTION: {{ $prom.retention | quote }}
+{{- if $am.enabled }}
+      PROMSTACK_ALERTMANAGER: "{{ $rel }}_alertmanager:9093"
+{{- end }}
+{{- if $disc }}
+      PROMSTACK_SD_HOST: "tcp://{{ $rel }}_socket-proxy:2375"
+      PROMSTACK_SCRAPE_NETWORKS: {{ join "|" $scrapeRegex | quote }}
+{{- end }}
+    configs:
+      - source: prometheus-config
+        target: /etc/prometheus/prometheus.yml
+      - source: prometheus-rules
+        target: /etc/prometheus/rules/prometheus-stack.yml
+{{- /* An exporter's absent-alert exists only while the exporter does, or it would fire forever. */}}
+{{- if .Values.nodeExporter.enabled }}
+      - source: prometheus-rules-node-exporter
+        target: /etc/prometheus/rules/node-exporter.yml
+{{- end }}
+{{- if .Values.cadvisor.enabled }}
+      - source: prometheus-rules-cadvisor
+        target: /etc/prometheus/rules/cadvisor.yml
+{{- end }}
+{{- if $prom.extraRules }}
+      - source: prometheus-extra-rules
+        target: /etc/prometheus/rules/extra.yml
+{{- end }}
+{{- if $prom.extraScrapeConfigs }}
+      - source: prometheus-extra-scrape
+        target: /etc/prometheus/scrape/extra.yml
+{{- end }}
+{{- if $persist }}
+    volumes:
+      - {{ $prom.volumePath | default $prom.volumeName }}:/prometheus
+{{- end }}
+    networks:
+{{- range $promNets }}
+      - {{ . }}
+{{- end }}
+{{- /* /-/healthy, not /-/ready: ready is 503 for the whole WAL replay after a restart, which
+       on a large TSDB outlasts any retry budget — Swarm would kill Prometheus mid-replay, every
+       time, in exactly the recovery it is trying to finish. */}}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      replicas: 1
+{{- /* Swarm counts a task failure against the rollout only for `monitor` after creating the
+       task, and its default is 5s. The healthcheck above needs 0s start_period + 30s
+       interval x 3 retries = 90s to fail, so anything shorter lets a broken deploy report
+       success. Rounded up to 2m, which also leaves room for the image pull that runs
+       inside the window. Change it together with the healthcheck. */}}
+      update_config:
+        monitor: 2m
+{{- if $pin }}
+      placement:
+        constraints:
+          - {{ $pin }}
+{{- end }}
+{{- template "prometheus-stack.resources" $prom.resources }}
+      restart_policy:
+        condition: any
+{{- if or $promRouted .Values.labels }}
+      labels:
+{{- if $promRouted }}
+{{- template "prometheus-stack.traefik-labels" (dict "router" (printf "%s-prometheus" $base) "traefik" .Values.traefik "ingress" $prom.ingress "auth" $prom.basicAuthUsers "port" 9090) }}
+{{- end }}
+{{- range $key, $val := .Values.labels }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+{{- end }}
+
+{{- if $am.enabled }}
+
+  alertmanager:
+    image: {{ $am.image.repository }}:{{ $am.image.tag }}
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+      # One replica, no gossip: an empty listen address turns clustering off.
+      - "--cluster.listen-address="
+{{- if $amRouted }}
+      - "--web.external-url={{ ternary "https" "http" $am.ingress.tls }}://{{ $am.ingress.host }}"
+{{- end }}
+    configs:
+      - source: alertmanager-config
+        target: /etc/alertmanager/alertmanager.yml
+{{- if $am.secrets }}
+    secrets:
+{{- range $am.secrets }}
+      - {{ . }}
+{{- end }}
+{{- end }}
+{{- if $persist }}
+    volumes:
+      - {{ $am.volumePath | default $am.volumeName }}:/alertmanager
+{{- end }}
+    networks:
+      - internal
+{{- if $amRouted }}
+      - {{ .Values.traefik.network }}
+{{- end }}
+    deploy:
+      replicas: 1
+{{- if $pin }}
+      placement:
+        constraints:
+          - {{ $pin }}
+{{- end }}
+{{- template "prometheus-stack.resources" $am.resources }}
+      restart_policy:
+        condition: any
+{{- if $amRouted }}
+      labels:
+{{- template "prometheus-stack.traefik-labels" (dict "router" (printf "%s-alertmanager" $base) "traefik" .Values.traefik "ingress" $am.ingress "auth" $am.basicAuthUsers "port" 9093) }}
+{{- end }}
+{{- end }}
+
+{{- if $gf.enabled }}
+{{- /* Grafana reads every *__FILE variable from the named file, so no secret value is ever in
+       this environment or in `docker inspect`. extraEnv comes last and may override the
+       hardening defaults deliberately. */ -}}
+{{- $gfEnv := dict
+      "GF_SECURITY_ADMIN_USER" $gf.adminUser
+      "GF_SECURITY_ADMIN_PASSWORD__FILE" (printf "/run/secrets/%s" $gf.adminPasswordSecret)
+      "GF_SECURITY_SECRET_KEY__FILE" (printf "/run/secrets/%s" $gf.secretKeySecret)
+      "GF_USERS_ALLOW_SIGN_UP" "false"
+      "GF_AUTH_ANONYMOUS_ENABLED" "false"
+      "GF_ANALYTICS_REPORTING_ENABLED" "false"
+      "GF_ANALYTICS_CHECK_FOR_UPDATES" "false"
+      "GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES" "false"
+      "GF_PLUGINS_PREINSTALL_DISABLED" "true"
+      "GF_METRICS_ENABLED" "false"
+      "GF_SNAPSHOTS_EXTERNAL_ENABLED" "false"
+      "PROMSTACK_PROMETHEUS_URL" (printf "http://%s_prometheus:9090" $rel)
+      "PROMSTACK_SCRAPE_INTERVAL" $prom.scrapeInterval
+}}
+{{- if eq $gf.exposure.mode "traefik" }}
+{{-   $_ := set $gfEnv "GF_SERVER_ROOT_URL" (printf "%s://%s/" (ternary "https" "http" $gf.ingress.tls) $gf.ingress.host) }}
+{{- /*   Secure cookies only where users arrive over TLS. published mode is plain HTTP, and a
+         secure cookie there would never be sent back: nobody could log in. */}}
+{{-   if $gf.ingress.tls }}
+{{-     $_ := set $gfEnv "GF_SECURITY_COOKIE_SECURE" "true" }}
+{{-   end }}
+{{- else if eq $gf.exposure.mode "published" }}
+{{-   $_ := set $gfEnv "GF_SERVER_ROOT_URL" (printf "http://%s:%v/" $gf.ingress.host $gf.publish.port) }}
+{{- end }}
+{{- if $am.enabled }}
+{{-   $_ := set $gfEnv "PROMSTACK_ALERTMANAGER_URL" (printf "http://%s_alertmanager:9093" $rel) }}
+{{- end }}
+{{- if $gfLoki }}
+{{-   $_ := set $gfEnv "PROMSTACK_LOKI_URL" $gf.datasources.loki.url }}
+{{- end }}
+{{- range $gf.extraSecrets }}
+{{-   $_ := set $gfEnv (printf "%s__FILE" .env) (printf "/run/secrets/%s" .name) }}
+{{- end }}
+{{- $gfEnv = mergeOverwrite $gfEnv $gf.extraEnv }}
+
+  grafana:
+    image: {{ $gf.image.repository }}:{{ $gf.image.tag }}
+    environment:
+{{- range $key, $val := $gfEnv }}
+      {{ $key }}: {{ $val | toString | quote }}
+{{- end }}
+    secrets:
+      - {{ $gf.adminPasswordSecret }}
+      - {{ $gf.secretKeySecret }}
+{{- range $gf.extraSecrets }}
+      - {{ .name }}
+{{- end }}
+    configs:
+      - source: grafana-datasources
+        target: /etc/grafana/provisioning/datasources/prometheus.yml
+{{- if $am.enabled }}
+      - source: grafana-datasources-alertmanager
+        target: /etc/grafana/provisioning/datasources/alertmanager.yml
+{{- end }}
+{{- if $gfLoki }}
+      - source: grafana-datasources-loki
+        target: /etc/grafana/provisioning/datasources/loki.yml
+{{- end }}
+      - source: grafana-dashboards
+        target: /etc/grafana/provisioning/dashboards/prometheus-stack.yml
+      - source: dashboard-node-exporter-full
+        target: /etc/grafana/dashboards/node-exporter-full.json
+      - source: dashboard-swarm-services
+        target: /etc/grafana/dashboards/swarm-services.json
+{{- if eq $gf.exposure.mode "published" }}
+    ports:
+      - target: 3000
+        published: {{ $gf.publish.port }}
+        protocol: tcp
+        mode: {{ $gf.publish.mode }}
+{{- end }}
+{{- if $persist }}
+    volumes:
+      - {{ $gf.volumePath | default $gf.volumeName }}:/var/lib/grafana
+{{- end }}
+    networks:
+      - internal
+{{- if $gfLoki }}
+      - {{ .Values.network }}
+{{- end }}
+{{- if $gfRouted }}
+      - {{ .Values.traefik.network }}
+{{- end }}
+    deploy:
+      replicas: 1
+{{- if $pin }}
+      placement:
+        constraints:
+          - {{ $pin }}
+{{- end }}
+{{- template "prometheus-stack.resources" $gf.resources }}
+      restart_policy:
+        condition: any
+{{- if $gfRouted }}
+      labels:
+{{- template "prometheus-stack.traefik-labels" (dict "router" (printf "%s-grafana" $base) "traefik" .Values.traefik "ingress" $gf.ingress "auth" "" "port" 3000) }}
+{{- end }}
+{{- end }}
+
+{{- if .Values.nodeExporter.enabled }}
+
+{{- /* Host metrics. Swarm has no host network or host PID namespace for a service, so the
+       collectors that read the container's own network namespace (netdev, netstat, sockstat,
+       arp) would describe the container, not the node: they are off. netclass reads host
+       sysfs and stays, minus the per-container virtual devices. */}}
+  node-exporter:
+    image: {{ .Values.nodeExporter.image.repository }}:{{ .Values.nodeExporter.image.tag }}
+    # A Swarm service template, resolved per task by the daemon, so node_uname_info's
+    # nodename is the node rather than a container ID.
+    hostname: "{{ `{{.Node.Hostname}}` }}"
+    read_only: true
+    command:
+      - "--path.rootfs=/host"
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.udev.data=/host/run/udev/data"
+      - "--collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run|var/lib/docker/.+)($$|/)"
+      - "--collector.netclass.ignored-devices=^(veth.*|br-.*|docker.*)$$"
+      - "--no-collector.netdev"
+      - "--no-collector.netstat"
+      - "--no-collector.sockstat"
+      - "--no-collector.arp"
+{{- range .Values.nodeExporter.extraArgs }}
+      - {{ . | quote }}
+{{- end }}
+    volumes:
+      # The host's whole root filesystem, read-only. Invisible to the security scan
+      # (see Chart.yaml); asserted by ci/render-check.sh. The image runs as nobody, so
+      # it reads only what is world-readable.
+      - /:/host:ro,rslave
+    networks:
+      - internal
+    deploy:
+      mode: global
+      placement:
+        constraints:
+          - node.platform.os == linux
+{{- template "prometheus-stack.resources" .Values.nodeExporter.resources }}
+      restart_policy:
+        condition: any
+      labels:
+        - "prometheus.io/scrape=true"
+        - "prometheus.io/port=9100"
+        - "prometheus.io/job=node-exporter"
+{{- end }}
+
+{{- if .Values.cadvisor.enabled }}
+
+{{- /* Per-container metrics. Root, and unprivileged: Swarm cannot grant `privileged`, so there
+       are no OOM events (/dev/kmsg) and no process metrics. Only the four swarm labels are kept
+       from each container, and `disable_metrics` REPLACES cAdvisor's default list, so it
+       restates that list plus percpu (cardinality) and disk (per-container filesystem usage,
+       which reads 0 on Docker's containerd image store anyway). */}}
+  cadvisor:
+    image: {{ .Values.cadvisor.image.repository }}:{{ .Values.cadvisor.image.tag }}
+    read_only: true
+    command:
+      - "--docker_only=true"
+      - "--housekeeping_interval={{ .Values.cadvisor.housekeepingInterval }}"
+      - "--store_container_labels=false"
+      - "--whitelisted_container_labels=com.docker.swarm.service.name,com.docker.swarm.task.name,com.docker.swarm.node.id,com.docker.stack.namespace"
+      - "--disable_metrics=advtcp,cpu_topology,cpuset,hugetlb,memory_numa,process,referenced_memory,resctrl,sched,tcp,udp,percpu,disk"
+{{- range .Values.cadvisor.extraArgs }}
+      - {{ . | quote }}
+{{- end }}
+    volumes:
+      # Root-equivalent access to this node's daemon; see Chart.yaml.
+      - {{ .Values.discovery.dockerSocket }}:/var/run/docker.sock:ro
+      # Which of the next two cAdvisor needs depends on the daemon's storage: on the
+      # containerd image store (Docker 29's default for new installs) no series carries a
+      # container label without containerd's socket; on the classic overlay2 driver it reads
+      # each container's layer ID under the daemon's root dir, or drops the container.
+      - {{ .Values.cadvisor.containerdSocket }}:/run/containerd/containerd.sock:ro
+      # cAdvisor looks for it under /rootfs at the path `docker info` reports as the root dir.
+      - {{ .Values.cadvisor.dockerRoot }}:/rootfs{{ .Values.cadvisor.dockerRoot }}:ro
+      - /sys:/sys:ro
+      - /proc:/rootfs/proc:ro
+    networks:
+      - internal
+    deploy:
+      mode: global
+      placement:
+        constraints:
+          - node.platform.os == linux
+{{- template "prometheus-stack.resources" .Values.cadvisor.resources }}
+      restart_policy:
+        condition: any
+      labels:
+        - "prometheus.io/scrape=true"
+        - "prometheus.io/port=8080"
+        - "prometheus.io/job=cadvisor"
+{{- end }}
+
+{{- if $disc }}
+
+{{- /* The only Docker API Prometheus ever talks to: GET on four collections plus the version
+       ping, each path its own anchored regex (one combined regex let a logs path through).
+       No logs, exec or writes; POST and DELETE answer 405. It sits alone with Prometheus on an
+       `internal: true` overlay with no route out, and accepts connections only from
+       Prometheus's own tasks. That source check needs dnsrr: behind a VIP every client
+       arrives from the load balancer's address. Root, because the socket is 0660 root:docker
+       and the docker group's id differs from host to host. */}}
+  socket-proxy:
+    image: {{ .Values.discovery.image.repository }}:{{ .Values.discovery.image.tag }}
+    user: "0:0"
+    read_only: true
+    command:
+      - "-listenip=0.0.0.0"
+      - "-allowfrom=tasks.{{ $rel }}_prometheus"
+      - '-allowGET=/v1\.[0-9]+/tasks'
+      - '-allowGET=/v1\.[0-9]+/services'
+      - '-allowGET=/v1\.[0-9]+/nodes'
+      - '-allowGET=/v1\.[0-9]+/networks'
+      - "-allowGET=/_ping"
+      - "-allowHEAD=/_ping"
+    volumes:
+      - {{ .Values.discovery.dockerSocket }}:/var/run/docker.sock:ro
+    networks:
+      - discovery
+    deploy:
+      replicas: 1
+      endpoint_mode: dnsrr
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: any
+{{- end }}
+
+configs:
+  prometheus-config:
+    name: {{ index $cfg "prometheus-config" | quote }}
+    file: files/prometheus/prometheus.yml
+    template_driver: golang
+  prometheus-rules:
+    name: {{ index $cfg "prometheus-rules" | quote }}
+    file: files/prometheus/rules/prometheus-stack.yml
+{{- if .Values.nodeExporter.enabled }}
+  prometheus-rules-node-exporter:
+    name: {{ index $cfg "prometheus-rules-node-exporter" | quote }}
+    file: files/prometheus/rules/node-exporter.yml
+{{- end }}
+{{- if .Values.cadvisor.enabled }}
+  prometheus-rules-cadvisor:
+    name: {{ index $cfg "prometheus-rules-cadvisor" | quote }}
+    file: files/prometheus/rules/cadvisor.yml
+{{- end }}
+{{- if $prom.extraRules }}
+  prometheus-extra-rules:
+    name: {{ index $cfg "prometheus-extra-rules" | quote }}
+    file: values/prometheus.extraRules
+{{- end }}
+{{- if $prom.extraScrapeConfigs }}
+  prometheus-extra-scrape:
+    name: {{ index $cfg "prometheus-extra-scrape" | quote }}
+    file: values/prometheus.extraScrapeConfigs
+{{- end }}
+{{- if $am.enabled }}
+  alertmanager-config:
+    name: {{ index $cfg "alertmanager-config" | quote }}
+{{- if $am.config }}
+    file: values/alertmanager.config
+{{- else }}
+    file: files/alertmanager/alertmanager.yml
+{{- end }}
+{{- end }}
+{{- if $gf.enabled }}
+  grafana-datasources:
+    name: {{ index $cfg "grafana-datasources" | quote }}
+    file: files/grafana/datasources.yml
+{{- if $am.enabled }}
+  grafana-datasources-alertmanager:
+    name: {{ index $cfg "grafana-datasources-alertmanager" | quote }}
+    file: files/grafana/datasources-alertmanager.yml
+{{- end }}
+{{- if $gfLoki }}
+  grafana-datasources-loki:
+    name: {{ index $cfg "grafana-datasources-loki" | quote }}
+    file: files/grafana/datasources-loki.yml
+{{- end }}
+  grafana-dashboards:
+    name: {{ index $cfg "grafana-dashboards" | quote }}
+    file: files/grafana/dashboards.yml
+  dashboard-node-exporter-full:
+    name: {{ index $cfg "dashboard-node-exporter-full" | quote }}
+    file: files/grafana/dashboards/node-exporter-full.json
+  dashboard-swarm-services:
+    name: {{ index $cfg "dashboard-swarm-services" | quote }}
+    file: files/grafana/dashboards/swarm-services.json
+{{- end }}
+
+{{- $secrets := list }}
+{{- if $am.enabled }}{{ range $am.secrets }}{{ $secrets = append $secrets . }}{{ end }}{{ end }}
+{{- if $gf.enabled }}
+{{-   $secrets = append $secrets $gf.adminPasswordSecret }}
+{{-   $secrets = append $secrets $gf.secretKeySecret }}
+{{-   range $gf.extraSecrets }}{{ $secrets = append $secrets .name }}{{ end }}
+{{- end }}
+{{- if $secrets }}
+
+secrets:
+{{- range $secrets | uniq }}
+  {{ . }}:
+    external: true
+{{- end }}
+{{- end }}
+
+{{- $volumes := list }}
+{{- if $persist }}
+{{-   if not $prom.volumePath }}{{ $volumes = append $volumes $prom.volumeName }}{{ end }}
+{{-   if and $am.enabled (not $am.volumePath) }}{{ $volumes = append $volumes $am.volumeName }}{{ end }}
+{{-   if and $gf.enabled (not $gf.volumePath) }}{{ $volumes = append $volumes $gf.volumeName }}{{ end }}
+{{- end }}
+{{- if $volumes }}
+
+volumes:
+{{- range $volumes }}
+  {{ . }}: {}
+{{- end }}
+{{- end }}
+
+networks:
+  # The stack's own overlay. Explicitly named, because the discovery job keeps targets by
+  # network name. Not `internal: true`: Alertmanager and Grafana need egress.
+  internal:
+    name: "{{ $rel }}_internal"
+    driver: overlay
+{{- if $disc }}
+  # Only the socket-proxy and Prometheus, with no route out of the swarm.
+  discovery:
+    driver: overlay
+    internal: true
+{{- end }}
+{{- range $externalNets }}
+  {{ . }}:
+    external: true
+{{- end }}

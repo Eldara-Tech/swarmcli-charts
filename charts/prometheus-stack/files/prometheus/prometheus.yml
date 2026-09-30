@@ -1,0 +1,113 @@
+# Prometheus configuration for the prometheus-stack chart.
+#
+# This file is a Swarm config with `template_driver: golang`: the daemon renders it
+# once per task, and each `env` action reads a variable from the prometheus
+# service's own environment. That is how the per-release values (peer addresses,
+# networks, intervals, retention) reach one static file, since a chart template
+# cannot read or template anything under files/. Every PROMSTACK_* variable is set
+# by templates/stack.yaml.tmpl.
+#
+# Swarm evaluates EVERY action in this file, comments included, so no comment may
+# contain a double brace. Control flow sits on comment lines of its own, so the
+# unrendered file still parses as YAML: yamllint checks it and ci/render-check.sh
+# reads it. Swarm evaluates those actions all the same and leaves an empty comment.
+#
+# Rule files are separate configs WITHOUT the template driver, because their
+# annotations use the $labels template variable, which Swarm would evaluate.
+#
+# Validate the rendered file inside a running task:
+#   docker exec <prometheus container> promtool check config /etc/prometheus/prometheus.yml
+
+global:
+  scrape_interval: '{{ env "PROMSTACK_SCRAPE_INTERVAL" }}'
+  evaluation_interval: '{{ env "PROMSTACK_SCRAPE_INTERVAL" }}'
+
+storage:
+  tsdb:
+    retention:
+      time: '{{ env "PROMSTACK_RETENTION" }}'
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+# prometheus.extraScrapeConfigs lands here when it is set.
+scrape_config_files:
+  - /etc/prometheus/scrape/*.yml
+
+# {{ if env "PROMSTACK_ALERTMANAGER" }}
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['{{ env "PROMSTACK_ALERTMANAGER" }}']
+# {{ end }}
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+# {{ if env "PROMSTACK_ALERTMANAGER" }}
+  - job_name: alertmanager
+    static_configs:
+      - targets: ['{{ env "PROMSTACK_ALERTMANAGER" }}']
+# {{ end }}
+
+# {{ if env "PROMSTACK_SD_HOST" }}
+  # Every task, anywhere in the swarm, whose SERVICE carries the deploy label
+  # prometheus.io/scrape=true, reached over a network Prometheus is attached to.
+  - job_name: swarm-tasks
+    # Bounds how many dropped targets the targets API keeps (0 would be unlimited).
+    # Discovered labels include every deploy label of the service, so fewer is better.
+    keep_dropped_targets: 1
+    # Plenty of /metrics endpoints answer without a Content-Type, which Prometheus 3
+    # refuses unless the job names a fallback.
+    fallback_scrape_protocol: PrometheusText0.0.4
+    # Any service can opt in, so one runaway /metrics must not swamp the TSDB: a scrape
+    # over either limit is failed whole (up == 0, TargetDown). cAdvisor on a node with a
+    # few hundred containers stays well under both. A service that needs more should
+    # not opt in; scrape it with a job of its own in prometheus.extraScrapeConfigs.
+    sample_limit: 100000
+    label_limit: 64
+    dockerswarm_sd_configs:
+      - host: '{{ env "PROMSTACK_SD_HOST" }}'
+        role: tasks
+        refresh_interval: 30s
+        # Server-side: the daemon returns only opted-in tasks, so no other service's
+        # labels (a Traefik basic-auth hash, say) ever reach Prometheus.
+        filters:
+          - name: label
+            values: ['prometheus.io/scrape=true']
+    relabel_configs:
+      - source_labels: [__meta_dockerswarm_task_desired_state]
+        regex: running
+        action: keep
+      # Defence in depth: still gates if the filter above is ever mistyped or ignored.
+      - source_labels: [__meta_dockerswarm_service_label_prometheus_io_scrape]
+        regex: 'true'
+        action: keep
+      # One target per network Prometheus is attached to: the stack's own overlay,
+      # `network` and prometheus.extraNetworks.
+      - source_labels: [__meta_dockerswarm_network_name]
+        regex: '({{ env "PROMSTACK_SCRAPE_NETWORKS" }})'
+        action: keep
+      - source_labels: [__address__, __meta_dockerswarm_service_label_prometheus_io_port]
+        regex: '([^:]+)(?::\d+)?;(\d+)'
+        replacement: '$1:$2'
+        target_label: __address__
+      - source_labels: [__meta_dockerswarm_service_label_prometheus_io_path]
+        regex: '(.+)'
+        target_label: __metrics_path__
+      - source_labels: [__meta_dockerswarm_service_name]
+        target_label: job
+      - source_labels: [__meta_dockerswarm_service_label_prometheus_io_job]
+        regex: '(.+)'
+        target_label: job
+      - source_labels: [__meta_dockerswarm_node_hostname]
+        target_label: node
+      # A global service has one task per node, so node:port names it better than a
+      # task IP that changes on every restart.
+      - source_labels: [__meta_dockerswarm_service_mode, __meta_dockerswarm_node_hostname, __meta_dockerswarm_service_label_prometheus_io_port]
+        regex: 'global;(.+);(.+)'
+        replacement: '$1:$2'
+        target_label: instance
+# {{ end }}

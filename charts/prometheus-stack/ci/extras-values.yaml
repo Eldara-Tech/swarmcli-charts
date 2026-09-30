@@ -1,0 +1,30 @@
+# The operator extras: a scrape job and a rule file (as --set-file would pass them),
+# extra Grafana environment and a secret handed to Grafana as <env>__FILE, plus
+# Alertmanager routed behind basic auth with TLS — so the HTTP router only
+# redirects and the auth middleware sits on the HTTPS one.
+prometheus:
+  extraScrapeConfigs: |
+    scrape_configs:
+      - job_name: e2e-extra-scrape
+        static_configs:
+          - targets: ['localhost:9090']
+  extraRules: |
+    groups:
+      - name: e2e-extra
+        rules:
+          - record: e2e:extra_rule:up
+            expr: sum(up)
+grafana:
+  extraEnv:
+    GF_SMTP_ENABLED: "true"
+    GF_SMTP_HOST: "smtp.e2e.test:587"
+  extraSecrets:
+    - name: prometheus-stack-e2e-smtp
+      env: GF_SMTP_PASSWORD
+alertmanager:
+  exposure:
+    mode: traefik
+  ingress:
+    host: alertmanager.example.com
+    tls: true
+  basicAuthUsers: "ops:$$apr1$$e2eSalt1$$1s/hES2iWPor3OWxBdGX./"

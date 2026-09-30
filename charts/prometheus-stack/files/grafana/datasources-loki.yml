@@ -1,0 +1,10 @@
+# The Loki datasource, mounted only when grafana.datasources.loki.enabled.
+apiVersion: 1
+
+datasources:
+  - name: Loki
+    type: loki
+    uid: loki
+    access: proxy
+    url: $PROMSTACK_LOKI_URL
+    editable: false
