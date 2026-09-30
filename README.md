@@ -36,9 +36,12 @@ Community charts for [SwarmCLI](https://github.com/Eldara-Tech/swarmcli) — a k
 
 ## Adding the Repository
 
+swarmcli releases after v2.1.1 start with this repository already configured as
+`swarmcli-charts`, so there is nothing to add. On v2.1.1 or earlier, or after
+removing it, add it by hand:
+
 ```bash
 swarmcli charts repo add swarmcli-charts https://eldara-tech.github.io/swarmcli-charts
-swarmcli charts repo update
 ```
 
 You can add multiple repos and reference charts by repo prefix. `install` takes a
