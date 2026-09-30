@@ -104,6 +104,25 @@ request.
 > Infinispan cache clustering (JGroups discovery) configured for shared sessions,
 > which is out of scope for this chart.
 
+### Deploying with swarmcli-cd
+
+[swarmcli-cd](https://github.com/Eldara-Tech/swarmcli-cd) deploys a release only if its
+application's `allow` names every `external:` secret, config, volume and network the release
+references, whatever its name. A default install needs:
+
+```yaml
+- name: keycloak          # an application in the swarmcli-cd app set
+  source: { ... }
+  allow:
+    secrets:  [keycloak_db_password, keycloak_admin_password]
+    networks: [keycloak-db-net, traefik-public]
+```
+
+Terminating TLS in Keycloak (`exposure.mode: published` with `publish.tls.enabled`) adds
+`keycloak_tls_cert` and `keycloak_tls_key`. Each entry is the name itself, so an override in
+values needs the same change here. See
+[`allow`](https://github.com/Eldara-Tech/swarmcli-cd/blob/main/docs/configuration.md#allow-optional) in the swarmcli-cd docs.
+
 ## Exposure modes
 
 `exposure.mode` selects how clients reach Keycloak. `KC_HOSTNAME` is derived from

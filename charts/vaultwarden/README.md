@@ -61,6 +61,26 @@ swarmcli charts install vaultwarden swarmcli-charts/vaultwarden \
 	--set ingress.tls=false
 ```
 
+### Deploying with swarmcli-cd
+
+[swarmcli-cd](https://github.com/Eldara-Tech/swarmcli-cd) deploys a release only if its
+application's `allow` names every `external:` secret, config, volume and network the release
+references, whatever its name. A default install needs:
+
+```yaml
+- name: vaultwarden       # an application in the swarmcli-cd app set
+  source: { ... }
+  allow:
+    networks: [traefik-public]
+```
+
+`database.type: postgres` adds `vaultwarden_postgres_password` and `postgres-net`,
+`database.type: mysql` adds `vaultwarden_mysql_password` and `mariadb-net`,
+`auth.adminToken.enabled` adds `vaultwarden_admin_token`, and `smtp.password.enabled` adds
+`vaultwarden_smtp_password`. Each entry is the name itself, so an override in values needs
+the same change here. See
+[`allow`](https://github.com/Eldara-Tech/swarmcli-cd/blob/main/docs/configuration.md#allow-optional) in the swarmcli-cd docs.
+
 ## Notes
 
 - `database.type=sqlite` is the simplest path and keeps everything in `/data`.

@@ -67,6 +67,24 @@ declare a cold-booting GitLab unhealthy after ~5 minutes and restart it forever.
 With `auth.rootPassword.enabled: false` (the default), GitLab generates a root password into
 `/etc/gitlab/initial_root_password` on the pinned node.
 
+### Deploying with swarmcli-cd
+
+[swarmcli-cd](https://github.com/Eldara-Tech/swarmcli-cd) deploys a release only if its
+application's `allow` names every `external:` secret, config, volume and network the release
+references, whatever its name. A default install needs:
+
+```yaml
+- name: gitlab            # an application in the swarmcli-cd app set
+  source: { ... }
+  allow:
+    networks: [traefik-public]
+```
+
+`auth.rootPassword.enabled` adds `gitlab_root_password` to `secrets`, and SMTP with an
+`smtp.authentication` other than `none` adds `gitlab_smtp_password`. Each entry is the name
+itself, so an override in values needs the same change here. See
+[`allow`](https://github.com/Eldara-Tech/swarmcli-cd/blob/main/docs/configuration.md#allow-optional) in the swarmcli-cd docs.
+
 ## How GitLab is configured
 
 GitLab has no per-setting environment variables. The image's `/assets/gitlab.rb` ends with

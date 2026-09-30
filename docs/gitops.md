@@ -317,4 +317,14 @@ waited out until the next merge. That is
 [swarmcli-cd](https://github.com/Eldara-Tech/swarmcli-cd), and the
 [swarmcli-cd chart](../charts/swarmcli-cd) deploys it.
 
+The controller lets a release reach outside itself only as far as its
+application's `allow` in the app set permits. Every `external:` secret, config,
+volume and network a release references needs an entry there, whatever its
+name — the postgres chart's `postgres_password` included — and so does a host
+path it binds, such as the Docker socket the traefik chart mounts. A chart's
+`requirements.yaml` lists the external names it can reference, and the charts
+whose secrets are named after the chart give a default install's entries in
+their README. See
+[`allow`](https://github.com/Eldara-Tech/swarmcli-cd/blob/main/docs/configuration.md#allow-optional).
+
 [actions/runner#801]: https://github.com/actions/runner/issues/801
