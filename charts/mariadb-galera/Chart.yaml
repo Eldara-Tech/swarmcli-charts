@@ -2,7 +2,7 @@ name: mariadb-galera
 description: MariaDB Galera cluster for Docker Swarm — synchronous multi-primary, one pinned peer per node
 version: 0.1.0
 # renovate: image=mariadb
-appVersion: "12.3"
+appVersion: "13.0"
 # Oldest swarmcli whose chart engine renders this chart; verified by
 # scripts/floor-check.sh against a real binary of that version.
 swarmcliVersion: ">= 1.11.0"
