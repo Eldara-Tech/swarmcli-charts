@@ -160,7 +160,7 @@ done
 # into a fresh state dir. `charts outdated` takes a chart's newest version from ANY
 # configured repo, so its whoami would stand in for the served one. Removing it
 # sticks: seeding only happens while repos.json does not exist.
-if "$SWARMCLI" charts repo list | awk 'NR > 1 {print $1}' | grep -qx swarmcli-charts; then
+if "$SWARMCLI" charts repo list | awk 'NR > 1 {print $1}' | grep -x swarmcli-charts >/dev/null; then
   "$SWARMCLI" charts repo remove swarmcli-charts >/dev/null
 fi
 "$SWARMCLI" charts repo update >/dev/null
