@@ -37,7 +37,7 @@ svc='.services.seaweedfs'
 q() { yq -r "$1" "$rendered"; }
 
 script="$(q "$svc.command[0]")"
-args="$(q "$svc.command[1:][]")"
+args="$(q "$svc.command[]" | sed 1d)"  # the script is one line; no slice syntax, older yq lacks it
 [ -n "$script" ] && [ "$script" != "null" ] || bad "the service has no start-up script — every check below would pass vacuously"
 
 # ── the wrapper and its exec target ───────────────────────────────────────────────────
