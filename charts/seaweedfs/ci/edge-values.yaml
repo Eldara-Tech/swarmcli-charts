@@ -1,0 +1,12 @@
+# Traefik-routed on the in-repo traefik chart as a real edge (ci/e2e-setup.sh stands it
+# up). Plain HTTP (tls:false): CI cannot issue an ACME certificate, so this exercises
+# routing, discovery and path-style S3 with a SigV4 signature through the proxy — not
+# cert resolution.
+exposure:
+  mode: traefik
+  network: traefik-public
+ingress:
+  host: s3.e2e.test
+  tls: false
+buckets:
+  - runner-cache

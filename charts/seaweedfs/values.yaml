@@ -1,0 +1,138 @@
+# seaweedfs chart default values.
+#
+# SeaweedFS as an S3-compatible object store: ONE service running `weed server -s3`,
+# which is master, volume server, filer and S3 gateway in a single process, with all of
+# its data on one node-local volume. That is the shape for a build cache, a backup
+# target or an application's blob store on a small swarm — not a distributed cluster.
+#
+# Two things drive the defaults:
+#
+#   1. S3 authentication is ON, always. SeaweedFS serves every request anonymously when
+#      it knows no identity, so the chart refuses to start unless both credential
+#      secrets exist and are non-empty — an empty secret must never become an open store.
+#   2. Only the S3 port leaves the container. The master, volume and filer APIs carry no
+#      authentication at all and are bound to 127.0.0.1; see the chart README.
+
+image:
+  repository: chrislusf/seaweedfs
+  tag: ""  # defaults to appVersion from Chart.yaml
+
+s3:
+  # Port the S3 API listens on inside the container — the port other stacks dial on
+  # network.name, the Traefik load-balancer target and the published target.
+  port: 8333
+  # EXTERNAL Swarm secrets holding the one admin identity's access key id and secret
+  # key. Pre-create them; the chart never creates secrets:
+  #   printf '%s' 'cache-access-key' | docker secret create seaweedfs-s3-access-key -
+  #   openssl rand -base64 30 | tr -d '\n' | docker secret create seaweedfs-s3-secret-key -
+  accessKeySecret: seaweedfs-s3-access-key
+  secretKeySecret: seaweedfs-s3-secret-key
+
+# Buckets created once the server is up, if they do not exist yet (an existing bucket
+# is left alone, so restarts are safe). Clients such as the GitLab Runner cache never
+# create their own bucket. S3 naming rules apply: 3-63 characters of a-z, 0-9, '.'
+# and '-', starting and ending with a letter or digit.
+buckets: []
+
+# Persistence. Named volume at /data (needle volumes, filer metadata, master state).
+# enabled:false => ephemeral: every object is lost when the task is replaced, which is
+# useful for a smoke test and nothing else.
+persistence:
+  enabled: true
+  volumeName: seaweedfs-data
+  # Store the data under a host directory instead of Docker's managed volume storage.
+  # When set it TAKES PRECEDENCE over volumeName: /data is bind-mounted from this
+  # absolute host path on the pinned node, which must already exist. This is
+  # host-filesystem access, acknowledged via swarmcli-charts/allow: "host-mount" in
+  # Chart.yaml; the default named-volume render needs no acknowledgment.
+  volumePath: ""
+  # Node label pinning the service to the node carrying the data (Swarm volumes are
+  # node-local). Rendered as `node.labels.<nodeLabel> == true` while persistence is
+  # enabled, and dropped with it. Label exactly ONE node first:
+  #   docker node update --label-add seaweedfs-data=true <node>
+  # Set "" to schedule unpinned even with persistence on (single-node swarm).
+  nodeLabel: seaweedfs-data
+
+# Extra scheduling constraints, always applied (independent of the persistence pin
+# above), e.g. ["node.hostname == node-29"].
+placement:
+  constraints: []
+
+# The overlay S3 clients reach the store on, in every exposure mode. Other stacks join
+# it as an external network and dial http://<release>_seaweedfs:<s3.port>.
+# requirements.yaml declares it autoCreate:true, so it is created on first install.
+network:
+  name: seaweedfs-net
+
+# How the S3 API is exposed beyond network.name:
+#   none      - (default) nowhere else; only services on network.name reach it.
+#   traefik   - Traefik deploy labels on exposure.network, routing ingress.host to the
+#               S3 port. Path-style addressing (https://<host>/<bucket>/<key>), which is
+#               what non-AWS S3 clients use, including the GitLab Runner cache.
+#   published - publish s3.port on the Swarm as publish.port.
+exposure:
+  mode: none
+  # The edge proxy's overlay (traefik mode only). Provisioned by the proxy
+  # chart/operator (requirements.yaml, autoCreate:false).
+  network: traefik-public
+
+# Public-facing address for traefik mode. host drives the Traefik Host() rule; tls
+# selects whether an HTTPS router terminates TLS (and HTTP redirects to it).
+ingress:
+  host: s3.example.com
+  tls: true
+
+# traefik-mode routing. The defaults match the traefik chart in this repository;
+# adjust them to your own Traefik if you run one.
+traefik:
+  certResolver: le
+  entrypoints:
+    http: http
+    https: https
+  # Base name for this chart's router/service objects (`<name>-http` / `<name>-https`
+  # routers + the `<name>` service). Empty => the release name.
+  routerName: ""
+  # Swarm-provider constraint label. The traefik chart runs with
+  # --providers.swarm.exposedByDefault=false and a constraint on this label, so a
+  # routed service must carry it to be discovered. Match your Traefik's.
+  constraintLabel: traefik-public
+  # Middleware on the HTTP router redirecting to HTTPS (only when ingress.tls). The
+  # traefik chart always defines https-redirect in the swarm provider.
+  redirectMiddleware: https-redirect
+
+# published-mode port publish. mode: ingress (routing mesh, every node) or host (only
+# the node running the task).
+publish:
+  port: 8333
+  mode: ingress
+
+# Extra `weed server` flags, appended verbatim after the chart's own, e.g.
+# ["-master.volumeSizeLimitMB=512"]. Run `docker run --rm chrislusf/seaweedfs weed
+# server -h` for the full list. Do not rebind -ip/-ip.bind: that re-exposes the
+# unauthenticated internal APIs.
+extraArgs: []
+
+# Probes the S3 gateway's /healthz on 127.0.0.1 with the image's curl.
+healthcheck:
+  enabled: true
+  interval: 15s
+  timeout: 5s
+  retries: 4
+  startPeriod: 30s
+  # Swarm's rollout monitor window. Must outlast the worst-case first failure
+  # (startPeriod + retries x interval = 1m30s here), or a broken deploy reports success.
+  monitor: 2m
+
+# Time Swarm waits after SIGTERM before SIGKILL. SeaweedFS flushes its volume indexes
+# and filer store on shutdown; the 10s default can cut that short.
+stopGracePeriod: 30s
+
+# Swarm deploy resources (optional; each rendered only when set).
+resources:
+  limits:
+    memory: ""
+  reservations:
+    memory: ""
+
+# Extra deploy labels (key: value), merged after the Traefik labels.
+labels: {}
