@@ -1,0 +1,208 @@
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) (contains "/" .Values.persistence.volumeName) -}}
+{{-   fail "persistence.volumeName is a Docker named-volume name and cannot contain '/'. To store data under a host directory, set persistence.volumePath instead." -}}
+{{- end -}}
+{{- if or (not .Values.s3.accessKeySecret) (not .Values.s3.secretKeySecret) -}}
+{{-   fail "s3.accessKeySecret and s3.secretKeySecret are required: without credentials SeaweedFS serves every S3 request anonymously" -}}
+{{- end -}}
+{{- if eq .Values.s3.accessKeySecret .Values.s3.secretKeySecret -}}
+{{-   fail "s3.accessKeySecret and s3.secretKeySecret must name two different secrets" -}}
+{{- end -}}
+{{- /* Bucket names are spliced into the start-up shell, so they are validated here rather
+       than trusted: the S3 naming rules admit nothing a shell would interpret. */}}
+{{- range .Values.buckets }}
+{{-   if not (regexMatch "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" .) }}
+{{-     fail (printf "buckets: %q is not a valid S3 bucket name (3-63 characters of a-z, 0-9, '.' and '-', starting and ending with a letter or digit)" .) }}
+{{-   end }}
+{{- end -}}
+{{- if and (eq .Values.exposure.mode "traefik") (not .Values.ingress.host) -}}
+{{-   fail "ingress.host is required when exposure.mode=traefik" -}}
+{{- end -}}
+version: "3.9"
+
+{{- $mode := .Values.exposure.mode }}
+{{- $router := .Values.traefik.routerName | default .Release.Name }}
+{{- $port := .Values.s3.port | int }}
+{{- $access := .Values.s3.accessKeySecret }}
+{{- $secret := .Values.s3.secretKeySecret }}
+
+{{- $nets := list .Values.network.name }}
+{{- if eq $mode "traefik" }}{{ $nets = append $nets .Values.exposure.network }}{{- end }}
+{{- $nets = $nets | uniq }}
+
+{{- /* `weed server` flags. The image's entrypoint already adds -dir=/data. -ip and -ip.bind
+       put the master, volume server and filer on loopback: their HTTP and gRPC APIs carry
+       no authentication, so anything that could reach them could read and write every
+       object without a key. Only the S3 gateway binds the container's interfaces. The
+       Iceberg and Lance catalog listeners `-s3` starts by default are switched off — this
+       chart serves S3 and nothing else. */}}
+{{- $args := list "server" "-ip=127.0.0.1" "-ip.bind=127.0.0.1" "-s3" "-s3.ip.bind=0.0.0.0" (printf "-s3.port=%d" $port) "-s3.port.iceberg=0" "-s3.port.lance=0" }}
+{{- range .Values.extraArgs }}{{ $args = append $args . }}{{- end }}
+
+services:
+
+  seaweedfs:
+    image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
+
+    # The start-up wrapper. `$$` escapes the `$` for compose, so every expansion happens
+    # inside the container and no secret is resolved into the manifest or `docker inspect`.
+    #
+    #  * Both secrets must be non-empty. SeaweedFS turns AWS_ACCESS_KEY_ID /
+    #    AWS_SECRET_ACCESS_KEY into its one admin identity and only then enforces
+    #    signatures; with either one empty it would serve the store to anyone.
+    #  * WEED_JWT_FILER_SIGNING_KEY (jwt.filer_signing.key) is a fresh random key per
+    #    start. The S3 gateway's gRPC port (s3.port + 10000) shares its bind address and
+    #    accepts identity updates; without a signing key it accepts them from anyone on
+    #    the overlay, so a neighbour could add itself as an admin. Everything that needs
+    #    the key lives in this one process, so it never has to be shared or persisted.
+    #  * Buckets are created by a background loop over the authenticated S3 API once the
+    #    gateway answers. 409 (already exists) counts as done, so a restart is a no-op,
+    #    and a failure is logged rather than taking the server down with it.
+    #  * `exec` hands PID 1 to the image's entrypoint, which fixes /data ownership and
+    #    drops to the seaweed user, so SIGTERM reaches weed itself.
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - >-
+        set -eu;
+        for s in {{ $access }} {{ $secret }}; do
+        test -s "/run/secrets/$$s" || { echo "secret $$s is missing or empty - refusing to start an S3 store without credentials" >&2; exit 1; };
+        done;
+        export AWS_ACCESS_KEY_ID="$$(cat /run/secrets/{{ $access }})";
+        export AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/{{ $secret }})";
+        export WEED_JWT_FILER_SIGNING_KEY="$$(head -c 32 /dev/urandom | base64)";
+{{- if .Values.buckets }}
+        (
+        for b in {{ join " " .Values.buckets }}; do
+        n=0; code=000;
+        until [ "$$code" = 200 ] || [ "$$code" = 409 ]; do
+        n=$$((n + 1));
+        if [ "$$n" -gt 150 ]; then echo "bucket $$b: not created after 150 attempts (last HTTP $$code)" >&2; exit 1; fi;
+        sleep 2;
+        code="$$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 --aws-sigv4 'aws:amz:us-east-1:s3' --user "$$AWS_ACCESS_KEY_ID:$$AWS_SECRET_ACCESS_KEY" -X PUT "http://127.0.0.1:{{ $port }}/$$b" || true)";
+        done;
+        echo "bucket $$b: ready (HTTP $$code)";
+        done
+        ) &
+{{- end }}
+        exec /entrypoint.sh "$$@"
+      - seaweedfs
+{{- range $args }}
+      - {{ . | quote }}
+{{- end }}
+
+{{- if .Values.healthcheck.enabled }}
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -fsS
+        - -o
+        - /dev/null
+        - http://127.0.0.1:{{ $port }}/healthz
+      interval: {{ .Values.healthcheck.interval }}
+      timeout: {{ .Values.healthcheck.timeout }}
+      retries: {{ .Values.healthcheck.retries }}
+      start_period: {{ .Values.healthcheck.startPeriod }}
+{{- end }}
+    stop_grace_period: {{ .Values.stopGracePeriod }}
+
+    secrets:
+      - {{ $access }}
+      - {{ $secret }}
+
+    networks:
+{{- range $nets }}
+      - {{ . }}
+{{- end }}
+
+{{- if eq $mode "published" }}
+    ports:
+      - target: {{ $port }}
+        published: {{ .Values.publish.port }}
+        protocol: tcp
+        mode: {{ .Values.publish.mode }}
+{{- end }}
+
+{{- if .Values.persistence.enabled }}
+    volumes:
+      - {{ .Values.persistence.volumePath | default .Values.persistence.volumeName }}:/data
+{{- end }}
+
+    deploy:
+      # One process owns /data: a second task on the same volume would corrupt it, so
+      # there is exactly one replica and an update stops the old task first.
+      replicas: 1
+      update_config:
+        order: stop-first
+{{- if .Values.healthcheck.enabled }}
+        monitor: {{ .Values.healthcheck.monitor }}
+{{- end }}
+{{- $constraints := list }}
+{{- if and .Values.persistence.enabled .Values.persistence.nodeLabel }}
+{{-   $constraints = append $constraints (printf "node.labels.%s == true" .Values.persistence.nodeLabel) }}
+{{- end }}
+{{- range .Values.placement.constraints }}
+{{-   $constraints = append $constraints . }}
+{{- end }}
+{{- if $constraints }}
+      placement:
+        constraints:
+{{- range $constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- $limitMem := .Values.resources.limits.memory }}
+{{- $resMem := .Values.resources.reservations.memory }}
+{{- if or $limitMem $resMem }}
+      resources:
+{{-   with $limitMem }}
+        limits:
+          memory: {{ . | quote }}
+{{-   end }}
+{{-   with $resMem }}
+        reservations:
+          memory: {{ . | quote }}
+{{-   end }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- if or (eq $mode "traefik") .Values.labels }}
+      labels:
+{{- if eq $mode "traefik" }}
+        - "traefik.enable=true"
+        - "traefik.swarm.network={{ .Values.exposure.network }}"
+        - "traefik.constraint-label={{ .Values.traefik.constraintLabel }}"
+        - "traefik.http.routers.{{ $router }}-http.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ $router }}-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
+{{- if .Values.ingress.tls }}
+        - "traefik.http.routers.{{ $router }}-http.middlewares={{ .Values.traefik.redirectMiddleware }}"
+        - "traefik.http.routers.{{ $router }}-https.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ $router }}-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
+        - "traefik.http.routers.{{ $router }}-https.tls=true"
+        - "traefik.http.routers.{{ $router }}-https.tls.certresolver={{ .Values.traefik.certResolver }}"
+{{- end }}
+        - "traefik.http.services.{{ $router }}.loadbalancer.server.port={{ $port }}"
+{{- end }}
+{{- range $key, $val := .Values.labels }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+{{- end }}
+
+secrets:
+  {{ $access }}:
+    external: true
+  {{ $secret }}:
+    external: true
+
+networks:
+{{- range $nets }}
+  {{ . }}:
+    external: true
+{{- end }}
+
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) }}
+
+volumes:
+  {{ .Values.persistence.volumeName }}: {}
+{{- end }}
