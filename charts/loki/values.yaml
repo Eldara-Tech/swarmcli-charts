@@ -191,7 +191,7 @@ shipper:
   enabled: false
   image:
     repository: grafana/alloy
-    tag: "v1.19.2"
+    tag: "v1.20.1"
   # Alloy's own log level: debug, info, warn or error. debug reports every
   # discovery and push decision, which is what to reach for when lines are not
   # arriving.
