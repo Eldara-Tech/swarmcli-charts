@@ -1,0 +1,41 @@
+# yamllint disable-file
+networks:
+  - name: "{{ .Values.database.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "External overlay where PostgreSQL is reachable"
+  - name: "{{ .Values.exposure.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "Shared ingress overlay for Traefik"
+{{- range .Values.workloadLauncher.extraNetworks }}
+  - name: "{{ . }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "Extra attachable overlay for Docker-created Airbyte connector workloads"
+{{- end }}
+secrets:
+  - name: "{{ .Values.database.userSecretName }}"
+    description: "Airbyte PostgreSQL username"
+  - name: "{{ .Values.database.passwordSecretName }}"
+    description: "Airbyte PostgreSQL password"
+  - name: "{{ .Values.storage.accessKeySecretName }}"
+    description: "S3-compatible storage access key"
+  - name: "{{ .Values.storage.secretKeySecretName }}"
+    description: "S3-compatible storage secret key"
+  - name: "{{ .Values.oauth2.clientSecretName }}"
+    description: "OIDC client secret for oauth2-proxy"
+  - name: "{{ .Values.oauth2.cookieSecretName }}"
+    description: "Cookie encryption secret for oauth2-proxy"
+  - name: "{{ .Values.auth.airbyte.passwordSecretName }}"
+    description: "Airbyte admin password for auth.mode airbyte"
+  - name: "{{ .Values.auth.jwtSecretName }}"
+    description: "Airbyte JWT signing secret (32+ random characters) its services sign internal calls with"
+{{- with .Values.workloadLauncher.registryAuthSecretName }}
+  - name: "{{ . }}"
+    description: "Docker config.json with credentials for private connector registries"
+{{- end }}
+configs: []

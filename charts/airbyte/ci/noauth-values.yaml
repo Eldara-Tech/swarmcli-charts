@@ -1,0 +1,18 @@
+# No login in the chart: Traefik routes straight to the server, behind a basic-auth
+# middleware. Deploys against the same throwaway PostgreSQL and S3
+# as the mock fixture, with the in-repo traefik chart stood up as a real edge
+# (ci/e2e-setup.sh). Plain HTTP (tls:false): CI cannot issue an ACME certificate.
+#
+# The credential is a throwaway for e2e: user `e2e`, password `e2e-secret`. The `$`
+# characters are DOUBLED because Compose eats single ones.
+auth:
+  mode: none
+database:
+  host: airbyte-e2e-postgres
+storage:
+  endpoint: http://airbyte-e2e-s3:8333
+exposure:
+  host: airbyte.e2e.test
+  tls: false
+traefik:
+  basicAuthUsers: "e2e:$$apr1$$e2eSalt1$$1s/hES2iWPor3OWxBdGX./"

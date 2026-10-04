@@ -1,0 +1,3 @@
+# Own reverse proxy: joins exposure.network with no Traefik labels.
+exposure:
+  mode: none
