@@ -1,0 +1,5 @@
+# Chart-managed overlay with IPsec on the data plane, so replication does not
+# cross between nodes in the clear. Only valid with external: false.
+network:
+  external: false
+  encrypted: true

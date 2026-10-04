@@ -1,0 +1,6 @@
+# SQL port published on each peer's own node. host mode is the only legal mode
+# here; the template fails the render on ingress.
+exposure:
+  enabled: true
+  port: 3306
+  mode: host

@@ -1,0 +1,15 @@
+# External resources this chart needs. Authoritative: every external
+# network/secret/config the rendered stack references must be listed here
+# (swarmcli pre-flights it; scripts/requirements-check.sh enforces it at PR time).
+networks:
+  - name: "{{ .Values.network.name }}"
+    driver: overlay
+    attachable: true
+    autoCreate: true
+    description: "Shared overlay carrying Galera replication between peers, and the one app stacks attach to in order to reach the cluster"
+secrets:
+  - name: "{{ .Values.auth.rootSecretName }}"
+    description: "MariaDB root password, shared by every peer. Pre-create: printf 'S3cr3t' | docker secret create mariadb_galera_root_password -"
+  - name: "{{ .Values.auth.appUser.secretName }}"
+    description: "MariaDB app-user password (when auth.appUser.enabled). Pre-create: printf 'S3cr3t' | docker secret create mariadb_galera_password -"
+configs: []

@@ -1,0 +1,6 @@
+# The S3 port published on the routing mesh under a different number.
+exposure:
+  mode: published
+publish:
+  port: 18333
+  mode: ingress

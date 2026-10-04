@@ -44,6 +44,17 @@ include:
   # volume, so all other fixtures pass); the host-path render is covered by
   # charts.yml and the fixture still runs in local `make e2e`.
   - { chart: mariadb,       cases: "default no-appuser ephemeral published-port",                                     timeout: 6m  }
+  # mariadb-galera: the two fixtures that can converge on ONE node. `default` is the real
+  # pinned shape — ci/e2e-setup.sh labels the single node with every peer label so all three
+  # peers schedule there, which is not HA but IS a real 3-peer cluster: peers 2 and 3 start
+  # with empty data dirs and only reach Synced by pulling a state transfer, so ci/e2e-check.sh
+  # asserting wsrep_cluster_size == 3 is what proves the passwordless SST account works.
+  # `ephemeral` proves the no-volume shape schedules with no node pin. published-port is
+  # EXCLUDED: every peer publishes 3306 in host mode and three cannot bind one node's 3306.
+  # five-peers, bind-mount, internal-net, force-bootstrap and unpinned are render-only in
+  # charts.yml and still run in a local `make e2e` on a multi-node swarm. The 12m budget
+  # covers the image pull plus a bootstrap and two state transfers.
+  - { chart: mariadb-galera, cases: "default ephemeral proxy",                                                         timeout: 25m }
   # postgres: EVERY fixture (cases: "" => no filter). bind-mount is included, unlike
   # mariadb's: PGDATA sits one level below the mount (/var/lib/postgresql/<major>/docker),
   # so initdb never has to chown or empty the bind-mounted mountpoint itself. legacy-major
@@ -110,6 +121,15 @@ include:
   # full local `make e2e`: bind-mount, retention-off, external-config, external-secret
   # (all deploy locally) and traefik-auth (marked ci/e2e-render-only — it needs ACME).
   - { chart: loki,          cases: "default published ephemeral shipper edge",                                       timeout: 6m  }
+  # seaweedfs: the five fixtures that prove something a render cannot. A store with no identity converges exactly like one with
+  # credentials while serving everything anonymously, so ci/e2e-check.sh asserts the point of
+  # the chart from a client on the overlay: anonymous and wrong-key requests get 403, a signed
+  # PUT/GET round-trips, the listed buckets were created, the unauthenticated master/filer
+  # ports refuse connections and the S3 gRPC port refuses an unsigned PutIdentity. `buckets`
+  # forces a restart and proves the object survives and the bootstrap sees 409; `edge` does
+  # the signed round trip path-style through the traefik chart. traefik (labels only, nothing
+  # to route through) and bind-mount are covered by charts.yml and run in a full local `make e2e`.
+  - { chart: seaweedfs,     cases: "default buckets ephemeral published edge",                                       timeout: 6m  }
   # gitlab: ONE fixture. GitLab CE is a multi-gigabyte monolith (Postgres, Redis, Gitaly,
   # Puma, Sidekiq in one container) whose documented baseline is 8 vCPU / 16 GB, so the
   # runner boots exactly the case that carries the most signal per minute: `minimal` is the

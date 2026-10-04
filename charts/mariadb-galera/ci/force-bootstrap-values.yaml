@@ -1,0 +1,4 @@
+# Disaster-recovery shape: peer 2 is told to form a new cluster. Proves exactly
+# one peer renders the unconditional bootstrap and the others keep the guard.
+cluster:
+  forceBootstrap: 2

@@ -1,0 +1,5 @@
+# The health-aware client endpoint: HAProxy in front of the peers, with each peer
+# running the Synced responder the proxy checks. Proves the alias moves to the
+# proxy and that every peer is rendered as a backend.
+proxy:
+  enabled: true

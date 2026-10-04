@@ -1,0 +1,3 @@
+# Defaults: a 3-peer cluster on named volumes, each peer pinned to its own node
+# label, reachable over the shared mariadb-galera-net overlay. Deliberately empty
+# of overrides so this fixture tracks values.yaml.

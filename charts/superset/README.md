@@ -87,6 +87,26 @@ First boot takes a few minutes: the image is ~930 MB, the driver is pip-installe
 then runs the full alembic migration chain. Watch it with
 `docker service logs -f superset_init`.
 
+### Deploying with swarmcli-cd
+
+[swarmcli-cd](https://github.com/Eldara-Tech/swarmcli-cd) deploys a release only if its
+application's `allow` names every `external:` secret, config, volume and network the release
+references, whatever its name. A default install needs:
+
+```yaml
+- name: superset          # an application in the swarmcli-cd app set
+  source: { ... }
+  allow:
+    secrets:  [superset_secret_key, superset_db_password, superset_redis_password,
+               superset_admin_password]
+    networks: [superset-db-net, redis-net, traefik-public]
+```
+
+`oidc.enabled` adds `superset_oidc_client_secret`, and `dataNetwork.enabled` adds
+`dataNetwork.name` (`superset-data-net` by default) to `networks`. Each entry is the name
+itself, so an override in values needs the same change here. See
+[`allow`](https://github.com/Eldara-Tech/swarmcli-cd/blob/main/docs/configuration.md#allow-optional) in the swarmcli-cd docs.
+
 ## Python packages
 
 The lean image ships no driver, and it runs as the non-root `superset` user — so the chart

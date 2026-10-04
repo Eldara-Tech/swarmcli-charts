@@ -1,0 +1,7 @@
+# Host paths instead of named volumes — exercises the host-mount acknowledgment in
+# Chart.yaml. One absolute path per peer, in peer order.
+persistence:
+  volumePaths:
+    - /srv/mariadb-galera/peer-1
+    - /srv/mariadb-galera/peer-2
+    - /srv/mariadb-galera/peer-3

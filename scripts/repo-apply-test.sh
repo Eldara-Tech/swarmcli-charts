@@ -156,6 +156,13 @@ done
 [ -n "$served" ] || { echo "ERROR: nginx is not serving index.yaml from its docroot"; exit 1; }
 
 "$SWARMCLI" charts repo add localrepo "$URL" >/dev/null
+# swarmcli since Eldara-Tech/swarmcli#682 seeds the published swarmcli-charts repo
+# into a fresh state dir. `charts outdated` takes a chart's newest version from ANY
+# configured repo, so its whoami would stand in for the served one. Removing it
+# sticks: seeding only happens while repos.json does not exist.
+if "$SWARMCLI" charts repo list | awk 'NR > 1 {print $1}' | grep -x swarmcli-charts >/dev/null; then
+  "$SWARMCLI" charts repo remove swarmcli-charts >/dev/null
+fi
 "$SWARMCLI" charts repo update >/dev/null
 
 fail=0
@@ -277,9 +284,11 @@ EOF
   fi
 
   out="$("$SWARMCLI" charts outdated 2>&1 || true)"
-  if printf '%s\n' "$out" | grep "$RELEASE" >/dev/null \
-     && printf '%s\n' "$out" | grep "$OLDVER" >/dev/null \
-     && printf '%s\n' "$out" | grep "$CURVER" >/dev/null; then
+  # Columns RELEASE CHART REPO INSTALLED LATEST, read from this release's own row:
+  # matching versions anywhere in the output lets another release on a shared swarm
+  # supply them.
+  row="$(printf '%s\n' "$out" | awk -v r="$RELEASE" '$1 == r {print $3, $4, $5}')"
+  if [ "$row" = "localrepo ${OLDVER} ${CURVER}" ]; then
     note PASS "outdated reports ${RELEASE} (${OLDVER} -> ${CURVER})"
   else
     note FAIL "outdated did not report ${RELEASE} as ${OLDVER} -> ${CURVER}"

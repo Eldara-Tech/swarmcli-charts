@@ -32,6 +32,23 @@ dropped together with the volume).
 swarmcli charts install postgres swarmcli-charts/postgres
 ```
 
+### Deploying with swarmcli-cd
+
+[swarmcli-cd](https://github.com/Eldara-Tech/swarmcli-cd) deploys a release only if its
+application's `allow` names every `external:` secret, config, volume and network the release
+references, whatever its name. A default install needs:
+
+```yaml
+- name: postgres          # an application in the swarmcli-cd app set
+  source: { ... }
+  allow:
+    secrets:  [postgres_password]
+    networks: [postgres-net]
+```
+
+Each entry is the name itself, so an override in values needs the same change here. See
+[`allow`](https://github.com/Eldara-Tech/swarmcli-cd/blob/main/docs/configuration.md#allow-optional) in the swarmcli-cd docs.
+
 ## Connecting
 
 Attach an app service to the `postgres-net` overlay and dial **`<release>_postgres:5432`** —

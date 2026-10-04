@@ -1,0 +1,5 @@
+# Host-path persistence: /data bind-mounted from a host directory on a differently
+# named data node. ci/e2e-setup.sh creates the directory on the node and the label.
+persistence:
+  volumePath: /tmp/seaweedfs-e2e/data
+  nodeLabel: seaweedfs-e2e-node

@@ -1,0 +1,5 @@
+# The other supported size. Proves the peer loop renders five services with five
+# distinct volumes and five distinct node labels, and that the gcomm list names
+# all of them.
+cluster:
+  peers: 5

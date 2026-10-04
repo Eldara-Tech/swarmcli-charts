@@ -1,0 +1,7 @@
+# The proxy with the SQL port published: the port must land on the proxy, in
+# ingress mode, and on no peer — a peer publishing it would let external clients
+# bypass the proxy's health checks.
+proxy:
+  enabled: true
+exposure:
+  enabled: true

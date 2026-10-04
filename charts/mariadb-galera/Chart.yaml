@@ -1,0 +1,32 @@
+name: mariadb-galera
+description: MariaDB Galera cluster for Docker Swarm — synchronous multi-primary, one pinned peer per node
+version: 0.1.0
+# renovate: image=mariadb
+appVersion: "12.3"
+# Oldest swarmcli whose chart engine renders this chart; verified by
+# scripts/floor-check.sh against a real binary of that version.
+swarmcliVersion: ">= 1.11.0"
+# host-mount is acknowledged because persistence.volumePaths can bind-mount each
+# peer's data dir from an operator-chosen host path. The default (named volumes)
+# render mounts no host path — no docker.sock, unprivileged — so the annotation is
+# exercised by the security scan only when host paths are configured.
+annotations:
+  swarmcli-charts/allow: "host-mount"
+maintainers:
+  - name: Eldara
+    url: https://github.com/Eldara-Tech
+keywords:
+  - mariadb
+  - galera
+  - mysql
+  - database
+  - sql
+  - cluster
+  - replication
+  - high-availability
+  - stateful
+  - swarm
+home: https://github.com/Eldara-Tech/swarmcli-charts
+sources:
+  - https://github.com/Eldara-Tech/swarmcli-charts
+  - https://github.com/MariaDB/server
