@@ -71,6 +71,9 @@ Prometheus datasource, uid `prometheus`, as the default:
   services dashboard (MIT); the queries are new, keyed on the four swarm labels
   cAdvisor keeps and the `node` label discovery adds.
 
+Your own dashboards go in `grafana.dashboards`: see
+[Keeping your setup in git](#keeping-your-setup-in-git).
+
 **Alerts** (`files/prometheus/rules/`): `TargetDown`,
 `NodeFilesystemAlmostOutOfSpace`, `NodeFilesystemFillingUp`,
 `NodeMemoryHighUtilization`, `PrometheusRuleFailures`, `SwarmDiscoveryFailing`,
@@ -123,11 +126,12 @@ whose labels carry credential material — a Traefik basic-auth hash is the comm
 case. Put the metrics endpoint on a service of its own instead.
 
 One job, `swarm-tasks`, discovers everything, the chart's exporters included.
-Custom targets that do not fit it go in a file of your own:
+Custom targets that do not fit it go in a file of your own, one entry per file
+under a name you choose:
 
 ```bash
 swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --reuse-values \
-  --set-file prometheus.extraScrapeConfigs=./scrape.yml   # a top-level `scrape_configs:` list
+  --set-file prometheus.extraScrapeConfigs.app=./scrape.yml   # a top-level `scrape_configs:` list
 ```
 
 ## Exposure
@@ -182,9 +186,86 @@ receivers:
 ```
 
 Each name in `alertmanager.secrets` is mounted at `/run/secrets/<name>`. Your own
-rule files work the same way: `--set-file prometheus.extraRules=./rules.yml`.
-Both are stored as content-named Swarm configs, so editing one and upgrading
-rotates it.
+rule files go in `prometheus.extraRules`, one entry per file:
+`--set-file prometheus.extraRules.app=./rules.yml`. Each of these files is stored
+as a content-named Swarm config, so editing one and upgrading rotates it.
+
+## Keeping your setup in git
+
+Every file the chart takes from you is a value: `alertmanager.config`, and an entry
+of `prometheus.extraRules`, `prometheus.extraScrapeConfigs` or `grafana.dashboards`.
+`--set-file` fills one from a file on your machine; a values file fills it from a
+repository. Write the file's content as a block string under its key:
+
+```yaml
+# monitoring/rules.yaml
+prometheus:
+  extraRules:
+    app: |
+      groups:
+        - name: app
+          rules:
+            - alert: AppDown
+              expr: up{job="app"} == 0
+              for: 5m
+```
+
+```yaml
+# monitoring/dashboards/app.yaml
+grafana:
+  dashboards:
+    app: |
+      {"uid": "app", "title": "App", "panels": [ … ]}
+```
+
+The three maps merge across values files, so each rule file, scrape-job file and
+dashboard can live in a file of its own; `alertmanager.config` is a single file.
+Keys are lower-case letters, digits and `-`. With swarmcli-cd, list the files in
+the application, beside the `allow` entries in [Notes](#notes):
+
+```yaml
+applications:
+  - name: monitoring
+    source:
+      repoURL: https://git.example.com/ops/swarm.git
+      revision: main
+      chart:
+        release: mon
+        ref: swarmcli-charts/prometheus-stack
+        version: "<chart version>"
+        values:
+          - monitoring/values.yaml
+          - monitoring/rules.yaml
+          - monitoring/alertmanager.yaml
+          - monitoring/dashboards/app.yaml
+        repositories:
+          - name: swarmcli-charts
+            url: https://eldara-tech.github.io/swarmcli-charts
+```
+
+The same files work as `-f` arguments to `swarmcli charts upgrade`, or in a release
+file's `values:` list. Credentials stay out of git either way: they go in the Swarm
+secrets named by `alertmanager.secrets` and `grafana.extraSecrets`.
+
+**Dashboards** are provisioned read-only, beside the shipped ones, and removing an
+entry deletes the dashboard from Grafana. Select the datasource by uid `prometheus`,
+the provisioned default. Grafana's "Export for sharing externally" replaces it with
+`${DS_…}` placeholders that only an import fills in, so export without that option.
+Keep each `uid` distinct from the shipped `rYdddlPWk` and `swarm-services`.
+
+**Size.** Each of these files is stored twice in the release record, once as a value
+and once as the file mounted from it, and the record is one Docker Config that
+swarmcli holds to 500 KiB gzipped. The chart's own content takes about 67 KB of that.
+A dashboard the size of Swarm services (27 KB) adds about 6 KB, one the size of Node
+Exporter Full (468 KB) about 85 KB. A release that will not fit is refused before
+anything is deployed, with the sizes listed. Swarm also caps any single file at
+1000 KiB.
+
+**Dashboards built in Grafana's UI** cannot be kept this way, and the provisioned
+ones cannot be edited there. To edit in the UI and commit from it, use Grafana 13's
+Git Sync, which manages a folder of its own and is configured in Grafana rather than
+in this chart. In the open-source edition its "pure Git" repository type reaches any
+Git server, a self-hosted GitLab included.
 
 ## Loki
 
@@ -285,9 +366,11 @@ an API socket. Both are named in `Chart.yaml` and asserted by `ci/render-check.s
 
 ## Validating your own config files
 
-Nothing checks the contents of a file you pass with `--set-file`. Before you do:
+Nothing checks the contents of a file you pass as a value. Before you do:
 
 ```bash
+# A file kept in a values file, extracted first:
+yq '.prometheus.extraRules.app' monitoring/rules.yaml > rules.yml
 docker run --rm --entrypoint promtool -v "$PWD/rules.yml:/r.yml:ro" \
   prom/prometheus:<appVersion> check rules /r.yml
 docker run --rm --entrypoint amtool -v "$PWD/alertmanager.yml:/a.yml:ro" \
@@ -319,8 +402,8 @@ result there: `docker exec <prometheus container> promtool check config
 | `prometheus.volumeName` | `prometheus-data` | Named volume at `/prometheus` |
 | `prometheus.volumePath` | `""` | Host path instead (owner 65534) |
 | `prometheus.extraNetworks` | `[]` | Existing overlays Prometheus joins to scrape on |
-| `prometheus.extraScrapeConfigs` | `""` | Your scrape jobs (`--set-file`) |
-| `prometheus.extraRules` | `""` | Your rule file (`--set-file`) |
+| `prometheus.extraScrapeConfigs` | `{}` | Your scrape-job files, by name |
+| `prometheus.extraRules` | `{}` | Your rule files, by name |
 | `prometheus.extraArgs` | `[]` | Extra Prometheus flags |
 | `prometheus.resources.limits.memory` / `.reservations.memory` | `""` | Optional memory limit / reservation |
 | `prometheus.exposure.mode` | `none` | `none` \| `traefik` |
@@ -352,6 +435,7 @@ result there: `docker exec <prometheus container> promtool check config
 | `grafana.datasources.loki.url` | `http://loki:3100` | Loki URL; prefer `http://<loki-release>_loki:3100` |
 | `grafana.extraEnv` | `{}` | Extra Grafana environment (never secrets) |
 | `grafana.extraSecrets` | `[]` | `[{name, env}]`: a secret handed over as `<env>__FILE` |
+| `grafana.dashboards` | `{}` | Your dashboard JSON, by name; provisioned read-only |
 | `grafana.resources.limits.memory` / `.reservations.memory` | `""` | Optional memory limit / reservation |
 | `nodeExporter.enabled` | `true` | Deploy node-exporter (needs `discovery.enabled`) |
 | `nodeExporter.image.repository` | `prom/node-exporter` | node-exporter image |

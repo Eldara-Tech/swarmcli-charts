@@ -82,12 +82,15 @@ prometheus:
   # reach Prometheus. Never list traefik-public: every routed service in the swarm
   # could then query it. A service on two of Prometheus's networks is scraped twice.
   extraNetworks: []
-  # Your own scrape jobs, as a file with a top-level `scrape_configs:` list, loaded
-  # through scrape_config_files: --set-file prometheus.extraScrapeConfigs=./scrape.yml
-  extraScrapeConfigs: ""
-  # Your own rules, as a Prometheus rule file (`groups:`):
-  #   --set-file prometheus.extraRules=./rules.yml
-  extraRules: ""
+  # Your own files, each keyed by a name of your choice (lower-case letters, digits
+  # and `-`). Maps merge across values files, so each entry can live in a file of its
+  # own; README "Keeping your setup in git" has the values-file form.
+  # Scrape jobs: files with a top-level `scrape_configs:` list, loaded through
+  # scrape_config_files: --set-file prometheus.extraScrapeConfigs.<name>=./scrape.yml
+  extraScrapeConfigs: {}
+  # Rules: Prometheus rule files (`groups:`):
+  #   --set-file prometheus.extraRules.<name>=./rules.yml
+  extraRules: {}
   # Extra Prometheus flags, appended verbatim.
   extraArgs: []
   resources:
@@ -181,6 +184,11 @@ grafana:
   # EXTERNAL Swarm secrets handed to Grafana as <env>__FILE, e.g.
   #   [{name: grafana_smtp_password, env: GF_SMTP_PASSWORD}]
   extraSecrets: []
+  # Your own dashboards, as dashboard JSON keyed by a name, like prometheus.extraRules:
+  #   --set-file grafana.dashboards.<name>=./dashboard.json
+  # Provisioned read-only beside the shipped ones; removing an entry deletes the
+  # dashboard. Select the datasource by uid `prometheus`.
+  dashboards: {}
   resources:
     limits:
       memory: ""

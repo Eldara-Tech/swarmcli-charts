@@ -65,13 +65,14 @@ while read -r file name; do
   case "$file" in
     files/*) [[ "$name" =~ ^${rel}_[a-z-]+_[0-9]+\.[0-9]+\.[0-9]+$ ]] \
                || bad "config from $file is named '$name', not <release>_<x>_<semver>" ;;
-    values/*) [[ "$name" =~ ^${rel}_[a-z-]+_[0-9a-f]{12}$ ]] \
+    values/*) [[ "$name" =~ ^${rel}_[a-z0-9-]+_[0-9a-f]{12}$ ]] \
                || bad "config from $file is named '$name', not <release>_<x>_<12 hex>" ;;
     *) bad "config from '$file' is neither a chart file nor an operator value" ;;
   esac
 done <<<"$cfgs"
 case "$case" in
-  extras) want_values="values/prometheus.extraRules values/prometheus.extraScrapeConfigs" ;;
+  extras) want_values="values/prometheus.extraRules.e2e values/prometheus.extraRules.e2e-second
+                       values/prometheus.extraScrapeConfigs.e2e values/grafana.dashboards.e2e" ;;
   alertmanager-config) want_values="values/alertmanager.config" ;;
   *) want_values="" ;;
 esac
@@ -87,6 +88,24 @@ for pair in "node-exporter:prometheus-rules-node-exporter>/etc/prometheus/rules/
   if contains "$rules" "${pair#*:}"; then got=1; else got=0; fi
   [ "$got" = "$on" ] || bad "the ${pair%%:*} absent-alert rule file mounted=$got, expected $on"
 done
+
+# Each operator entry is mounted under its own key, and the operator's dashboards bring a
+# provider of their own, mounted only while there is a dashboard for it to provide.
+gconfs="$(q '.services.grafana.configs // [] | .[] | .source + ">" + .target')"
+if [ "$case" = extras ]; then
+  for m in "prometheus-extra-rules-e2e>/etc/prometheus/rules/extra-e2e.yml" \
+           "prometheus-extra-rules-e2e-second>/etc/prometheus/rules/extra-e2e-second.yml" \
+           "prometheus-extra-scrape-e2e>/etc/prometheus/scrape/extra-e2e.yml"; do
+    contains "$rules" "$m" || bad "prometheus does not mount $m"
+  done
+  for m in "grafana-dashboards-extra>/etc/grafana/provisioning/dashboards/extra.yml" \
+           "dashboard-extra-e2e>/etc/grafana/dashboards-extra/e2e.json"; do
+    contains "$gconfs" "$m" || bad "grafana does not mount $m"
+  done
+else
+  grep -F 'grafana-dashboards-extra>' <<<"$gconfs" >/dev/null \
+    && bad "the extra dashboard provider is mounted with no dashboard to provide"
+fi
 
 # Only prometheus.yml is rendered by Swarm: the rule files contain $labels templates that
 # the golang driver would evaluate.
@@ -317,6 +336,13 @@ filter="$(yq -r "$job | .dockerswarm_sd_configs[].filters // [] | .[] | select(.
 contains "$filter" "prometheus.io/scrape=true" || bad "$pf: swarm-tasks has no label filter on prometheus.io/scrape=true"
 keep="$(yq -r "$job | .relabel_configs[] | select(.action == \"keep\" and .regex == \"true\") | .source_labels | join(\",\")" "$pf")"
 contains "$keep" "__meta_dockerswarm_service_label_prometheus_io_scrape" || bad "$pf: swarm-tasks has no relabel keep on prometheus_io_scrape"
+
+# The operator's dashboard provider reads exactly the directory they are mounted in, with
+# deletion on: removing an entry from the values must remove the dashboard from Grafana.
+xp="$dir/files/grafana/dashboards-extra.yml"
+[ "$(yq -r '(.providers | length | tostring) + " " + .providers[0].options.path + " " + (.providers[0].disableDeletion | tostring)' "$xp")" \
+  = "1 /etc/grafana/dashboards-extra false" ] \
+  || bad "$xp is not one provider of /etc/grafana/dashboards-extra with deletion on"
 
 [ "$fail" -eq 0 ] || exit 1
 echo "  $case: render assertions OK"

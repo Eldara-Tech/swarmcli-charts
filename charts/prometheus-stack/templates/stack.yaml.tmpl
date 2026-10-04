@@ -86,23 +86,23 @@
 {{-   end }}
 {{- end }}
 
-{{- /* Every Swarm config name this chart can render. Swarm refuses a config name longer than 64
-       characters, and it says so only at deploy time, after the pre-flight passed. Checked
-       here for every name, used or not, so a release name that fits today cannot stop
-       fitting when a feature is switched on. Shipped files rotate with the chart version,
-       operator files (values/) with their content. */ -}}
+{{- /* Every Swarm config name this chart can render, bar the operator's map entries checked
+       below. Swarm refuses a config name longer than 64 characters, and it says so only at
+       deploy time, after the pre-flight passed. Checked here for every name, used or not,
+       so a release name that fits today cannot stop fitting when a feature is switched on.
+       Shipped files rotate with the chart version, operator files (values/) with their
+       content. */ -}}
 {{- $cfg := dict
       "prometheus-config" (printf "%s_prometheus_%s" $rel $ver)
       "prometheus-rules" (printf "%s_rules_%s" $rel $ver)
       "prometheus-rules-node-exporter" (printf "%s_rules-node_%s" $rel $ver)
       "prometheus-rules-cadvisor" (printf "%s_rules-cadvisor_%s" $rel $ver)
-      "prometheus-extra-rules" (printf "%s_xrules_%s" $rel ($prom.extraRules | sha256sum | trunc 12))
-      "prometheus-extra-scrape" (printf "%s_xscrape_%s" $rel ($prom.extraScrapeConfigs | sha256sum | trunc 12))
       "alertmanager-config" (ternary (printf "%s_am_%s" $rel ($am.config | sha256sum | trunc 12)) (printf "%s_am_%s" $rel $ver) (ne $am.config ""))
       "grafana-datasources" (printf "%s_gf-ds_%s" $rel $ver)
       "grafana-datasources-alertmanager" (printf "%s_gf-ds-am_%s" $rel $ver)
       "grafana-datasources-loki" (printf "%s_gf-ds-loki_%s" $rel $ver)
       "grafana-dashboards" (printf "%s_gf-dash_%s" $rel $ver)
+      "grafana-dashboards-extra" (printf "%s_gf-dash-x_%s" $rel $ver)
       "dashboard-node-exporter-full" (printf "%s_dash-nodes_%s" $rel $ver)
       "dashboard-swarm-services" (printf "%s_dash-swarm_%s" $rel $ver)
 }}
@@ -110,6 +110,25 @@
 {{- range $k, $n := $cfg }}{{ if gt (len $n) (len $longest) }}{{ $longest = $n }}{{ end }}{{ end }}
 {{- if gt (len $longest) 64 }}
 {{-   fail (printf "release name %q is too long for this chart: its longest Swarm config name, %q, would be %d characters and Swarm allows 64. Use a release name of at most %d characters." $rel $longest (len $longest) (sub 64 (sub (len $longest) (len $rel)))) }}
+{{- end }}
+
+{{- /* The operator's own files: one config per map entry, named after its key and its
+       content. The key is part of a values/ path, so the schema keeps dots out of it, and
+       part of the name, so it counts toward the same 64. */ -}}
+{{- $xRules := dict }}
+{{- range $k, $v := $prom.extraRules }}{{ $_ := set $xRules $k (printf "%s_xrules-%s_%s" $rel $k ($v | sha256sum | trunc 12)) }}{{ end }}
+{{- $xScrape := dict }}
+{{- range $k, $v := $prom.extraScrapeConfigs }}{{ $_ := set $xScrape $k (printf "%s_xscrape-%s_%s" $rel $k ($v | sha256sum | trunc 12)) }}{{ end }}
+{{- $xDash := dict }}
+{{- if $gf.enabled }}
+{{-   range $k, $v := $gf.dashboards }}{{ $_ := set $xDash $k (printf "%s_xdash-%s_%s" $rel $k ($v | sha256sum | trunc 12)) }}{{ end }}
+{{- end }}
+{{- range $key, $names := dict "prometheus.extraRules" $xRules "prometheus.extraScrapeConfigs" $xScrape "grafana.dashboards" $xDash }}
+{{-   range $k, $n := $names }}
+{{-     if gt (len $n) 64 }}
+{{-       fail (printf "%s key %q makes the Swarm config name %q, %d characters, and Swarm allows 64. Shorten the key." $key $k $n (len $n)) }}
+{{-     end }}
+{{-   end }}
 {{- end }}
 
 {{- /* The data pin for the three stateful services. It travels with persistence, so the
@@ -184,13 +203,14 @@ services:
       - source: prometheus-rules-cadvisor
         target: /etc/prometheus/rules/cadvisor.yml
 {{- end }}
-{{- if $prom.extraRules }}
-      - source: prometheus-extra-rules
-        target: /etc/prometheus/rules/extra.yml
+{{- /* The extra- prefix keeps the operator's rule files clear of the three shipped ones. */}}
+{{- range $k, $_ := $xRules }}
+      - source: prometheus-extra-rules-{{ $k }}
+        target: /etc/prometheus/rules/extra-{{ $k }}.yml
 {{- end }}
-{{- if $prom.extraScrapeConfigs }}
-      - source: prometheus-extra-scrape
-        target: /etc/prometheus/scrape/extra.yml
+{{- range $k, $_ := $xScrape }}
+      - source: prometheus-extra-scrape-{{ $k }}
+        target: /etc/prometheus/scrape/extra-{{ $k }}.yml
 {{- end }}
 {{- if $persist }}
     volumes:
@@ -350,6 +370,16 @@ services:
         target: /etc/grafana/dashboards/node-exporter-full.json
       - source: dashboard-swarm-services
         target: /etc/grafana/dashboards/swarm-services.json
+{{- /* The operator's dashboards get a provider of their own, so that removing one deletes it:
+       the shipped provider keeps a dashboard whose file is gone. */}}
+{{- if $xDash }}
+      - source: grafana-dashboards-extra
+        target: /etc/grafana/provisioning/dashboards/extra.yml
+{{- end }}
+{{- range $k, $_ := $xDash }}
+      - source: dashboard-extra-{{ $k }}
+        target: /etc/grafana/dashboards-extra/{{ $k }}.json
+{{- end }}
 {{- if eq $gf.exposure.mode "published" }}
     ports:
       - target: 3000
@@ -533,15 +563,15 @@ configs:
     name: {{ index $cfg "prometheus-rules-cadvisor" | quote }}
     file: files/prometheus/rules/cadvisor.yml
 {{- end }}
-{{- if $prom.extraRules }}
-  prometheus-extra-rules:
-    name: {{ index $cfg "prometheus-extra-rules" | quote }}
-    file: values/prometheus.extraRules
+{{- range $k, $n := $xRules }}
+  prometheus-extra-rules-{{ $k }}:
+    name: {{ $n | quote }}
+    file: values/prometheus.extraRules.{{ $k }}
 {{- end }}
-{{- if $prom.extraScrapeConfigs }}
-  prometheus-extra-scrape:
-    name: {{ index $cfg "prometheus-extra-scrape" | quote }}
-    file: values/prometheus.extraScrapeConfigs
+{{- range $k, $n := $xScrape }}
+  prometheus-extra-scrape-{{ $k }}:
+    name: {{ $n | quote }}
+    file: values/prometheus.extraScrapeConfigs.{{ $k }}
 {{- end }}
 {{- if $am.enabled }}
   alertmanager-config:
@@ -575,6 +605,16 @@ configs:
   dashboard-swarm-services:
     name: {{ index $cfg "dashboard-swarm-services" | quote }}
     file: files/grafana/dashboards/swarm-services.json
+{{- if $xDash }}
+  grafana-dashboards-extra:
+    name: {{ index $cfg "grafana-dashboards-extra" | quote }}
+    file: files/grafana/dashboards-extra.yml
+{{- end }}
+{{- range $k, $n := $xDash }}
+  dashboard-extra-{{ $k }}:
+    name: {{ $n | quote }}
+    file: values/grafana.dashboards.{{ $k }}
+{{- end }}
 {{- end }}
 
 {{- $secrets := list }}

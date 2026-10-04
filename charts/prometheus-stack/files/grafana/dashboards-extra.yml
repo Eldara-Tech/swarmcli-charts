@@ -1,0 +1,13 @@
+# The operator's dashboards (grafana.dashboards), provisioned read-only from the files
+# the chart mounts under /etc/grafana/dashboards-extra. Mounted only while there is one.
+# Unlike the shipped provider, deletion is on: a dashboard whose entry leaves the values
+# leaves Grafana too, so the values stay the source of truth.
+apiVersion: 1
+
+providers:
+  - name: prometheus-stack-extra
+    type: file
+    disableDeletion: false
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/dashboards-extra

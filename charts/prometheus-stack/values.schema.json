@@ -47,8 +47,16 @@
           "type": "array",
           "items": { "type": "string", "minLength": 1 }
         },
-        "extraScrapeConfigs": { "type": "string" },
-        "extraRules": { "type": "string" },
+        "extraScrapeConfigs": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[a-z0-9][a-z0-9-]*$" },
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        },
+        "extraRules": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[a-z0-9][a-z0-9-]*$" },
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        },
         "extraArgs": {
           "type": "array",
           "items": { "type": "string" }
@@ -198,6 +206,11 @@
             },
             "required": ["name", "env"]
           }
+        },
+        "dashboards": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[a-z0-9][a-z0-9-]*$" },
+          "additionalProperties": { "type": "string", "minLength": 1 }
         },
         "resources": {
           "type": "object",

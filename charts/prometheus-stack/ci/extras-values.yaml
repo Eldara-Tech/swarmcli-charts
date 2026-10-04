@@ -1,19 +1,28 @@
-# The operator extras: a scrape job and a rule file (as --set-file would pass them),
-# extra Grafana environment and a secret handed to Grafana as <env>__FILE, plus
-# Alertmanager routed behind basic auth with TLS — so the HTTP router only
-# redirects and the auth middleware sits on the HTTPS one.
+# The operator extras: scrape jobs, rule files and dashboards (as --set-file or a values
+# file would pass them; two rule files, so the map form is exercised), extra Grafana
+# environment and a secret handed to Grafana as <env>__FILE, plus Alertmanager routed
+# behind basic auth with TLS — so the HTTP router only redirects and the auth middleware
+# sits on the HTTPS one.
 prometheus:
-  extraScrapeConfigs: |
-    scrape_configs:
-      - job_name: e2e-extra-scrape
-        static_configs:
-          - targets: ['localhost:9090']
-  extraRules: |
-    groups:
-      - name: e2e-extra
-        rules:
-          - record: e2e:extra_rule:up
-            expr: sum(up)
+  extraScrapeConfigs:
+    e2e: |
+      scrape_configs:
+        - job_name: e2e-extra-scrape
+          static_configs:
+            - targets: ['localhost:9090']
+  extraRules:
+    e2e: |
+      groups:
+        - name: e2e-extra
+          rules:
+            - record: e2e:extra_rule:up
+              expr: sum(up)
+    e2e-second: |
+      groups:
+        - name: e2e-second
+          rules:
+            - record: e2e:second_rule:up
+              expr: count(up)
 grafana:
   extraEnv:
     GF_SMTP_ENABLED: "true"
@@ -21,6 +30,9 @@ grafana:
   extraSecrets:
     - name: prometheus-stack-e2e-smtp
       env: GF_SMTP_PASSWORD
+  dashboards:
+    e2e: |
+      {"uid": "e2e-extra", "title": "e2e extra", "schemaVersion": 41, "panels": []}
 alertmanager:
   exposure:
     mode: traefik

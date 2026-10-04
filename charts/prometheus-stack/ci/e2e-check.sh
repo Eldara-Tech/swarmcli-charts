@@ -226,7 +226,11 @@ case "$case" in
     grep -F 'GF_SMTP_HOST=smtp.e2e.test:587' <<<"$env_spec" >/dev/null || fail "grafana.extraEnv did not arrive"
     echo "  grafana: extraSecrets as __FILE with no plaintext, extraEnv set"
     wait_for "prometheus: the extra scrape job is up" prom_is 'count(up{job="e2e-extra-scrape"} == 1)' 1
-    wait_for "prometheus: the extra rule is loaded" \
+    wait_for "prometheus: the first extra rule file is loaded" \
       body_has 'e2e:extra_rule:up' in_ns prometheus http://127.0.0.1:9090/api/v1/rules
+    wait_for "prometheus: the second extra rule file is loaded" \
+      body_has 'e2e:second_rule:up' in_ns prometheus http://127.0.0.1:9090/api/v1/rules
+    wait_for "grafana: the operator's dashboard is provisioned" \
+      body_has '"uid":"e2e-extra"' in_ns grafana -u "$ADMIN" 'http://127.0.0.1:3000/api/search?type=dash-db'
     ;;
 esac
