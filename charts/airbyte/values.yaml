@@ -27,7 +27,7 @@ workloadApiServer:
 manifestServer:
   image:
     repository: airbyte/manifest-server
-    tag: "7.28.2"
+    tag: "7.32.0"
 cron:
   image:
     repository: airbyte/cron
