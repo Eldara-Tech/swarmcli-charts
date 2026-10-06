@@ -61,6 +61,25 @@
 {{- $esHost := ternary "elasticsearch" .Values.elasticsearch.host $esEmbedded }}
 {{- $memServers := ternary "memcached:11211" .Values.memcache.servers $memEmbedded }}
 
+{{- /* Metrics: an exporter per backing service the chart runs itself. Zammad has no Prometheus
+       endpoint of its own, so with memcached external and Elasticsearch external or disabled there
+       is nothing to export — fail rather than render a silent no-op. */ -}}
+{{- $memMetrics := and .Values.metrics.enabled $memEmbedded }}
+{{- $esMetrics := and .Values.metrics.enabled $esEmbedded }}
+{{- if and .Values.metrics.enabled (not $memMetrics) (not $esMetrics) }}
+{{-   fail "metrics.enabled has nothing to export: Zammad serves no Prometheus metrics itself, and the chart exports only the memcached and Elasticsearch it runs — here memcache.servers points at an external memcached and elasticsearch.mode is not embedded. Monitor those where they run." }}
+{{- end }}
+{{- /* The metrics overlay is an overlay of its own. requirements.yaml declares every network name
+       below autoCreate:false and the metrics one autoCreate:true, and swarmcli takes the FIRST entry
+       with a matching name — so a shared name would quietly flip one of them. Checked against every
+       declared name, whatever the modes, for the same reason. */ -}}
+{{- if .Values.metrics.enabled }}
+{{-   $declared := concat (list .Values.exposure.network .Values.database.network .Values.redis.network .Values.elasticsearch.network) .Values.extraNetworks }}
+{{-   if has .Values.metrics.network $declared }}
+{{-     fail (printf "metrics.network (%q) is also one of the chart's other overlays (exposure.network / database.network / redis.network / elasticsearch.network / extraNetworks). Give the exporters an overlay of their own: Prometheus joins it, and the default is monitoring." .Values.metrics.network) }}
+{{-   end }}
+{{- end }}
+
 {{- $internal := .Values.internalNetwork }}
 
 {{- /* The EXTERNAL overlays this render references (each only in the corresponding external mode).
@@ -74,8 +93,9 @@
 {{- if and $esEnabled (not $esEmbedded) }}{{ $externalNets = append $externalNets .Values.elasticsearch.network }}{{ end }}
 {{- if $proxied }}{{ $externalNets = append $externalNets .Values.exposure.network }}{{ end }}
 {{- range .Values.extraNetworks }}{{ $externalNets = append $externalNets . }}{{ end }}
+{{- if .Values.metrics.enabled }}{{ $externalNets = append $externalNets .Values.metrics.network }}{{ end }}
 {{- if has $internal $externalNets }}
-{{-   fail (printf "internalNetwork (%q) collides with an EXTERNAL overlay (database.network / redis.network / elasticsearch.network / exposure.network / extraNetworks). The internal overlay is chart-managed and created by this stack; give it a name none of the external overlays use." $internal) }}
+{{-   fail (printf "internalNetwork (%q) collides with an EXTERNAL overlay (database.network / redis.network / elasticsearch.network / exposure.network / extraNetworks / metrics.network). The internal overlay is chart-managed and created by this stack; give it a name none of the external overlays use." $internal) }}
 {{- end }}
 
 {{- /* Networks each Zammad role attaches to: the internal overlay always, plus every backing
@@ -609,6 +629,68 @@ services:
         condition: any
 {{- end }}
 
+{{- if $memMetrics }}
+
+  {{- /* Prometheus exporter for the in-stack memcached. It joins the internal overlay to reach
+         memcached and metrics.network for Prometheus to reach it; memcached itself never joins
+         metrics.network. tasks.<release>_memcached names this release's task unambiguously on an
+         exporter that sits on two overlays, and resolves to nothing while there is none, so a
+         stopped memcached reads as memcached_up 0 at once. Same placement as memcached. Exactly the
+         two discovery labels: every deploy label of an opted-in service is readable through
+         Prometheus's targets API. */}}
+  memcached-exporter:
+    image: {{ .Values.metrics.memcached.image.repository }}:{{ .Values.metrics.memcached.image.tag }}
+    networks:
+      - {{ $internal }}
+      - {{ .Values.metrics.network }}
+    command:
+      - --memcached.address=tasks.{{ .Release.Name }}_memcached:11211
+    deploy:
+      replicas: 1
+{{- if $extraConstraints }}
+      placement:
+        constraints:
+{{- range $extraConstraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+      labels:
+        - "prometheus.io/scrape=true"
+        - "prometheus.io/port=9150"
+{{- end }}
+
+{{- if $esMetrics }}
+
+  {{- /* Prometheus exporter for the embedded Elasticsearch, which runs with security off: only
+         the exporter joins metrics.network, never Elasticsearch, or everything on that overlay
+         could read and write the ticket indices. The default collectors (cluster health, node
+         stats) only read. Same placement as Elasticsearch, so Prometheus's `node` label is
+         Elasticsearch's node. */}}
+  elasticsearch-exporter:
+    image: {{ .Values.metrics.elasticsearch.image.repository }}:{{ .Values.metrics.elasticsearch.image.tag }}
+    networks:
+      - {{ $internal }}
+      - {{ .Values.metrics.network }}
+    command:
+      - --es.uri=http://tasks.{{ .Release.Name }}_elasticsearch:{{ .Values.elasticsearch.port }}
+    deploy:
+      replicas: 1
+{{- if $dataConstraints }}
+      placement:
+        constraints:
+{{- range $dataConstraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+      labels:
+        - "prometheus.io/scrape=true"
+        - "prometheus.io/port=9114"
+{{- end }}
+
 {{- if $dbEmbedded }}
 
 {{- /* One mount contract for every major, the same one charts/postgres renders: the volume (or
@@ -837,9 +919,11 @@ secrets:
 {{- /* The internal overlay is CHART-MANAGED (this stack creates it); every other overlay is
        EXTERNAL (operator/other-chart provisioned; requirements.yaml declares them autoCreate:false). */}}
 networks:
-{{- /* $nginxNets is the superset of every service's networks (nginx joins the ingress overlay on
-       top of what the other roles use), so it is exactly the set to declare here. */}}
-{{- range $nginxNets }}
+{{- /* $nginxNets is the superset of every Zammad role's networks (nginx joins the ingress overlay
+       on top of what the other roles use); the exporters add the metrics overlay. */}}
+{{- $allNets := $nginxNets }}
+{{- if or $memMetrics $esMetrics }}{{ $allNets = append $allNets .Values.metrics.network | uniq }}{{ end }}
+{{- range $allNets }}
   {{ . }}:
 {{- if eq . $internal }}
     driver: overlay

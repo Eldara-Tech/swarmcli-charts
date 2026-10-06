@@ -244,7 +244,9 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   the hook, so only the chart's own can make its celery worker healthy.
 - **zammad** — the three operator secrets and nothing else: the `embedded-backing` fixture runs
   its own PostgreSQL, Redis, memcached and Elasticsearch, and one dummy password backs both
-  sides of each pair (the embedded server reads the same secret the app does).
+  sides of each pair (the embedded server reads the same secret the app does). It also turns
+  metrics on: `ci/e2e-check.sh` scrapes both exporters from the `monitoring` overlay and proves the
+  security-off Elasticsearch is not reachable there.
 - **swarmcli-cd** — the admin-token secret + the applications config + the persistence node
   label; per fixture, the external app-set volume (`dir`, left empty on purpose) and a real
   Traefik edge (`edge`). The application is declared `automated: false` because the controller
