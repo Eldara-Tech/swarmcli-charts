@@ -87,7 +87,11 @@
             "enabled": { "type": "boolean" },
             "host": { "type": "string" },
             "insecure": { "type": "boolean" },
-            "basicAuthUsers": { "type": "string" }
+            "basicAuthUsers": { "type": "string" },
+            "basicAuthSecret": {
+              "description": "External Swarm secret holding htpasswd lines; the alternative to basicAuthUsers that keeps the hash out of the labels.",
+              "type": "string"
+            }
           }
         },
         "apiPort": { "type": "integer", "minimum": 1 },
@@ -99,6 +103,18 @@
             "access": { "type": "boolean" },
             "level": { "type": "string" }
           }
+        }
+      }
+    },
+    "metrics": {
+      "description": "Prometheus metrics on a dedicated, unpublished entrypoint, labelled for Docker Swarm service discovery.",
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "network": {
+          "description": "External overlay Traefik shares with Prometheus.",
+          "type": "string", "minLength": 1
         }
       }
     },

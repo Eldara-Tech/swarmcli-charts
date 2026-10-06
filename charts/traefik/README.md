@@ -30,6 +30,10 @@ export PASSWORD=changethis
 echo $(openssl passwd -apr1 $PASSWORD) | sed 's/\$/\$\$/g'
 ```
 
+That hash ends up in the service's deploy labels. To keep it out of them, put the
+users in an external Swarm secret and set `traefik.dashboard.basicAuthSecret`
+instead; with [metrics](#metrics) on, that is required.
+
 ## Routing a service
 
 The swarm provider runs with `exposedByDefault=false` **and** a constraint on
@@ -86,13 +90,89 @@ the dashboard), so routed services can rely on it. The entrypoints are named
 | `traefik.dashboard.host` | `""` | **Required when enabled** — dashboard FQDN |
 | `traefik.dashboard.insecure` | `false` | Expose the insecure `:8080` API — keep `false` in production |
 | `traefik.dashboard.basicAuthUsers` | `""` | htpasswd users; empty ⇒ no basic-auth middleware is attached |
+| `traefik.dashboard.basicAuthSecret` | `""` | External Swarm secret holding the htpasswd lines instead; keeps the hash out of the labels (required with metrics) |
 | `traefik.apiPort` | `8080` | Internal Traefik API port the dashboard load-balances to |
 | `traefik.bufferingMaxRequestBodyBytes` | `2000000` | Max buffered request body in bytes (0 disables) |
 | `traefik.log.enabled` | `true` | Traefik log |
 | `traefik.log.access` | `true` | Access log |
 | `traefik.log.level` | `INFO` | Log level |
+| `metrics.enabled` | `false` | Prometheus metrics on a dedicated entrypoint, labelled for service discovery. See *Metrics* |
+| `metrics.port` | `8082` | Container port of the metrics entrypoint; never published |
+| `metrics.network` | `monitoring` | External overlay Traefik shares with Prometheus (auto-created) |
 | `extraLabels` | `{}` | Extra deploy labels appended verbatim |
 | `extraCommands` | `[]` | Extra Traefik CLI flags appended to the command block |
+
+## Metrics
+
+`metrics.enabled` turns on Traefik's Prometheus metrics, served at `/metrics` on an
+entrypoint of their own (`metrics`, port `metrics.port`, 8082) that is never
+published. The service carries the deploy labels `prometheus.io/scrape=true` and
+`prometheus.io/port=8082` and joins the `monitoring` overlay, which is where the
+prometheus-stack chart scrapes by default, so Prometheus
+finds Traefik with no scrape config. Any Prometheus using Docker Swarm service
+discovery on those labels works the same way.
+
+```bash
+printf 'admin:%s\n' "$(openssl passwd -apr1 changethis)" \
+  | docker secret create traefik_dashboard_users -
+# drop traefik.dashboard.basicAuthUsers from traefik-values.yaml first
+swarmcli charts upgrade traefik swarmcli-charts/traefik -f traefik-values.yaml \
+  --set traefik.dashboard.basicAuthSecret=traefik_dashboard_users \
+  --set metrics.enabled=true
+```
+
+Pass the values you installed with (`-f`, or the same `--set`s), not `--reuse-values`.
+That flag merges over the previous release's stored values *instead of* this chart
+version's defaults, so every `metrics.*` key would render empty
+([swarmcli#687](https://github.com/Eldara-Tech/swarmcli/issues/687)).
+
+Turning metrics on or off changes Traefik's command and networks, so Swarm replaces
+its one task: every routed service is unreachable for the few seconds the new task
+takes to bind the host-mode ports.
+
+You get request counts and durations per entrypoint and per service
+(`traefik_entrypoint_*`, `traefik_service_*`), open connections, configuration
+reloads and certificate expiry (`traefik_tls_certs_not_after`). The per-service
+series cover every chart routed through Traefik, including whoami, ollama and
+openclaw, which serve no metrics of their own. Per-router series are off, as in
+Traefik itself; add `--metrics.prometheus.addRoutersLabels=true` to `extraCommands`
+for them. Traefik runs as one replicated task, so its `instance` label is the
+task's address and changes when the task is replaced; the `node` label is stable.
+
+No router lands on the metrics entrypoint by accident. A router that names no
+entrypoint is served on every default one, and while none is flagged that is every
+entrypoint, so with metrics on the chart marks `http`, `https` and each
+`extraEntrypoints` entry `asDefault`: the default set stays what it was.
+
+**The dashboard's users move into a secret.** Once a service is discovered, every
+one of its deploy labels is readable through Prometheus's targets API, and
+`traefik.dashboard.basicAuthUsers` writes the dashboard's password hash into one.
+With metrics on, the render refuses it, and any `extraLabels` key ending in
+`basicauth.users`, `digestauth.users` or `customrequestheaders.authorization`
+(`basicauth.usersfile` is fine). `traefik.dashboard.basicAuthSecret` names an
+external Swarm secret holding the htpasswd lines (one `user:hash` per line, no `$$`
+escaping) instead; Traefik reads it from `/run/secrets` through the middleware's
+`usersfile` option. It works without metrics too. To rotate, create a secret under
+a new name and point `basicAuthSecret` at it.
+
+**What the `monitoring` overlay can reach.** Joining it gives every service on
+`monitoring` the access to Traefik that services on `traefik-public` already have:
+
+- `:80` and `:443` directly, past the published ports. The default
+  `traefik.trustedIPs` trusts all of `10.0.0.0/8`, which covers every overlay, for
+  forwarded headers and PROXY protocol, so such a service can claim any client IP.
+  That defeats IP-allowlist middlewares and skews the access log; narrow
+  `trustedIPs` to your real load balancers if either matters.
+- `/metrics` itself, which answers on every network the task is on,
+  `traefik-public` included.
+
+The render also refuses metrics together with `traefik.dashboard.insecure: true`.
+That API on `:8080` authenticates nobody, and its `/api/rawdata` and
+`/api/http/middlewares` return every middleware's configuration, so the basic-auth
+users and hashes of every stack Traefik routes would be one request away for anything
+on `monitoring`.
+
+With swarmcli-cd, allow the `monitoring` network and the users secret.
 
 ## Logging
 

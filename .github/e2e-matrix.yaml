@@ -69,8 +69,10 @@ include:
   - { chart: mongodb,       cases: "",                                                                                timeout: 6m  }
   # traefik: every CI-friendly fixture EXCEPT loki-logging, which needs the
   # loki:latest Docker log-driver plugin (absent on stock runners). `routing` (#63)
-  # stands up two whoami backends and proves a request routes THROUGH the edge.
-  - { chart: traefik,       cases: "default dashboard-off extra-entrypoints hsts-off ingress-ports certs-bind-mount routing", timeout: 6m }
+  # stands up two whoami backends and proves a request routes THROUGH the edge. `metrics`
+  # (#234) proves the dashboard authenticates from the users SECRET (401 without, 200 with)
+  # and scrapes /metrics over the monitoring overlay, where the https requests show up.
+  - { chart: traefik,       cases: "default dashboard-off extra-entrypoints hsts-off ingress-ports certs-bind-mount routing metrics", timeout: 6m }
   # keycloak: ci/e2e-setup.sh stands up the backend the fixture asks for — MariaDB for
   # most, PostgreSQL for `postgres` (#69). jdbc-url and published-tls converge nowhere
   # and are marked ci/e2e-render-only. `edge` (#63) additionally stands up the traefik

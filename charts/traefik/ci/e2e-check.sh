@@ -39,6 +39,15 @@ if [ "$up" != 1 ]; then
   exit 1
 fi
 
+# Discovery is opt-in: the `metrics` fixture's service must carry the scrape label, and
+# no other fixture's may.
+scrape="$(docker service inspect "$service" --format '{{index .Spec.Labels "prometheus.io/scrape"}}')"
+if [ "${3:-}" = "metrics" ]; then
+  [ "$scrape" = "true" ] || { echo "  $service lacks prometheus.io/scrape=true in the metrics fixture"; exit 1; }
+else
+  [ -z "$scrape" ] || { echo "  $service carries prometheus.io/scrape=$scrape although metrics are off"; exit 1; }
+fi
+
 # --- routing fixture: prove Traefik actually ROUTES through the edge, and that the
 # constraint-label gate works — the labelled backend is reached (200) while the copy
 # missing ONLY that label is never discovered (404). The backends are stood up by
@@ -49,6 +58,48 @@ if [ "$case" = "routing" ]; then
   EDGE_TARGET="$service"   # the harness's traefik release is the edge here
   edge_assert_routed   whoami-ok.e2e.test  / 200 || exit 1
   edge_assert_unrouted whoami-bad.e2e.test       || exit 1
+fi
+
+# --- metrics fixture: the dashboard's basic auth works from the users SECRET (401
+# without credentials, 200 with them), and Prometheus — standing in a container on the
+# monitoring overlay — scrapes /metrics from the dedicated entrypoint and sees the
+# requests just made counted on the https entrypoint. The metrics port must not be
+# published. ----------------------------------------------------------------------------
+if [ "$case" = "metrics" ]; then
+  CURL_IMAGE="${TRAEFIK_E2E_CURL_IMAGE:-curlimages/curl:latest}"
+  dash() {
+    docker run --rm --network traefik-public "$CURL_IMAGE" -sk -o /dev/null -w '%{http_code}' \
+      --max-time 10 --connect-to "traefik.e2e.test:443:${service}:443" "$@" \
+      https://traefik.e2e.test/dashboard/ 2>/dev/null || true
+  }
+  anon=""; authed=""
+  for _ in $(seq 1 30); do
+    anon="$(dash)"; authed="$(dash -u e2e:e2e-pass)"
+    [ "$anon" = 401 ] && [ "$authed" = 200 ] && break
+    sleep 2
+  done
+  [ "$anon" = 401 ] || { echo "  dashboard without credentials returned '$anon', expected 401"; exit 1; }
+  [ "$authed" = 200 ] || { echo "  dashboard with the secret's credentials returned '$authed', expected 200"; exit 1; }
+  echo "  dashboard: 401 without credentials, 200 with the users from the secret"
+
+  m=""
+  for _ in $(seq 1 15); do
+    m="$(docker run --rm --network monitoring "$CURL_IMAGE" -sSf --max-time 10 "http://${service}:8082/metrics" 2>&1 || true)"
+    grep -E '^traefik_entrypoint_requests_total\{.*entrypoint="https".*\} [1-9]' <<<"$m" >/dev/null && break
+    sleep 2
+  done
+  if ! grep -E '^traefik_entrypoint_requests_total\{.*entrypoint="https".*\} [1-9]' <<<"$m" >/dev/null; then
+    echo "  no traefik_entrypoint_requests_total for the https entrypoint on monitoring. Scrape:"
+    grep -E '^traefik_|^curl' <<<"$m" | sed -n '1,10p' | sed 's/^/    /'
+    exit 1
+  fi
+  series="$(grep -c '^traefik_' <<<"$m" || true)"
+  echo "  /metrics on monitoring: $series traefik_* samples, https entrypoint requests counted"
+
+  pub="$(docker service inspect "$service" --format '{{range .Endpoint.Ports}}{{.TargetPort}} {{end}}')"
+  for p in $pub; do
+    [ "$p" != 8082 ] || { echo "  the metrics port 8082 is published"; exit 1; }
+  done
 fi
 
 exit 0
