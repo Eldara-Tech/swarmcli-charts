@@ -21,6 +21,11 @@ networks:
     attachable: true
     autoCreate: false
     description: "External overlay the database backend is reachable on; provisioned by the DB chart/operator (the database.network value)"
+  - name: "{{ .Values.metrics.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: true
+    description: "Overlay Keycloak shares with Prometheus (when metrics.enabled); the prometheus-stack chart scrapes on it by default"
 secrets:
   - name: keycloak_db_password
     description: "Database password for KC_DB_USERNAME. Pre-create: printf 'S3cr3t' | docker secret create keycloak_db_password -"

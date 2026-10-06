@@ -234,6 +234,8 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   co-located backend on `keycloak-db-net` — MariaDB, or PostgreSQL for the `postgres` fixture —
   because Keycloak attaches its DB overlay unconditionally and `/health/ready` only passes once
   it has connected and migrated, so every keycloak fixture needs a reachable database.
+  The `metrics` fixture scrapes `:9000/metrics` from the `monitoring` overlay, as Prometheus
+  would, and asserts JVM and DB-pool series.
 - **vaultwarden** — the four dummy secrets + the data node label for every fixture, plus a
   throwaway PostgreSQL/MariaDB named `vw-postgres`/`vw-mariadb` for the `postgres`/`mysql`
   fixtures — deliberately *not* the plain `postgres`/`mariadb` names the keycloak and superset

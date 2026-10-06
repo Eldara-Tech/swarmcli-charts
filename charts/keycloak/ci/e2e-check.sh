@@ -54,6 +54,29 @@ if [ "$ready" != 1 ]; then
   exit 1
 fi
 
+# --- metrics (any fixture whose service opted in to discovery): scrape /metrics the way
+# Prometheus does — from a client on the overlay named by the labels' network, at the
+# port the labels name — and assert series that only a booted, DB-connected Keycloak has.
+# A 200 alone would also come from a metrics endpoint with nothing behind it. ----------
+mport="$(docker service inspect --format '{{index .Spec.Labels "prometheus.io/port"}}' "${release}_keycloak")"
+if [ -n "$mport" ]; then
+  m=""
+  for _ in $(seq 1 15); do
+    m="$(docker run --rm --network monitoring curlimages/curl:latest -sSf --max-time 10 \
+      "http://${release}_keycloak:${mport}/metrics" 2>&1 || true)"
+    grep -E '^jvm_memory_used_bytes\{' <<<"$m" >/dev/null && break
+    sleep 2
+  done
+  for series in jvm_memory_used_bytes agroal_active_count; do
+    if ! grep -E "^${series}\{" <<<"$m" >/dev/null; then
+      echo "  FAIL: ${release}_keycloak:${mport}/metrics on the monitoring overlay has no ${series} series. First lines:"
+      sed -n '1,5p' <<<"$m" | sed 's/^/    /'
+      exit 1
+    fi
+  done
+  echo "  ${release}_keycloak: /metrics scraped on monitoring:${mport} ($(grep -c '^[a-z]' <<<"$m") samples, jvm_* and the DB pool's agroal_* present) OK"
+fi
+
 # --- edge fixture: prove a request routes THROUGH the stood-up traefik edge to Keycloak
 # (issue #63). Health above proved Keycloak is serving; now assert a public realm endpoint
 # is reachable via the edge with a matching Host header, and that an unknown host 404s. ---
