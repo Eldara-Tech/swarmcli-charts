@@ -254,7 +254,9 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
 - **loki** — the `loki-data` node label + the `monitoring` overlay for every fixture; per
   fixture, the bind-mount host dir, a real Traefik edge (`edge`), and — for `external-config` /
   `external-secret` — a Swarm config/secret holding the chart's own shipped Loki configuration,
-  standing in for the operator's. No auth secret: Loki has none.
+  standing in for the operator's. No auth secret: Loki has none. The `metrics` fixtures scrape
+  `/metrics` from the `monitoring` overlay at the port the discovery label names, and assert
+  `loki_build_info` plus a distributor line count that includes the push.
 - **gitlab** — the two dummy secrets (initial root password, SMTP password) + the `gitlab-data`
   node label + `traefik-public`, which is `autoCreate:false`, so the hook stands in for the
   operator. Both secrets are turned on by the fixture on purpose: GitLab `File.read`s them at
