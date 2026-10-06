@@ -246,6 +246,12 @@ if [ "$case_name" = "metrics" ]; then
   if yq -r ".services.\"$u\".networks // [] | .[]" "$f" | grep -xF monitoring >/dev/null; then
     err "$u: joined the metrics overlay while holding the root password"
   fi
+
+  # The dashboard shipped for operators (monitoring/): every query scoped to the selected
+  # cluster, or two releases' peers would mix in one panel.
+  gd="$(dirname "$0")/../monitoring/galera-dashboard.json"
+  unscoped="$(yq -p json -o yaml -r '.. | select(tag == "!!map" and has("expr")) | .expr' "$gd" | grep -vF 'stack="$stack"' || true)"
+  [ -z "$unscoped" ] || err "$gd has queries not scoped to the selected cluster: $unscoped"
 fi
 
 # EXACTLY ONE peer may be able to bootstrap, in any fixture. This is the assertion

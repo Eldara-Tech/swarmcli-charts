@@ -169,8 +169,8 @@ peer's node.
 That pin also decides what a lost node looks like. Swarm cannot move the exporter
 elsewhere, so its target stays and reads down (`up 0`, not `mysql_up 0`), while the
 surviving peers report `mysql_global_status_wsrep_cluster_size` below
-`cluster.peers`. That drop is the signal to alert on; the prometheus-stack chart
-ships it as `GaleraQuorumAtRisk` and `GaleraClusterShrunk`.
+`cluster.peers`. That drop is the signal to alert on, and the rules below do:
+`GaleraQuorumAtRisk` and `GaleraClusterShrunk`.
 
 - **Rotating the password**: create a secret under a new name and point
   `metrics.secretName` at it. The changed spec runs the one-shot again, which resets
@@ -182,6 +182,39 @@ ships it as `GaleraQuorumAtRisk` and `GaleraClusterShrunk`.
 - **Turning it off** leaves the services running, for the same reason as shrinking
   the cluster (swarmcli deploys without `--prune`). Remove them yourself:
   `docker service rm <release>_mariadb-galera-exporter-1 … <release>_mariadb-galera-exporter-user`.
+
+### Alerts and a dashboard
+
+The chart ships both under [`monitoring/`](monitoring) for your Prometheus and Grafana,
+and deploys neither: scraping is automatic, but which rules and dashboards a monitoring
+stack loads is its operator's choice. With the prometheus-stack chart they go in
+through its own configuration:
+
+```bash
+base=https://raw.githubusercontent.com/Eldara-Tech/swarmcli-charts/main/charts/mariadb-galera/monitoring
+curl -fsSL -O "$base/galera-rules.yml" -O "$base/galera-dashboard.json"
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --reuse-values \
+  --set-file prometheus.extraRules.galera=./galera-rules.yml \
+  --set-file grafana.dashboards.galera=./galera-dashboard.json
+```
+
+prometheus-stack's README, *Keeping your setup in git*, has the values-file form.
+
+- **Alerts** (`galera-rules.yml`): `MySQLDown`, `MySQLGaleraNotReady`,
+  `MySQLGaleraOutOfSync` and `MySQLGaleraDonorFallingBehind`, derived from the
+  [mysqld-mixin](https://github.com/prometheus/mysqld_exporter/tree/main/mysqld-mixin)
+  (Apache-2.0); OutOfSync leaves out a donor, which keeps serving during a state
+  transfer. Then one alert per cluster: `GaleraQuorumAtRisk` while fewer than 3
+  members remain, so the next failure loses quorum, and `GaleraClusterShrunk` while a
+  cluster has fewer members than it had in the last day.
+- **Dashboard** (`galera-dashboard.json`, uid `galera`): members, Synced peers,
+  primary component, peer state, flow control, write-set queues and traffic,
+  certification conflicts, plus connections, queries and buffer-pool hits. Pick a
+  cluster by its `stack`.
+
+Both group by the `stack` label prometheus-stack's discovery puts on every target.
+Another Prometheus needs the same relabelling of
+`__meta_dockerswarm_service_label_com_docker_stack_namespace` to `stack`.
 
 ## Values
 

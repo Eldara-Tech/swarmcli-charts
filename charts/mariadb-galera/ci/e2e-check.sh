@@ -126,7 +126,17 @@ if [ -n "$exporters" ]; then
     failed="$(grep -E '^mysql_exporter_collector_success\{.*\} 0$' <<<"$m" || true)"
     [ -z "$failed" ] || { echo "  $e: collectors failing (a missing grant):"; echo "$failed" | sed 's/^/    /'; exit 1; }
   done
-  metrics_ok=", $n_exp exporters scraped on monitoring"
+  # The alert rules the chart ships for operators to load (monitoring/), checked here
+  # because nothing deploys them: their logic, under the promtool of a pinned Prometheus.
+  chart="$(cd "$2" && pwd)"
+  promtool_image="${GALERA_E2E_PROMTOOL_IMAGE:-prom/prometheus:v3.15.0}"
+  if ! out="$(docker run --rm --entrypoint promtool -v "$chart:/chart:ro" "$promtool_image" \
+      test rules /chart/ci/galera-rules-test.yml 2>&1)"; then
+    echo "  promtool test rules fails on monitoring/galera-rules.yml:"
+    echo "$out" | sed 's/^/    /'
+    exit 1
+  fi
+  metrics_ok=", $n_exp exporters scraped on monitoring, alert rules pass promtool"
 fi
 
 # With the proxy fixture, the thing worth proving is not that the cluster formed —
