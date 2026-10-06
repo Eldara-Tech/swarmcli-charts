@@ -26,14 +26,21 @@
 {{- fail "smtp.address is required when smtp.enabled is true." -}}
 {{- end -}}
 {{- if .Values.metrics.enabled -}}
-{{- if has (int .Values.metrics.port) (list (int .Values.service.port) 22) -}}
-{{- fail "metrics.port must differ from service.port and from 22: the metrics server is a listener of its own inside the container." -}}
+{{- /* Ports already bound inside the container: nginx (service.port, and its status page on
+       *:8060), sshd, and the loopback listeners of Puma, Sidekiq, KAS, Workhorse and Gitaly,
+       plus the bundled monitoring stack's in case config.extraRb re-enables it. The metrics
+       server could not bind one of them, and it would restart endlessly while GitLab itself
+       stays healthy. */}}
+{{- $taken := list (int .Values.service.port) 22 8060 8080 8082 8092 8150 8151 8153 8154 8155 9229 9236 9090 9093 9100 9121 9168 9187 -}}
+{{- if has (int .Values.metrics.port) $taken -}}
+{{- fail (printf "metrics.port %v is already bound inside the GitLab container (service.port, sshd, nginx's status page or one of GitLab's own listeners), so the metrics server could not start. GitLab's own default for it is 8083." .Values.metrics.port) -}}
 {{- end -}}
 {{- /* Once a service opts in to discovery, every one of its deploy labels is readable
-       through Prometheus's targets API, so a basic-auth hash in `labels` would leak. */}}
+       through Prometheus's targets API, so a credential in `labels` would leak. Anchored:
+       basicauth.usersfile is the safe alternative and must pass. */}}
 {{- range $key, $val := .Values.labels -}}
-{{- if regexMatch "(?i)basicauth\\.users" $key -}}
-{{- fail (printf "labels.%s carries a basic-auth hash, and with metrics.enabled every deploy label is readable through Prometheus's targets API. Use basicauth.usersfile with a mounted secret instead." $key) -}}
+{{- if regexMatch "(?i)((basic|digest)auth\\.users|customrequestheaders\\.authorization)$" $key -}}
+{{- fail (printf "labels.%s carries a credential, and with metrics.enabled every deploy label of the service is readable through Prometheus's targets API. Use basicauth.usersfile / digestauth.usersfile with a mounted secret instead, or leave metrics off." $key) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

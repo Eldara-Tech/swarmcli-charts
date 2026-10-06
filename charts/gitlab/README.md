@@ -122,8 +122,15 @@ config:
   extraRb: |
     gitlab_rails['time_zone'] = 'Europe/Zurich'
     gitlab_rails['gitlab_default_theme'] = 2
-    nginx['real_ip_trusted_addresses'] = ['10.0.0.0/8']
+    # The ingress overlay's subnet only, from:
+    #   docker network inspect traefik-public --format '{{(index .IPAM.Config 0).Subnet}}'
+    nginx['real_ip_trusted_addresses'] = ['10.0.1.0/24']
 ```
+
+Trust exactly the proxy's subnet, never all of `10.0.0.0/8`: every Swarm overlay comes
+out of that range, so any container on any overlay GitLab joins could then claim a
+client address of its choosing — `127.0.0.1` included, which is what GitLab's
+loopback-only endpoints such as `/-/metrics` trust.
 
 **A literal `$` must be written `$$`.** This is rendered into the compose manifest, which
 docker interpolates before deploying, so a single `$` would be eaten (or expanded into
@@ -209,8 +216,13 @@ prometheus-stack chart scrapes by default — so Prometheus finds GitLab by itse
 scrape config.
 
 ```bash
-swarmcli charts upgrade gitlab swarmcli-charts/gitlab --reuse-values --set metrics.enabled=true
+swarmcli charts upgrade gitlab swarmcli-charts/gitlab -f gitlab-values.yaml --set metrics.enabled=true
 ```
+
+Pass the values you installed with (`-f`, or the same `--set`s), not `--reuse-values`.
+That flag merges over the previous release's stored values *instead of* this chart
+version's defaults, so every `metrics.*` key would render empty
+([swarmcli#687](https://github.com/Eldara-Tech/swarmcli/issues/687)).
 
 This changes `GITLAB_OMNIBUS_CONFIG`, so GitLab restarts and reconfigures once. The
 server costs one extra Ruby process, and it answers nothing but `/metrics`, without
@@ -219,10 +231,19 @@ does not widen `monitoring_whitelist`, and GitLab's bundled Prometheus stays off
 
 - **Everything on `monitoring` can reach every port of the GitLab service**, not just the
   metrics port: GitLab itself over plain HTTP on `service.port`, behind its own login,
-  and sshd on 22. Attach only services you trust to that overlay.
+  sshd on 22, and nginx's status page on 8060 (it answers 403 to anything but loopback).
+  Attach only services you trust to that overlay.
+- **Keep `nginx['real_ip_trusted_addresses']` off the `monitoring` subnet.** A trusted
+  range that covers it lets any container there send a forged client address to :80 —
+  `127.0.0.1` passes GitLab's loopback-only allow-lists. Scope it to the ingress overlay,
+  as in *Extra configuration*.
 - **Every deploy label of the service becomes readable** through Prometheus's targets API.
-  The render fails if `labels` carries a Traefik `basicauth.users` hash while metrics are
-  on.
+  The render fails if `labels` carries a credential while metrics are on — a Traefik
+  `basicauth.users` / `digestauth.users` hash or an `Authorization` request header; use
+  `basicauth.usersfile` with a mounted secret instead.
+- `metrics.port` must be free inside the container: the render refuses `service.port`,
+  22, 8060 and the ports of GitLab's own listeners (8080, 8082, 8092, 8150, 8151, 8153-8155, 9229,
+  9236, and the bundled monitoring stack's 9090, 9093, 9100, 9121, 9168, 9187).
 - **Web metrics only.** Sidekiq (8082), Workhorse (9229) and Gitaly (9236) keep their
   exporters on loopback: Swarm service discovery scrapes one port per service, and
   GitLab is one service. Background-job and Git metrics are a follow-up.

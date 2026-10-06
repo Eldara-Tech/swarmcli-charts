@@ -8,6 +8,6 @@ ssh:
   mode: none
 metrics:
   enabled: true
-  port: 9100
+  port: 8183
 labels:
   team: git

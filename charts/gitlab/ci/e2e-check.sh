@@ -24,6 +24,7 @@
 set -euo pipefail
 
 release="$1"
+case_name="${3:-}"
 # SMTP_PW must match ci/e2e-setup.sh; HOST must match ci/minimal-values.yaml. The password is
 # deliberately distinctive: the environment assertion below greps for it, and a value like
 # "test" also occurs inside HOST, so it would report a leak that is not there.
@@ -114,6 +115,14 @@ fi
 #    Rails samplers, so seeing it proves the server reads Puma's metrics, not just its own.
 mport="$(docker service inspect "${release}_gitlab" \
   --format '{{index .Spec.Labels "prometheus.io/port"}}' 2>/dev/null || true)"
+# The fixture decides whether metrics must be there: a missing label on a metrics fixture
+# fails, it never skips the scrape, and a label on any other fixture fails too.
+case "$case_name" in
+  minimal|metrics)
+    [ -n "$mport" ] || note "fixture $case_name turns metrics on, but ${release}_gitlab carries no prometheus.io/port label" ;;
+  *)
+    [ -z "$mport" ] || note "fixture $case_name has metrics off, but ${release}_gitlab carries prometheus.io/port=$mport" ;;
+esac
 if [ -n "$mport" ]; then
   m=""
   for _ in $(seq 1 30); do
