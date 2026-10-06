@@ -242,8 +242,9 @@ does not widen `monitoring_whitelist`, and GitLab's bundled Prometheus stays off
   `basicauth.users` / `digestauth.users` hash or an `Authorization` request header; use
   `basicauth.usersfile` with a mounted secret instead.
 - `metrics.port` must be free inside the container: the render refuses `service.port`,
-  22, 8060 and the ports of GitLab's own listeners (8080, 8082, 8092, 8150, 8151, 8153-8155, 9229,
-  9236, and the bundled monitoring stack's 9090, 9093, 9100, 9121, 9168, 9187).
+  22, 8060 and the ports of GitLab's own listeners (8080, 8082, 8092, 8150, 8151,
+  8153-8155, 9229, 9236, and the bundled monitoring stack's 9090, 9093, 9100, 9121, 9168,
+  9187).
 - **Web metrics only.** Sidekiq (8082), Workhorse (9229) and Gitaly (9236) keep their
   exporters on loopback: Swarm service discovery scrapes one port per service, and
   GitLab is one service. Background-job and Git metrics are a follow-up.
