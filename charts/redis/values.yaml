@@ -73,6 +73,37 @@ exposure:
 maxmemory: ""            # e.g. "256mb"
 maxmemoryPolicy: noeviction
 
+# Prometheus metrics: a redis_exporter beside the database, found by Docker Swarm
+# service discovery. The exporter carries the deploy labels prometheus.io/scrape=true
+# and prometheus.io/port=9121, and joins metrics.network, the prometheus-stack chart's
+# default scrape overlay — so that chart picks it up with no config.
+#
+# Off by default, and nothing below renders while it is off. Redis itself never joins
+# metrics.network, so its port stays off it.
+#
+# With auth.enabled the exporter logs in as its own ACL user (`username`), which may
+# run INFO, LATENCY LATEST/HISTOGRAM, SLOWLOG LEN, COMMAND INFO and CLIENT SETNAME and
+# nothing else: no key, no CONFIG (CONFIG GET returns requirepass in plain text). The
+# user is defined on the redis-server command line, so TURNING METRICS ON RESTARTS
+# REDIS ONCE — an ephemeral instance (persistence.enabled: false) loses its data.
+# secretName is an EXTERNAL Swarm secret holding that user's password; it must differ
+# from auth.secretName. Pre-create it with a random one:
+#   openssl rand -base64 32 | docker secret create redis_exporter_password -
+# With auth.enabled: false there is no user to restrict, and no secret is needed.
+metrics:
+  enabled: false
+  image:
+    repository: oliver006/redis_exporter
+    # A concrete tag, not appVersion: this is a second image, and Renovate's
+    # helm-values manager maintains pins written here. The -alpine variant, because
+    # the default image has no shell to read the password from the mounted secret.
+    tag: "v1.93.0-alpine"
+  username: exporter
+  secretName: redis_exporter_password
+  # External overlay the exporter shares with Prometheus. Only the exporter joins it,
+  # never redis. requirements.yaml declares it autoCreate:true.
+  network: monitoring
+
 # Swarm deploy resource limits (optional). Rendered only when limits.memory is set.
 resources:
   limits:

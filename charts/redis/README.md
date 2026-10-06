@@ -57,6 +57,58 @@ authenticating with the `redis_password` secret. To reach Redis from outside the
 overlay, set `exposure.enabled: true` (publishes a port; choose `mode: ingress` for
 the cluster-wide routing mesh or `mode: host` for the pinned node only).
 
+## Metrics
+
+Redis serves no Prometheus metrics of its own, so `metrics.enabled` adds a
+[redis_exporter](https://github.com/oliver006/redis_exporter) service,
+`<release>_redis-exporter`. It carries the deploy labels `prometheus.io/scrape=true`
+and `prometheus.io/port=9121` and joins the `monitoring` overlay, which is where the
+[prometheus-stack](../prometheus-stack) chart scrapes by default, so Prometheus finds
+it by itself with no scrape config. Any Prometheus using Docker Swarm service
+discovery on those labels works the same way. Redis itself never joins `monitoring`.
+
+```bash
+openssl rand -base64 32 | docker secret create redis_exporter_password -
+swarmcli charts upgrade redis swarmcli-charts/redis --reuse-values --set metrics.enabled=true
+```
+
+With `auth.enabled` (the default), the exporter logs in as an ACL user of its own,
+`exporter`, defined on the `redis-server` command line from the SHA-256 of that
+secret. Its grant reads server state and nothing else: `INFO`, `LATENCY LATEST` and
+`HISTOGRAM`, `SLOWLOG LEN`, `COMMAND INFO` and `CLIENT SETNAME`. It cannot read a key,
+run `CONFIG` (`CONFIG GET requirepass` returns the admin password in plain text) or
+`SLOWLOG GET` (which returns the arguments of slow commands). Without auth there is
+nothing to restrict, and no secret is needed.
+
+- **Turning metrics on restarts Redis once**, because the ACL user is part of its
+  command line. With persistence on, the AOF carries the data across; an ephemeral
+  instance (`persistence.enabled: false`) starts empty. Turning metrics off restarts
+  it again.
+- You get `redis_up`, everything `INFO ALL` reports (memory, clients, keyspace sizes,
+  `redis_commands_total`, replication, persistence) and per-command latency
+  percentiles. The exporter skips the `CONFIG GET` metrics (`redis_config_*`; the
+  ones that matter, such as `maxmemory`, are in `INFO` too) and the last slow
+  command's id and duration (`SLOWLOG GET`). Each scrape is denied that one
+  command, so Redis's `ACL LOG` keeps one entry for `slowlog|get` by `exporter`
+  whose count rises; that is expected.
+- **`/scrape` is disabled.** redis_exporter's multi-target endpoint
+  (`/scrape?target=…`) dials whatever address a caller names and authenticates with
+  the exporter's own user and password (`exporter/http.go` at v1.93.0 copies the
+  configured options into each target's connection), so anything on `monitoring`
+  could collect them with a fake Redis. The chart passes `--disable-scrape-endpoint`.
+- **Rotating the password**: create a secret under a new name and point
+  `metrics.secretName` at it. Both services change, so Redis restarts.
+- **Requirements**: Redis 7.0 or later with auth on (the grant names
+  `latency|histogram`, and redis-server refuses to start on an unknown command), and
+  no `--aclfile` in `extraConfig`: redis-server refuses command-line users beside an
+  ACL file, so the render refuses that combination.
+- `metrics.network` names a different overlay. It must differ from `network.name`,
+  and the render fails if it does not.
+- **Turning it off** leaves the exporter running, because swarmcli deploys without
+  `--prune`. Remove it yourself: `docker service rm <release>_redis-exporter`.
+- With swarmcli-cd, add `redis_exporter_password` to `allow.secrets` and
+  `monitoring` to `allow.networks`.
+
 ## Values
 
 | Key | Default | Description |
@@ -82,6 +134,12 @@ the cluster-wide routing mesh or `mode: host` for the pinned node only).
 | `healthcheck.*` | see `values.yaml` | redis-cli PING healthcheck |
 | `healthcheck.monitor` | `90s` | Rollout watch window. Must cover `startPeriod + interval x retries` (80s) — see below |
 | `extraConfig` | `[]` | Extra `redis-server` flags appended verbatim |
+| `metrics.enabled` | `false` | A redis_exporter labelled for Prometheus service discovery. See *Metrics*. |
+| `metrics.image.repository` | `oliver006/redis_exporter` | Exporter image |
+| `metrics.image.tag` | pinned in `values.yaml` | Exporter image tag (a concrete `-alpine` pin; Renovate maintains it) |
+| `metrics.username` | `exporter` | ACL user the exporter logs in as (auth on); the chart defines it |
+| `metrics.secretName` | `redis_exporter_password` | External secret holding that user's password (auth on) |
+| `metrics.network` | `monitoring` | External overlay the exporter shares with Prometheus (auto-created) |
 | `labels` | `{}` | Extra deploy labels |
 
 ## Operating notes

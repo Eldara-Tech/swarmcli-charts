@@ -12,9 +12,14 @@
 # password. Auth is detected by the presence of the mounted secret; persistence
 # by the AOF directory on disk.
 #
+# With metrics on (the metrics / metrics-no-auth fixtures) it also scrapes the exporter
+# from the monitoring overlay, where Prometheus would, and — with auth — proves the
+# exporter's ACL user can read server state but no key and no CONFIG.
+#
 # PREREQUISITES for the default/auth fixtures (scripts/e2e-test.sh sets these up):
 #   docker node update --label-add redis-data=true <node>
 #   printf test | docker secret create redis_password -
+#   printf test | docker secret create redis_exporter_password -   (metrics)
 set -euo pipefail
 
 release="$1"
@@ -22,9 +27,10 @@ cid="$(docker ps -q -f "label=com.docker.swarm.service.name=${release}_redis" | 
 [ -n "$cid" ] || { echo "  ${release}_redis container not found"; exit 1; }
 
 # Build the redis-cli auth prefix only if a secret is actually mounted (auth on).
-# The chart mounts exactly one secret; discover its name rather than assuming the
-# default, so a fixture that overrides auth.secretName still works.
-secret="$(docker exec "$cid" sh -c 'ls /run/secrets/ 2>/dev/null | head -1')"
+# The chart mounts the auth secret, plus the exporter's with metrics on; discover the
+# auth secret's name rather than assuming the default, so a fixture that overrides
+# auth.secretName still works.
+secret="$(docker exec "$cid" sh -c 'ls /run/secrets/ 2>/dev/null | grep -v exporter | head -1')"
 if [ -n "$secret" ]; then
   pre='REDISCLI_AUTH="$(cat /run/secrets/'"$secret"')" '
 else
@@ -39,9 +45,50 @@ docker exec "$cid" sh -c \
   "${pre}redis-cli set e2e:smoke ok >/dev/null && ${pre}redis-cli get e2e:smoke" \
   | grep '^ok$' >/dev/null
 
+# Metrics: the exporter answers on the monitoring overlay — where Prometheus would
+# scrape it — sees redis (redis_up 1, a clean last scrape) and counts the SET above.
+metrics_ok=""
+exporter="${release}_redis-exporter"
+if docker service inspect "$exporter" >/dev/null 2>&1; then
+  m=""
+  for _ in $(seq 1 15); do
+    m="$(docker run --rm --network monitoring curlimages/curl:latest -sSf "http://$exporter:9121/metrics" 2>&1 || true)"
+    grep -x 'redis_up 1' <<<"$m" >/dev/null && break
+    sleep 2
+  done
+  if ! grep -x 'redis_up 1' <<<"$m" >/dev/null; then
+    echo "  $exporter: redis_up is not 1 on the monitoring overlay. Scrape and exporter log:"
+    grep -E '^redis_up|^redis_exporter_last_scrape_error|^curl' <<<"$m" | sed 's/^/    /'
+    docker service logs --tail 5 "$exporter" 2>&1 | sed 's/^/    /'
+    exit 1
+  fi
+  grep -xF 'redis_exporter_last_scrape_error{err=""} 0' <<<"$m" >/dev/null \
+    || { echo "  $exporter: the last scrape reported an error:"; grep '^redis_exporter_last_scrape_error' <<<"$m" | sed 's/^/    /'; exit 1; }
+  grep -E '^redis_commands_total\{cmd="set"\} [1-9]' <<<"$m" >/dev/null \
+    || { echo "  $exporter: redis_commands_total{cmd=\"set\"} does not count the smoke SET"; exit 1; }
+  code="$(docker run --rm --network monitoring curlimages/curl:latest -s -o /dev/null -w '%{http_code}' \
+    "http://$exporter:9121/scrape?target=redis://example.invalid:6379" || true)"
+  [ "$code" = "404" ] || { echo "  $exporter: /scrape answered $code, expected 404 (it must be disabled)"; exit 1; }
+  metrics_ok=" + exporter on monitoring (redis_up 1, /scrape 404)"
+
+  # With auth, the exporter's ACL user: logs in, reads INFO, and is refused a key and
+  # CONFIG GET (which would hand it requirepass). Its password comes from the secret
+  # redis mounts to hash it.
+  if docker exec "$cid" test -f /run/secrets/redis_exporter_password; then
+    as_exp() { docker exec "$cid" sh -c 'REDISCLI_AUTH="$(cat /run/secrets/redis_exporter_password)" redis-cli --no-auth-warning --user exporter '"$1" 2>&1; }
+    out="$(as_exp 'info server')"
+    grep -F 'redis_version:' <<<"$out" >/dev/null || { echo "  exporter user cannot run INFO: $out"; exit 1; }
+    for cmd in 'get e2e:smoke' 'config get requirepass' 'slowlog get 1' 'keys *'; do
+      out="$(as_exp "$cmd")"
+      grep -F 'NOPERM' <<<"$out" >/dev/null || { echo "  exporter user was not refused '$cmd': $out"; exit 1; }
+    done
+    metrics_ok="$metrics_ok + ACL user refused GET/CONFIG/SLOWLOG GET/KEYS"
+  fi
+fi
+
 # Persistence: assert AOF on disk only when this fixture enabled it.
 if docker exec "$cid" sh -c 'ls /data/appendonly* >/dev/null 2>&1'; then
-  echo "  ${release}_redis: connectivity + set/get + AOF OK"
+  echo "  ${release}_redis: connectivity + set/get + AOF$metrics_ok OK"
 else
-  echo "  ${release}_redis: connectivity + set/get OK (ephemeral)"
+  echo "  ${release}_redis: connectivity + set/get$metrics_ok OK (ephemeral)"
 fi
