@@ -222,7 +222,10 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   bind-mount host dir. Its `ci/e2e-check.sh` connects from a throwaway client container on the
   release's overlay rather than `docker exec`, so the `replica-set` fixture exercises the member
   address clients are handed, not just the one the server resolves.
-- **traefik** — the `traefik-certs` node-label pin + the certs-bind-mount host dir.
+- **traefik** — the `traefik-certs` node-label pin + the certs-bind-mount host dir, and for
+  `metrics` the dashboard's htpasswd users as a Swarm secret. `ci/e2e-check.sh` then asks
+  the dashboard for 401 without and 200 with those credentials, and scrapes `/metrics` from
+  the `monitoring` overlay for the https entrypoint's request count.
 - **mariadb-galera** — the two dummy auth secrets + a node label for EVERY peer
   (`mariadb-galera-1` … `-5`) on the single CI node, so the pinned default fixture
   schedules all its peers there. `ci/e2e-check.sh` then asserts one cluster of the right

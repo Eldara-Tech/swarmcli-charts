@@ -6,9 +6,9 @@
 # The chart pins Traefik to the node holding its ACME cert volume via
 # node.labels.traefik-certs == true, so that label must exist or the task never
 # schedules. For the certs-bind-mount fixture it also pre-creates the host cert-store
-# dir. traefik-public is autoCreate:true (swarmcli creates it) and no secret is needed.
-# ci/e2e-teardown.sh removes everything created here. (See charts/redis/ci/e2e-setup.sh
-# for the shared shape.)
+# dir, and for `metrics` the dashboard's users secret. traefik-public and monitoring
+# are autoCreate:true (swarmcli creates them). ci/e2e-teardown.sh removes everything
+# created here. (See charts/redis/ci/e2e-setup.sh for the shared shape.)
 #
 # Idempotent: safe to re-run after a crashed run.
 set -euo pipefail
@@ -28,6 +28,15 @@ if [ "$case" = "certs-bind-mount" ]; then
     sudo -n install -d -m 0700 /opt/traefik-certificates 2>/dev/null \
       || mkdir -p /opt/traefik-certificates 2>/dev/null || true
   fi
+fi
+
+# --- metrics fixture only: the dashboard's htpasswd users as a Swarm secret
+# (traefik.dashboard.basicAuthSecret). INVARIANT: ci/e2e-check.sh logs in as
+# e2e / e2e-pass; the line is `openssl passwd -apr1 -salt e2esalt1 e2e-pass`.
+if [ "$case" = "metrics" ]; then
+  docker secret inspect traefik_dashboard_users >/dev/null 2>&1 \
+    || printf '%s\n' 'e2e:$apr1$e2esalt1$PZHxCpZi5HZaFJSAo1S5B/' \
+      | docker secret create traefik_dashboard_users - >/dev/null
 fi
 
 # --- routing fixture only: stand up two whoami backends on traefik-public — one correctly

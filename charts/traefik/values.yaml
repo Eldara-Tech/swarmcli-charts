@@ -114,7 +114,15 @@ traefik:
     # is attached (do not leave empty while the dashboard is reachable). Generate:
     #   export PASSWORD=changethis
     #   echo $(openssl passwd -apr1 $PASSWORD) | sed 's/\$/\$\$/g'
+    # The hash lands in the service's deploy labels; with metrics.enabled use
+    # basicAuthSecret instead (the render refuses this one there).
     basicAuthUsers: ""
+    # EXTERNAL Swarm secret holding the htpasswd lines instead (one user:hash per
+    # line, no $$ escaping). Traefik reads it from /run/secrets, so no hash appears
+    # in any label or in `docker inspect`. Set this OR basicAuthUsers, not both:
+    #   printf 'admin:%s\n' "$(openssl passwd -apr1 changethis)" \
+    #     | docker secret create traefik_dashboard_users -
+    basicAuthSecret: ""
 
   # Internal Traefik API port the dashboard service load-balances to.
   apiPort: 8080
@@ -126,6 +134,25 @@ traefik:
     enabled: true
     access: true
     level: INFO
+
+# Prometheus metrics, found by Docker Swarm service discovery. Traefik serves
+# /metrics on an entrypoint of its own (metrics.port, never published), the service
+# carries the deploy labels prometheus.io/scrape=true and prometheus.io/port, and it
+# joins metrics.network, the prometheus-stack chart's default scrape overlay — so
+# that chart picks it up with no config. Off by default.
+#
+# Every deploy label of an opted-in service is readable through Prometheus's
+# targets API, so the render refuses metrics together with a basic-auth hash in the
+# labels (traefik.dashboard.basicAuthUsers, or one in extraLabels): use
+# traefik.dashboard.basicAuthSecret for the dashboard.
+metrics:
+  enabled: false
+  # Container port of the dedicated metrics entrypoint. Not published; Prometheus
+  # reaches it over metrics.network.
+  port: 8082
+  # External overlay Traefik shares with Prometheus. requirements.yaml declares it
+  # autoCreate:true.
+  network: monitoring
 
 # Extra deploy labels appended verbatim (map of key: value).
 extraLabels: {}
