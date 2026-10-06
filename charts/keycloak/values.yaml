@@ -146,6 +146,23 @@ healthcheck:
   # after the window does not fail the deploy. Raise it if you raise the values above.
   monitor: 3m
 
+# Prometheus metrics, served by Keycloak itself on the management interface
+# (:9000/metrics, plain HTTP in every exposure mode, beside the health endpoints).
+# enabled:true sets KC_METRICS_ENABLED, adds the deploy labels
+# prometheus.io/scrape=true and prometheus.io/port=9000 that Docker Swarm service
+# discovery looks for, and attaches the service to `network` — the prometheus-stack
+# chart's default scrape overlay — so that chart picks it up with no config.
+#
+# Everything on `network` can then reach every Keycloak port, :8080 included, and
+# read every deploy label of this service through Prometheus. See the README's
+# Metrics section before turning it on. Turning it on (or off) restarts Keycloak:
+# the setting is part of its spec, and a build-time option Keycloak rebuilds for.
+metrics:
+  enabled: false
+  # External overlay shared with Prometheus. requirements.yaml declares it
+  # autoCreate:true.
+  network: monitoring
+
 # Optional placement constraints. Keycloak is stateless (no node-local volume), so
 # it is unpinned by default; add constraints to steer scheduling if you want.
 placement:

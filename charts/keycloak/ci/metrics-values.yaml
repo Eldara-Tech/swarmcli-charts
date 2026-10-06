@@ -1,0 +1,9 @@
+# Metrics on top of the default (Traefik-routed) shape: KC_METRICS_ENABLED, the two
+# Swarm service-discovery labels on the keycloak service, and the monitoring overlay
+# beside traefik-public and the DB overlay. ci/e2e-check.sh scrapes /metrics on :9000
+# from a client on monitoring, the way Prometheus does. `labels` proves user labels
+# still render beside the discovery ones.
+metrics:
+  enabled: true
+labels:
+  team: iam
