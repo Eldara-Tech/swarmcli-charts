@@ -116,7 +116,8 @@ grep -E '^  request_concurrency = [1-9]' <<<"$toml" >/dev/null \
 listen="$(grep -E '^listen_address = ' <<<"$toml" | sed -n 's/^listen_address = //p' | tr -d '"' || true)"
 hc="$(q "$svc.healthcheck.test")"
 # Keyed on the manifest, not on the case name, so a new fixture cannot slip past it: the
-# probe and the listener are one feature and must appear together or not at all.
+# probe needs the listener, so a probe without one could never pass.
+port=""
 if [ -n "$listen" ]; then
   grep -E '^0\.0\.0\.0:[0-9]+$' <<<"$listen" >/dev/null \
     || bad "listen_address is '$listen'; expected the 0.0.0.0:<port> form"
@@ -130,21 +131,46 @@ if [ -n "$listen" ]; then
   fi
 else
   [ "$hc" = "null" ] \
-    || bad "a healthcheck is rendered with metrics off — it probes /metrics, so it could never pass"
+    || bad "a healthcheck is rendered with no listen_address — it probes the listener, so it could never pass"
 fi
 # The fixtures that exist to cover this must not quietly stop covering it.
 case "$case" in
-  metrics|metrics-only|mock)
-    [ -n "$listen" ] || bad "case $case: metrics are off, so this fixture no longer exercises the listener"
+  metrics|metrics-only|mock|healthcheck-only)
+    [ -n "$listen" ] || bad "case $case: the listener is off, so this fixture no longer exercises it"
     ;;
 esac
 # And the fixture that exists to cover the metrics-without-a-probe mode must keep covering it.
 if [ "$case" = "metrics-only" ]; then
   [ "$hc" = "null" ] || bad "case $case: a healthcheck is rendered, so this fixture no longer covers metrics without a probe"
 fi
-if [ "$case" = "metrics" ]; then
-  [ "$hc" != "null" ] || bad "case $case: no healthcheck is rendered, so this fixture no longer covers the probe"
-fi
+case "$case" in
+  metrics|healthcheck-only)
+    [ "$hc" != "null" ] || bad "case $case: no healthcheck is rendered, so this fixture no longer covers the probe"
+    ;;
+esac
+
+# ── discovery: only metrics.enabled opts in, and only on the metrics overlay ──────────
+# Every deploy label of an opted-in service is readable through Prometheus's targets API,
+# and joining the overlay hands its members the unauthenticated listener — /debug/pprof and
+# /debug/jobs/list included. So the healthcheck alone must never do either.
+nets="$(q "$svc.networks // [] | .[]")"
+labels="$(q "$svc.deploy.labels // [] | .[]")"
+disc="$(grep -E '^prometheus\.io/' <<<"$labels" | sort | tr '\n' ',' || true)"
+case "$case" in
+  metrics|metrics-only|mock)
+    [ "$disc" = "prometheus.io/port=$port,prometheus.io/scrape=true," ] \
+      || bad "case $case: discovery labels are '$disc', expected exactly prometheus.io/port=$port (the listen port) and prometheus.io/scrape=true"
+    [ "$(tr '\n' ' ' <<<"$nets")" = "default monitoring " ] \
+      || bad "case $case: networks are '$(tr '\n' ' ' <<<"$nets")', expected the stack's own default (egress, and the mock's overlay) then monitoring"
+    [ "$(q '.networks.monitoring.external')" = "true" ] \
+      || bad "case $case: monitoring is not declared external — it would be stack-scoped and Prometheus could not share it"
+    ;;
+  *)
+    [ -z "$disc" ] || bad "case $case: discovery labels rendered although metrics.enabled is off: $disc"
+    [ -z "$nets" ] || bad "case $case: the service names networks although metrics.enabled is off: $(tr '\n' ' ' <<<"$nets")"
+    [ "$(q '.networks')" = "null" ] || bad "case $case: a top-level networks block is rendered although metrics.enabled is off"
+    ;;
+esac
 
 # ── placement: the pin must follow the node label, in every persistence mode ──────────
 constraints="$(q "$svc.deploy.placement.constraints")"
@@ -157,7 +183,7 @@ case "$case" in
     grep -F 'node.labels.runner-node == true' <<<"$constraints" >/dev/null \
       || bad "case $case: the node pin for persistence.nodeLabel=runner-node is missing"
     ;;
-  default|metrics|metrics-only|mock|cache|cache-iam|dind|extra-toml)
+  default|metrics|metrics-only|healthcheck-only|mock|cache|cache-iam|dind|extra-toml)
     grep -F 'node.labels.gitlab-runner-data == true' <<<"$constraints" >/dev/null \
       || bad "case $case: the default node pin is missing; the runner would be free to reschedule away from its volume and its warm image cache"
     ;;

@@ -3,10 +3,6 @@
 {{- if not .Values.gitlab.url -}}
 {{- fail "gitlab.url is required: it is the instance the runner polls, written into config.toml as the runner's url." -}}
 {{- end -}}
-{{- /* The probe reads /metrics, which exists only when the runner is told to listen. */}}
-{{- if and .Values.healthcheck.enabled (not .Values.metrics.enabled) -}}
-{{- fail "healthcheck.enabled requires metrics.enabled: the probe reads the runner's /metrics endpoint, and with metrics off there is nothing listening for it to pass." -}}
-{{- end -}}
 {{- /* Host-path persistence bind-mounts a host dir; a named-volume value must not be a path
        (docker compose would otherwise emit a cryptic error). */}}
 {{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) (contains "/" .Values.persistence.volumeName) -}}
@@ -62,7 +58,9 @@ version: "3.9"
 {{- $toml = append $toml (printf "log_level = %q" .Values.logLevel) }}
 {{- $toml = append $toml (printf "log_format = %q" .Values.logFormat) }}
 {{- $toml = append $toml (printf "shutdown_timeout = %v" .Values.shutdownTimeout) }}
-{{- if .Values.metrics.enabled }}
+{{- /* The listener serves both /metrics and the probe, so either one turns it on. Only
+       metrics.enabled also makes it reachable to Prometheus (the network and labels below). */}}
+{{- if or .Values.metrics.enabled .Values.healthcheck.enabled }}
 {{- $toml = append $toml (printf "listen_address = %q" (printf "0.0.0.0:%v" .Values.metrics.port)) }}
 {{- end }}
 {{- with .Values.config.extraGlobalToml }}
@@ -199,6 +197,15 @@ services:
 {{- range $secrets }}
       - {{ . }}
 {{- end }}
+{{- if .Values.metrics.enabled }}
+
+    # The stack's own overlay stays first: it is the runner's egress, and naming any
+    # network replaces the implicit default. The metrics overlay is where Prometheus
+    # reaches the listener.
+    networks:
+      - default
+      - {{ .Values.metrics.network }}
+{{- end }}
 
     # SIGQUIT is the image's own STOPSIGNAL and means "finish the running jobs, then exit";
     # pinned here so the graceful path does not depend on image metadata. Swarm's 10s
@@ -265,9 +272,15 @@ services:
 {{- end }}
       restart_policy:
         condition: any
-{{- with .Values.labels }}
+{{- if or .Values.labels .Values.metrics.enabled }}
       labels:
-{{- range $key, $val := . }}
+{{- if .Values.metrics.enabled }}
+        # Docker Swarm service discovery: Prometheus scrapes every task of a service
+        # carrying these. It also reads every OTHER deploy label below.
+        - "prometheus.io/scrape=true"
+        - "prometheus.io/port={{ .Values.metrics.port }}"
+{{- end }}
+{{- range $key, $val := .Values.labels }}
         - "{{ $key }}={{ $val }}"
 {{- end }}
 {{- end }}
@@ -281,5 +294,12 @@ volumes:
 secrets:
 {{- range $secrets }}
   {{ . }}:
+    external: true
+{{- end }}
+{{- if .Values.metrics.enabled }}
+
+networks:
+  default: {}
+  {{ .Values.metrics.network }}:
     external: true
 {{- end }}

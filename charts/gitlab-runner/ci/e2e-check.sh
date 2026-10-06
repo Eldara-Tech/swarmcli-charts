@@ -82,6 +82,38 @@ fi
 grep -aF '${RUNNER_TOKEN}' <<<"$config" >/dev/null \
   || bad "config.toml does not carry the \${RUNNER_TOKEN} reference the runner expands at load"
 
+# ── metrics: reachable where Prometheus would scrape them, and only there ─────────────
+# Keyed on the live service's labels, so it covers every fixture that opts in. The scrape
+# comes from a throwaway container on the monitoring overlay — Prometheus's vantage point —
+# at the port the discovery label names, which proves the label, the overlay and the
+# listener agree. gitlab_runner_version_info is a series the runner exports from start-up,
+# whether or not it ever reached a GitLab.
+svc_labels="$(docker service inspect "$svc" --format '{{json .Spec.Labels}}' 2>/dev/null || true)"
+if grep -F '"prometheus.io/scrape":"true"' <<<"$svc_labels" >/dev/null; then
+  mport="$(sed -n 's/.*"prometheus.io\/port":"\([0-9]*\)".*/\1/p' <<<"$svc_labels")"
+  [ -n "$mport" ] || bad "the service opts in to scraping but carries no prometheus.io/port label"
+  scrape=""
+  for _ in $(seq 1 15); do
+    scrape="$(docker run --rm --network monitoring curlimages/curl:latest -sS --max-time 5 \
+      "http://${svc}:${mport}/metrics" 2>&1 || true)"
+    grep -E '^gitlab_runner_version_info\{' <<<"$scrape" >/dev/null && break
+    sleep 2
+  done
+  if grep -E '^gitlab_runner_version_info\{' <<<"$scrape" >/dev/null; then
+    note "metrics: gitlab_runner_version_info scraped from the monitoring overlay on :$mport"
+  else
+    bad "no gitlab_runner_version_info at http://${svc}:${mport}/metrics from the monitoring overlay"
+    sed -n '1,5p' <<<"$scrape" | sed 's/^/    /'
+  fi
+else
+  # Not opted in: the runner must not have joined the metrics overlay either.
+  vips="$(docker service inspect "$svc" --format '{{range .Spec.TaskTemplate.Networks}}{{.Target}} {{end}}' 2>/dev/null || true)"
+  mon_id="$(docker network inspect monitoring --format '{{.Id}}' 2>/dev/null || true)"
+  if [ -n "$mon_id" ] && grep -F "$mon_id" <<<"$vips" >/dev/null; then
+    bad "the runner joined the monitoring overlay although it carries no prometheus.io/scrape label"
+  fi
+fi
+
 # ── cache credentials are appended by the container, not rendered into the manifest ───
 if [ "$case" = "cache" ]; then
   access="$(docker exec "$cid" cat /run/secrets/gitlab-runner-cache-access-key 2>/dev/null || true)"

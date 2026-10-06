@@ -130,20 +130,29 @@ cache:
     secretKeySecret: gitlab-runner-cache-secret-key
 
 # ── metrics ───────────────────────────────────────────────────────────────────────────
-# Prometheus /metrics (and /debug/pprof) on the task's own address. Deliberately not
-# publishable by this chart: the endpoint carries NO authentication, so it stays reachable
-# from inside the swarm only — scrape it from a Prometheus on the same overlay, or
-# `docker exec` into the task for a one-off. It is also what the healthcheck below probes.
+# Prometheus metrics, found by Docker Swarm service discovery. enabled turns on the
+# runner's listener, gives the service the deploy labels prometheus.io/scrape=true and
+# prometheus.io/port=<port>, and attaches it to `network`, the prometheus-stack chart's
+# default scrape overlay — so that chart picks the runner up with no config.
+#
+# The listener carries NO authentication, and it serves more than /metrics: /debug/pprof,
+# and /debug/jobs/list with the URL of every running job. Everything on `network` can
+# read them, and every deploy label of this service becomes readable through Prometheus.
+# The chart never publishes the port.
 metrics:
   enabled: false
   port: 9252
+  # External overlay the runner shares with Prometheus. requirements.yaml declares it
+  # autoCreate:true.
+  network: monitoring
 
-# Container healthcheck. It probes the metrics endpoint, so metrics.enabled must be on —
-# asking for one without the other fails the render rather than rendering a probe that
-# cannot pass. Two things it deliberately does not do: it does not ask GitLab whether the
-# token is valid (a GitLab outage would then mark every runner unhealthy, and Swarm would
-# restart them, aborting jobs mid-build), and it cannot tell you jobs are being picked up.
-# It proves the process is alive and its config parsed, no more.
+# Container healthcheck. It probes the runner's own listener on 127.0.0.1, and turns that
+# listener on by itself, so it works with metrics.enabled off — without joining `network`
+# or opting in to discovery. Two things it deliberately does not do: it does not ask
+# GitLab whether the token is valid (a GitLab outage would then mark every runner
+# unhealthy, and Swarm would restart them, aborting jobs mid-build), and it cannot tell
+# you jobs are being picked up. It proves the process is alive and its config parsed, no
+# more.
 healthcheck:
   enabled: false
   interval: 30s

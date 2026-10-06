@@ -4,9 +4,15 @@
 # uses must be declared here. Entries are declared unconditionally and become inert when the
 # selected values never reference them (the pre-flight is manifest-driven).
 #
-# No networks: the runner only needs egress to your GitLab, which the stack's own overlay
-# provides, and its metrics endpoint is deliberately not exposed.
-networks: []
+# The runner itself only needs egress to your GitLab, which the stack's own overlay
+# provides. The one external network is the metrics overlay, joined only while
+# metrics.enabled.
+networks:
+  - name: "{{ .Values.metrics.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: true
+    description: "Overlay the runner shares with Prometheus (when metrics.enabled); the prometheus-stack chart scrapes on it by default"
 secrets:
   - name: "{{ .Values.auth.tokenSecret }}"
     description: "Runner authentication token (glrt-...) from GitLab > Settings > CI/CD > Runners; create the runner there first"

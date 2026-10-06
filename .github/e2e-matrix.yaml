@@ -19,15 +19,18 @@ include:
   # ci/e2e-check.sh then runs a source-faker connection check through the launcher and FakeK8s.
   # Nine JVM/Temporal images plus the connector images it pulls on demand need the long budget.
   - { chart: airbyte,       cases: "mock noauth login",                                                               timeout: 15m }
-  # gitlab-runner: the three fixtures that prove something a render cannot. `mock` stands up
+  # gitlab-runner: the five fixtures that prove something a render cannot. `mock` stands up
   # a mock GitLab on the release's own overlay (ci/e2e-check.sh, after install — that overlay
   # does not exist before it) and asserts the runner authenticated with exactly the token
   # from the Swarm secret; convergence proves nothing on its own here, because a runner with
   # an empty or bogus token reports Running just the same. `cache` proves the container
   # really appends the S3 credentials to config.toml, with a secret carrying the / and + of a
-  # real base64 key. `ephemeral` proves the no-volume shape schedules with no node pin. The
-  # rest are render-only (charts.yml) and still run in a local `make e2e`.
-  - { chart: gitlab-runner, cases: "mock cache ephemeral",                                            timeout: 6m  }
+  # real base64 key. `ephemeral` proves the no-volume shape schedules with no node pin.
+  # `metrics` scrapes the runner from the monitoring overlay at the port its discovery label
+  # names; `healthcheck-only` proves the probe passes on its own listener while the runner
+  # stays off that overlay. The rest are render-only (charts.yml) and still run in a local
+  # `make e2e`.
+  - { chart: gitlab-runner, cases: "mock cache ephemeral metrics healthcheck-only",                   timeout: 6m  }
   - { chart: whoami,        cases: "",                                                                                timeout: 5m  }
   - { chart: swarm-cronjob, cases: "",                                                                                timeout: 5m  }
   # swarmcli-cd: the four fixtures that can converge without a forge to clone from.
