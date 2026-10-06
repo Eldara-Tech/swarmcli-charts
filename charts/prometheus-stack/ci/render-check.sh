@@ -88,6 +88,10 @@ for pair in "node-exporter:prometheus-rules-node-exporter>/etc/prometheus/rules/
   if contains "$rules" "${pair#*:}"; then got=1; else got=0; fi
   [ "$got" = "$on" ] || bad "the ${pair%%:*} absent-alert rule file mounted=$got, expected $on"
 done
+# The Galera rules ship in every configuration: they are inert without mysqld_exporter
+# targets (asserted on the file below), and nobody remembers to switch alerts on.
+contains "$rules" "prometheus-rules-galera>/etc/prometheus/rules/galera.yml" \
+  || bad "prometheus does not mount the Galera rule file"
 
 # Each operator entry is mounted under its own key, and the operator's dashboards bring a
 # provider of their own, mounted only while there is a dashboard for it to provide.
@@ -105,6 +109,10 @@ if [ "$case" = extras ]; then
 else
   grep -F 'grafana-dashboards-extra>' <<<"$gconfs" >/dev/null \
     && bad "the extra dashboard provider is mounted with no dashboard to provide"
+fi
+if [ "$gf_mode" != off ]; then
+  contains "$gconfs" "dashboard-galera>/etc/grafana/dashboards/galera.json" \
+    || bad "grafana does not mount the Galera dashboard"
 fi
 
 # Only prometheus.yml is rendered by Swarm: the rule files contain $labels templates that
@@ -336,6 +344,20 @@ filter="$(yq -r "$job | .dockerswarm_sd_configs[].filters // [] | .[] | select(.
 contains "$filter" "prometheus.io/scrape=true" || bad "$pf: swarm-tasks has no label filter on prometheus.io/scrape=true"
 keep="$(yq -r "$job | .relabel_configs[] | select(.action == \"keep\" and .regex == \"true\") | .source_labels | join(\",\")" "$pf")"
 contains "$keep" "__meta_dockerswarm_service_label_prometheus_io_scrape" || bad "$pf: swarm-tasks has no relabel keep on prometheus_io_scrape"
+# The stack label is how the Galera rules and dashboard tell one cluster from another.
+[ "$(yq -r "$job | .relabel_configs[] | select(.target_label == \"stack\") | .source_labels | join(\",\")" "$pf")" \
+  = "__meta_dockerswarm_service_label_com_docker_stack_namespace" ] \
+  || bad "$pf: swarm-tasks does not set stack from com.docker.stack.namespace"
+
+# Shipped unconditionally, so the Galera rules must stay inert on a swarm with no MySQL:
+# an absent() there would fire forever. And every dashboard query is scoped to the
+# selected cluster, or two releases' peers would mix in one panel.
+gr="$dir/files/prometheus/rules/galera.yml"
+yq -r '.groups[].rules[].expr' "$gr" | grep -F 'absent(' >/dev/null \
+  && bad "$gr uses absent(); it ships to every stack, so it would fire with no MySQL"
+gd="$dir/files/grafana/dashboards/galera.json"
+unscoped="$(yq -p json -o yaml -r '.. | select(tag == "!!map" and has("expr")) | .expr' "$gd" | grep -vF 'stack="$stack"' || true)"
+[ -z "$unscoped" ] || bad "$gd has queries not scoped to the selected cluster: $unscoped"
 
 # The operator's dashboard provider reads exactly the directory they are mounted in, with
 # deletion on: removing an entry from the values must remove the dashboard from Grafana.

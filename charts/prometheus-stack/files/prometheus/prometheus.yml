@@ -104,6 +104,11 @@ scrape_configs:
         target_label: job
       - source_labels: [__meta_dockerswarm_node_hostname]
         target_label: node
+      # The stack a service was deployed in, i.e. the swarmcli release: what tells one
+      # release's targets from another's when their jobs are named per service.
+      - source_labels: [__meta_dockerswarm_service_label_com_docker_stack_namespace]
+        regex: '(.+)'
+        target_label: stack
       # A global service has one task per node, so node:port names it better than a
       # task IP that changes on every restart.
       - source_labels: [__meta_dockerswarm_service_mode, __meta_dockerswarm_node_hostname, __meta_dockerswarm_service_label_prometheus_io_port]
