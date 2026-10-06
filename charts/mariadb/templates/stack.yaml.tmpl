@@ -1,6 +1,9 @@
 {{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) (contains "/" .Values.persistence.volumeName) -}}
 {{- fail "persistence.volumeName is a Docker named-volume name and cannot contain '/'. To store data under a host directory, set persistence.volumePath instead." -}}
 {{- end -}}
+{{- if and .Values.metrics.enabled (eq .Values.metrics.network .Values.network.name) -}}
+{{- fail "metrics.network must differ from network.name: the exporter joins both, and the point of a separate metrics overlay is that Prometheus never shares one with the database's SQL port." -}}
+{{- end -}}
 version: "3.9"
 
 services:
@@ -106,6 +109,116 @@ services:
         - "{{ $key }}={{ $val }}"
 {{- end }}
 {{- end }}
+{{- if .Values.metrics.enabled }}
+
+  mariadb-exporter:
+    image: {{ .Values.metrics.image.repository }}:{{ .Values.metrics.image.tag }}
+
+    # The database's overlay to reach it, and the metrics overlay for Prometheus to
+    # reach the exporter. The database itself never joins the metrics overlay, so
+    # nothing there can reach its SQL port.
+    networks:
+      - {{ .Values.network.name }}
+      - {{ .Values.metrics.network }}
+
+    secrets:
+      - {{ .Values.metrics.secretName }}
+
+    # The exporter takes its password only from MYSQLD_EXPORTER_PASSWORD, so it is
+    # read from the mounted secret at start and never lands in the compose file or
+    # `docker inspect`. `$$` is the compose escape for a literal `$`.
+    #
+    # tasks.<release>_mariadb resolves to the database's task, and to nothing while
+    # it has none, so a stopped database reads as mysql_up 0 at once rather than a
+    # connect timeout against an empty VIP.
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - >-
+        export MYSQLD_EXPORTER_PASSWORD="$$(cat /run/secrets/{{ .Values.metrics.secretName }})";
+        exec /bin/mysqld_exporter
+        --mysqld.address=tasks.{{ .Release.Name }}_mariadb:3306
+        --mysqld.username={{ .Values.metrics.username }}
+
+    deploy:
+      replicas: 1
+{{- /* The same constraints as the database: Prometheus labels every target with the
+       node it runs on, and that should be the database's node. */}}
+{{- if $constraints }}
+      placement:
+        constraints:
+{{- range $constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+      # Only the discovery labels, never .Values.labels: once a service opts in,
+      # every one of its deploy labels is readable through Prometheus's targets API.
+      labels:
+        - "prometheus.io/scrape=true"
+        - "prometheus.io/port=9104"
+
+  # Creates the exporter's database user, or resets its password, then exits. It
+  # logs in as root over the overlay rather than running inside the database, so
+  # turning metrics on works on a database that already exists without restarting
+  # it. Swarm runs it again only when its spec changes, which is what a rotation
+  # does: a new metrics.secretName.
+  mariadb-exporter-user:
+    image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
+
+    networks:
+      - {{ .Values.network.name }}
+
+    secrets:
+      - {{ .Values.auth.rootSecretName }}
+      - {{ .Values.metrics.secretName }}
+
+    # MYSQL_PWD keeps the root password off the command line. The exporter password
+    # has to travel inside the statement, so it is escaped as a SQL string literal
+    # the way the image's own entrypoint escapes the passwords it sets.
+    entrypoint:
+      - /bin/bash
+      - -c
+    command:
+      - |-
+        set -eu
+        export MYSQL_PWD="$$(cat /run/secrets/{{ .Values.auth.rootSecretName }})"
+        pw="$$(cat /run/secrets/{{ .Values.metrics.secretName }})"
+        nl=$$'\n'
+        pw="$${pw//\\/\\\\}"
+        pw="$${pw//$$nl/\\n}"
+        pw="$${pw//\'/\\\'}"
+        user="'{{ .Values.metrics.username }}'@'%'"
+        sql="CREATE USER IF NOT EXISTS $$user IDENTIFIED BY '$$pw' WITH MAX_USER_CONNECTIONS 3;
+        ALTER USER $$user IDENTIFIED BY '$$pw' WITH MAX_USER_CONNECTIONS 3;
+        GRANT PROCESS, REPLICATION CLIENT, SLAVE MONITOR ON *.* TO $$user;"
+        err=""
+        for _ in $$(seq 1 60); do
+          if err="$$(mariadb -h tasks.{{ .Release.Name }}_mariadb -uroot -e "$$sql" 2>&1)"; then
+            echo "mariadb: exporter user {{ .Values.metrics.username }} is ready"
+            exit 0
+          fi
+          sleep 5
+        done
+        echo "mariadb: the database did not accept the exporter user statements; last error: $$err" >&2
+        exit 1
+
+    deploy:
+      replicas: 1
+{{- if .Values.placement.constraints }}
+      placement:
+        constraints:
+{{- range .Values.placement.constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      # on-failure, not none: a first install can take longer than the loop above to
+      # become writable, and Swarm then simply runs it again.
+      restart_policy:
+        condition: on-failure
+{{- end }}
 
 {{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) }}
 
@@ -120,6 +233,10 @@ secrets:
   {{ .Values.auth.appUser.secretName }}:
     external: true
 {{- end }}
+{{- if .Values.metrics.enabled }}
+  {{ .Values.metrics.secretName }}:
+    external: true
+{{- end }}
 
 networks:
   {{ .Values.network.name }}:
@@ -128,4 +245,8 @@ networks:
 {{- else }}
     driver: overlay
     attachable: true
+{{- end }}
+{{- if .Values.metrics.enabled }}
+  {{ .Values.metrics.network }}:
+    external: true
 {{- end }}

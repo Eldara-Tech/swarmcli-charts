@@ -65,6 +65,49 @@ cluster-wide routing mesh or `mode: host` for the pinned node only). `ingress`
 binds 3306 on **every** Swarm node, so prefer `mode: host` and firewall the port
 to trusted sources — or keep exposure disabled and stay on the overlay.
 
+## Metrics
+
+MariaDB serves no Prometheus metrics of its own, so `metrics.enabled` adds a
+[mysqld_exporter](https://github.com/prometheus/mysqld_exporter) beside it. The
+exporter carries the deploy labels `prometheus.io/scrape=true` and
+`prometheus.io/port=9104` and joins the `monitoring` overlay, which is where the
+prometheus-stack chart scrapes by default — so Prometheus finds it by itself, with no
+scrape config. Any Prometheus using Docker Swarm service
+discovery on those labels works the same way.
+
+```bash
+openssl rand -base64 32 | docker secret create mariadb_exporter_password -
+swarmcli charts upgrade mariadb swarmcli-charts/mariadb --reuse-values --set metrics.enabled=true
+```
+
+Turning it on adds services and leaves the `mariadb` service untouched, so the
+database does not restart. The exporter logs in as a database user of its own,
+`exporter`, which a one-shot service (`mariadb-exporter-user`) creates as root over
+`mariadb-net` and then exits. The user holds `PROCESS, REPLICATION CLIENT, SLAVE
+MONITOR` — what the default collectors need, and no `SELECT` on your data.
+
+You get `mysql_up` and every numeric `SHOW GLOBAL STATUS` and `SHOW GLOBAL VARIABLES`
+value, so dashboards and alert rules written for mysqld_exporter apply as they are.
+The exporter shares the database's node pin, so Prometheus's `node` label is the
+database's node.
+
+- **Only the exporter joins `monitoring`.** The database stays on `mariadb-net`, so
+  nothing on the metrics overlay can reach its SQL port. Use a random password for
+  the exporter anyway: its `/probe?target=` endpoint lets anything on `monitoring`
+  point the exporter's login at a server of its choosing.
+- **Rotating the password**: create a secret under a new name and point
+  `metrics.secretName` at it. The changed spec runs the one-shot again, which resets
+  the password; a scrape or two may read `mysql_up 0` until it has.
+- **A database rebuilt from an empty volume** loses the user with everything else.
+  Run the one-shot again: `docker service update --force <release>_mariadb-exporter-user`.
+- `metrics.network` names a different overlay. It must differ from `network.name`,
+  and the render fails if it does not.
+- **Turning it off** leaves both services running, because swarmcli deploys without
+  `--prune`. Remove them yourself:
+  `docker service rm <release>_mariadb-exporter <release>_mariadb-exporter-user`.
+- **swarmcli-cd** additionally needs `mariadb_exporter_password` in `allow.secrets`
+  and `monitoring` in `allow.networks`.
+
 ## Values
 
 | Key | Default | Description |
@@ -89,8 +132,14 @@ to trusted sources — or keep exposure disabled and stay on the overlay.
 | `resources.limits.memory` | `""` | Swarm deploy memory limit |
 | `healthcheck.*` | see `values.yaml` | `healthcheck.sh --connect --innodb_initialized` |
 | `healthcheck.monitor` | `90s` | Rollout watch window. Must cover `startPeriod + interval x retries` (80s) — see below |
+| `metrics.enabled` | `false` | A mysqld_exporter labelled for Prometheus service discovery. See *Metrics* |
+| `metrics.image.repository` | `prom/mysqld-exporter` | Exporter image |
+| `metrics.image.tag` | pinned in `values.yaml` | Exporter image tag (a concrete pin; Renovate maintains it) |
+| `metrics.username` | `exporter` | Database user the exporter logs in as; the chart creates it |
+| `metrics.secretName` | `mariadb_exporter_password` | External secret holding that user's password |
+| `metrics.network` | `monitoring` | Overlay the exporter shares with Prometheus (auto-created); must differ from `network.name` |
 | `extraArgs` | `[]` | Extra `mariadbd` flags appended verbatim |
-| `labels` | `{}` | Extra deploy labels |
+| `labels` | `{}` | Extra deploy labels (the `mariadb` service only, never the exporter) |
 
 ## Security note
 
