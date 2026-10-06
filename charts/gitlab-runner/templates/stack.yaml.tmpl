@@ -3,6 +3,19 @@
 {{- if not .Values.gitlab.url -}}
 {{- fail "gitlab.url is required: it is the instance the runner polls, written into config.toml as the runner's url." -}}
 {{- end -}}
+{{- if .Values.metrics.enabled -}}
+{{- /* The service names `default` itself beside metrics.network, so the two must differ. */}}
+{{- if eq .Values.metrics.network "default" -}}
+{{- fail "metrics.network must not be \"default\": that is the stack's own overlay, which the runner is always on. Name the external overlay Prometheus scrapes on, e.g. monitoring." -}}
+{{- end -}}
+{{- /* Once the runner opts in to discovery, every deploy label it carries is readable through
+       Prometheus's targets API, so a credential must never sit among them. */}}
+{{- range $key, $_ := .Values.labels -}}
+{{- if regexMatch "(?i)((basic|digest)auth\\.users|customrequestheaders\\.authorization)$" $key -}}
+{{- fail (printf "labels.%s carries credentials, and with metrics.enabled every deploy label of the runner is readable through Prometheus's targets API. Use the usersfile form with a mounted secret, or turn metrics off." $key) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- /* Host-path persistence bind-mounts a host dir; a named-volume value must not be a path
        (docker compose would otherwise emit a cryptic error). */}}
 {{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) (contains "/" .Values.persistence.volumeName) -}}
@@ -59,9 +72,12 @@ version: "3.9"
 {{- $toml = append $toml (printf "log_format = %q" .Values.logFormat) }}
 {{- $toml = append $toml (printf "shutdown_timeout = %v" .Values.shutdownTimeout) }}
 {{- /* The listener serves both /metrics and the probe, so either one turns it on. Only
-       metrics.enabled also makes it reachable to Prometheus (the network and labels below). */}}
-{{- if or .Values.metrics.enabled .Values.healthcheck.enabled }}
+       metrics.enabled also makes it reachable to Prometheus (the network and labels below);
+       for the probe alone it stays on loopback, where the probe looks for it. */}}
+{{- if .Values.metrics.enabled }}
 {{- $toml = append $toml (printf "listen_address = %q" (printf "0.0.0.0:%v" .Values.metrics.port)) }}
+{{- else if .Values.healthcheck.enabled }}
+{{- $toml = append $toml (printf "listen_address = %q" (printf "127.0.0.1:%v" .Values.metrics.port)) }}
 {{- end }}
 {{- with .Values.config.extraGlobalToml }}
 {{- $toml = append $toml "# --- config.extraGlobalToml ---" }}

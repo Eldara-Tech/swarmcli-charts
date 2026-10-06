@@ -117,11 +117,19 @@ listen="$(grep -E '^listen_address = ' <<<"$toml" | sed -n 's/^listen_address = 
 hc="$(q "$svc.healthcheck.test")"
 # Keyed on the manifest, not on the case name, so a new fixture cannot slip past it: the
 # probe needs the listener, so a probe without one could never pass.
+# The bind address follows discovery: 0.0.0.0 only for metrics, which Prometheus reaches over
+# the overlay; loopback for the probe alone, which is all it needs.
+labels="$(q "$svc.deploy.labels // [] | .[]")"
 port=""
 if [ -n "$listen" ]; then
-  grep -E '^0\.0\.0\.0:[0-9]+$' <<<"$listen" >/dev/null \
-    || bad "listen_address is '$listen'; expected the 0.0.0.0:<port> form"
-  port="${listen#0.0.0.0:}"
+  if grep -Fx 'prometheus.io/scrape=true' <<<"$labels" >/dev/null; then
+    grep -E '^0\.0\.0\.0:[0-9]+$' <<<"$listen" >/dev/null \
+      || bad "listen_address is '$listen'; with metrics on Prometheus reaches it over the overlay, so expected 0.0.0.0:<port>"
+  else
+    grep -E '^127\.0\.0\.1:[0-9]+$' <<<"$listen" >/dev/null \
+      || bad "listen_address is '$listen'; with metrics off only the probe needs it, so expected 127.0.0.1:<port> — anything else serves /debug/pprof and /debug/jobs/list on the stack's overlay"
+  fi
+  port="${listen##*:}"
   # Only one direction is required: the probe needs the listener, not the other way round.
   # Metrics without a probe is a reasonable thing to run (scrape it, but do not let a probe
   # failure restart a runner mid-job), so it must not be asserted away — ci/metrics-only.
@@ -154,7 +162,6 @@ esac
 # and joining the overlay hands its members the unauthenticated listener — /debug/pprof and
 # /debug/jobs/list included. So the healthcheck alone must never do either.
 nets="$(q "$svc.networks // [] | .[]")"
-labels="$(q "$svc.deploy.labels // [] | .[]")"
 disc="$(grep -E '^prometheus\.io/' <<<"$labels" | sort | tr '\n' ',' || true)"
 case "$case" in
   metrics|metrics-only|mock)
@@ -171,6 +178,34 @@ case "$case" in
     [ "$(q '.networks')" = "null" ] || bad "case $case: a top-level networks block is rendered although metrics.enabled is off"
     ;;
 esac
+
+# ── the refusals, rendered from this chart with SWARMCLI (test-charts.sh exports it) ──
+# Once in a run is enough: they do not depend on the fixture being checked.
+if [ "$case" = "metrics" ]; then
+  chart="$(cd "$(dirname "$0")/.." && pwd)"
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  render() { "${SWARMCLI:?render-check needs SWARMCLI to test the refusals}" charts template r "$chart" -f "$chart/ci/metrics-values.yaml" "$@"; }
+  refused() {
+    local want="$1"; shift
+    if render "$@" >/dev/null 2>"$tmp/err"; then
+      bad "rendered with $* — it must be refused"
+    elif ! grep -F "$want" "$tmp/err" >/dev/null; then
+      bad "$* failed, but not with \"$want\": $(cat "$tmp/err")"
+    fi
+  }
+  printf 'labels:\n  traefik.http.middlewares.ci.BasicAuth.Users: "ci:$$apr1$$x$$y"\n' >"$tmp/basic.yaml"
+  printf 'labels:\n  traefik.http.middlewares.ci.headers.customrequestheaders.Authorization: "Bearer x"\n' >"$tmp/header.yaml"
+  printf 'labels:\n  traefik.http.middlewares.ci.basicauth.usersfile: /run/secrets/users\n' >"$tmp/usersfile.yaml"
+  printf 'metrics:\n  enabled: false\nlabels:\n  traefik.http.middlewares.ci.basicauth.users: "ci:$$apr1$$x$$y"\n' >"$tmp/off.yaml"
+  refused 'labels.traefik.http.middlewares.ci.BasicAuth.Users carries credentials' -f "$tmp/basic.yaml"
+  refused 'customrequestheaders.Authorization carries credentials' -f "$tmp/header.yaml"
+  refused 'metrics.network must not be "default"' --set metrics.network=default
+  render -f "$tmp/usersfile.yaml" >/dev/null 2>"$tmp/err" \
+    || bad "a basicauth.usersfile label was refused; it is the alternative the error recommends: $(cat "$tmp/err")"
+  render -f "$tmp/off.yaml" >/dev/null 2>"$tmp/err" \
+    || bad "a credential label with metrics off was refused; only discovery makes it readable: $(cat "$tmp/err")"
+fi
 
 # ── placement: the pin must follow the node label, in every persistence mode ──────────
 constraints="$(q "$svc.deploy.placement.constraints")"

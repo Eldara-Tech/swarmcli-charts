@@ -83,13 +83,20 @@ grep -aF '${RUNNER_TOKEN}' <<<"$config" >/dev/null \
   || bad "config.toml does not carry the \${RUNNER_TOKEN} reference the runner expands at load"
 
 # ── metrics: reachable where Prometheus would scrape them, and only there ─────────────
-# Keyed on the live service's labels, so it covers every fixture that opts in. The scrape
-# comes from a throwaway container on the monitoring overlay — Prometheus's vantage point —
-# at the port the discovery label names, which proves the label, the overlay and the
-# listener agree. gitlab_runner_version_info is a series the runner exports from start-up,
-# whether or not it ever reached a GitLab.
+# The fixtures that turn metrics on must carry the discovery label, and every other one
+# must not: a missing label fails rather than skipping the scrape. The scrape comes from a
+# throwaway container on the monitoring overlay — Prometheus's vantage point — at the port
+# the discovery label names, which proves the label, the overlay and the listener agree.
+# gitlab_runner_version_info is a series the runner exports from start-up, whether or not
+# it ever reached a GitLab.
+case "$case" in metrics|metrics-only|mock) want_metrics=1 ;; *) want_metrics=0 ;; esac
 svc_labels="$(docker service inspect "$svc" --format '{{json .Spec.Labels}}' 2>/dev/null || true)"
-if grep -F '"prometheus.io/scrape":"true"' <<<"$svc_labels" >/dev/null; then
+has_scrape=0
+grep -F '"prometheus.io/scrape":"true"' <<<"$svc_labels" >/dev/null && has_scrape=1
+if [ "$has_scrape" != "$want_metrics" ]; then
+  bad "case $case: prometheus.io/scrape label present=$has_scrape, expected $want_metrics (labels: $svc_labels)"
+fi
+if [ "$want_metrics" = 1 ]; then
   mport="$(sed -n 's/.*"prometheus.io\/port":"\([0-9]*\)".*/\1/p' <<<"$svc_labels")"
   [ -n "$mport" ] || bad "the service opts in to scraping but carries no prometheus.io/port label"
   scrape=""
@@ -111,6 +118,17 @@ else
   mon_id="$(docker network inspect monitoring --format '{{.Id}}' 2>/dev/null || true)"
   if [ -n "$mon_id" ] && grep -F "$mon_id" <<<"$vips" >/dev/null; then
     bad "the runner joined the monitoring overlay although it carries no prometheus.io/scrape label"
+  fi
+fi
+# The probe-only listener answers on loopback, where the probe looks, and on no interface
+# of the overlay — /debug/pprof and /debug/jobs/list have no business there.
+if [ "$case" = "healthcheck-only" ]; then
+  lo="$(docker exec "$cid" curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:9252/metrics 2>/dev/null || true)"
+  ov="$(docker exec "$cid" sh -c 'curl -s -o /dev/null -w "%{http_code}" --max-time 3 "http://$(hostname -i | cut -d" " -f1):9252/metrics"' 2>/dev/null || true)"
+  if [ "$lo" = "200" ] && [ "$ov" = "000" ]; then
+    note "healthcheck-only: listener answers on 127.0.0.1 ($lo) and refuses the overlay address"
+  else
+    bad "healthcheck-only: listener answered $lo on 127.0.0.1 and $ov on the overlay address; expected 200 and no connection"
   fi
 fi
 

@@ -145,8 +145,13 @@ runner task by itself, with no scrape config. Any Prometheus using Swarm service
 on those labels works the same way. swarmcli creates the overlay if it is missing.
 
 ```bash
-swarmcli charts upgrade runner swarmcli-charts/gitlab-runner --reuse-values --set metrics.enabled=true
+swarmcli charts upgrade runner swarmcli-charts/gitlab-runner -f runner-values.yaml --set metrics.enabled=true
 ```
+
+Pass the values you installed with (`-f`, or the same `--set`s), not `--reuse-values`.
+That flag merges over the previous release's stored values *instead of* this chart
+version's defaults, so every `metrics.*` key would render empty
+([swarmcli#687](https://github.com/Eldara-Tech/swarmcli/issues/687)).
 
 You get the runner's own series — `gitlab_runner_jobs`, `gitlab_runner_concurrent`,
 `gitlab_runner_errors_total`, GitLab API request durations and statuses — plus the Go
@@ -160,18 +165,20 @@ than `/metrics`: `/debug/jobs/list` (the URL and stage of every running job),
 `labels` included — becomes readable through Prometheus's targets API. Keep secrets out of
 `labels`. The chart still never publishes the port.
 
-**Upgrading from a release where `metrics.enabled` only turned the listener on:** it now
-also joins `metrics.network` and opts in to discovery. If you turned it on only so the
+**Upgrading from 0.1.x, where `metrics.enabled` only turned the listener on:** it now also
+joins `metrics.network` and opts in to discovery. If you turned it on only so the
 healthcheck could pass, set `metrics.enabled: false` — the healthcheck now turns the
 listener on by itself. Turning metrics off again drops the labels and detaches the runner;
 the overlay itself stays, since other services share it.
 
-Deployed by [swarmcli-cd](https://github.com/Eldara-Tech/swarmcli-cd), the release then
-references one more external name: add `monitoring` (or your `metrics.network`) to the
-application's `allow.networks`.
+**This breaks a [swarmcli-cd](https://github.com/Eldara-Tech/swarmcli-cd) deployment that
+has `metrics.enabled: true`:** the release now references one more external name, and the
+controller refuses it until you add `monitoring` (or your `metrics.network`) to the
+application's `allow.networks`. Add it before you bump the chart version.
 
 `healthcheck.enabled` probes that same listener on `127.0.0.1`, so it works with metrics on
-or off; with metrics off the runner joins no overlay and carries no discovery labels. The
+or off. With metrics off the runner joins no additional overlay, carries no discovery
+labels, and binds the listener to `127.0.0.1` only. The
 probe deliberately does **not** ask GitLab whether the token is valid: a GitLab outage
 would then mark every runner unhealthy and Swarm would restart them, aborting running jobs.
 For a one-off look without Prometheus:
@@ -222,8 +229,8 @@ docker exec "$(docker ps -q -f label=com.docker.swarm.service.name=runner_gitlab
 | `cache.s3.secretKeySecret` | `gitlab-runner-cache-secret-key` | External Swarm secret with the S3 secret key. |
 | `metrics.enabled` | `false` | Serve Prometheus metrics, labelled for Swarm service discovery, on `metrics.network`. Never published. See *Metrics*. |
 | `metrics.port` | `9252` | Port the runner listens on for metrics (and the healthcheck). |
-| `metrics.network` | `monitoring` | External overlay shared with Prometheus (auto-created). |
-| `healthcheck.enabled` | `false` | Probe the runner's listener on `127.0.0.1`; turns the listener on by itself. |
+| `metrics.network` | `monitoring` | External overlay shared with Prometheus (auto-created). Not `default`. |
+| `healthcheck.enabled` | `false` | Probe the runner's listener on `127.0.0.1`; turns the listener on by itself (loopback-only while metrics are off). |
 | `healthcheck.interval` | `30s` | Probe interval. |
 | `healthcheck.timeout` | `5s` | Probe timeout. |
 | `healthcheck.retries` | `3` | Failures before the container is unhealthy. |
