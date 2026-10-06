@@ -97,9 +97,10 @@ The exporter shares the database's node pin, so Prometheus's `node` label is the
 database's node.
 
 - **Only the exporter joins `monitoring`.** The database stays on `mariadb-net`, so
-  nothing on the metrics overlay can reach its SQL port. Use a random password for
-  the exporter anyway: its `/probe?target=` endpoint lets anything on `monitoring`
-  point the exporter's login at a server of its choosing.
+  nothing on the metrics overlay can reach its SQL port directly. Use a random
+  password for the exporter anyway: its `/probe?target=` endpoint lets anything on
+  `monitoring` point the exporter's login at a server of its choosing, including
+  any host and port on `mariadb-net`.
 - **Rotating the password**: create a secret under a new name and point
   `metrics.secretName` at it. The changed spec runs the one-shot again, which resets
   the password; a scrape or two may read `mysql_up 0` until it has.

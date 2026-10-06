@@ -92,6 +92,8 @@ if grep -F -- ' -e ' <<<"$ucmd" >/dev/null; then
 fi
 grep -F 'export MYSQL_PWD="$$(cat /run/secrets/mariadb_root_password)"' <<<"$ucmd" >/dev/null \
   || bad "user one-shot: the root password is not read from the mounted secret"
+grep -F 'sql="SET SESSION sql_log_off = 1;' <<<"$ucmd" >/dev/null \
+  || bad "user one-shot: the statements are not kept out of the general query log; they carry the exporter password"
 grep -F "GRANT PROCESS, REPLICATION CLIENT, SLAVE MONITOR ON *.* TO" <<<"$ucmd" >/dev/null \
   || bad "user one-shot: the grant changed; anything wider reads data, anything narrower fails a default collector"
 grep -F "user=\"'exporter'@'%'\"" <<<"$ucmd" >/dev/null || bad "user one-shot: does not create the exporter user"

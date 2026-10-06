@@ -178,7 +178,8 @@ services:
     # MYSQL_PWD keeps the root password off the command line. The exporter password
     # travels inside the statement, escaped as a SQL string literal the way the image's
     # own entrypoint escapes the passwords it sets, and the statement goes in on stdin,
-    # so neither appears in an argv.
+    # so neither appears in an argv. sql_log_off keeps it out of the general query log
+    # for an operator who has that log on.
     entrypoint:
       - /bin/bash
       - -c
@@ -192,7 +193,8 @@ services:
         pw="$${pw//$$nl/\\n}"
         pw="$${pw//\'/\\\'}"
         user="'{{ .Values.metrics.username }}'@'%'"
-        sql="CREATE USER IF NOT EXISTS $$user IDENTIFIED BY '$$pw' WITH MAX_USER_CONNECTIONS 3;
+        sql="SET SESSION sql_log_off = 1;
+        CREATE USER IF NOT EXISTS $$user IDENTIFIED BY '$$pw' WITH MAX_USER_CONNECTIONS 3;
         ALTER USER $$user IDENTIFIED BY '$$pw' WITH MAX_USER_CONNECTIONS 3;
         GRANT PROCESS, REPLICATION CLIENT, SLAVE MONITOR ON *.* TO $$user;"
         err=""
