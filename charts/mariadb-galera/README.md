@@ -166,10 +166,11 @@ the `job` label names the peer it watches (`<release>_mariadb-galera-exporter-<N
 and it shares that peer's node pin, so while the peers are pinned `node` is the
 peer's node.
 
-That pin is also why the signal to alert on is the cluster's own view: a lost node
-takes the peer and its exporter with it, leaving no target to report `mysql_up 0`,
-while the surviving peers report `mysql_global_status_wsrep_cluster_size` below
-`cluster.peers`.
+That pin also decides what a lost node looks like. Swarm cannot move the exporter
+elsewhere, so its target stays and reads down (`up 0`, not `mysql_up 0`), while the
+surviving peers report `mysql_global_status_wsrep_cluster_size` below
+`cluster.peers`. That drop is the signal to alert on; the prometheus-stack chart
+ships it as `GaleraQuorumAtRisk` and `GaleraClusterShrunk`.
 
 - **Rotating the password**: create a secret under a new name and point
   `metrics.secretName` at it. The changed spec runs the one-shot again, which resets
