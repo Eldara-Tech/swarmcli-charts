@@ -163,7 +163,8 @@ value, Galera's `mysql_global_status_wsrep_*` included (`wsrep_cluster_size`,
 `wsrep_local_state`, `wsrep_flow_control_paused`, …), so dashboards and alert rules
 written for mysqld_exporter apply as they are. Each exporter is its own service, so
 the `job` label names the peer it watches (`<release>_mariadb-galera-exporter-<N>`),
-and it is pinned beside that peer, so `node` is the peer's node.
+and it shares that peer's node pin, so while the peers are pinned `node` is the
+peer's node.
 
 That pin is also why the signal to alert on is the cluster's own view: a lost node
 takes the peer and its exporter with it, leaving no target to report `mysql_up 0`,
