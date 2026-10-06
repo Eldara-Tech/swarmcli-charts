@@ -77,8 +77,13 @@ discovery on those labels works the same way.
 
 ```bash
 openssl rand -base64 32 | docker secret create mariadb_exporter_password -
-swarmcli charts upgrade mariadb swarmcli-charts/mariadb --reuse-values --set metrics.enabled=true
+swarmcli charts upgrade mariadb swarmcli-charts/mariadb -f mariadb-values.yaml --set metrics.enabled=true
 ```
+
+Pass the values you installed with (`-f`, or the same `--set`s), not `--reuse-values`.
+That flag merges over the previous release's stored values *instead of* this chart
+version's defaults, so every `metrics.*` key would render empty
+([swarmcli#687](https://github.com/Eldara-Tech/swarmcli/issues/687)).
 
 Turning it on adds services and leaves the `mariadb` service untouched, so the
 database does not restart. The exporter logs in as a database user of its own,

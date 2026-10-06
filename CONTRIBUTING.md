@@ -271,6 +271,9 @@ scrapes on. Declare that network `autoCreate: true` in `requirements.yaml`.
   Renovate's helm-values manager maintains it.
 - Ship a `ci/metrics-values.yaml` fixture, assert the above in `ci/render-check.sh`,
   and scrape the endpoint from the `monitoring` overlay in `ci/e2e-check.sh`.
+- Show turning it on with the release's own values (`-f`), never `--reuse-values`:
+  that flag replaces the new chart version's defaults with the old release's values,
+  so every `metrics.*` key renders as `<no value>` (Eldara-Tech/swarmcli#687).
 - Alert rules and dashboards are not deployed by the chart: the prometheus-stack
   chart stays independent of the applications it watches. A chart that ships them
   puts them under `monitoring/` for operators to load through their own stack.
