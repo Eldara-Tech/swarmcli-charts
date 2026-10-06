@@ -146,8 +146,10 @@ fi
 # caught here. The S3 round trip above has run, so the gateway's request counter must
 # already carry it — proof the registry is the live process's, not an empty one.
 metrics_ok=""
-if [ "$case" = "metrics" ]; then
-  mport="$(docker service inspect "$svc" --format '{{index .Spec.Labels "prometheus.io/port"}}')"
+mport="$(docker service inspect "$svc" --format '{{index .Spec.Labels "prometheus.io/port"}}')"
+if [ "$case" != "metrics" ]; then
+  [ -z "$mport" ] || die "case $case opted the service in to discovery (prometheus.io/port=$mport) although metrics are off"
+else
   [ -n "$mport" ] || die "the service carries no prometheus.io/port deploy label"
   m=""
   for _ in $(seq 1 15); do

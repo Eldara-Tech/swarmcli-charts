@@ -20,14 +20,17 @@
 {{- if .Values.metrics.enabled -}}
 {{-   $mp := .Values.metrics.port | int -}}
 {{-   $sp := .Values.s3.port | int -}}
-{{-   if or (eq $mp $sp) (eq $mp (add $sp 10000)) -}}
-{{-     fail (printf "metrics.port %d collides with the S3 port %d or its gRPC port %d" $mp $sp (add $sp 10000)) -}}
+{{- /* weed binds every one of these, so a metrics listener on any of them fails the
+       whole process at start: the S3 port and its gRPC twin, and the master, volume
+       and filer ports and theirs on loopback. */}}
+{{-   if has $mp (list $sp (add $sp 10000 | int) 9333 19333 8080 18080 8888 18888) -}}
+{{-     fail (printf "metrics.port %d is already taken inside the container: weed binds the S3 port %d and its gRPC port %d, and the master, volume and filer ports 9333, 8080 and 8888 and their gRPC ports 19333, 18080 and 18888. Pick another port." $mp $sp (add $sp 10000)) -}}
 {{-   end -}}
 {{- /* Once a service opts in to discovery, every deploy label it carries is readable
-       through Prometheus's targets API, so a basic-auth hash must not ride along. */}}
+       through Prometheus's targets API, so credential material must not ride along. */}}
 {{-   range $key, $val := .Values.labels -}}
-{{-     if contains "basicauth" (lower $key) -}}
-{{-       fail (printf "labels.%s carries basic-auth credentials, and metrics.enabled would make every deploy label of this service readable through Prometheus's targets API. Put the middleware on another service, or leave metrics off." $key) -}}
+{{-     if regexMatch "(?i)((basic|digest)auth\\.users|customrequestheaders\\.authorization)$" $key -}}
+{{-       fail (printf "labels %q carries credentials, and metrics.enabled makes every deploy label of this service readable through Prometheus's targets API. Point the middleware's usersfile at a file the proxy reads (a mounted secret), or leave metrics off." $key) -}}
 {{-     end -}}
 {{-   end -}}
 {{- end -}}

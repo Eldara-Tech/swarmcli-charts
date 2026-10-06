@@ -129,8 +129,13 @@ Prometheus finds it by itself, with no scrape config; any Prometheus using Docke
 Swarm service discovery on those labels works the same way.
 
 ```bash
-swarmcli charts upgrade s3 swarmcli-charts/seaweedfs --reuse-values --set metrics.enabled=true
+swarmcli charts upgrade s3 swarmcli-charts/seaweedfs -f seaweedfs-values.yaml --set metrics.enabled=true
 ```
+
+Pass the values you installed with (`-f`, or the same `--set`s), not `--reuse-values`.
+That flag merges over the previous release's stored values *instead of* this chart
+version's defaults, so every `metrics.*` key would render empty
+([swarmcli#687](https://github.com/Eldara-Tech/swarmcli/issues/687)).
 
 You get the `SeaweedFS_*` series: S3 requests by type, status code and bucket
 (`SeaweedFS_s3_request_total`, `SeaweedFS_s3_request_seconds`), volume server and
@@ -145,7 +150,9 @@ overlays do not filter ports, so everything attached to `monitoring` reaches:
   cannot be switched off. They hand out the command line, memory statistics and
   goroutine dumps, and CPU profiles and execution traces on request, which cost
   the process CPU while they run. No credentials appear in them: the S3 keys
-  are environment variables, and neither endpoint reads the environment;
+  are environment variables, and neither endpoint reads the environment. gRPC's
+  `/debug/requests` and `/debug/events` sit on the same listener but answer 401
+  to anything but loopback;
 - the S3 port and its gRPC port, exactly as on `seaweedfs-net`: S3 refuses
   unsigned requests, and the gRPC port refuses identity updates without the
   per-start signing key;
@@ -159,6 +166,9 @@ To keep the store off a shared overlay, set `metrics.network=seaweedfs-net` (the
 service is on it already) and attach Prometheus to that overlay instead, e.g.
 prometheus-stack's `prometheus.extraNetworks`. Prometheus should share exactly one
 overlay with the service, or it scrapes it once per overlay.
+
+Under [swarmcli-cd](../../docs/gitops.md), the application's `allow` must list the
+`monitoring` network as well.
 
 ## Persistence & node pinning
 
