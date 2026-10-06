@@ -86,8 +86,8 @@
           }
         },
         "username": {
-          "description": "The exporter's role. A plain lower-case identifier: it is spliced into the start-up shell and the connection settings.",
-          "type": "string", "pattern": "^[a-z_][a-z0-9_]{0,62}$"
+          "description": "The exporter's role. A plain lower-case identifier, because it is spliced into the start-up shell and the connection settings, and not pg_*, a prefix PostgreSQL reserves.",
+          "type": "string", "pattern": "^[a-z_][a-z0-9_]{0,62}$", "not": { "pattern": "^pg_" }
         },
         "secretName": { "type": "string", "minLength": 1 },
         "network": {

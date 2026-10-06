@@ -84,15 +84,25 @@ discovery on those labels works the same way.
 
 ```bash
 openssl rand -base64 32 | docker secret create postgres_exporter_password -
-swarmcli charts upgrade postgres swarmcli-charts/postgres --reuse-values --set metrics.enabled=true
+swarmcli charts upgrade postgres swarmcli-charts/postgres -f postgres-values.yaml --set metrics.enabled=true
 ```
+
+Pass the values you installed with (`-f`, or the same `--set`s), not `--reuse-values`. That flag
+merges over the previous release's stored values *instead of* this chart version's defaults, so
+every `metrics.*` key would render empty
+([swarmcli#687](https://github.com/Eldara-Tech/swarmcli/issues/687)).
 
 Turning it on adds two services and changes nothing about `postgres` itself, so the database
 does not restart. The exporter logs in as a role of its own, `exporter`, which a one-shot service
 (`postgres-exporter-user`) creates — or whose password it resets — as `auth.username` over the
 overlay, and then exits. The role can log in, holds at most 3 connections, and is a member of
 PostgreSQL's built-in `pg_monitor` role: it reads the statistics views and settings, and none of
-your tables.
+your tables. Every run resets it to exactly that (`NOSUPERUSER NOCREATEDB NOCREATEROLE
+NOREPLICATION NOBYPASSRLS`). The one-shot only adopts a role it created itself, which it marks
+with a comment; if a role named `metrics.username` already exists for another purpose, it is
+refused and left untouched, because its new password would go to the exporter. The one-shot also
+switches statement logging off for its session, so `log_statement`, duration logging or a failed
+statement never writes the password to the server log.
 
 You get `pg_up` and the exporter's default collectors — per-database size, transactions and
 cache hits (`pg_stat_database_*`), connections by state (`pg_stat_activity_*`), locks, WAL,
@@ -112,12 +122,17 @@ dashboards and alert rules written for postgres_exporter apply as they are.
 - **A database rebuilt from empty data** loses the role with everything else — with
   `persistence.enabled: false` that is every restart. Run the one-shot again:
   `docker service update --force <release>_postgres-exporter-user`.
-- **What `monitoring` can reach**: the exporter, never the database's SQL port. Anything on that
-  overlay can read the metrics, which include role and database names and server settings, and
-  can use the exporter's `/probe?target=` endpoint to make it open connections elsewhere — with
-  credentials the caller supplies, never the exporter's own.
-- `metrics.network` names a different overlay. It must differ from `network.name`, and the render
-  fails if it does not.
+- **What `monitoring` can reach**: the exporter, not the database directly. Anything on that
+  overlay can read the metrics, which include role and database names and server settings. It
+  can also use the exporter's `/probe?target=` endpoint, which cannot be turned off: the exporter
+  connects to whatever target the caller names, with credentials the caller supplies (never its
+  own). That reaches the database after all: `pg_up` answering 1 or 0 makes `/probe` a
+  password-guessing oracle against `auth.username`, and it can open TCP connections to anything
+  on `network.name`. Give the superuser a long random password (`openssl rand -base64 32`), and
+  attach only services you trust to `monitoring`.
+- `metrics.network`, `metrics.username` and `metrics.secretName` must differ from `network.name`,
+  `auth.username` and `auth.secretName`, and the render fails if one does not. `metrics.username`
+  must not start with `pg_`, a prefix PostgreSQL reserves.
 - **Turning it off** leaves both services in place (swarmcli deploys without `--prune`). Remove
   them yourself: `docker service rm <release>_postgres-exporter <release>_postgres-exporter-user`.
 - **With swarmcli-cd**, add the secret to `allow.secrets` and `monitoring` to `allow.networks`.

@@ -57,8 +57,18 @@ mid="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/postgr
 # collector, never pg_up, which is why the collectors are checked one by one. Then the role
 # itself: not a superuser, capped at 3 connections, a pg_monitor member.
 metrics_ok=""
+exp="${release}_postgres-exporter"
+labels="$(docker service inspect "$exp" --format '{{json .Spec.Labels}}' 2>/dev/null || true)"
+if [ "$case" != "metrics" ]; then
+  # Metrics are opt-in: an exporter in any other fixture is a default that changed.
+  [ -z "$labels" ] || { echo "  $exp exists although the fixture does not enable metrics"; exit 1; }
+else
+  # Without both discovery labels, Prometheus would never find it, however well it scrapes.
+  for l in '"prometheus.io/scrape":"true"' '"prometheus.io/port":"9187"'; do
+    grep -F "$l" <<<"$labels" >/dev/null || { echo "  $exp: deploy label $l missing (labels: ${labels:-<no service>})"; exit 1; }
+  done
+fi
 if [ "$case" = "metrics" ]; then
-  exp="${release}_postgres-exporter"
   m=""
   for _ in $(seq 1 15); do
     m="$(docker run --rm --network monitoring curlimages/curl:latest -sSf "http://$exp:9187/metrics" 2>&1 || true)"

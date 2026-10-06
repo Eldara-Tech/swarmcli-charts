@@ -7,6 +7,9 @@
 {{- if and .Values.metrics.enabled (eq .Values.metrics.username .Values.auth.username) -}}
 {{- fail "metrics.username must differ from auth.username: the chart resets the exporter role's password to metrics.secretName, and must never touch the superuser's." -}}
 {{- end -}}
+{{- if and .Values.metrics.enabled (eq .Values.metrics.secretName .Values.auth.secretName) -}}
+{{- fail "metrics.secretName must differ from auth.secretName: the exporter would hold the superuser's password, on an overlay Prometheus shares." -}}
+{{- end -}}
 {{- /* One mount contract for every major. The volume (or host path) is mounted at
        /var/lib/postgresql — the PARENT — and PGDATA lives one level down at
        /var/lib/postgresql/<major>/docker. That is the postgres:18+ image's own default layout,
@@ -156,7 +159,7 @@ services:
 
     # The database's overlay to reach it, and the metrics overlay for Prometheus to reach the
     # exporter. The database itself never joins the metrics overlay, so nothing there can reach
-    # its SQL port.
+    # its SQL port directly.
     networks:
       - {{ .Values.network.name }}
       - {{ .Values.metrics.network }}
@@ -200,6 +203,12 @@ services:
   # over the overlay rather than running inside the database, so turning metrics on works on a
   # database that already exists without restarting it. Swarm runs it again only when its spec
   # changes, which is what a rotation does: a new metrics.secretName.
+  #
+  # It adopts only a role it created, recognised by its comment: a role of that name made by
+  # someone else may hold any privilege or membership, and its new password would go to the
+  # exporter, so it is refused, untouched. Its own role gets its attributes reset on every run.
+  # Statement logging is switched off for the session first, or log_statement=ddl, a duration
+  # log or a failed statement would write the password to the server log.
   postgres-exporter-user:
     image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
 
@@ -233,10 +242,24 @@ services:
         export EXPORTER_PASSWORD="$$pw"
         sql="$$(cat <<'SQL'
         \set pw `printf '%s' "$$EXPORTER_PASSWORD"`
-        SELECT format('CREATE ROLE %I', :'exporter') WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'exporter')
-        \gexec
-        ALTER ROLE :"exporter" WITH LOGIN CONNECTION LIMIT 3 PASSWORD :'pw';
+        SET log_statement = 'none';
+        SET log_min_duration_statement = -1;
+        SET log_min_error_statement = 'panic';
+        SET pg_stat_statements.track_utility = off;
+        SELECT NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'exporter') AS fresh
+        \gset
+        \if :fresh
+        CREATE ROLE :"exporter";
+        COMMENT ON ROLE :"exporter" IS 'swarmcli-charts postgres: metrics exporter role';
+        \endif
+        SELECT coalesce(shobj_description(oid, 'pg_authid'), '') = 'swarmcli-charts postgres: metrics exporter role' AS ours FROM pg_roles WHERE rolname = :'exporter'
+        \gset
+        \if :ours
+        ALTER ROLE :"exporter" WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT CONNECTION LIMIT 3 PASSWORD :'pw';
         GRANT pg_monitor TO :"exporter";
+        \else
+        DO $$$$BEGIN RAISE EXCEPTION 'refusing: role {{ .Values.metrics.username }} exists but was not created by this chart, and its password would go to the exporter. Drop it or set another metrics.username.'; END$$$$;
+        \endif
         SQL
         )"
         err=""
@@ -245,6 +268,7 @@ services:
             echo "postgres: exporter role {{ .Values.metrics.username }} is ready"
             exit 0
           fi
+          case "$$err" in *refusing:*) echo "postgres: $$err" >&2; exit 1 ;; esac
           sleep 5
         done
         echo "postgres: the database did not accept the exporter role statements; last error: $$err" >&2

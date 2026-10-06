@@ -103,11 +103,13 @@ metrics:
     # maintains pins written here.
     tag: "v0.20.1"
   # The exporter's role. Must differ from auth.username: the one-shot resets this role's
-  # password, and the superuser's must never be touched.
+  # password, and the superuser's must never be touched. It adopts only a role it created
+  # itself, and refuses an existing one of that name.
   username: exporter
   secretName: postgres_exporter_password
   # External overlay the exporter shares with Prometheus. Only the exporter joins it, never the
-  # database, so its SQL port stays off it. requirements.yaml declares it autoCreate:true.
+  # database, so nothing there reaches its SQL port directly. requirements.yaml declares it
+  # autoCreate:true.
   network: monitoring
 
 # Swarm deploy resource limits (optional). Rendered only when limits.memory is set.

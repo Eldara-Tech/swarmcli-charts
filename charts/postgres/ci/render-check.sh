@@ -88,13 +88,37 @@ u='.services."postgres-exporter-user"'
 script="$(q "$u.command[0]")"
 grep -F 'export PGPASSWORD="$$(cat /run/secrets/postgres_password)"' <<<"$script" >/dev/null \
   || bad "the one-shot does not read the superuser password from its mounted secret"
-grep -Fx 'GRANT pg_monitor TO :"exporter";' <<<"$script" >/dev/null \
-  || bad "the one-shot does not grant pg_monitor"
-if grep -E 'GRANT +(ALL|pg_read_all_data|pg_write_all_data|pg_execute_server_program|pg_read_server_files)|SUPERUSER|CREATEROLE' <<<"$script" >/dev/null; then
-  bad "the one-shot grants more than pg_monitor"
-fi
-grep -Fx "\\set pw \`printf '%s' \"\$\$EXPORTER_PASSWORD\"\`" <<<"$script" >/dev/null \
-  || bad "psql does not read the exporter password from the environment"
+# The SQL, exactly: any edit to it is a privilege or logging decision, so it is a reviewed one.
+# Logging off before the password is set; a role adopted only if this chart created it; its
+# attributes reset to least privilege on every run; pg_monitor and nothing else.
+want_sql="$(cat <<'EOF'
+\set pw `printf '%s' "$$EXPORTER_PASSWORD"`
+SET log_statement = 'none';
+SET log_min_duration_statement = -1;
+SET log_min_error_statement = 'panic';
+SET pg_stat_statements.track_utility = off;
+SELECT NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'exporter') AS fresh
+\gset
+\if :fresh
+CREATE ROLE :"exporter";
+COMMENT ON ROLE :"exporter" IS 'swarmcli-charts postgres: metrics exporter role';
+\endif
+SELECT coalesce(shobj_description(oid, 'pg_authid'), '') = 'swarmcli-charts postgres: metrics exporter role' AS ours FROM pg_roles WHERE rolname = :'exporter'
+\gset
+\if :ours
+ALTER ROLE :"exporter" WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT CONNECTION LIMIT 3 PASSWORD :'pw';
+GRANT pg_monitor TO :"exporter";
+\else
+DO $$$$BEGIN RAISE EXCEPTION 'refusing: role exporter exists but was not created by this chart, and its password would go to the exporter. Drop it or set another metrics.username.'; END$$$$;
+\endif
+EOF
+)"
+got_sql="$(sed -n "/^sql=\"\$\$(cat <<'SQL'\$/,/^SQL\$/p" <<<"$script" | sed '1d;$d')"
+[ "$got_sql" = "$want_sql" ] \
+  || bad "the one-shot's SQL changed; review it and update this check. Got:
+$got_sql"
+grep -F 'case "$$err" in *refusing:*) echo "postgres: $$err" >&2; exit 1 ;; esac' <<<"$script" >/dev/null \
+  || bad "the one-shot retries a refused role for five minutes instead of stopping at once"
 if grep -E -- '-v +pw=|PASSWORD +.\$\$' <<<"$script" >/dev/null; then
   bad "the exporter password is put on a command line or spliced into SQL"
 fi
@@ -105,5 +129,26 @@ grep -F '*[[:space:]]*)' <<<"$script" >/dev/null \
 if grep -E '(^|[^$])\$[({A-Za-z_]' <<<"$script" >/dev/null; then
   bad "the one-shot has an unescaped \$: Docker would interpolate it at deploy time"
 fi
+
+# ── the refusals ─────────────────────────────────────────────────────────────────────────────
+# Rendered from this fixture's chart with SWARMCLI, which test-charts.sh sets: each one must FAIL,
+# with its own message.
+chart="$(cd "$(dirname "$0")/.." && pwd)"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+refused() {
+  local want="$1"; shift
+  if "${SWARMCLI:?render-check needs SWARMCLI to test the refusals}" charts template r "$chart" \
+      -f "$chart/ci/metrics-values.yaml" "$@" >/dev/null 2>"$tmp/err"; then
+    bad "rendered with $* — it must be refused"
+  elif ! grep -F -- "$want" "$tmp/err" >/dev/null; then
+    bad "$* failed, but not with \"$want\": $(cat "$tmp/err")"
+  fi
+}
+refused 'metrics.network must differ from network.name' --set metrics.network=postgres-net
+refused 'metrics.username must differ from auth.username' --set metrics.username=postgres
+refused 'metrics.secretName must differ from auth.secretName' --set metrics.secretName=postgres_password
+refused "at '/metrics/username': 'not' failed" --set metrics.username=pg_exporter
+refused "at '/metrics/username'" --set metrics.username=Exporter
 
 exit "$fail"
