@@ -1,10 +1,11 @@
 {{- /* Once a service opts in to discovery, every one of its deploy labels is readable
-       through Prometheus's targets API, so a basic-auth hash in .Values.labels would be
+       through Prometheus's targets API, so credential material in .Values.labels (a
+       basic/digest-auth hash, an Authorization header a middleware injects) would be
        handed to anyone who can query Prometheus. */}}
 {{- if .Values.metrics.enabled }}
 {{-   range $key, $val := .Values.labels }}
-{{-     if contains "basicauth.users" (lower $key) }}
-{{-       fail (printf "labels.%s carries a basic-auth hash, and metrics.enabled would publish it through Prometheus's targets API (every deploy label of a scraped service is readable there). Use basicauth.usersfile with a mounted secret instead, or leave metrics off." $key) }}
+{{-     if regexMatch "(?i)((basic|digest)auth\\.users|customrequestheaders\\.authorization)$" $key }}
+{{-       fail (printf "labels.%s carries credential material, and metrics.enabled would publish it through Prometheus's targets API (every deploy label of a scraped service is readable there). Use the middleware's usersfile with a mounted secret instead, or leave metrics off." $key) }}
 {{-     end }}
 {{-   end }}
 {{- end -}}

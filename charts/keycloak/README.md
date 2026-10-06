@@ -158,8 +158,13 @@ and `prometheus.io/port=9000`, and attaches it to the `monitoring` overlay
 Prometheus using Docker Swarm service discovery on those labels works the same way.
 
 ```bash
-swarmcli charts upgrade keycloak swarmcli-charts/keycloak --reuse-values --set metrics.enabled=true
+swarmcli charts upgrade keycloak swarmcli-charts/keycloak -f keycloak-values.yaml --set metrics.enabled=true
 ```
+
+Pass the values you installed with (`-f`, or the same `--set`s), not `--reuse-values`.
+That flag merges over the previous release's stored values *instead of* this chart
+version's defaults, so every `metrics.*` key would render empty
+([swarmcli#687](https://github.com/Eldara-Tech/swarmcli/issues/687)).
 
 You get Keycloak's default set: JVM memory, GC and threads, the database pool
 (`agroal_*`), HTTP server request counts and latencies (`http_server_requests_seconds_*`),
@@ -183,9 +188,15 @@ What changes for `monitoring`, so read this before turning it on:
   can reach `:8080` directly can choose the client address and scheme Keycloak records
   in its events. That is already true for everything on `exposure.network`; joining
   `monitoring` adds its members.
+- **Keycloak can reach everything on it, too.** An internet-facing Keycloak joined to
+  `monitoring` sits next to whatever else is there: in the loki chart's default `none`
+  mode that is Loki's unauthenticated `3100`/`9095`, which read every log line and
+  accept pushes. A compromised Keycloak would no longer be confined to the edge and
+  its database.
 - **Every deploy label of the service is readable through Prometheus's targets API.**
   The chart's own labels carry no secrets, and the render fails if one of yours carries
-  a Traefik basic-auth hash (`*.basicauth.users`): use `basicauth.usersfile` with a
+  credential material (`*.basicauth.users`, `*.digestauth.users`,
+  `*.customrequestheaders.authorization`): use the middleware's `usersfile` with a
   mounted secret for that, or leave metrics off.
 
 Attach only services you trust to `monitoring`. Event metrics

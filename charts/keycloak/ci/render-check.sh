@@ -61,6 +61,34 @@ if [ "$case" = "metrics" ]; then
   [ "$(grep -c . <<<"$nets")" = "$(sort -u <<<"$nets" | grep -c .)" ] || bad "case $case: a network is listed twice"
   [ "$(q "$svc.ports")" = "null" ] || bad "case $case: a port is published; /metrics has no authentication"
   grep -Fx 'team=iam' <<<"$labels" >/dev/null || bad "case $case: the user's labels were dropped"
+
+  # The refusals: a user label carrying credential material must not render beside the
+  # discovery labels. Rendered from this chart with SWARMCLI, which test-charts.sh sets.
+  chart="$(cd "$(dirname "$0")/.." && pwd)"
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  render() { "${SWARMCLI:?render-check needs SWARMCLI to test the refusals}" charts template r "$chart" -f "$chart/ci/metrics-values.yaml" "$@"; }
+  refused() {
+    if render "$@" >/dev/null 2>"$tmp/err"; then
+      bad "case $case: rendered with $* — a credential label beside the discovery labels must be refused"
+    elif ! grep -F 'carries credential material' "$tmp/err" >/dev/null; then
+      bad "case $case: $* failed, but not with the credential-label refusal: $(cat "$tmp/err")"
+    fi
+  }
+  n=0
+  for key in traefik.http.middlewares.kc.BasicAuth.Users traefik.http.middlewares.kc.digestauth.users \
+             traefik.http.middlewares.kc.headers.customRequestHeaders.Authorization; do
+    n=$((n + 1))
+    printf 'labels:\n  %s: "u:$$apr1$$x$$y"\n' "$key" >"$tmp/l$n.yaml"
+    refused -f "$tmp/l$n.yaml"
+  done
+  # The alternative the refusal recommends must itself render: usersfile is not users.
+  printf 'labels:\n  traefik.http.middlewares.kc.basicauth.usersfile: /run/secrets/kc_users\n' >"$tmp/file.yaml"
+  render -f "$tmp/file.yaml" >/dev/null 2>"$tmp/err" \
+    || bad "case $case: basicauth.usersfile was refused, though it is the fix the refusal recommends: $(cat "$tmp/err")"
+  printf 'metrics:\n  enabled: false\n' >"$tmp/off.yaml"
+  render -f "$tmp/l1.yaml" -f "$tmp/off.yaml" >/dev/null 2>"$tmp/err" \
+    || bad "case $case: a basic-auth label without metrics was refused; it must keep working: $(cat "$tmp/err")"
 else
   [ "$(q "$svc.environment.KC_METRICS_ENABLED")" = "null" ] || bad "case $case: KC_METRICS_ENABLED is set; metrics must be opt-in"
   [ -z "$prom" ] || bad "case $case: discovery labels rendered ($(tr '\n' ' ' <<<"$prom")); metrics must be opt-in"

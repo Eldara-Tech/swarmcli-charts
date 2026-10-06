@@ -54,11 +54,21 @@ if [ "$ready" != 1 ]; then
   exit 1
 fi
 
-# --- metrics (any fixture whose service opted in to discovery): scrape /metrics the way
-# Prometheus does — from a client on the overlay named by the labels' network, at the
-# port the labels name — and assert series that only a booted, DB-connected Keycloak has.
-# A 200 alone would also come from a metrics endpoint with nothing behind it. ----------
+# --- metrics: scrape /metrics the way Prometheus does — from a client on the monitoring
+# overlay, at the port the discovery label names — and assert series that only a booted,
+# DB-connected Keycloak has. A 200 alone would also come from a metrics endpoint with
+# nothing behind it. The `metrics` fixture must carry the label and no other may, so a
+# missing label fails rather than skipping the scrape. -------------------------------
 mport="$(docker service inspect --format '{{index .Spec.Labels "prometheus.io/port"}}' "${release}_keycloak")"
+case="${3:-}"
+if [ "$case" = "metrics" ] && [ -z "$mport" ]; then
+  echo "  FAIL: ${release}_keycloak carries no prometheus.io/port label in the metrics fixture"
+  exit 1
+fi
+if [ "$case" != "metrics" ] && [ -n "$mport" ]; then
+  echo "  FAIL: ${release}_keycloak carries prometheus.io/port=${mport} outside the metrics fixture; metrics must be opt-in"
+  exit 1
+fi
 if [ -n "$mport" ]; then
   m=""
   for _ in $(seq 1 15); do
@@ -80,7 +90,6 @@ fi
 # --- edge fixture: prove a request routes THROUGH the stood-up traefik edge to Keycloak
 # (issue #63). Health above proved Keycloak is serving; now assert a public realm endpoint
 # is reachable via the edge with a matching Host header, and that an unknown host 404s. ---
-case="${3:-}"
 if [ "$case" = "edge" ]; then
   . "$2/../../scripts/e2e-edge/traefik-edge.sh"
   edge_assert_routed keycloak.e2e.test /realms/master 200 || exit 1
