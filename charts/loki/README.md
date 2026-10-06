@@ -151,8 +151,13 @@ overlay with no scrape config of its own. Any Prometheus using
 Docker Swarm service discovery on those labels works the same way.
 
 ```bash
-swarmcli charts upgrade loki swarmcli-charts/loki --reuse-values --set metrics.enabled=true
+swarmcli charts upgrade loki swarmcli-charts/loki -f loki-values.yaml --set metrics.enabled=true
 ```
+
+Pass the values you installed with (`-f`, or the same `--set`s), not `--reuse-values`.
+That flag merges over the previous release's stored values *instead of* this chart
+version's defaults, so every `metrics.*` key would render empty
+([swarmcli#687](https://github.com/Eldara-Tech/swarmcli/issues/687)).
 
 What it attaches depends on `exposure.mode`:
 
@@ -160,8 +165,9 @@ What it attaches depends on `exposure.mode`:
   both that and `metrics.network` are `monitoring`, so only the labels change and
   nothing new can reach Loki. A different `metrics.network` is joined as well; then
   share only one of the two with Prometheus, or it scrapes Loki once per network.
-- **`published`**: Loki joins `metrics.network`. Its API is already open,
-  unauthenticated, on every node's published port.
+- **`published`**: Loki joins `metrics.network`. Its HTTP API is already open,
+  unauthenticated, on every node's published port; joining also makes its gRPC port
+  (9095), which is not published, reachable from that overlay.
 - **`traefik`**: refused at render time. Loki's labels carry the basic-auth hash,
   and every deploy label of a discovered service is readable through Prometheus's
   targets API; joining an unauthenticated overlay would also bypass the router's
@@ -169,7 +175,7 @@ What it attaches depends on `exposure.mode`:
   `traefik.basicAuthUsers` so it can be revoked alone:
 
   ```yaml
-  # loki-scrape.yml — holds a password: keep it out of git
+  # loki-scrape.yml — holds a password
   scrape_configs:
     - job_name: loki
       scheme: https
@@ -181,19 +187,31 @@ What it attaches depends on `exposure.mode`:
   ```
 
   ```bash
-  swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --reuse-values \
+  swarmcli charts upgrade mon swarmcli-charts/prometheus-stack -f mon-values.yaml \
     --set-file prometheus.extraScrapeConfigs.loki=./loki-scrape.yml
   ```
+
+  This relies on the prometheus-stack chart, not yet merged
+  ([#221](https://github.com/Eldara-Tech/swarmcli-charts/pull/221)). It deploys each
+  `extraScrapeConfigs` entry as a Swarm config, which anyone with Docker access to
+  the swarm reads in cleartext with `docker config inspect`, so the password is as
+  exposed there as in the file: keep the file out of git and give this user nothing
+  but read access to Loki.
 
 Everything on the scrape overlay can reach Loki's whole API on 3100 and its gRPC
 port 9095, neither of which authenticates anyone; in the default shape that is the
 same `monitoring` overlay Grafana and your log producers already use.
 
+With [swarmcli-cd](https://github.com/Eldara-Tech/swarmcli-cd), an application's
+`allow.networks` must name every overlay the release joins: when metrics add
+`metrics.network` (in `published` mode, or when it differs from
+`exposure.network`), list `monitoring` there too. See
+[`allow`](https://github.com/Eldara-Tech/swarmcli-cd/blob/main/docs/configuration.md#allow-optional).
+
 The Alloy shipper (`shipper.enabled`) is not labelled. Its HTTP server, besides
 `/metrics`, serves the state of every component, which includes the labels of every
-container it discovers (Traefik basic-auth hashes among them), plus a support
-bundle and pprof. Scraping it safely needs Alloy's HTTP auth configured, which is a
-follow-up.
+container on its node, plus a support bundle and pprof. Scraping it safely needs
+Alloy's HTTP auth configured, which is a follow-up.
 
 ## Retention
 

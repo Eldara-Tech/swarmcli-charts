@@ -10,6 +10,16 @@
 {{- if and .Values.metrics.enabled (eq .Values.exposure.mode "traefik") -}}
 {{-   fail "metrics.enabled cannot be combined with exposure.mode=traefik: Loki's labels carry the basic-auth hash, which Prometheus's targets API would expose, and joining the metrics overlay would bypass the router's auth. Scrape https://<ingress.host>/metrics with basic_auth from a prometheus.extraScrapeConfigs entry instead (chart README, Metrics)." -}}
 {{- end -}}
+{{- if .Values.metrics.enabled -}}
+{{-   range $key, $val := .Values.labels -}}
+{{-     if regexMatch "(?i)((basic|digest)auth\\.users|customrequestheaders\\.authorization)$" $key -}}
+{{-       fail (printf "metrics.enabled exposes every deploy label of the loki service through Prometheus's targets API, and labels %q carries credential material. Define that middleware where Prometheus does not discover it (a Traefik file-provider config, or a usersfile Traefik reads from a mounted secret), or leave metrics off." $key) -}}
+{{-     end -}}
+{{-   end -}}
+{{-   if and .Values.shipper.enabled (eq .Values.metrics.network "internal") -}}
+{{-     fail "metrics.network cannot be \"internal\" while shipper.enabled: that is the name of the stack-internal overlay the Alloy shipper pushes over. Pick another name." -}}
+{{-   end -}}
+{{- end -}}
 version: "3.9"
 
 {{- /* Exposure mode drives networks, ports, labels and the public scheme. */}}

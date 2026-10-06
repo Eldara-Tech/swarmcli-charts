@@ -123,8 +123,9 @@ service:
 #
 #   none      - Loki is already on exposure.network. With the default (both
 #               `monitoring`) nothing new is attached: only the labels change.
-#   published - Loki joins `network`. Its API is already unauthenticated on every
-#               node's published port, so this widens nothing that is not open.
+#   published - Loki joins `network`. Its HTTP API is already unauthenticated on
+#               every node's published port; joining also exposes gRPC (9095),
+#               which is not published, to that overlay.
 #   traefik   - refused at render time. Loki's labels there carry the basic-auth
 #               hash, which Prometheus's targets API would show to anyone who can
 #               query it, and an unauthenticated overlay would bypass the router's
@@ -132,7 +133,8 @@ service:
 #
 # Whatever shares `network` reaches Loki's whole API (3100) and gRPC port (9095),
 # which authenticate nobody. Alloy (shipper.enabled) is NOT labelled: its HTTP
-# server also serves component state carrying every container label it discovers.
+# server also serves component state carrying the labels of every container on
+# its node, a support bundle and pprof.
 metrics:
   enabled: false
   # External overlay Prometheus scrapes on (the prometheus-stack chart's default).

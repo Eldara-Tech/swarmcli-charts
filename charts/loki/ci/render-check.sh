@@ -212,5 +212,60 @@ else
     || { echo "  FAIL($case): the shipper is off but an alloy service was rendered"; fail=1; }
 fi
 
+# ------------------------------------------------------------------- refusals
+# What the chart must REFUSE to render, checked once (in the `metrics` fixture) by rendering
+# the chart again with SWARMCLI, which test-charts.sh sets. A refusal nobody tests reads
+# exactly like one that works.
+if [ "$case" = "metrics" ]; then
+  chart="$(cd "$(dirname "$0")/.." && pwd)"
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  render() { "${SWARMCLI:?render-check needs SWARMCLI to test the refusals}" charts template r "$chart" -f "$chart/ci/metrics-values.yaml" "$@"; }
+  refused() {
+    local want="$1"; shift
+    if render "$@" >/dev/null 2>"$tmp/err"; then
+      echo "  FAIL($case): rendered with $* — it must be refused"; fail=1
+    elif ! grep -F "$want" "$tmp/err" >/dev/null; then
+      echo "  FAIL($case): $* failed, but not with \"$want\": $(cat "$tmp/err")"; fail=1
+    fi
+  }
+  cat >"$tmp/traefik.yaml" <<'YAML'
+exposure:
+  mode: traefik
+  network: traefik-public
+traefik:
+  basicAuthUsers: "ops:$$apr1$$x$$y"
+YAML
+  cat >"$tmp/basic.yaml" <<'YAML'
+labels:
+  traefik.http.middlewares.ops.BasicAuth.Users: "ops:$$apr1$$x$$y"
+YAML
+  cat >"$tmp/digest.yaml" <<'YAML'
+exposure:
+  mode: published
+labels:
+  traefik.http.middlewares.ops.digestauth.users: "ops:realm:abc"
+YAML
+  cat >"$tmp/header.yaml" <<'YAML'
+labels:
+  traefik.http.middlewares.ops.headers.customRequestHeaders.Authorization: "Basic b3BzOnNlY3JldA=="
+YAML
+  cat >"$tmp/usersfile.yaml" <<'YAML'
+labels:
+  traefik.http.middlewares.ops.basicauth.usersfile: /run/secrets/ops-users
+YAML
+  refused 'cannot be combined with exposure.mode=traefik' -f "$tmp/traefik.yaml"
+  refused 'carries credential material' -f "$tmp/basic.yaml"
+  refused 'carries credential material' -f "$tmp/digest.yaml"
+  refused 'carries credential material' -f "$tmp/header.yaml"
+  refused 'cannot be "internal" while shipper.enabled' --set shipper.enabled=true --set metrics.network=internal
+  # The alternative the message recommends must keep working, and so must the same labels
+  # with metrics off.
+  render -f "$tmp/usersfile.yaml" >/dev/null 2>"$tmp/err" \
+    || { echo "  FAIL($case): a basicauth.usersfile label was refused; it carries no credential: $(cat "$tmp/err")"; fail=1; }
+  render -f "$tmp/basic.yaml" --set metrics.enabled=false >/dev/null 2>"$tmp/err" \
+    || { echo "  FAIL($case): a basic-auth label without metrics was refused; it must keep working: $(cat "$tmp/err")"; fail=1; }
+fi
+
 [ "$fail" -eq 0 ] || exit 1
 echo "  $case: render assertions OK"

@@ -214,4 +214,12 @@ case "$case" in
     fi
     echo "  ${svc}: /metrics scraped on monitoring:${port} (loki_build_info, loki_distributor_lines_received_total=${lines})"
     ;;
+  *)
+    # Metrics are opt-in: a fixture that did not ask for them must not be discoverable.
+    scrape="$(docker service inspect "${release}_loki" --format '{{index .Spec.Labels "prometheus.io/scrape"}}' 2>/dev/null || true)"
+    if [ -n "$scrape" ]; then
+      echo "  FAIL: ${release}_loki carries prometheus.io/scrape=$scrape although the fixture leaves metrics off"
+      exit 1
+    fi
+    ;;
 esac
