@@ -72,10 +72,10 @@ grep -F -- '--mysqld.username=exporter' <<<"$cmd" >/dev/null || bad "exporter: d
 [ "$(q "$e.deploy.labels | sort | join(\",\")")" = "prometheus.io/port=9104,prometheus.io/scrape=true" ] \
   || bad "exporter: deploy labels are '$(q "$e.deploy.labels | sort | join(\",\")")', expected exactly the two discovery labels"
 [ "$(q "$e.networks | sort | join(\" \")")" = "mariadb-net monitoring" ] \
-  || bad "exporter: networks are '$(q "$e.networks | join(" ")")', expected the database's overlay and the metrics overlay"
+  || bad "exporter: networks are '$(q "$e.networks | join(\" \")")', expected the database's overlay and the metrics overlay"
 [ "$(q "$e.ports")" = "null" ] || bad "exporter: publishes a port; /metrics has no authentication"
-[ "$(q "$e.secrets | join(\",\")")" = "mariadb_exporter_password" ] \
-  || bad "exporter: mounts '$(q "$e.secrets | join(",")")', expected only its own secret"
+e_secrets="$(q "$e.secrets | join(\",\")")"
+[ "$e_secrets" = "mariadb_exporter_password" ] || bad "exporter: mounts '$e_secrets', expected only its own secret"
 [ "$(yq -o=json -I=0 "$e.deploy.placement" "$rendered")" = "$(yq -o=json -I=0 '.services.mariadb.deploy.placement' "$rendered")" ] \
   || bad "exporter: placement differs from the database's; it belongs on the database's node"
 
@@ -84,7 +84,7 @@ ucmd="$(q "$u.command[0]")"
 [ "$(q "$u.deploy.restart_policy.condition")" = "on-failure" ] \
   || bad "user one-shot: restart condition is not on-failure; it must run to completion once, and retry while the database is not writable yet"
 [ "$(q "$u.networks | join(\" \")")" = "mariadb-net" ] \
-  || bad "user one-shot: networks are '$(q "$u.networks | join(" ")")'; it holds the root password and stays off the metrics overlay"
+  || bad "user one-shot: networks are '$(q "$u.networks | join(\" \")")'; it holds the root password and stays off the metrics overlay"
 grep -F 'mariadb -h tasks.ci_mariadb -uroot' <<<"$ucmd" >/dev/null || bad "user one-shot: does not reach this release's database"
 grep -F 'export MYSQL_PWD="$$(cat /run/secrets/mariadb_root_password)"' <<<"$ucmd" >/dev/null \
   || bad "user one-shot: the root password is not read from the mounted secret"

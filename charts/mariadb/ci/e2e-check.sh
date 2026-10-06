@@ -58,11 +58,15 @@ if docker service inspect "$exp" >/dev/null 2>&1; then
   fi
   failed="$(grep -E '^mysql_exporter_collector_success\{.*\} 0$' <<<"$m" || true)"
   [ -z "$failed" ] || { echo "  $exp: collectors failing (a missing grant):"; echo "$failed" | sed 's/^/    /'; exit 1; }
-  # The exporter's login is its own least-privilege user, not root.
+  # The exporter's login is its own least-privilege user, with one GRANT and nothing
+  # that reads data. MariaDB shows REPLICATION CLIENT under its newer name, BINLOG MONITOR.
   grants="$(docker exec "$cid" sh -c \
     'MYSQL_PWD="$(cat /run/secrets/mariadb_root_password)" mariadb -uroot -N -e "SHOW GRANTS FOR exporter@\"%\""')"
-  grep -F 'GRANT PROCESS, REPLICATION CLIENT, SLAVE MONITOR ON *.* TO' <<<"$grants" >/dev/null \
-    || { echo "  exporter grants are not the least-privilege set: $grants"; exit 1; }
+  if [ "$(grep -c '^GRANT' <<<"$grants")" != 1 ] \
+    || ! grep -E '^GRANT PROCESS, (BINLOG MONITOR|REPLICATION CLIENT), SLAVE MONITOR ON \*\.\* TO `exporter`@`%`' <<<"$grants" >/dev/null; then
+    echo "  exporter grants are not the least-privilege set: $grants"
+    exit 1
+  fi
   metrics_ok=", exporter scraped on monitoring (mysql_up 1, all collectors OK)"
 fi
 
