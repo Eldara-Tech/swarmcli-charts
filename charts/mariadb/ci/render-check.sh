@@ -85,7 +85,11 @@ ucmd="$(q "$u.command[0]")"
   || bad "user one-shot: restart condition is not on-failure; it must run to completion once, and retry while the database is not writable yet"
 [ "$(q "$u.networks | join(\" \")")" = "mariadb-net" ] \
   || bad "user one-shot: networks are '$(q "$u.networks | join(\" \")")'; it holds the root password and stays off the metrics overlay"
-grep -F 'mariadb -h tasks.ci_mariadb -uroot' <<<"$ucmd" >/dev/null || bad "user one-shot: does not reach this release's database"
+grep -F 'mariadb -h tasks.ci_mariadb -uroot 2>&1 <<<"$$sql"' <<<"$ucmd" >/dev/null \
+  || bad "user one-shot: does not send the statements to this release's database on stdin"
+if grep -F -- ' -e ' <<<"$ucmd" >/dev/null; then
+  bad "user one-shot: passes SQL with -e; the exporter password would be readable in its argv"
+fi
 grep -F 'export MYSQL_PWD="$$(cat /run/secrets/mariadb_root_password)"' <<<"$ucmd" >/dev/null \
   || bad "user one-shot: the root password is not read from the mounted secret"
 grep -F "GRANT PROCESS, REPLICATION CLIENT, SLAVE MONITOR ON *.* TO" <<<"$ucmd" >/dev/null \

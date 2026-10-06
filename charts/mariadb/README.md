@@ -100,6 +100,8 @@ database's node.
   the password; a scrape or two may read `mysql_up 0` until it has.
 - **A database rebuilt from an empty volume** loses the user with everything else.
   Run the one-shot again: `docker service update --force <release>_mariadb-exporter-user`.
+  With `persistence.enabled: false` that is every restart of the database task, so
+  the exporter reads `mysql_up 0` after each one until you do.
 - `metrics.network` names a different overlay. It must differ from `network.name`,
   and the render fails if it does not.
 - **Turning it off** leaves both services running, because swarmcli deploys without

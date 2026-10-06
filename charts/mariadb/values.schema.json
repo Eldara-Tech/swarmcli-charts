@@ -91,7 +91,7 @@
             "tag": { "type": "string", "minLength": 1 }
           }
         },
-        "username": { "type": "string", "minLength": 1 },
+        "username": { "type": "string", "pattern": "^[A-Za-z0-9_]{1,80}$" },
         "secretName": { "type": "string", "minLength": 1 },
         "network": {
           "description": "External overlay the exporter shares with Prometheus.",

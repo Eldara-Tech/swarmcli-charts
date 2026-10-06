@@ -2,7 +2,7 @@
 #
 # Optional e2e smoke check for the mariadb chart. scripts/e2e-test.sh runs this
 # after the release converges:
-#   $1 = release name (== Docker stack name)   $2 = chart directory
+#   $1 = release name (== Docker stack name)   $2 = chart directory   $3 = fixture case
 # Exit 0 = healthy, non-zero = failure.
 #
 # It is run once per fixture (default / no-appuser / ephemeral / published-port / metrics),
@@ -43,7 +43,15 @@ docker exec "$cid" sh -c \
 # why the collectors are checked one by one.
 metrics_ok=""
 exp="${release}_mariadb-exporter"
-if docker service inspect "$exp" >/dev/null 2>&1; then
+if [ "${3:-}" != "metrics" ]; then
+  if docker service inspect "$exp" >/dev/null 2>&1; then
+    echo "  $exp exists although this fixture does not enable metrics"
+    exit 1
+  fi
+elif ! docker service inspect "$exp" >/dev/null 2>&1; then
+  echo "  $exp is missing in the metrics fixture"
+  exit 1
+else
   m=""
   for _ in $(seq 1 15); do
     m="$(docker run --rm --network monitoring curlimages/curl:latest -sSf "http://$exp:9104/metrics" 2>&1 || true)"

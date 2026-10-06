@@ -124,9 +124,9 @@ services:
     secrets:
       - {{ .Values.metrics.secretName }}
 
-    # The exporter takes its password only from MYSQLD_EXPORTER_PASSWORD, so it is
-    # read from the mounted secret at start and never lands in the compose file or
-    # `docker inspect`. `$$` is the compose escape for a literal `$`.
+    # The password reaches the exporter through MYSQLD_EXPORTER_PASSWORD, exported from
+    # the mounted secret at start, so it never lands in the compose file or `docker
+    # inspect`. `$$` is the compose escape for a literal `$`.
     #
     # tasks.<release>_mariadb resolves to the database's task, and to nothing while
     # it has none, so a stopped database reads as mysql_up 0 at once rather than a
@@ -176,8 +176,9 @@ services:
       - {{ .Values.metrics.secretName }}
 
     # MYSQL_PWD keeps the root password off the command line. The exporter password
-    # has to travel inside the statement, so it is escaped as a SQL string literal
-    # the way the image's own entrypoint escapes the passwords it sets.
+    # travels inside the statement, escaped as a SQL string literal the way the image's
+    # own entrypoint escapes the passwords it sets, and the statement goes in on stdin,
+    # so neither appears in an argv.
     entrypoint:
       - /bin/bash
       - -c
@@ -196,7 +197,7 @@ services:
         GRANT PROCESS, REPLICATION CLIENT, SLAVE MONITOR ON *.* TO $$user;"
         err=""
         for _ in $$(seq 1 60); do
-          if err="$$(mariadb -h tasks.{{ .Release.Name }}_mariadb -uroot -e "$$sql" 2>&1)"; then
+          if err="$$(mariadb -h tasks.{{ .Release.Name }}_mariadb -uroot 2>&1 <<<"$$sql")"; then
             echo "mariadb: exporter user {{ .Values.metrics.username }} is ready"
             exit 0
           fi
