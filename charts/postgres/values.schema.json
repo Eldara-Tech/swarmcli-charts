@@ -73,6 +73,29 @@
         "monitor": { "type": "string" }
       }
     },
+    "metrics": {
+      "description": "A postgres_exporter beside the database, labelled for Docker Swarm service discovery.",
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string", "minLength": 1 }
+          }
+        },
+        "username": {
+          "description": "The exporter's role. A plain lower-case identifier: it is spliced into the start-up shell and the connection settings.",
+          "type": "string", "pattern": "^[a-z_][a-z0-9_]{0,62}$"
+        },
+        "secretName": { "type": "string", "minLength": 1 },
+        "network": {
+          "description": "External overlay the exporter shares with Prometheus.",
+          "type": "string", "minLength": 1
+        }
+      }
+    },
     "extraArgs": { "type": "array", "items": { "type": "string" } },
     "labels": { "type": "object" }
   }

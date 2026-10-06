@@ -58,7 +58,9 @@ include:
   # postgres: EVERY fixture (cases: "" => no filter). bind-mount is included, unlike
   # mariadb's: PGDATA sits one level below the mount (/var/lib/postgresql/<major>/docker),
   # so initdb never has to chown or empty the bind-mounted mountpoint itself. legacy-major
-  # pulls a second image (postgres:15) — hence the 8m budget.
+  # pulls a second image (postgres:15) — hence the 8m budget. `metrics` scrapes the exporter over
+  # the monitoring overlay, which proves the one-shot created a pg_monitor role whose password
+  # survived the secret's quoting traps and that every default collector accepts.
   - { chart: postgres,      cases: "",                                                                                timeout: 8m  }
   # mongodb: EVERY fixture (cases: "" => no filter). ci/e2e-setup.sh creates the three dummy
   # secrets and the data node label; ci/e2e-check.sh then connects from a throwaway client

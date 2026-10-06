@@ -1,6 +1,12 @@
 {{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) (contains "/" .Values.persistence.volumeName) -}}
 {{- fail "persistence.volumeName is a Docker named-volume name and cannot contain '/'. To store data under a host directory, set persistence.volumePath instead." -}}
 {{- end -}}
+{{- if and .Values.metrics.enabled (eq .Values.metrics.network .Values.network.name) -}}
+{{- fail "metrics.network must differ from network.name: the exporter joins both, and the point of a separate metrics overlay is that Prometheus never shares one with the database's SQL port." -}}
+{{- end -}}
+{{- if and .Values.metrics.enabled (eq .Values.metrics.username .Values.auth.username) -}}
+{{- fail "metrics.username must differ from auth.username: the chart resets the exporter role's password to metrics.secretName, and must never touch the superuser's." -}}
+{{- end -}}
 {{- /* One mount contract for every major. The volume (or host path) is mounted at
        /var/lib/postgresql — the PARENT — and PGDATA lives one level down at
        /var/lib/postgresql/<major>/docker. That is the postgres:18+ image's own default layout,
@@ -143,6 +149,121 @@ services:
         - "{{ $key }}={{ $val }}"
 {{- end }}
 {{- end }}
+{{- if .Values.metrics.enabled }}
+
+  postgres-exporter:
+    image: {{ .Values.metrics.image.repository }}:{{ .Values.metrics.image.tag }}
+
+    # The database's overlay to reach it, and the metrics overlay for Prometheus to reach the
+    # exporter. The database itself never joins the metrics overlay, so nothing there can reach
+    # its SQL port.
+    networks:
+      - {{ .Values.network.name }}
+      - {{ .Values.metrics.network }}
+
+    secrets:
+      - {{ .Values.metrics.secretName }}
+
+    # The exporter reads its password from the mounted secret itself (DATA_SOURCE_PASS_FILE), so
+    # it never lands in the compose file or `docker inspect`. It trims surrounding whitespace, as
+    # the one-shot below does when it sets the password.
+    #
+    # tasks.<release>_postgres resolves to the database's task, and to nothing while it has none,
+    # so a stopped database reads as pg_up 0 at once rather than a connect timeout against an
+    # empty VIP. sslmode=disable because the image serves no TLS, and the driver's default
+    # (require) would refuse the plain connection; the password itself is sent as a SCRAM proof.
+    environment:
+      DATA_SOURCE_URI: "tasks.{{ .Release.Name }}_postgres:5432/{{ .Values.auth.database }}?sslmode=disable"
+      DATA_SOURCE_USER: {{ .Values.metrics.username | quote }}
+      DATA_SOURCE_PASS_FILE: /run/secrets/{{ .Values.metrics.secretName }}
+
+    deploy:
+      replicas: 1
+{{- /* The same constraints as the database: Prometheus labels every target with the node it
+       runs on, and that should be the database's node. */}}
+{{- if $constraints }}
+      placement:
+        constraints:
+{{- range $constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+      # Only the discovery labels, never .Values.labels: once a service opts in, every one of its
+      # deploy labels is readable through Prometheus's targets API.
+      labels:
+        - "prometheus.io/scrape=true"
+        - "prometheus.io/port=9187"
+
+  # Creates the exporter's role, or resets its password, then exits. It logs in as auth.username
+  # over the overlay rather than running inside the database, so turning metrics on works on a
+  # database that already exists without restarting it. Swarm runs it again only when its spec
+  # changes, which is what a rotation does: a new metrics.secretName.
+  postgres-exporter-user:
+    image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
+
+    networks:
+      - {{ .Values.network.name }}
+
+    secrets:
+      - {{ .Values.auth.secretName }}
+      - {{ .Values.metrics.secretName }}
+
+    # PGPASSWORD keeps the superuser's password off the command line. The exporter's password
+    # never reaches one either: psql reads it from the environment through a backquoted \set,
+    # and :'pw' quotes it as a SQL literal, so no character in it needs escaping here. It is
+    # trimmed the way the exporter trims what it reads (Go's strings.TrimSpace), or the two
+    # would disagree about a secret that ends with a newline. Whitespace INSIDE it is refused:
+    # postgres_exporter splits its connection string on spaces, so pg_up would read 0 forever.
+    entrypoint:
+      - /bin/bash
+      - -c
+    command:
+      - |-
+        set -eu
+        export PGPASSWORD="$$(cat /run/secrets/{{ .Values.auth.secretName }})"
+        pw="$$(cat /run/secrets/{{ .Values.metrics.secretName }})"
+        pw="$${pw#"$${pw%%[![:space:]]*}"}"
+        pw="$${pw%"$${pw##*[![:space:]]}"}"
+        case "$$pw" in
+          "") echo "postgres: secret {{ .Values.metrics.secretName }} is empty; refusing to set an empty exporter password" >&2; exit 1 ;;
+          *[[:space:]]*) echo "postgres: secret {{ .Values.metrics.secretName }} contains whitespace, which postgres_exporter cannot log in with; recreate it, e.g. openssl rand -base64 32" >&2; exit 1 ;;
+        esac
+        export EXPORTER_PASSWORD="$$pw"
+        sql="$$(cat <<'SQL'
+        \set pw `printf '%s' "$$EXPORTER_PASSWORD"`
+        SELECT format('CREATE ROLE %I', :'exporter') WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'exporter')
+        \gexec
+        ALTER ROLE :"exporter" WITH LOGIN CONNECTION LIMIT 3 PASSWORD :'pw';
+        GRANT pg_monitor TO :"exporter";
+        SQL
+        )"
+        err=""
+        for _ in $$(seq 1 60); do
+          if err="$$(printf '%s\n' "$$sql" | psql -h tasks.{{ .Release.Name }}_postgres -U {{ .Values.auth.username | quote }} -d {{ .Values.auth.database | quote }} -v ON_ERROR_STOP=1 -v exporter={{ .Values.metrics.username | quote }} -qAt 2>&1)"; then
+            echo "postgres: exporter role {{ .Values.metrics.username }} is ready"
+            exit 0
+          fi
+          sleep 5
+        done
+        echo "postgres: the database did not accept the exporter role statements; last error: $$err" >&2
+        exit 1
+
+    deploy:
+      replicas: 1
+{{- if .Values.placement.constraints }}
+      placement:
+        constraints:
+{{- range .Values.placement.constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      # on-failure, not none: a first install can take longer than the loop above to become
+      # writable, and Swarm then simply runs it again.
+      restart_policy:
+        condition: on-failure
+{{- end }}
 
 {{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) }}
 
@@ -153,6 +274,10 @@ volumes:
 secrets:
   {{ .Values.auth.secretName }}:
     external: true
+{{- if .Values.metrics.enabled }}
+  {{ .Values.metrics.secretName }}:
+    external: true
+{{- end }}
 
 networks:
   {{ .Values.network.name }}:
@@ -161,4 +286,8 @@ networks:
 {{- else }}
     driver: overlay
     attachable: true
+{{- end }}
+{{- if .Values.metrics.enabled }}
+  {{ .Values.metrics.network }}:
+    external: true
 {{- end }}

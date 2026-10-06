@@ -4,10 +4,11 @@
 # install`, once per fixture:
 #   $1 = release name   $2 = chart directory   $3 = fixture case name
 # It provisions the external prerequisites swarmcli validates but never creates: the operator
-# secret and the persistence node-label pin. For the bind-mount fixture it also pre-creates the
-# host data dir owned by the container's postgres uid (999). The shared postgres-net overlay is
-# autoCreate:true, so swarmcli creates it at install — not this hook. ci/e2e-teardown.sh removes
-# everything created here. (See charts/mariadb/ci/e2e-setup.sh for the shared shape.)
+# secrets (the superuser's and the exporter role's) and the persistence node-label pin. For the
+# bind-mount fixture it also pre-creates the host data dir owned by the container's postgres uid
+# (999). The shared postgres-net and monitoring overlays are autoCreate:true, so swarmcli creates
+# them at install — not this hook. ci/e2e-teardown.sh removes everything created here. (See
+# charts/mariadb/ci/e2e-setup.sh for the shared shape.)
 #
 # Idempotent: safe to re-run after a crashed run (every create tolerates "already exists").
 set -euo pipefail
@@ -16,6 +17,11 @@ case="$3"
 
 docker secret inspect postgres_password >/dev/null 2>&1 \
   || printf 'test' | docker secret create postgres_password - >/dev/null
+# The exporter role's password (metrics fixture). Every character a quoting bug would trip on
+# that the exporter can log in with — ' \ $ # " % : @ / — plus the leading space and trailing
+# newline both sides must trim the same way. ci/e2e-check.sh proves it with pg_up 1.
+docker secret inspect postgres_exporter_password >/dev/null 2>&1 \
+  || printf '%s\n' " a'b\\c\$HOME#d\"e%x:y@z/" | docker secret create postgres_exporter_password - >/dev/null
 
 # Pin: label this (single-node) swarm's node so node.labels.postgres-data == true schedules.
 # Harmless for the ephemeral fixture (no pin rendered).
