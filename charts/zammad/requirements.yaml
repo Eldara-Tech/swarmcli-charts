@@ -22,8 +22,15 @@
 # still fails CI — which is the form that actually matters.
 #
 # The chart-managed internal overlay (internalNetwork) is created by this stack and is NOT listed
-# here. Every overlay below is autoCreate:false — Zammad consumes them, it does not own them.
+# here. Every overlay below but the metrics one is autoCreate:false — Zammad consumes them, it does
+# not own them. The metrics overlay (metrics.enabled only) is autoCreate:true: it is where the
+# exporters meet Prometheus, and on a fresh swarm nothing else has created it yet.
 networks:
+  - name: "{{ .Values.metrics.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: true
+    description: "metrics.enabled ONLY — the overlay the exporters share with Prometheus; the prometheus-stack chart scrapes on it by default"
   - name: "{{ .Values.exposure.network }}"
     driver: overlay
     attachable: true

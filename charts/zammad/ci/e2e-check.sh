@@ -13,6 +13,11 @@
 #                                       and nginx's rails upstream wiring (ZAMMAD_RAILSSERVER_HOST)
 #                                       is correct.
 #
+# With metrics on (the `embedded-backing` fixture), it then scrapes each exporter from the
+# `monitoring` overlay, where Prometheus would, and asserts a series only a working connection to
+# the backing service produces (memcached_up 1; Elasticsearch's node count). It also proves the
+# embedded Elasticsearch itself is NOT reachable there: it runs with security off.
+#
 # It probes nginx ON THE STACK'S INTERNAL OVERLAY (a throwaway curl container joins it), NOT the host
 # published port. The published port exercises Swarm's ingress routing mesh, which is Docker infra —
 # not something this chart controls — and it is unreliable on CI runners: the mesh accepts the TCP
@@ -22,7 +27,45 @@
 set -euo pipefail
 
 release="$1"
+case="${3:-}"
 target="http://nginx:8080/api/v1/getting_started"
+
+# Scrape every exporter this release runs from the metrics overlay. Each pair is
+# <service>:<port>:<regex a healthy scrape must match>.
+check_metrics() {
+  local found=0 pair svc rest port want m
+  for pair in 'memcached-exporter:9150:^memcached_up 1$' \
+              'elasticsearch-exporter:9114:^elasticsearch_cluster_health_number_of_nodes\{[^}]*\} 1$'; do
+    svc="${pair%%:*}"; rest="${pair#*:}"; port="${rest%%:*}"; want="${rest#*:}"
+    docker service inspect "${release}_${svc}" >/dev/null 2>&1 || continue
+    found=$((found + 1))
+    m=""
+    for _ in $(seq 1 20); do
+      m="$(docker run --rm --network monitoring curlimages/curl:8.11.1 -sS -m 10 "http://${release}_${svc}:${port}/metrics" 2>&1 || true)"
+      grep -E "$want" <<<"$m" >/dev/null && break
+      sleep 3
+    done
+    if ! grep -E "$want" <<<"$m" >/dev/null; then
+      echo "   FAIL: ${release}_${svc} on the monitoring overlay did not report /${want}/. Scrape head and exporter log:"
+      sed -n '1,5p' <<<"$m" | sed 's/^/      /'
+      docker service logs --tail 10 "${release}_${svc}" 2>&1 | sed 's/^/      /'
+      return 1
+    fi
+    echo "   ok: ${release}_${svc} scraped on monitoring: $(grep -E "$want" <<<"$m")"
+  done
+  if [ "$case" = "embedded-backing" ] && [ "$found" != 2 ]; then
+    echo "   FAIL: embedded-backing runs both exporters, found $found"
+    return 1
+  fi
+  if [ "$found" -gt 0 ]; then
+    code="$(docker run --rm --network monitoring curlimages/curl:8.11.1 -s -o /dev/null -m 5 -w '%{http_code}' "http://${release}_elasticsearch:9200/" 2>/dev/null || true)"
+    if [ "$code" != "000" ]; then
+      echo "   FAIL: the embedded Elasticsearch answered HTTP $code on the monitoring overlay; it has security off and must not be there"
+      return 1
+    fi
+    echo "   ok: the embedded Elasticsearch is not reachable from the monitoring overlay"
+  fi
+}
 
 # The chart-managed internal overlay is attachable; find its Swarm-qualified name (<release>_<net>).
 net="$(docker network ls --filter "name=${release}" --format '{{.Name}}' 2>/dev/null | grep -m1 internal || true)"
@@ -49,7 +92,8 @@ if docker run --rm --network "$net" --entrypoint sh -e TARGET="$target" curlimag
   done
   echo "   (last status: ${code:-000})"; exit 1
 '; then
-  exit 0
+  check_metrics
+  exit $?
 fi
 
 # --- failure diagnostics -------------------------------------------------------------------------

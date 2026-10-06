@@ -105,6 +105,41 @@
         "network": { "type": "string" }
       }
     },
+    "metrics": {
+      "description": "Exporters for the backing services the chart runs, labelled for Docker Swarm service discovery.",
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "network": {
+          "description": "External overlay the exporters share with Prometheus.",
+          "type": "string", "minLength": 1
+        },
+        "memcached": {
+          "type": "object",
+          "properties": {
+            "image": {
+              "type": "object",
+              "properties": {
+                "repository": { "type": "string", "minLength": 1 },
+                "tag": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        },
+        "elasticsearch": {
+          "type": "object",
+          "properties": {
+            "image": {
+              "type": "object",
+              "properties": {
+                "repository": { "type": "string", "minLength": 1 },
+                "tag": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        }
+      }
+    },
     "extraNetworks": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 }
