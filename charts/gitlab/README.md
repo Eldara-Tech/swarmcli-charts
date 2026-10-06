@@ -80,8 +80,9 @@ references, whatever its name. A default install needs:
     networks: [traefik-public]
 ```
 
-`auth.rootPassword.enabled` adds `gitlab_root_password` to `secrets`, and SMTP with an
-`smtp.authentication` other than `none` adds `gitlab_smtp_password`. Each entry is the name
+`auth.rootPassword.enabled` adds `gitlab_root_password` to `secrets`, SMTP with an
+`smtp.authentication` other than `none` adds `gitlab_smtp_password`, and `metrics.enabled`
+adds `monitoring` to `networks`. Each entry is the name
 itself, so an override in values needs the same change here. See
 [`allow`](https://github.com/Eldara-Tech/swarmcli-cd/blob/main/docs/configuration.md#allow-optional) in the swarmcli-cd docs.
 
@@ -196,6 +197,37 @@ in Swarm**: docker/cli lists it as unsupported and `docker stack deploy` drops i
 (GitLab's own Swarm example has this bug). The chart mounts a sized tmpfs instead, in the one
 form the swarm converter honours — long syntax with the size in bytes.
 
+## Metrics
+
+`metrics.enabled` turns on GitLab's
+[dedicated web metrics server](https://docs.gitlab.com/administration/monitoring/prometheus/web_exporter/),
+a process Puma starts beside itself that serves the same Rails metrics as `/-/metrics`
+(`http_requests_total`, `ruby_*`, `puma_*`, …). The chart binds it on `metrics.port`
+(8083), gives the service the deploy labels `prometheus.io/scrape=true` and
+`prometheus.io/port`, and attaches it to the `monitoring` overlay, which is where the
+prometheus-stack chart scrapes by default — so Prometheus finds GitLab by itself, with no
+scrape config.
+
+```bash
+swarmcli charts upgrade gitlab swarmcli-charts/gitlab --reuse-values --set metrics.enabled=true
+```
+
+This changes `GITLAB_OMNIBUS_CONFIG`, so GitLab restarts and reconfigures once. The
+server costs one extra Ruby process, and it answers nothing but `/metrics`, without
+authentication. `/-/metrics` itself keeps GitLab's loopback-only IP allow-list: the chart
+does not widen `monitoring_whitelist`, and GitLab's bundled Prometheus stays off.
+
+- **Everything on `monitoring` can reach every port of the GitLab service**, not just the
+  metrics port: GitLab itself over plain HTTP on `service.port`, behind its own login,
+  and sshd on 22. Attach only services you trust to that overlay.
+- **Every deploy label of the service becomes readable** through Prometheus's targets API.
+  The render fails if `labels` carries a Traefik `basicauth.users` hash while metrics are
+  on.
+- **Web metrics only.** Sidekiq (8082), Workhorse (9229) and Gitaly (9236) keep their
+  exporters on loopback: Swarm service discovery scrapes one port per service, and
+  GitLab is one service. Background-job and Git metrics are a follow-up.
+- **swarmcli-cd** needs `monitoring` in `allow.networks`.
+
 ## Values
 
 | Key | Default | Description |
@@ -237,6 +269,9 @@ form the swarm converter honours — long syntax with the size in bytes.
 | `smtp.starttlsAuto` | `true` | STARTTLS when the server offers it |
 | `smtp.opensslVerifyMode` | `peer` | Certificate verification mode |
 | `smtp.from` / `.displayName` / `.replyTo` | `""` | E-mail identity |
+| `metrics.enabled` | `false` | The web metrics server, labelled for Prometheus service discovery. See *Metrics* |
+| `metrics.port` | `8083` | Its container port (never published) |
+| `metrics.network` | `monitoring` | Overlay GitLab shares with Prometheus (auto-created) |
 | `config.extraRb` | `""` | Extra omnibus Ruby, appended last (escape `$` as `$$`) |
 | `extraEnv` | `{}` | Extra container environment variables |
 | `placement.constraints` | `[]` | EXTRA constraints; the data pin is added automatically |

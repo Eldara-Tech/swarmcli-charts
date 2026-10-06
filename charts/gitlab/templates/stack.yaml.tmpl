@@ -25,6 +25,18 @@
 {{- if and .Values.smtp.enabled (not .Values.smtp.address) -}}
 {{- fail "smtp.address is required when smtp.enabled is true." -}}
 {{- end -}}
+{{- if .Values.metrics.enabled -}}
+{{- if has (int .Values.metrics.port) (list (int .Values.service.port) 22) -}}
+{{- fail "metrics.port must differ from service.port and from 22: the metrics server is a listener of its own inside the container." -}}
+{{- end -}}
+{{- /* Once a service opts in to discovery, every one of its deploy labels is readable
+       through Prometheus's targets API, so a basic-auth hash in `labels` would leak. */}}
+{{- range $key, $val := .Values.labels -}}
+{{- if regexMatch "(?i)basicauth\\.users" $key -}}
+{{- fail (printf "labels.%s carries a basic-auth hash, and with metrics.enabled every deploy label is readable through Prometheus's targets API. Use basicauth.usersfile with a mounted secret instead." $key) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 version: "3.9"
 
 {{- /* Exposure mode drives networks, ports, labels and the public scheme. GitLab never
@@ -43,6 +55,8 @@ version: "3.9"
        is driven by EITHER the HTTP exposure mode or the SSH mode. */}}
 {{- $nets := list }}
 {{- if or $proxied $sshTraefik }}{{ $nets = append $nets .Values.exposure.network }}{{- end }}
+{{- if .Values.metrics.enabled }}{{ $nets = append $nets .Values.metrics.network }}{{- end }}
+{{- $nets = $nets | uniq }}
 {{- /* An SMTP relay configured with authentication: none needs no password secret. */}}
 {{- $smtpAuth := and .Values.smtp.enabled (ne .Values.smtp.authentication "none") }}
 {{- $secrets := list }}
@@ -121,6 +135,15 @@ version: "3.9"
 {{- with .Values.smtp.replyTo }}
 {{- $rb = append $rb (printf "gitlab_rails['gitlab_email_reply_to'] = %q" .) }}
 {{- end }}
+{{- end }}
+{{- if .Values.metrics.enabled }}
+{{- /* The dedicated metrics server, not /-/metrics: it serves the same data with no IP
+       allow-list to widen (monitoring_whitelist stays loopback-only) and answers nothing
+       but /metrics. It must bind the container's interfaces to be scraped over the overlay. */}}
+{{- $rb = append $rb "# --- metrics: the web metrics server, for Swarm service discovery ---" }}
+{{- $rb = append $rb "puma['exporter_enabled'] = true" }}
+{{- $rb = append $rb (printf "puma['exporter_address'] = %q" "0.0.0.0") }}
+{{- $rb = append $rb (printf "puma['exporter_port'] = %v" .Values.metrics.port) }}
 {{- end }}
 {{- with .Values.config.extraRb }}
 {{- $rb = append $rb "# --- config.extraRb ---" }}
@@ -261,7 +284,7 @@ services:
 {{- end }}
       restart_policy:
         condition: any
-{{- if or (eq $mode "traefik") $sshTraefik .Values.labels }}
+{{- if or (eq $mode "traefik") $sshTraefik .Values.labels .Values.metrics.enabled }}
       labels:
 {{- if or (eq $mode "traefik") $sshTraefik }}
         - "traefik.enable=true"
@@ -290,6 +313,12 @@ services:
         - "traefik.tcp.routers.{{ $router }}-ssh.rule=HostSNI(`*`)"
         - "traefik.tcp.routers.{{ $router }}-ssh.entrypoints={{ .Values.ssh.entrypoint }}"
         - "traefik.tcp.services.{{ $router }}-ssh.loadbalancer.server.port=22"
+{{- end }}
+{{- if .Values.metrics.enabled }}
+        # Docker Swarm service discovery: Prometheus scrapes every task of a service
+        # carrying these. It also reads every OTHER deploy label of this service.
+        - "prometheus.io/scrape=true"
+        - "prometheus.io/port={{ .Values.metrics.port }}"
 {{- end }}
 {{- range $key, $val := .Values.labels }}
         - "{{ $key }}={{ $val }}"

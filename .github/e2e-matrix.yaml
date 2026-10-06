@@ -136,8 +136,10 @@ include:
   # default shape (Traefik labels, SSH TCP router, all three volumes) with BOTH secret-backed
   # settings on and the worker pools trimmed. Converging it proves the whole generated
   # omnibus config parsed and both File.read calls found their mounted secrets — reconfigure
-  # raises otherwise and the task never becomes healthy. Every other fixture is render-only,
-  # and ci/render-check.sh is correspondingly thorough.
+  # raises otherwise and the task never becomes healthy. It also turns metrics on, so
+  # ci/e2e-check.sh scrapes the web metrics server from the monitoring overlay in the same
+  # boot rather than in a second 20-minute one. Every other fixture is render-only, and
+  # ci/render-check.sh is correspondingly thorough.
   #
   # 30m, not the 20m every other chart tops out at, and MEASURED rather than guessed. The
   # instrumentation in ci/e2e-setup.sh + ci/e2e-check.sh (pull duration, task age) exists

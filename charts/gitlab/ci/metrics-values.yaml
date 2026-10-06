@@ -1,0 +1,13 @@
+# Metrics in published mode, where GitLab is on no overlay of its own: the metrics overlay
+# must then be its only network. A non-default port proves the scrape label and the
+# exporter follow metrics.port, and `labels` proves user labels still render beside the
+# discovery labels. Render-only: the one GitLab fixture CI boots is `minimal`.
+exposure:
+  mode: published
+ssh:
+  mode: none
+metrics:
+  enabled: true
+  port: 9100
+labels:
+  team: git

@@ -16,7 +16,10 @@
 #      ADVERTISES tracks the port actually routed;
 #   5. persistence toggles the three volumes and the node pin together;
 #   6. /dev/shm is a sized tmpfs expressed the one way Swarm honours;
-#   7. no password is ever in the manifest — only the File.read call that fetches it.
+#   7. no password is ever in the manifest — only the File.read call that fetches it;
+#   9. metrics are opt-in, and when on, the web metrics server binds the overlay on
+#      metrics.port, the service carries exactly that discovery label, and the IP
+#      allow-list of /-/metrics is NOT what was widened.
 set -euo pipefail
 
 out="$1"
@@ -62,8 +65,8 @@ svcport="$(yq -r '[.services.gitlab.deploy.labels // [] | .[] | select(test("tra
 #    carry its port or every clone URL and redirect GitLab emits is unreachable.
 url="$(sed -n 's/^external_url "\(.*\)"$/\1/p' <<<"$generated")"
 case "$case" in
-  published)
-    [ "$url" = "http://gitlab.example.com:8080" ] || note "published: external_url is '$url', expected the published port in it" ;;
+  published|metrics)
+    [ "$url" = "http://gitlab.example.com:8080" ] || note "$case: external_url is '$url', expected the published port in it" ;;
   tls-off)
     [ "$url" = "http://gitlab.example.com" ] || note "tls-off: external_url is '$url', expected an http:// URL" ;;
   minimal)
@@ -75,7 +78,7 @@ esac
 # 4a. exposure.mode: Traefik labels XOR a published HTTP port XOR neither.
 http_ports="$(yq -r '[.services.gitlab.ports // [] | .[] | select(.target == 80)] | length' "$out")"
 case "$case" in
-  published)
+  published|metrics)
     grep -q 'traefik.enable=true' <<<"$labels" && note "published mode rendered Traefik labels"
     [ "$http_ports" = "1" ] || note "published mode did not publish the HTTP port"
     ;;
@@ -109,7 +112,7 @@ case "$case" in
       || note "the published SSH port and gitlab_shell_ssh_port disagree — clone URLs would name an unreachable port"
     grep -q 'traefik.tcp.routers' <<<"$labels" && note "ssh.mode published also rendered a TCP router"
     ;;
-  none)
+  none|metrics)
     [ "$ssh_ports" = "0" ] || note "ssh.mode none published port 22"
     grep -q 'traefik.tcp' <<<"$labels" && note "ssh.mode none rendered TCP router labels"
     [ -z "$advertised" ] || note "ssh.mode none still advertises gitlab_shell_ssh_port=$advertised"
@@ -209,5 +212,38 @@ esac
   || note "no healthcheck start_period — the image's own probe has none and Swarm restart-loops a cold boot"
 [ "$(yq -r '.services.gitlab.stop_grace_period // ""' "$out")" != "" ] \
   || note "no stop_grace_period — Swarm's 10s default SIGKILLs Postgres mid-shutdown"
+
+# 9. Metrics: the web metrics server is the only thing opted in, and only on request.
+case "$case" in minimal) mport=8083 ;; metrics) mport=9100 ;; *) mport="" ;; esac
+nets="$(yq -r '.services.gitlab.networks // [] | .[]' "$out")"
+disc="$(grep -E '^prometheus\.io/' <<<"$labels" | sort | tr '\n' ',' || true)"
+if [ -z "$mport" ]; then
+  [ -z "$disc" ] || note "$case: discovery labels rendered although metrics are off: $disc"
+  grep -Fx monitoring <<<"$nets" >/dev/null && note "$case: joined the metrics overlay although metrics are off"
+  grep -F "puma['exporter" <<<"$generated" >/dev/null && note "$case: the web metrics server is configured although metrics are off"
+else
+  [ "$disc" = "prometheus.io/port=$mport,prometheus.io/scrape=true," ] \
+    || note "$case: discovery labels are '$disc', expected exactly scrape=true and port=$mport"
+  for setting in "puma['exporter_enabled'] = true" "puma['exporter_address'] = \"0.0.0.0\"" "puma['exporter_port'] = $mport"; do
+    grep -Fx "$setting" <<<"$generated" >/dev/null || note "$case: missing metrics setting: $setting"
+  done
+  grep -Fx monitoring <<<"$nets" >/dev/null || note "$case: not attached to the metrics overlay — Prometheus could not reach it"
+  [ "$(yq -r '.networks.monitoring.external // false' "$out")" = "true" ] || note "$case: the metrics overlay is not declared external"
+  [ "$(yq -r "[.services.gitlab.ports // [] | .[] | select(.target == $mport)] | length" "$out")" = "0" ] \
+    || note "$case: the metrics port is published; it has no authentication"
+  # Bundled Prometheus stays off, and /-/metrics keeps its loopback-only allow-list: the
+  # dedicated server is how GitLab is scraped here, not a widened monitoring_whitelist.
+  grep -Fx "prometheus_monitoring['enable'] = false" <<<"$generated" >/dev/null \
+    || note "$case: the bundled Prometheus stack is no longer disabled"
+  grep -F "monitoring_whitelist" <<<"$generated" >/dev/null && note "$case: monitoring_whitelist is set; /-/metrics must stay loopback-only"
+  if [ "$case" = "metrics" ]; then
+    [ "$nets" = "monitoring" ] || note "$case: published mode should be on the metrics overlay alone, got: $(tr '\n' ' ' <<<"$nets")"
+    grep -Fx 'team=git' <<<"$labels" >/dev/null || note "$case: the fixture's labels did not render beside the discovery labels"
+  else
+    grep -Fx traefik-public <<<"$nets" >/dev/null || note "$case: lost the ingress overlay when joining the metrics overlay"
+    grep -Fx 'traefik.swarm.network=traefik-public' <<<"$labels" >/dev/null \
+      || note "$case: Traefik is not pinned to the ingress overlay — with two networks it could pick the metrics one"
+  fi
+fi
 
 exit "$fail"
