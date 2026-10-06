@@ -244,6 +244,37 @@ command/entrypoint wrapper (`$$` compose-escapes the `$`) so the plaintext never
 lands in the compose file or `docker inspect`. Document the
 `docker secret create` pre-step in the chart README.
 
+**Metrics** — a chart whose software can serve Prometheus metrics offers
+`metrics.enabled` (off by default, and nothing renders while it is off), found by
+Docker Swarm service discovery rather than by a scrape config: the service that
+serves `/metrics` carries the deploy labels `prometheus.io/scrape=true` and
+`prometheus.io/port` (plus `prometheus.io/path` when it is not `/metrics`) and joins
+`metrics.network`, default `monitoring`, the overlay the prometheus-stack chart
+scrapes on. Declare that network `autoCreate: true` in `requirements.yaml`.
+`charts/mariadb-galera` and `charts/mariadb` are the references.
+
+- **Once a service opts in, every one of its deploy labels is readable through
+  Prometheus's targets API.** Never opt in a service whose labels carry credential
+  material — a Traefik basic-auth hash is the common case — and make the render
+  `fail` rather than document it.
+- **Everything on `monitoring` can reach every port of a service on it**, not just
+  the metrics port. When the software serves metrics itself, say in the README what
+  else becomes reachable. A database never joins: add an exporter as a service of
+  its own, on the database's overlay and `metrics.network`, carrying only the two
+  discovery labels and `fail` the render when the two networks are the same.
+- **Turning metrics on must not restart the thing it measures** where avoidable:
+  an exporter is an added service, so the database's spec stays byte-identical.
+- An exporter logs in as a **least-privilege user of its own**, created by a
+  one-shot (`restart_policy: on-failure`) that holds the admin credential and stays
+  off `metrics.network`; its password is an external secret like any other.
+- Pin the exporter image as a concrete `metrics.image.tag` in `values.yaml`, where
+  Renovate's helm-values manager maintains it.
+- Ship a `ci/metrics-values.yaml` fixture, assert the above in `ci/render-check.sh`,
+  and scrape the endpoint from the `monitoring` overlay in `ci/e2e-check.sh`.
+- Alert rules and dashboards are not deployed by the chart: the prometheus-stack
+  chart stays independent of the applications it watches. A chart that ships them
+  puts them under `monitoring/` for operators to load through their own stack.
+
 The bot maintaining the image pins is our own, run from the
 [`renovate`](charts/renovate) chart — see
 [docs/renovate-self-hosting.md](docs/renovate-self-hosting.md) for how it is
