@@ -1,0 +1,6 @@
+# Metrics in the default shape (exposure.mode none): the Loki service carries the two
+# Prometheus discovery labels and stays on `monitoring` ONLY — it is already there, so
+# metrics attach nothing new. ci/e2e-check.sh scrapes /metrics from that overlay, where
+# the prometheus-stack chart would.
+metrics:
+  enabled: true

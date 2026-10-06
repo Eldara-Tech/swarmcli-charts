@@ -3,6 +3,13 @@
 {{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) (contains "/" .Values.persistence.volumeName) -}}
 {{-   fail "persistence.volumeName is a Docker named-volume name and cannot contain '/'. To store Loki's data under a host directory, set persistence.volumePath instead." -}}
 {{- end -}}
+{{- /* Metrics opt a service into Prometheus discovery, and every deploy label of an opted-in
+       service is readable through Prometheus's targets API — in traefik mode that includes
+       the basic-auth hash. Joining an unauthenticated scrape overlay would also hand its
+       members the API the router's basic auth protects. */}}
+{{- if and .Values.metrics.enabled (eq .Values.exposure.mode "traefik") -}}
+{{-   fail "metrics.enabled cannot be combined with exposure.mode=traefik: Loki's labels carry the basic-auth hash, which Prometheus's targets API would expose, and joining the metrics overlay would bypass the router's auth. Scrape https://<ingress.host>/metrics with basic_auth from a prometheus.extraScrapeConfigs entry instead (chart README, Metrics)." -}}
+{{- end -}}
 version: "3.9"
 
 {{- /* Exposure mode drives networks, ports, labels and the public scheme. */}}
@@ -16,6 +23,11 @@ version: "3.9"
 {{- $nets := list }}
 {{- if $proxied }}{{ $nets = append $nets .Values.exposure.network }}{{- end }}
 {{- if .Values.shipper.enabled }}{{ $nets = append $nets "internal" }}{{- end }}
+{{- /* The overlay Prometheus scrapes on. In none mode Loki is usually there already
+       (exposure.network defaults to the same `monitoring`), so it is only added when it
+       is a different network. */}}
+{{- $metricsNet := and .Values.metrics.enabled (not (and $proxied (eq .Values.metrics.network .Values.exposure.network))) }}
+{{- if $metricsNet }}{{ $nets = append $nets .Values.metrics.network }}{{- end }}
 
 {{- /* Where Loki reads its configuration, and what the stack has to mount for it to be
        there. A Swarm SECRET lands under /run/secrets; a Swarm CONFIG goes where we ask. */}}
@@ -130,8 +142,14 @@ services:
 {{- end }}
       restart_policy:
         condition: any
-{{- if or (eq $mode "traefik") .Values.labels }}
+{{- if or (eq $mode "traefik") .Values.labels .Values.metrics.enabled }}
       labels:
+{{- if .Values.metrics.enabled }}
+        # Prometheus discovery (the prometheus-stack chart's swarm-tasks job): /metrics on
+        # the HTTP port.
+        - "prometheus.io/scrape=true"
+        - "prometheus.io/port={{ .Values.service.port }}"
+{{- end }}
 {{- if eq $mode "traefik" }}
         - "traefik.enable=true"
         - "traefik.swarm.network={{ .Values.exposure.network }}"
@@ -264,6 +282,10 @@ volumes:
 networks:
 {{- if $proxied }}
   {{ .Values.exposure.network }}:
+    external: true
+{{- end }}
+{{- if $metricsNet }}
+  {{ .Values.metrics.network }}:
     external: true
 {{- end }}
 {{- if .Values.shipper.enabled }}
