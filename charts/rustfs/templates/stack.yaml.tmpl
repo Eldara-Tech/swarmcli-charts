@@ -1,0 +1,252 @@
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) (contains "/" .Values.persistence.volumeName) -}}
+{{-   fail "persistence.volumeName is a Docker named-volume name and cannot contain '/'. To store data under a host directory, set persistence.volumePath instead." -}}
+{{- end -}}
+{{- if or (not .Values.s3.accessKeySecret) (not .Values.s3.secretKeySecret) -}}
+{{-   fail "s3.accessKeySecret and s3.secretKeySecret are required: without them RustFS falls back to its public default credentials" -}}
+{{- end -}}
+{{- if eq .Values.s3.accessKeySecret .Values.s3.secretKeySecret -}}
+{{-   fail "s3.accessKeySecret and s3.secretKeySecret must name two different secrets" -}}
+{{- end -}}
+{{- /* Bucket names are spliced into the start-up shell, so they are validated here rather
+       than trusted: the S3 naming rules admit nothing a shell would interpret. */}}
+{{- range .Values.buckets }}
+{{-   if not (regexMatch "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" .) }}
+{{-     fail (printf "buckets: %q is not a valid S3 bucket name (3-63 characters of a-z, 0-9, '.' and '-', starting and ending with a letter or digit)" .) }}
+{{-   end }}
+{{- end -}}
+{{- if and (eq .Values.exposure.mode "traefik") (not .Values.ingress.host) -}}
+{{-   fail "ingress.host is required when exposure.mode=traefik" -}}
+{{- end -}}
+{{- if and .Values.console.enabled (eq .Values.exposure.mode "traefik") (not .Values.console.host) -}}
+{{-   fail "console.host is required when console.enabled and exposure.mode=traefik: the console needs a host of its own, since it serves its UI at / of its listener" -}}
+{{- end -}}
+{{- if and .Values.console.enabled (eq (.Values.console.port | int) (.Values.s3.port | int)) -}}
+{{-   fail "console.port must differ from s3.port: RustFS runs the console as a second listener" -}}
+{{- end -}}
+{{- range $k, $v := .Values.extraEnv }}
+{{-   if regexMatch "^RUSTFS_(ACCESS|SECRET)_KEY|^RUSTFS_ROOT_(USER|PASSWORD)|^MINIO_ROOT_" $k }}
+{{-     fail (printf "extraEnv: %s is a credential; it belongs in the Swarm secrets s3.accessKeySecret / s3.secretKeySecret" $k) }}
+{{-   end }}
+{{- end -}}
+version: "3.9"
+
+{{- $mode := .Values.exposure.mode }}
+{{- $router := .Values.traefik.routerName | default .Release.Name }}
+{{- $port := .Values.s3.port | int }}
+{{- $cport := .Values.console.port | int }}
+{{- $console := .Values.console.enabled }}
+{{- $access := .Values.s3.accessKeySecret }}
+{{- $secret := .Values.s3.secretKeySecret }}
+
+{{- $nets := list .Values.network.name }}
+{{- if eq $mode "traefik" }}{{ $nets = append $nets .Values.exposure.network }}{{- end }}
+{{- $nets = $nets | uniq }}
+
+services:
+
+  rustfs:
+    image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
+
+    # The start-up wrapper. `$$` escapes the `$` for compose, so every expansion happens
+    # inside the container and no secret is resolved into the manifest or `docker inspect`.
+    #
+    #  * RustFS reads both keys itself through RUSTFS_ACCESS_KEY_FILE / _SECRET_KEY_FILE.
+    #    Its entrypoint refuses a missing or empty file, but only WARNS about the public
+    #    default `rustfsadmin` and starts anyway, so the wrapper refuses that too.
+    #  * Buckets are created by a background loop over the signed S3 API once the server
+    #    answers. 409 (already exists) counts as done, so a restart is a no-op, and a
+    #    failure is logged rather than taking the server down with it.
+    #  * `exec` hands PID 1 to the image's entrypoint, which execs rustfs, so SIGTERM
+    #    reaches the server itself.
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - >-
+        set -eu;
+        for f in "$$RUSTFS_ACCESS_KEY_FILE" "$$RUSTFS_SECRET_KEY_FILE"; do
+        v="$$(tr -d ' \t\r\n' 2>/dev/null < "$$f" || true)";
+        case "$$v" in ""|rustfsadmin) echo "$$f is missing, empty or the public default rustfsadmin - refusing to start" >&2; exit 1;; esac;
+        done;
+{{- if .Values.buckets }}
+        (
+        key="$$(tr -d '\r\n' < "$$RUSTFS_ACCESS_KEY_FILE")";
+        sec="$$(tr -d '\r\n' < "$$RUSTFS_SECRET_KEY_FILE")";
+        for b in {{ join " " .Values.buckets }}; do
+        n=0; code=000;
+        until [ "$$code" = 200 ] || [ "$$code" = 409 ]; do
+        n=$$((n + 1));
+        if [ "$$n" -gt 150 ]; then echo "bucket $$b: not created after 150 attempts (last HTTP $$code)" >&2; exit 1; fi;
+        sleep 2;
+        code="$$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 --aws-sigv4 "aws:amz:$${RUSTFS_REGION:-us-east-1}:s3" --user "$$key:$$sec" -X PUT "http://127.0.0.1:{{ $port }}/$$b" || true)";
+        done;
+        echo "bucket $$b: ready (HTTP $$code)";
+        done
+        ) &
+{{- end }}
+        exec /entrypoint.sh rustfs
+
+    environment:
+      RUSTFS_ACCESS_KEY_FILE: /run/secrets/{{ $access }}
+      RUSTFS_SECRET_KEY_FILE: /run/secrets/{{ $secret }}
+      RUSTFS_ADDRESS: ":{{ $port }}"
+      RUSTFS_CONSOLE_ENABLE: {{ $console | quote }}
+{{- if $console }}
+      RUSTFS_CONSOLE_ADDRESS: ":{{ $cport }}"
+{{- end }}
+      # Empty sends the server log to stdout (docker service logs) instead of a file
+      # inside the container, the image's default.
+      RUSTFS_OBS_LOG_DIRECTORY: ""
+      # The image is pinned and Renovate moves the pin; no call home for updates.
+      RUSTFS_CHECK_UPDATE: "false"
+{{- if eq $mode "traefik" }}
+      RUSTFS_HTTP1_HEADER_READ_TIMEOUT: {{ .Values.traefik.idleTimeoutSeconds | quote }}
+{{- end }}
+{{- range $k, $v := .Values.extraEnv }}
+      {{ $k }}: {{ $v | quote }}
+{{- end }}
+
+{{- if .Values.healthcheck.enabled }}
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -fsS
+        - -o
+        - /dev/null
+        - http://127.0.0.1:{{ $port }}/health/ready
+      interval: {{ .Values.healthcheck.interval }}
+      timeout: {{ .Values.healthcheck.timeout }}
+      retries: {{ .Values.healthcheck.retries }}
+      start_period: {{ .Values.healthcheck.startPeriod }}
+{{- end }}
+    stop_grace_period: {{ .Values.stopGracePeriod }}
+
+{{- if .Values.nofile }}
+    ulimits:
+      nofile:
+        soft: {{ .Values.nofile }}
+        hard: {{ .Values.nofile }}
+{{- end }}
+
+    secrets:
+      - {{ $access }}
+      - {{ $secret }}
+
+    networks:
+{{- range $nets }}
+      - {{ . }}
+{{- end }}
+
+{{- if eq $mode "published" }}
+    ports:
+      - target: {{ $port }}
+        published: {{ .Values.publish.port }}
+        protocol: tcp
+        mode: {{ .Values.publish.mode }}
+{{- if $console }}
+      - target: {{ $cport }}
+        published: {{ .Values.publish.consolePort }}
+        protocol: tcp
+        mode: {{ .Values.publish.mode }}
+{{- end }}
+{{- end }}
+
+{{- if .Values.persistence.enabled }}
+    volumes:
+      - {{ .Values.persistence.volumePath | default .Values.persistence.volumeName }}:/data
+{{- end }}
+
+    deploy:
+      # One process owns /data: a second task on the same volume would corrupt it, so
+      # there is exactly one replica and an update stops the old task first.
+      replicas: 1
+      update_config:
+        order: stop-first
+{{- if .Values.healthcheck.enabled }}
+        monitor: {{ .Values.healthcheck.monitor }}
+{{- end }}
+{{- $constraints := list }}
+{{- if and .Values.persistence.enabled .Values.persistence.nodeLabel }}
+{{-   $constraints = append $constraints (printf "node.labels.%s == true" .Values.persistence.nodeLabel) }}
+{{- end }}
+{{- range .Values.placement.constraints }}
+{{-   $constraints = append $constraints . }}
+{{- end }}
+{{- if $constraints }}
+      placement:
+        constraints:
+{{- range $constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- $limitMem := .Values.resources.limits.memory }}
+{{- $resMem := .Values.resources.reservations.memory }}
+{{- if or $limitMem $resMem }}
+      resources:
+{{-   with $limitMem }}
+        limits:
+          memory: {{ . | quote }}
+{{-   end }}
+{{-   with $resMem }}
+        reservations:
+          memory: {{ . | quote }}
+{{-   end }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- if or (eq $mode "traefik") .Values.labels }}
+      labels:
+{{- if eq $mode "traefik" }}
+        - "traefik.enable=true"
+        - "traefik.swarm.network={{ .Values.exposure.network }}"
+        - "traefik.constraint-label={{ .Values.traefik.constraintLabel }}"
+        - "traefik.http.routers.{{ $router }}-http.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ $router }}-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
+        - "traefik.http.routers.{{ $router }}-http.service={{ $router }}"
+{{- if .Values.ingress.tls }}
+        - "traefik.http.routers.{{ $router }}-http.middlewares={{ .Values.traefik.redirectMiddleware }}"
+        - "traefik.http.routers.{{ $router }}-https.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ $router }}-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
+        - "traefik.http.routers.{{ $router }}-https.service={{ $router }}"
+        - "traefik.http.routers.{{ $router }}-https.tls=true"
+        - "traefik.http.routers.{{ $router }}-https.tls.certresolver={{ .Values.traefik.certResolver }}"
+{{- end }}
+        - "traefik.http.services.{{ $router }}.loadbalancer.server.port={{ $port }}"
+{{- if $console }}
+        - "traefik.http.routers.{{ $router }}-console-http.rule=Host(`{{ .Values.console.host }}`)"
+        - "traefik.http.routers.{{ $router }}-console-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
+        - "traefik.http.routers.{{ $router }}-console-http.service={{ $router }}-console"
+{{- if .Values.ingress.tls }}
+        - "traefik.http.routers.{{ $router }}-console-http.middlewares={{ .Values.traefik.redirectMiddleware }}"
+        - "traefik.http.routers.{{ $router }}-console-https.rule=Host(`{{ .Values.console.host }}`)"
+        - "traefik.http.routers.{{ $router }}-console-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
+        - "traefik.http.routers.{{ $router }}-console-https.service={{ $router }}-console"
+        - "traefik.http.routers.{{ $router }}-console-https.tls=true"
+        - "traefik.http.routers.{{ $router }}-console-https.tls.certresolver={{ .Values.traefik.certResolver }}"
+{{- end }}
+        - "traefik.http.services.{{ $router }}-console.loadbalancer.server.port={{ $cport }}"
+{{- end }}
+{{- end }}
+{{- range $key, $val := .Values.labels }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+{{- end }}
+
+secrets:
+  {{ $access }}:
+    external: true
+  {{ $secret }}:
+    external: true
+
+networks:
+{{- range $nets }}
+  {{ . }}:
+    external: true
+{{- end }}
+
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) }}
+
+volumes:
+  {{ .Values.persistence.volumeName }}: {}
+{{- end }}

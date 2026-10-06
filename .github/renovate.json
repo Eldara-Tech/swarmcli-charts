@@ -96,6 +96,7 @@
     { "matchFileNames": ["charts/postgres/**"], "semanticCommitScope": "postgres" },
     { "matchFileNames": ["charts/redis/**"], "semanticCommitScope": "redis" },
     { "matchFileNames": ["charts/renovate/**"], "semanticCommitScope": "renovate" },
+    { "matchFileNames": ["charts/rustfs/**"], "semanticCommitScope": "rustfs" },
     { "matchFileNames": ["charts/seaweedfs/**"], "semanticCommitScope": "seaweedfs" },
     { "matchFileNames": ["charts/superset/**"], "semanticCommitScope": "superset" },
     { "matchFileNames": ["charts/swarm-cronjob/**"], "semanticCommitScope": "swarm-cronjob" },

@@ -1,0 +1,9 @@
+# The S3 API and the console published on the routing mesh under different numbers.
+exposure:
+  mode: published
+publish:
+  port: 19000
+  consolePort: 19001
+  mode: ingress
+console:
+  enabled: true

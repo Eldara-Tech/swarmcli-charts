@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string" }
+      },
+      "required": ["repository"]
+    },
+    "s3": {
+      "type": "object",
+      "properties": {
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "accessKeySecret": { "type": "string", "minLength": 1 },
+        "secretKeySecret": { "type": "string", "minLength": 1 }
+      }
+    },
+    "console": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "host": { "type": "string" }
+      }
+    },
+    "buckets": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" },
+      "uniqueItems": true
+    },
+    "persistence": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "volumeName": { "type": "string", "pattern": "^[^/]+$" },
+        "volumePath": { "type": "string" },
+        "nodeLabel": { "type": "string" }
+      }
+    },
+    "placement": {
+      "type": "object",
+      "properties": {
+        "constraints": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "network": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 1 }
+      }
+    },
+    "exposure": {
+      "type": "object",
+      "properties": {
+        "mode": { "type": "string", "enum": ["none", "traefik", "published"] },
+        "network": { "type": "string", "minLength": 1 }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "host": { "type": "string" },
+        "tls": { "type": "boolean" }
+      }
+    },
+    "traefik": {
+      "type": "object",
+      "properties": {
+        "certResolver": { "type": "string" },
+        "routerName": { "type": "string" },
+        "constraintLabel": { "type": "string" },
+        "redirectMiddleware": { "type": "string" },
+        "idleTimeoutSeconds": { "type": "integer", "minimum": 1 },
+        "entrypoints": {
+          "type": "object",
+          "properties": {
+            "http": { "type": "string" },
+            "https": { "type": "string" }
+          }
+        }
+      }
+    },
+    "publish": {
+      "type": "object",
+      "properties": {
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "consolePort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "mode": { "type": "string", "enum": ["ingress", "host"] }
+      }
+    },
+    "nofile": { "type": "integer", "minimum": 0 },
+    "extraEnv": {
+      "type": "object",
+      "additionalProperties": { "type": ["string", "number", "boolean"] }
+    },
+    "healthcheck": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "interval": { "type": "string" },
+        "timeout": { "type": "string" },
+        "retries": { "type": "integer", "minimum": 1 },
+        "startPeriod": { "type": "string" },
+        "monitor": { "type": "string" }
+      }
+    },
+    "stopGracePeriod": { "type": "string" },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "limits": {
+          "type": "object",
+          "properties": { "memory": { "type": "string" } }
+        },
+        "reservations": {
+          "type": "object",
+          "properties": { "memory": { "type": "string" } }
+        }
+      }
+    },
+    "labels": { "type": "object" }
+  }
+}
