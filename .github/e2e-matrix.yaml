@@ -42,8 +42,10 @@ include:
   # bind-mount excluded from CI: MariaDB's healthcheck cannot authenticate on a
   # host bind-mounted datadir in this Swarm CI environment (it works on a named
   # volume, so all other fixtures pass); the host-path render is covered by
-  # charts.yml and the fixture still runs in local `make e2e`.
-  - { chart: mariadb,       cases: "default no-appuser ephemeral published-port",                                     timeout: 6m  }
+  # charts.yml and the fixture still runs in local `make e2e`. `metrics` scrapes the
+  # exporter over the monitoring overlay, which proves the one-shot created a user
+  # whose grants every default collector accepts.
+  - { chart: mariadb,       cases: "default no-appuser ephemeral published-port metrics",                             timeout: 6m  }
   # mariadb-galera: the two fixtures that can converge on ONE node. `default` is the real
   # pinned shape — ci/e2e-setup.sh labels the single node with every peer label so all three
   # peers schedule there, which is not HA but IS a real 3-peer cluster: peers 2 and 3 start

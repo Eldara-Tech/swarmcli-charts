@@ -79,6 +79,26 @@
         "monitor": { "type": "string" }
       }
     },
+    "metrics": {
+      "description": "A mysqld_exporter beside the database, labelled for Docker Swarm service discovery.",
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string", "minLength": 1 }
+          }
+        },
+        "username": { "type": "string", "pattern": "^[A-Za-z0-9_]{1,80}$" },
+        "secretName": { "type": "string", "minLength": 1 },
+        "network": {
+          "description": "External overlay the exporter shares with Prometheus.",
+          "type": "string", "minLength": 1
+        }
+      }
+    },
     "extraArgs": { "type": "array", "items": { "type": "string" } },
     "labels": { "type": "object" }
   }
