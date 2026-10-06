@@ -82,10 +82,11 @@ maxmemoryPolicy: noeviction
 # metrics.network, so its port stays off it.
 #
 # With auth.enabled the exporter logs in as its own ACL user (`username`), which may
-# run INFO, LATENCY LATEST/HISTOGRAM, SLOWLOG LEN, COMMAND INFO and CLIENT SETNAME and
-# nothing else: no key, no CONFIG (CONFIG GET returns requirepass in plain text). The
-# user is defined on the redis-server command line, so TURNING METRICS ON RESTARTS
-# REDIS ONCE — an ephemeral instance (persistence.enabled: false) loses its data.
+# run INFO, LATENCY LATEST/HISTOGRAM, SLOWLOG LEN/GET, COMMAND INFO and CLIENT SETNAME
+# and nothing else: no key, no CONFIG (CONFIG GET returns requirepass in plain text).
+# The user is defined on the redis-server command line, so TURNING METRICS ON (or
+# rotating secretName) RESTARTS REDIS — an ephemeral instance (persistence.enabled:
+# false) loses its data.
 # secretName is an EXTERNAL Swarm secret holding that user's password; it must differ
 # from auth.secretName. Pre-create it with a random one:
 #   openssl rand -base64 32 | docker secret create redis_exporter_password -

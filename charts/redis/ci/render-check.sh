@@ -12,8 +12,10 @@
 #   * The exporter carries exactly the two discovery labels: every deploy label of an
 #     opted-in service is readable through Prometheus's targets API.
 #   * With auth on, the exporter logs in as an ACL user that can read server state and
-#     nothing else. A wider grant (a key pattern, CONFIG — which returns requirepass —,
-#     SLOWLOG GET, a category) works just as well, so only this check would notice.
+#     the slow log and nothing else. A wider grant (a key pattern, CONFIG — which returns
+#     requirepass —, a category) works just as well, so only this check would notice; an
+#     empty-after-trim secret must stop the start, not become an empty password.
+#   * The guards refuse what they promise to (rendered below with $SWARMCLI).
 #   * /scrape?target= is disabled: it would dial any address and send it the
 #     exporter's credentials.
 #
@@ -88,24 +90,48 @@ fi
 
 # ── auth on: the exporter's ACL user ──────────────────────────────────────────────────
 [ "$(q "$e.secrets | join(\" \")")" = "redis_exporter_password" ] || bad "the exporter does not mount exactly its own secret"
-grep -F 'export REDIS_PASSWORD="$$(cat /run/secrets/redis_exporter_password)";' <<<"$ecmd" >/dev/null \
-  || bad "the exporter does not read its password from the mounted secret"
+grep -F "p=\"\$\$(cat /run/secrets/redis_exporter_password)\"; [ -n \"\$\$(printf '%s' \"\$\$p\" | tr -d '[:space:]')\" ] || { echo 'redis_exporter_password secret is empty' >&2; exit 1; }; export REDIS_PASSWORD=\"\$\$p\";" <<<"$ecmd" >/dev/null \
+  || bad "the exporter does not read its password from the mounted secret, refusing an empty one"
 grep -F -- '--redis.user=exporter' <<<"$ecmd" >/dev/null || bad "the exporter does not log in as the exporter user"
 [ "$(q '.services.redis.secrets | join(" ")')" = "redis_password redis_exporter_password" ] \
   || bad "redis does not mount the exporter secret it hashes"
 [ "$(q '.secrets.redis_exporter_password.external')" = "true" ] || bad "redis_exporter_password is not external"
 
-grep -F "h=\"\$\$(printf '%s' \"\$\$(cat /run/secrets/redis_exporter_password)\" | sha256sum | cut -d' ' -f1)\";" <<<"$rcmd" >/dev/null \
+grep -F "e=\"\$\$(cat /run/secrets/redis_exporter_password)\"; [ -n \"\$\$(printf '%s' \"\$\$e\" | tr -d '[:space:]')\" ] || { echo 'redis_exporter_password secret is empty' >&2; exit 1; };" <<<"$rcmd" >/dev/null \
+  || bad "an empty or whitespace-only exporter secret does not stop the start — it would become an empty ACL password"
+grep -F "h=\"\$\$(printf '%s' \"\$\$e\" | sha256sum | cut -d' ' -f1)\";" <<<"$rcmd" >/dev/null \
   || bad "the ACL password hash is not computed from the mounted secret as the exporter reads it"
-grep -F 'test -s /run/secrets/redis_exporter_password ||' <<<"$rcmd" >/dev/null \
-  || bad "an empty exporter secret does not stop the start"
 # The user, its hashed password and the exact grant, in order: `on`, `#<hash>` quoted so
 # the shell does not read it as a comment, everything revoked, then server-state reads.
-want="--user 'exporter' on \"#\$\$h\" -@all '+client|setname' '+info' '+latency|latest' '+latency|histogram' '+slowlog|len' '+command|info'"
+want="--user 'exporter' on \"#\$\$h\" -@all '+client|setname' '+info' '+latency|latest' '+latency|histogram' '+slowlog|len' '+slowlog|get' '+command|info'"
 user_part="$(sed -n "s/.*\(--user .*\)$/\1/p" <<<"$rcmd")"
 [ "$user_part" = "$want" ] || bad "the exporter's ACL user is not exactly: $want (got: ${user_part:-<none>})"
 # The --user directive must come after `exec … redis-server`, i.e. be a redis-server argument.
 grep -E 'exec docker-entrypoint\.sh redis-server .* --user ' <<<"$rcmd" >/dev/null \
   || bad "--user is not passed to redis-server"
+
+# ── the refusals, rendered from this chart with SWARMCLI (test-charts.sh sets it) ─────
+chart="$(cd "$(dirname "$0")/.." && pwd)"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+render() { "${SWARMCLI:?render-check needs SWARMCLI to test the refusals}" charts template r "$chart" -f "$chart/ci/metrics-values.yaml" "$@"; }
+refused() {
+  local want="$1"; shift
+  if render "$@" >/dev/null 2>"$tmp/err"; then
+    bad "rendered with $* — it must be refused"
+  elif ! grep -F -- "$want" "$tmp/err" >/dev/null; then
+    bad "$* failed, but not with \"$want\": $(tail -1 "$tmp/err")"
+  fi
+}
+render >/dev/null 2>"$tmp/err" || bad "the metrics fixture itself does not render: $(tail -1 "$tmp/err")"
+refused "/metrics/username" --set metrics.username=default
+refused "/metrics/username" --set 'metrics.username=a b'
+refused "metrics.secretName must differ from auth.secretName" --set metrics.secretName=redis_password
+refused "metrics.network must differ from network.name" --set metrics.network=redis-net
+refused "refuses to start with both command-line users and an aclfile" --set 'extraConfig[0]=--aclfile /etc/redis/users.acl'
+refused "refuses to start with both command-line users and an aclfile" --set 'extraConfig[0]=--save 900 1 --aclfile=/x'
+# Without auth there is no command-line user, so an ACL file is fine.
+render --set auth.enabled=false --set 'extraConfig[0]=--aclfile /x' >/dev/null 2>"$tmp/err" \
+  || bad "an aclfile with auth off is refused, but there is no command-line user to clash with: $(tail -1 "$tmp/err")"
 
 exit "$fail"
