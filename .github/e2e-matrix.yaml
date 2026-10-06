@@ -99,7 +99,9 @@ include:
   # (ci/e2e-setup.sh only creates the secrets) and the smoke check proves nginx -> rails ->
   # a migrated DB via /api/v1/getting_started. The ES heap is trimmed in the fixture. Metrics
   # are on in it too, so the check also scrapes the memcached and Elasticsearch exporters from
-  # the monitoring overlay and proves Elasticsearch itself is not reachable there. The
+  # the monitoring overlay and proves Elasticsearch itself is not reachable there. That is why
+  # zammad has no `metrics` fixture: this is the only one CI can converge, and a second whole
+  # stack is not worth its 15-20 minutes; `default` keeps the metrics-off render covered. The
   # other fixtures (external backing, exposure/ES variants, host-path, backup, the pre-18
   # embedded PostgreSQL) are render-only here — covered by charts.yml, and still run in
   # local `make e2e`.

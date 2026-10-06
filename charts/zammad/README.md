@@ -146,8 +146,13 @@ Each carries the deploy labels `prometheus.io/scrape=true` and `prometheus.io/po
 finds both by itself, with no scrape config.
 
 ```bash
-swarmcli charts upgrade zammad swarmcli-charts/zammad --reuse-values --set metrics.enabled=true
+swarmcli charts upgrade zammad swarmcli-charts/zammad -f zammad-values.yaml --set metrics.enabled=true
 ```
+
+Pass the values you installed with (`-f`, or the same `--set`s), not `--reuse-values`. That flag
+merges over the previous release's stored values *instead of* this chart version's defaults, so
+every `metrics.*` key would render empty
+([swarmcli#687](https://github.com/Eldara-Tech/swarmcli/issues/687)).
 
 No secret is needed, and turning it on adds services only: no Zammad role or backing service
 restarts. With an external memcached and an external or disabled Elasticsearch there is nothing to
@@ -155,14 +160,21 @@ export, and the render fails rather than doing nothing.
 
 - **Only the exporters join `monitoring`.** memcached and Elasticsearch stay on the internal
   overlay. That matters for Elasticsearch: the embedded node runs with security off, so anything
-  that reached it could read and write every ticket. Both exporters do take a target from anything
-  on `monitoring` (`/scrape?target=` and `/probe?target=`), but hold no credentials to hand over.
+  that reached it could read and write every ticket.
+- **What the exporters serve to `monitoring`**, unauthenticated: `/metrics`, and a scrape of any
+  target the caller names (`/scrape?target=` on memcached-exporter, `/probe?target=` on
+  elasticsearch-exporter), with no credentials to hand over. elasticsearch-exporter also serves Go's
+  `/debug/pprof/` (it links `net/http/pprof` into its default handler): profiles, goroutine dumps,
+  and CPU-costly traces on demand. memcached-exporter does not.
 - **PostgreSQL and Redis** get no exporter here. The embedded ones are for evaluation, and the
   embedded PostgreSQL's only credential is its superuser, which no exporter should hold. In
   production run them as the [postgres](../postgres) and [redis](../redis) charts and monitor
   them there.
 - **An external Elasticsearch** is monitored where it runs; the chart neither runs it nor holds
   credentials to read its stats.
+- `metrics.network` must be an overlay of its own: the render fails when it shares a name with
+  `exposure.network`, `database.network`, `redis.network`, `elasticsearch.network`,
+  `extraNetworks` or `internalNetwork`.
 - **Turning it off** leaves the exporter services running, because swarmcli deploys without
   `--prune`. Remove them yourself:
   `docker service rm <release>_memcached-exporter <release>_elasticsearch-exporter`.

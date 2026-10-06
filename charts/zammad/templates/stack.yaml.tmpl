@@ -69,6 +69,16 @@
 {{- if and .Values.metrics.enabled (not $memMetrics) (not $esMetrics) }}
 {{-   fail "metrics.enabled has nothing to export: Zammad serves no Prometheus metrics itself, and the chart exports only the memcached and Elasticsearch it runs — here memcache.servers points at an external memcached and elasticsearch.mode is not embedded. Monitor those where they run." }}
 {{- end }}
+{{- /* The metrics overlay is an overlay of its own. requirements.yaml declares every network name
+       below autoCreate:false and the metrics one autoCreate:true, and swarmcli takes the FIRST entry
+       with a matching name — so a shared name would quietly flip one of them. Checked against every
+       declared name, whatever the modes, for the same reason. */ -}}
+{{- if .Values.metrics.enabled }}
+{{-   $declared := concat (list .Values.exposure.network .Values.database.network .Values.redis.network .Values.elasticsearch.network) .Values.extraNetworks }}
+{{-   if has .Values.metrics.network $declared }}
+{{-     fail (printf "metrics.network (%q) is also one of the chart's other overlays (exposure.network / database.network / redis.network / elasticsearch.network / extraNetworks). Give the exporters an overlay of their own: Prometheus joins it, and the default is monitoring." .Values.metrics.network) }}
+{{-   end }}
+{{- end }}
 
 {{- $internal := .Values.internalNetwork }}
 

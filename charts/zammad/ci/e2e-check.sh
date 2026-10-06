@@ -30,41 +30,52 @@ release="$1"
 case="${3:-}"
 target="http://nginx:8080/api/v1/getting_started"
 
-# Scrape every exporter this release runs from the metrics overlay. Each pair is
-# <service>:<port>:<regex a healthy scrape must match>.
+# Metrics are on in `embedded-backing` (both exporters; the fixture CI runs) and in the render-only
+# `metrics-es-external` (memcached's only). There every exporter the fixture implies must exist, opt
+# in and scrape; in every other fixture no service of the release may opt in at all. Neither
+# direction is ever a skip. Each pair is <service>:<port>:<regex a healthy scrape must match>.
 check_metrics() {
-  local found=0 pair svc rest port want m
+  local want="" s short scrape pair svc rest port want_re m code
+  case "$case" in
+    embedded-backing) want="memcached-exporter elasticsearch-exporter" ;;
+    metrics-es-external) want="memcached-exporter" ;;
+  esac
+  for s in $(docker service ls --filter "label=com.docker.stack.namespace=${release}" --format '{{.Name}}'); do
+    short="${s#"${release}"_}"
+    scrape="$(docker service inspect "$s" --format '{{index .Spec.Labels "prometheus.io/scrape"}}')"
+    case " $want " in
+      *" $short "*) [ "$scrape" = "true" ] || { echo "   FAIL: $s does not carry prometheus.io/scrape=true"; return 1; } ;;
+      *) [ -z "$scrape" ] || { echo "   FAIL: $s opts in to scraping, but only the exporters of a metrics fixture may"; return 1; } ;;
+    esac
+  done
+  [ -n "$want" ] || return 0
   for pair in 'memcached-exporter:9150:^memcached_up 1$' \
               'elasticsearch-exporter:9114:^elasticsearch_cluster_health_number_of_nodes\{[^}]*\} 1$'; do
-    svc="${pair%%:*}"; rest="${pair#*:}"; port="${rest%%:*}"; want="${rest#*:}"
-    docker service inspect "${release}_${svc}" >/dev/null 2>&1 || continue
-    found=$((found + 1))
+    svc="${pair%%:*}"; rest="${pair#*:}"; port="${rest%%:*}"; want_re="${rest#*:}"
+    case " $want " in *" $svc "*) ;; *) continue ;; esac
+    docker service inspect "${release}_${svc}" >/dev/null 2>&1 \
+      || { echo "   FAIL: ${release}_${svc} does not exist; metrics are on in $case"; return 1; }
     m=""
     for _ in $(seq 1 20); do
       m="$(docker run --rm --network monitoring curlimages/curl:8.11.1 -sS -m 10 "http://${release}_${svc}:${port}/metrics" 2>&1 || true)"
-      grep -E "$want" <<<"$m" >/dev/null && break
+      grep -E "$want_re" <<<"$m" >/dev/null && break
       sleep 3
     done
-    if ! grep -E "$want" <<<"$m" >/dev/null; then
-      echo "   FAIL: ${release}_${svc} on the monitoring overlay did not report /${want}/. Scrape head and exporter log:"
+    if ! grep -E "$want_re" <<<"$m" >/dev/null; then
+      echo "   FAIL: ${release}_${svc} on the monitoring overlay did not report /${want_re}/. Scrape head and exporter log:"
       sed -n '1,5p' <<<"$m" | sed 's/^/      /'
       docker service logs --tail 10 "${release}_${svc}" 2>&1 | sed 's/^/      /'
       return 1
     fi
-    echo "   ok: ${release}_${svc} scraped on monitoring: $(grep -E "$want" <<<"$m")"
+    echo "   ok: ${release}_${svc} scraped on monitoring: $(grep -E "$want_re" <<<"$m")"
   done
-  if [ "$case" = "embedded-backing" ] && [ "$found" != 2 ]; then
-    echo "   FAIL: embedded-backing runs both exporters, found $found"
+  [ "$case" = "embedded-backing" ] || return 0
+  code="$(docker run --rm --network monitoring curlimages/curl:8.11.1 -s -o /dev/null -m 5 -w '%{http_code}' "http://${release}_elasticsearch:9200/" 2>/dev/null || true)"
+  if [ "$code" != "000" ]; then
+    echo "   FAIL: the embedded Elasticsearch answered HTTP $code on the monitoring overlay; it has security off and must not be there"
     return 1
   fi
-  if [ "$found" -gt 0 ]; then
-    code="$(docker run --rm --network monitoring curlimages/curl:8.11.1 -s -o /dev/null -m 5 -w '%{http_code}' "http://${release}_elasticsearch:9200/" 2>/dev/null || true)"
-    if [ "$code" != "000" ]; then
-      echo "   FAIL: the embedded Elasticsearch answered HTTP $code on the monitoring overlay; it has security off and must not be there"
-      return 1
-    fi
-    echo "   ok: the embedded Elasticsearch is not reachable from the monitoring overlay"
-  fi
+  echo "   ok: the embedded Elasticsearch is not reachable from the monitoring overlay"
 }
 
 # The chart-managed internal overlay is attachable; find its Swarm-qualified name (<release>_<net>).

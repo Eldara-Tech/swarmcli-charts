@@ -274,4 +274,30 @@ else
   esac
 fi
 
+# 8. The metrics refusals, rendered from this chart with SWARMCLI (test-charts.sh sets it) on top
+#    of the fixture that turns metrics on. A guard that stopped firing would otherwise go unnoticed:
+#    nothing else renders the values it exists to refuse.
+if [ "$case" = "embedded-backing" ]; then
+  chart="$(cd "$(dirname "$0")/.." && pwd)"
+  errf="$(mktemp)"
+  refused() {
+    local want="$1"; shift
+    if "${SWARMCLI:?render-check needs SWARMCLI to test the refusals}" charts template ci "$chart" \
+        -f "$chart/ci/embedded-backing-values.yaml" "$@" >/dev/null 2>"$errf"; then
+      note "metrics: rendered with $* — it must be refused"
+    elif ! grep -F "$want" "$errf" >/dev/null; then
+      note "metrics: $* failed, but not with \"$want\": $(tr '\n' ' ' <"$errf" | cut -c1-300)"
+    fi
+  }
+  refused 'metrics.enabled has nothing to export' \
+    --set memcache.servers=mc.internal:11211 --set elasticsearch.mode=disabled
+  refused 'metrics.enabled has nothing to export' \
+    --set memcache.servers=mc.internal:11211 --set elasticsearch.mode=external --set elasticsearch.host=es.internal
+  refused 'collides with an EXTERNAL overlay' --set metrics.network=zammad-internal
+  refused 'metrics.network ("traefik-public") is also one of' --set metrics.network=traefik-public
+  refused 'metrics.network ("postgres-net") is also one of' --set metrics.network=postgres-net
+  refused 'metrics.network ("elasticsearch-net") is also one of' --set metrics.network=elasticsearch-net
+  rm -f "$errf"
+fi
+
 exit "$fail"
