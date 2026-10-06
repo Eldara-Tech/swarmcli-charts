@@ -12,6 +12,10 @@
 #   * Once a service opts in to discovery, every one of its deploy labels is readable
 #     through Prometheus's targets API, so a basic-auth hash must never sit beside the
 #     discovery labels. The render refuses that; the refusals are checked here too.
+#   * With metrics.enabled the insecure API would answer on `monitoring` and hand out every
+#     middleware's basic-auth hashes, so that combination is refused as well.
+#   * Without an asDefault flag every entrypoint is a default one, the metrics entrypoint
+#     included, so a router that names no entrypoint would be served on it too.
 #   * Off by default: no fixture but `metrics` may carry the labels or join monitoring.
 #
 # No check pipes into `grep -q` (scripts/lint.sh enforces it): match with `grep … >/dev/null`
@@ -48,6 +52,7 @@ fi
 if [ "$case" != "metrics" ]; then
   if grep -E '^prometheus\.io/' <<<"$labels" >/dev/null; then bad "case $case: discovery labels rendered although metrics are off"; fi
   if grep -F -- '--metrics.' <<<"$cmd" >/dev/null; then bad "case $case: a metrics flag is rendered although metrics are off"; fi
+  if grep -Fi -- '.asDefault=' <<<"$cmd" >/dev/null; then bad "case $case: an asDefault flag is rendered although metrics are off"; fi
   [ "$nets" = "traefik-public " ] || bad "case $case: networks are '$nets', expected traefik-public alone"
   exit "$fail"
 fi
@@ -60,6 +65,18 @@ grep -Fx -- '--metrics.prometheus.entryPoint=metrics' <<<"$cmd" >/dev/null \
   || bad "metrics are not served on the dedicated 'metrics' entrypoint"
 grep -Fx -- '--api.insecure=false' <<<"$cmd" >/dev/null \
   || bad "the insecure API is on in the metrics fixture; the monitoring overlay would reach it"
+# Routers that name no entrypoint go to the default ones. Every entrypoint but metrics
+# must be flagged asDefault, and metrics must not: an unflagged set makes ALL of them
+# defaults, metrics included.
+eps="$(sed -n 's/^--entrypoints\.\([^.]*\)\.address=.*/\1/p' <<<"$cmd")"
+for ep in $eps; do
+  if [ "$ep" = metrics ]; then
+    if grep -F -- "--entrypoints.metrics.asDefault" <<<"$cmd" >/dev/null; then bad "the metrics entrypoint is flagged asDefault"; fi
+  else
+    grep -Fx -- "--entrypoints.$ep.asDefault=true" <<<"$cmd" >/dev/null \
+      || bad "entrypoint $ep is not flagged asDefault; routers without entrypoints would also be served on metrics"
+  fi
+done
 
 disc="$(grep -E '^prometheus\.io/' <<<"$labels" | sort | tr '\n' ',')"
 [ "$disc" = "prometheus.io/port=$port,prometheus.io/scrape=true," ] \
@@ -109,6 +126,15 @@ cat >"$tmp/extra.yaml" <<'EOF'
 extraLabels:
   traefik.http.middlewares.ops.BasicAuth.Users: "ops:$$apr1$$x$$y"
 EOF
+cat >"$tmp/header.yaml" <<'EOF'
+extraLabels:
+  traefik.http.middlewares.up.headers.customRequestHeaders.Authorization: "Bearer x"
+EOF
+cat >"$tmp/insecure.yaml" <<'EOF'
+traefik:
+  dashboard:
+    insecure: true
+EOF
 cat >"$tmp/off.yaml" <<'EOF'
 metrics:
   enabled: false
@@ -117,10 +143,30 @@ traefik:
     basicAuthSecret: ""
     basicAuthUsers: "admin:$$apr1$$x$$y"
 EOF
+cat >"$tmp/usersfile.yaml" <<'EOF'
+extraLabels:
+  traefik.http.middlewares.ops.basicAuth.usersFile: /config/ops-users
+EOF
+cat >"$tmp/extra-ep.yaml" <<'EOF'
+traefik:
+  extraEntrypoints:
+    - name: gitlab-ssh
+      address: ":2222"
+EOF
 refused 'set traefik.dashboard.basicAuthSecret instead' -f "$tmp/users.yaml"
 refused 'are alternatives' -f "$tmp/both.yaml"
-refused 'carries password hashes' -f "$tmp/extra.yaml"
+refused '"traefik.http.middlewares.ops.BasicAuth.Users" carries credentials' -f "$tmp/extra.yaml"
+refused 'customRequestHeaders.Authorization" carries credentials' -f "$tmp/header.yaml"
+refused 'Turn traefik.dashboard.insecure off' -f "$tmp/insecure.yaml"
 render -f "$tmp/off.yaml" >/dev/null 2>"$tmp/err" \
   || bad "basicAuthUsers without metrics was refused; it must keep working: $(cat "$tmp/err")"
+render -f "$tmp/usersfile.yaml" >/dev/null 2>"$tmp/err" \
+  || bad "a basicauth.usersfile label was refused with metrics on; it is the alternative the refusal recommends: $(cat "$tmp/err")"
+if render -f "$tmp/extra-ep.yaml" >"$tmp/ep.yaml" 2>"$tmp/err"; then
+  grep -F -- '--entrypoints.gitlab-ssh.asDefault=true' "$tmp/ep.yaml" >/dev/null \
+    || bad "an extra entrypoint is not flagged asDefault with metrics on; it would stop being a default"
+else
+  bad "metrics with an extra entrypoint was refused: $(cat "$tmp/err")"
+fi
 
 exit "$fail"

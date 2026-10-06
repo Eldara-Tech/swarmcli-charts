@@ -12,9 +12,15 @@
 {{- if and $dash.enabled $dash.basicAuthUsers -}}
 {{- fail "metrics.enabled exposes every deploy label of the traefik service through Prometheus's targets API, and traefik.dashboard.basicAuthUsers puts the dashboard's password hash in one. Move the users into an external Swarm secret and set traefik.dashboard.basicAuthSecret instead." -}}
 {{- end -}}
+{{- /* The insecure API answers on every network the task is on, and its /api/rawdata
+       and /api/http/middlewares return each middleware's configuration, basic-auth
+       users and their hashes included, for every routed stack. */ -}}
+{{- if and $dash.enabled $dash.insecure -}}
+{{- fail "metrics.enabled joins the monitoring overlay, and traefik.dashboard.insecure serves the unauthenticated API on :8080 there: its /api/rawdata and /api/http/middlewares return every basic-auth middleware's users and hashes, for every stack Traefik routes. Turn traefik.dashboard.insecure off; the dashboard stays on its authenticated router." -}}
+{{- end -}}
 {{- range $key, $val := .Values.extraLabels -}}
-{{- if or (contains "basicauth.users" (lower $key)) (contains "digestauth.users" (lower $key)) -}}
-{{- fail (printf "metrics.enabled exposes every deploy label of the traefik service through Prometheus's targets API, and extraLabels %q carries password hashes. Define that middleware in a file-provider config (configs) instead." $key) -}}
+{{- if regexMatch "(?i)((basic|digest)auth\\.users|customrequestheaders\\.authorization)$" $key -}}
+{{- fail (printf "metrics.enabled exposes every deploy label of the traefik service through Prometheus's targets API, and extraLabels %q carries credentials. Point the middleware's usersfile at a file Traefik reads (one mounted through configs), define it in a file-provider config instead, or leave metrics off." $key) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -167,6 +173,14 @@ services:
       - --entrypoints.metrics.address=:{{ .Values.metrics.port }}
       - --metrics.prometheus=true
       - --metrics.prometheus.entryPoint=metrics
+      # A router that names no entrypoint is served on every default one, and with
+      # none flagged every entrypoint is a default. Flagging all the others keeps that
+      # set exactly what it is without metrics, so no router lands on the metrics port.
+      - --entrypoints.http.asDefault=true
+      - --entrypoints.https.asDefault=true
+{{- range .Values.traefik.extraEntrypoints }}
+      - --entrypoints.{{ .name }}.asDefault=true
+{{- end }}
 {{- end }}
 
       # Trusted IPs

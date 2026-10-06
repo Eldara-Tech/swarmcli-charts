@@ -39,6 +39,15 @@ if [ "$up" != 1 ]; then
   exit 1
 fi
 
+# Discovery is opt-in: the `metrics` fixture's service must carry the scrape label, and
+# no other fixture's may.
+scrape="$(docker service inspect "$service" --format '{{index .Spec.Labels "prometheus.io/scrape"}}')"
+if [ "${3:-}" = "metrics" ]; then
+  [ "$scrape" = "true" ] || { echo "  $service lacks prometheus.io/scrape=true in the metrics fixture"; exit 1; }
+else
+  [ -z "$scrape" ] || { echo "  $service carries prometheus.io/scrape=$scrape although metrics are off"; exit 1; }
+fi
+
 # --- routing fixture: prove Traefik actually ROUTES through the edge, and that the
 # constraint-label gate works — the labelled backend is reached (200) while the copy
 # missing ONLY that label is never discovered (404). The backends are stood up by
