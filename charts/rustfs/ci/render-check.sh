@@ -169,7 +169,7 @@ if [ -n "$want" ]; then
     || bad "case $case: buckets are not created against the S3 port $port"
   grep -F -- '--aws-sigv4' <<<"$script" >/dev/null || bad "case $case: bucket creation is not signed — it would be refused"
   grep -F '[ "$$code" = 409 ]' <<<"$script" >/dev/null \
-    || bad "case $case: 409 (bucket exists) is not treated as done — every restart would retry for five minutes"
+    || bad "case $case: 409 (bucket exists) is not treated as done — a server answering it would make every restart retry for five minutes"
   grep -F ') & exec /entrypoint.sh' <<<"$script" >/dev/null \
     || bad "case $case: the bootstrap loop does not run in the background — it would block the server it waits for"
 else

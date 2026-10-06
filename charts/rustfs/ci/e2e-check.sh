@@ -15,10 +15,13 @@
 #   * a SigV4-signed PUT of an object reads back byte-for-byte, and an anonymous GET of
 #     that same object is refused;
 #   * every bucket the fixture lists was created by the chart's bootstrap;
-#   * the console listener exists exactly when console.enabled.
+#   * the console listener exists exactly when console.enabled;
+#   * the raised open-file limit reached the process, and its log reaches `docker service
+#     logs` (both are chart settings a render cannot prove the daemon applied).
 #
 # `buckets` additionally forces a task restart and proves the object survives it and the
-# bootstrap treats the buckets that now exist as done.
+# bootstrap passes again over the buckets that now exist (RustFS answers 200 for a bucket
+# you already own, as S3 does in us-east-1).
 set -euo pipefail
 
 release="$1"
@@ -113,6 +116,15 @@ got="$(code "$base/$bucket/dir/object.txt")"
 [ "$got" = "403" ] || die "anonymous GET of the object returned '$got', expected 403"
 echo "  ok: signed PUT/GET round trip (path-style $base/$bucket/…), anonymous GET refused"
 
+# ── what the chart sets on the process ────────────────────────────────────────────────
+cid="$(docker ps -q -f "label=com.docker.swarm.service.name=$svc" | sed -n 1p)"
+[ -n "$cid" ] || die "no running container of $svc on this node (the e2e swarm is single-node)"
+nofile="$(docker exec "$cid" sh -c 'ulimit -n')"
+[ "$nofile" = "65536" ] || die "the open-file limit inside the task is $nofile, expected the chart's 65536"
+logs="$(docker service logs --raw "$svc" 2>&1 || true)"
+grep -F '"level":' <<<"$logs" >/dev/null || die "no server log line in docker service logs; RustFS is still logging to a file"
+echo "  ok: nofile 65536 inside the task, server log on docker service logs"
+
 # ── the console listener: there exactly when console.enabled ──────────────────────────
 if [ "$case" != "edge" ]; then
   got="$(docker run --rm --network rustfs-net "$CURL_IMAGE" -s -o /dev/null -w '%{http_code}' \
@@ -143,17 +155,20 @@ if [ "$case" = "buckets" ]; then
     sleep 3
   done
   [ "$back" = "$payload" ] || die "after a forced restart the object read back as '${back:-<nothing>}'"
+  # Both tasks' logs are in `docker service logs`: every bucket must be reported ready
+  # twice, once by each, and the second time it already existed.
   logs=""
   for _ in $(seq 1 20); do
     logs="$(docker service logs --raw "$svc" 2>&1 || true)"
-    [ "$(grep -c 'bucket .*: ready (HTTP 409)' <<<"$logs" || true)" -ge 2 ] && break
+    done_all=1
+    for b in $buckets; do
+      [ "$(grep -cE "^bucket $b: ready \(HTTP (200|409)\)$" <<<"$logs" || true)" -ge 2 ] || done_all=""
+    done
+    [ -n "$done_all" ] && break
     sleep 3
   done
-  for b in $buckets; do
-    grep -F "bucket $b: ready (HTTP 409)" <<<"$logs" >/dev/null \
-      || die "after the restart the bootstrap did not report $b as already existing (409)"
-  done
-  echo "  ok: forced restart kept the object; the bootstrap found the buckets already there (409)"
+  [ -n "$done_all" ] || die "after the restart the bootstrap did not report every bucket ready again: $(grep '^bucket ' <<<"$logs" | tr '\n' ';')"
+  echo "  ok: forced restart kept the object; the bootstrap passed again over the existing buckets"
 fi
 
 # ── published: the ports are on the routing mesh ──────────────────────────────────────

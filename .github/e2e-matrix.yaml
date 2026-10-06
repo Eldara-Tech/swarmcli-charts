@@ -134,9 +134,10 @@ include:
   # its public default rustfsadmin pair, so ci/e2e-check.sh proves from a client on the overlay
   # that anonymous, wrong-key and default-pair requests get 403, a signed PUT/GET round-trips and
   # the listed buckets were created. `buckets` forces a restart and proves the object survives
-  # and the bootstrap sees 409; `published` also publishes the console and proves its UI
-  # answers; `edge` does the signed round trip path-style through the traefik chart. traefik
-  # (labels only) and bind-mount are covered by charts.yml and run in a full local `make e2e`.
+  # and the bootstrap passes again over buckets that now exist; `published` also publishes the
+  # console and proves its UI answers; `edge` does the signed round trip path-style through the
+  # traefik chart. traefik (labels only) and bind-mount are covered by charts.yml and run in a
+  # full local `make e2e`.
   - { chart: rustfs,        cases: "default buckets ephemeral published edge",                                       timeout: 6m  }
   # gitlab: ONE fixture. GitLab CE is a multi-gigabyte monolith (Postgres, Redis, Gitaly,
   # Puma, Sidekiq in one container) whose documented baseline is 8 vCPU / 16 GB, so the

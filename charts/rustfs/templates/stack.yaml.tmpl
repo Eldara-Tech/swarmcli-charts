@@ -54,8 +54,9 @@ services:
     #    Its entrypoint refuses a missing or empty file, but only WARNS about the public
     #    default `rustfsadmin` and starts anyway, so the wrapper refuses that too.
     #  * Buckets are created by a background loop over the signed S3 API once the server
-    #    answers. 409 (already exists) counts as done, so a restart is a no-op, and a
-    #    failure is logged rather than taking the server down with it.
+    #    answers. RustFS answers an existing bucket with 200, as S3 does in us-east-1, or
+    #    409; both count as done, so a restart is a no-op, and a failure is logged rather
+    #    than taking the server down with it.
     #  * `exec` hands PID 1 to the image's entrypoint, which execs rustfs, so SIGTERM
     #    reaches the server itself.
     entrypoint:

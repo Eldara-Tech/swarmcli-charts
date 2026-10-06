@@ -152,8 +152,9 @@ cache:
 ## Buckets
 
 Each entry in `buckets` is created with a signed S3 `CreateBucket` by a background
-loop in the container, once the server answers. `409` (already exists) counts as
-done, so restarts and upgrades are harmless; a bucket that cannot be created after
+loop in the container, once the server answers. For a bucket that already exists
+RustFS answers `200`, as S3 does in us-east-1, and the loop also accepts `409`, so
+restarts and upgrades are harmless; a bucket that cannot be created after
 five minutes is logged (`docker service logs`) and the server keeps running. Removing
 a name from `buckets` does not delete the bucket. If you set `RUSTFS_REGION` in
 `extraEnv`, the loop signs for that region.
