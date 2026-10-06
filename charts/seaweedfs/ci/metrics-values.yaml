@@ -1,0 +1,6 @@
+# Metrics on: weed's own metrics listener on 0.0.0.0:9327, the two discovery labels and
+# the monitoring overlay, with the chart defaults otherwise (overlay-only, persisted).
+# ci/e2e-check.sh scrapes it from the monitoring overlay, as Prometheus would, and
+# asserts that S3 still refuses anonymous requests there and the internal APIs stay shut.
+metrics:
+  enabled: true

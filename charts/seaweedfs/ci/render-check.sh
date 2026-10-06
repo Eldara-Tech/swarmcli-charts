@@ -119,9 +119,30 @@ case "$case" in
   *)
     [ "$(q "$svc.ports")" = "null" ] || bad "case $case: a port is published although exposure.mode is none"
     if grep -F 'traefik.' <<<"$labels" >/dev/null; then bad "case $case: Traefik labels rendered although exposure.mode is none"; fi
-    [ "$nets" = "seaweedfs-net" ] || bad "case $case: attached to more than network.name: $(tr '\n' ' ' <<<"$nets")"
+    want_nets=seaweedfs-net
+    [ "$case" = "metrics" ] && want_nets="$(printf 'seaweedfs-net\nmonitoring')"
+    [ "$nets" = "$want_nets" ] || bad "case $case: attached to $(tr '\n' ' ' <<<"$nets")instead of $(tr '\n' ' ' <<<"$want_nets")"
     ;;
 esac
+
+# ── metrics: opt-in, never published, one port value drives listener and label ──────
+# A listener left on loopback still renders, labels and deploys cleanly — and every
+# scrape fails. A label naming another port fails the same way.
+if [ "$case" = "metrics" ]; then
+  mport="$(sed -n 's/^-metricsPort=\([0-9]*\)$/\1/p' <<<"$args")"
+  [ "$mport" = "9327" ] || bad "case $case: -metricsPort is '$mport', expected 9327"
+  grep -Fx -- '-metricsIp=0.0.0.0' <<<"$args" >/dev/null \
+    || bad "case $case: -metricsIp=0.0.0.0 is missing — the listener would follow -ip.bind onto loopback, out of Prometheus's reach"
+  grep -Fx 'prometheus.io/scrape=true' <<<"$labels" >/dev/null || bad "case $case: label prometheus.io/scrape=true is missing"
+  grep -Fx "prometheus.io/port=$mport" <<<"$labels" >/dev/null \
+    || bad "case $case: label prometheus.io/port does not name the metrics port $mport (got: $(grep -F prometheus.io/port <<<"$labels" || echo none))"
+  [ "$(q '.networks.monitoring.external')" = "true" ] || bad "case $case: the monitoring overlay is not external — Prometheus in another stack could not reach it"
+  if q "$svc.ports[].target" | grep -Fx "$mport" >/dev/null; then bad "case $case: the metrics port is published; /metrics and /debug/pprof have no authentication"; fi
+else
+  if grep -E -- '^-metrics(Port|Ip)=' <<<"$args" >/dev/null; then bad "case $case: a metrics listener is rendered although metrics.enabled is off"; fi
+  if grep -F 'prometheus.io/' <<<"$labels" >/dev/null; then bad "case $case: discovery labels are rendered although metrics.enabled is off"; fi
+  if grep -Fx monitoring <<<"$nets" >/dev/null; then bad "case $case: attached to the monitoring overlay although metrics.enabled is off"; fi
+fi
 case "$case" in
   traefik)
     grep -Fx 'traefik.http.routers.ci-http.middlewares=https-redirect' <<<"$labels" >/dev/null \

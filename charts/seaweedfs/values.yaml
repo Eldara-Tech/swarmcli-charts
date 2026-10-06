@@ -112,6 +112,29 @@ publish:
 # unauthenticated internal APIs.
 extraArgs: []
 
+# Prometheus metrics, served by weed itself and found by Docker Swarm service
+# discovery. enabled adds `-metricsPort=<port> -metricsIp=0.0.0.0` (one registry for
+# master, volume server, filer and S3 gateway), the deploy labels
+# prometheus.io/scrape=true and prometheus.io/port=<port>, and attaches the service
+# to `network`, the prometheus-stack chart's default scrape overlay — so that chart
+# picks it up with no config. The port is never published.
+#
+# Everything on `network` can then reach the S3 port and its gRPC port too (both
+# authenticated), and the metrics port also serves Go's /debug/pprof/ — see the
+# README's Metrics section. To keep the store off a shared overlay, set network to
+# network.name and attach Prometheus to that overlay instead (prometheus-stack:
+# prometheus.extraNetworks).
+#
+# Turning it on or off changes the service spec, so weed restarts once.
+metrics:
+  enabled: false
+  # Port the metrics listener binds inside the container. 9327 is upstream's Helm
+  # chart default; it must differ from s3.port and from the S3 gRPC port (s3.port + 10000).
+  port: 9327
+  # External overlay the service shares with Prometheus. requirements.yaml declares
+  # it autoCreate:true.
+  network: monitoring
+
 # Probes the S3 gateway's /healthz on 127.0.0.1 with the image's curl.
 healthcheck:
   enabled: true

@@ -112,23 +112,54 @@ echo "  ok: signed PUT/GET round trip (path-style $base/$bucket/…), anonymous 
 
 # ── nothing but S3 is reachable from the overlay ──────────────────────────────────────
 # Only on the client overlay: the edge fixture's network is traefik-public, where the
-# service is reachable too, but one network proves the bind address.
+# service is reachable too, but one network proves the bind address. With metrics on, the
+# monitoring overlay is checked as well: everything Prometheus shares it with reaches the
+# service there, and must find S3 authenticated and the internal APIs shut.
+probe_nets=seaweedfs-net
+[ "$case" = "metrics" ] && probe_nets="seaweedfs-net monitoring"
 if [ "$case" != "edge" ]; then
-  for p in 9333 8888 8080; do
-    got="$(docker run --rm --network seaweedfs-net "$CURL_IMAGE" -s -o /dev/null -w '%{http_code}' \
-      --max-time 5 "http://${svc}:$p/" 2>/dev/null || true)"
-    [ "$got" = "000" ] || die "port $p (unauthenticated master/filer/volume API) answered HTTP $got from the overlay"
-  done
-  echo "  ok: master/filer/volume ports refuse connections from the overlay"
+  for n in $probe_nets; do
+    got="$(docker run --rm --network "$n" "$CURL_IMAGE" -s -o /dev/null -w '%{http_code}' \
+      --max-time 5 "http://${svc}:8333/" 2>/dev/null || true)"
+    [ "$got" = "403" ] || die "anonymous GET of S3 from $n returned '$got', expected 403"
+    for p in 9333 8888 8080; do
+      got="$(docker run --rm --network "$n" "$CURL_IMAGE" -s -o /dev/null -w '%{http_code}' \
+        --max-time 5 "http://${svc}:$p/" 2>/dev/null || true)"
+      [ "$got" = "000" ] || die "port $p (unauthenticated master/filer/volume API) answered HTTP $got from $n"
+    done
+    echo "  ok: from $n, S3 refuses anonymous requests and the master/filer/volume ports refuse connections"
 
-  out="$(docker run --rm --network seaweedfs-net "$GRPCURL_IMAGE" -plaintext -max-time 10 \
-    -d '{"identity":{"name":"e2e-intruder","credentials":[{"accessKey":"intruderkey","secretKey":"intrudersecret"}],"actions":["Admin"]}}' \
-    "${svc}:18333" messaging_pb.SeaweedS3IamCache/PutIdentity 2>&1 || true)"
-  grep -F 'Unauthenticated' <<<"$out" >/dev/null \
-    || die "the S3 gRPC port did not refuse an unsigned PutIdentity: $out"
+    out="$(docker run --rm --network "$n" "$GRPCURL_IMAGE" -plaintext -max-time 10 \
+      -d '{"identity":{"name":"e2e-intruder","credentials":[{"accessKey":"intruderkey","secretKey":"intrudersecret"}],"actions":["Admin"]}}' \
+      "${svc}:18333" messaging_pb.SeaweedS3IamCache/PutIdentity 2>&1 || true)"
+    grep -F 'Unauthenticated' <<<"$out" >/dev/null \
+      || die "the S3 gRPC port did not refuse an unsigned PutIdentity from $n: $out"
+  done
   got="$(code --aws-sigv4 "$SIG" --user "intruderkey:intrudersecret" "$base/")"
   [ "$got" = "403" ] || die "the injected identity was accepted (HTTP $got)"
   echo "  ok: gRPC PutIdentity without the signing key refused, and the identity does not work"
+fi
+
+# ── metrics: scraped where Prometheus would scrape it ─────────────────────────────────
+# From the monitoring overlay, on the port the discovery label names. A listener left on
+# loopback, or a label naming another port, converges just as healthily and is only
+# caught here. The S3 round trip above has run, so the gateway's request counter must
+# already carry it — proof the registry is the live process's, not an empty one.
+metrics_ok=""
+if [ "$case" = "metrics" ]; then
+  mport="$(docker service inspect "$svc" --format '{{index .Spec.Labels "prometheus.io/port"}}')"
+  [ -n "$mport" ] || die "the service carries no prometheus.io/port deploy label"
+  m=""
+  for _ in $(seq 1 15); do
+    m="$(docker run --rm --network monitoring "$CURL_IMAGE" -sSf --max-time 10 "http://${svc}:${mport}/metrics" 2>&1 || true)"
+    grep -E '^SeaweedFS_s3_request_total\{' <<<"$m" >/dev/null && break
+    sleep 2
+  done
+  grep -E '^SeaweedFS_s3_request_total\{' <<<"$m" >/dev/null \
+    || die "no SeaweedFS_s3_request_total series on http://${svc}:${mport}/metrics from monitoring (got: $(sed -n 1,3p <<<"$m"))"
+  n_series="$(grep -cE '^SeaweedFS_' <<<"$m" || true)"
+  echo "  ok: /metrics on monitoring:${mport} serves ${n_series} SeaweedFS_ samples, S3 requests counted"
+  metrics_ok=", metrics scraped on monitoring"
 fi
 
 # ── restart: data persists, bootstrap is idempotent ───────────────────────────────────
@@ -165,4 +196,4 @@ if [ "$case" = "published" ]; then
   echo "  ok: S3 published on the routing mesh as 18333"
 fi
 
-echo "  seaweedfs [$case]: all checks passed"
+echo "  seaweedfs [$case]: all checks passed${metrics_ok}"

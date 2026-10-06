@@ -118,6 +118,48 @@ exists) counts as done, so restarts and upgrades are harmless; a bucket that
 cannot be created after five minutes is logged (`docker service logs`) and the
 server keeps running. Removing a name from `buckets` does not delete the bucket.
 
+## Metrics
+
+SeaweedFS serves its own Prometheus metrics. `metrics.enabled` turns the listener
+on — one registry for the master, volume server, filer and S3 gateway in the
+process — labels the service `prometheus.io/scrape=true` and
+`prometheus.io/port=9327`, and attaches it to the `monitoring` overlay, which is
+where the [prometheus-stack chart](../prometheus-stack) scrapes by default. So
+Prometheus finds it by itself, with no scrape config; any Prometheus using Docker
+Swarm service discovery on those labels works the same way.
+
+```bash
+swarmcli charts upgrade s3 swarmcli-charts/seaweedfs --reuse-values --set metrics.enabled=true
+```
+
+You get the `SeaweedFS_*` series: S3 requests by type, status code and bucket
+(`SeaweedFS_s3_request_total`, `SeaweedFS_s3_request_seconds`), volume server and
+filer request rates and latencies and disk usage, plus the Go runtime and process
+series. Turning it on or off changes the service spec, so weed restarts once.
+
+**What `monitoring` can reach.** The listener binds every interface, and Swarm
+overlays do not filter ports, so everything attached to `monitoring` reaches:
+
+- port 9327, unauthenticated: `/metrics`, and on the same listener Go's
+  `/debug/pprof/` and `/debug/vars`. weed imports both handlers globally, so they
+  cannot be switched off. They hand out the command line, memory statistics and
+  goroutine dumps, and CPU profiles and execution traces on request, which cost
+  the process CPU while they run. No credentials appear in them: the S3 keys
+  are environment variables, and neither endpoint reads the environment;
+- the S3 port and its gRPC port, exactly as on `seaweedfs-net`: S3 refuses
+  unsigned requests, and the gRPC port refuses identity updates without the
+  per-start signing key;
+- not the master, volume or filer APIs, which stay on 127.0.0.1.
+
+Every deploy label of the service is also readable through Prometheus's targets
+API once it opts in, so `labels` must not carry credentials; the render fails on a
+basic-auth label while metrics are on. The metrics port is never published.
+
+To keep the store off a shared overlay, set `metrics.network=seaweedfs-net` (the
+service is on it already) and attach Prometheus to that overlay instead, e.g.
+prometheus-stack's `prometheus.extraNetworks`. Prometheus should share exactly one
+overlay with the service, or it scrapes it once per overlay.
+
 ## Persistence & node pinning
 
 Everything lives under `/data` on the `seaweedfs-data` volume, pinned to the node
@@ -155,6 +197,9 @@ processes must never share `/data`.
 | `traefik.redirectMiddleware` | `https-redirect` | HTTP→HTTPS middleware |
 | `publish.port` / `publish.mode` | `8333` / `ingress` | Published port (published mode) |
 | `extraArgs` | `[]` | Extra `weed server` flags |
+| `metrics.enabled` | `false` | Serve Prometheus metrics, labelled for Swarm service discovery. See *Metrics* |
+| `metrics.port` | `9327` | Metrics listen port (never published; must differ from the S3 and gRPC ports) |
+| `metrics.network` | `monitoring` | Overlay shared with Prometheus (external, auto-created) |
 | `healthcheck.*` | enabled, 15s/5s/4, start 30s, monitor 2m | `curl` of `/healthz` on the S3 port |
 | `stopGracePeriod` | `30s` | SIGTERM → SIGKILL window |
 | `resources.limits.memory` / `resources.reservations.memory` | `""` | Optional memory limits |

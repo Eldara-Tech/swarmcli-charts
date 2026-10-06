@@ -82,6 +82,18 @@
       }
     },
     "extraArgs": { "type": "array", "items": { "type": "string" } },
+    "metrics": {
+      "description": "weed's own Prometheus endpoint, labelled for Docker Swarm service discovery.",
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "network": {
+          "description": "External overlay the service shares with Prometheus.",
+          "type": "string", "minLength": 1
+        }
+      }
+    },
     "healthcheck": {
       "type": "object",
       "properties": {
