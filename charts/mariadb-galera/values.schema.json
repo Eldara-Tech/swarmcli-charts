@@ -136,6 +136,26 @@
         }
       }
     },
+    "metrics": {
+      "description": "One mysqld_exporter per peer, labelled for Docker Swarm service discovery.",
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string", "minLength": 1 }
+          }
+        },
+        "username": { "type": "string", "minLength": 1 },
+        "secretName": { "type": "string", "minLength": 1 },
+        "network": {
+          "description": "External overlay the exporters share with Prometheus.",
+          "type": "string", "minLength": 1
+        }
+      }
+    },
     "extraArgs": { "type": "array", "items": { "type": "string" } },
     "labels": { "type": "object" }
   }

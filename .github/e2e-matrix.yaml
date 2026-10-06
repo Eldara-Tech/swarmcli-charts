@@ -53,8 +53,10 @@ include:
   # EXCLUDED: every peer publishes 3306 in host mode and three cannot bind one node's 3306.
   # five-peers, bind-mount, internal-net, force-bootstrap and unpinned are render-only in
   # charts.yml and still run in a local `make e2e` on a multi-node swarm. The 12m budget
-  # covers the image pull plus a bootstrap and two state transfers.
-  - { chart: mariadb-galera, cases: "default ephemeral proxy",                                                         timeout: 25m }
+  # covers the image pull plus a bootstrap and two state transfers. `metrics` scrapes each
+  # exporter over the monitoring overlay, which proves the one-shot created a user whose
+  # grants every default collector accepts — a missing grant fails only its collector.
+  - { chart: mariadb-galera, cases: "default ephemeral proxy metrics",                                                 timeout: 25m }
   # postgres: EVERY fixture (cases: "" => no filter). bind-mount is included, unlike
   # mariadb's: PGDATA sits one level below the mount (/var/lib/postgresql/<major>/docker),
   # so initdb never has to chown or empty the bind-mounted mountpoint itself. legacy-major

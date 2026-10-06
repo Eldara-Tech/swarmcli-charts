@@ -23,6 +23,9 @@ printf 'S3cr3t' | docker secret create mariadb_galera_root_password -
 # The app user's password (auth.appUser.enabled, on by default):
 printf 'S3cr3t' | docker secret create mariadb_galera_password -
 
+# The exporter user's password (metrics.enabled, off by default):
+openssl rand -base64 32 | docker secret create mariadb_galera_exporter_password -
+
 # One node per peer, each labelled for the peer whose volume lives there.
 # The chart pins peer N to node.labels.mariadb-galera-<N>:
 docker node update --label-add mariadb-galera-1=true <node-a>
@@ -133,6 +136,51 @@ the ingress mesh: port 3306 on any node reaches the proxy, which routes to a
 `Synced` peer. The peers then publish nothing, so no external client can bypass
 the proxy's health checks, and `exposure.mode` does not apply.
 
+## Metrics
+
+MariaDB serves no Prometheus metrics of its own, so `metrics.enabled` adds one
+[mysqld_exporter](https://github.com/prometheus/mysqld_exporter) per peer. Each
+carries the deploy labels `prometheus.io/scrape=true` and `prometheus.io/port=9104`
+and joins the `monitoring` overlay, which is where the prometheus-stack chart
+scrapes by default — so Prometheus finds every peer by itself, with no scrape
+config. Any Prometheus using Docker Swarm service discovery on those labels works
+the same way.
+
+```bash
+openssl rand -base64 32 | docker secret create mariadb_galera_exporter_password -
+swarmcli charts upgrade db swarmcli-charts/mariadb-galera --reuse-values --set metrics.enabled=true
+```
+
+Turning it on adds services and changes no peer, so it is safe on a running cluster:
+nothing restarts. The exporters log in as a database user of their own, `exporter`,
+which a one-shot service (`mariadb-galera-exporter-user`) creates as root over the
+overlay and then exits; Galera replicates it to every peer. The user holds `PROCESS,
+REPLICATION CLIENT, SLAVE MONITOR` — what the default collectors need, and no
+`SELECT` on your data.
+
+You get `mysql_up` and every numeric `SHOW GLOBAL STATUS` and `SHOW GLOBAL VARIABLES`
+value, Galera's `mysql_global_status_wsrep_*` included (`wsrep_cluster_size`,
+`wsrep_local_state`, `wsrep_flow_control_paused`, …), so dashboards and alert rules
+written for mysqld_exporter apply as they are. Each exporter is its own service, so
+the `job` label names the peer it watches (`<release>_mariadb-galera-exporter-<N>`),
+and it is pinned beside that peer, so `node` is the peer's node.
+
+That pin is also why the signal to alert on is the cluster's own view: a lost node
+takes the peer and its exporter with it, leaving no target to report `mysql_up 0`,
+while the surviving peers report `mysql_global_status_wsrep_cluster_size` below
+`cluster.peers`.
+
+- **Rotating the password**: create a secret under a new name and point
+  `metrics.secretName` at it. The changed spec runs the one-shot again, which resets
+  the password; a scrape or two may read `mysql_up 0` until it has.
+- **A cluster rebuilt from empty data** loses the user with everything else. Run the
+  one-shot again: `docker service update --force <release>_mariadb-galera-exporter-user`.
+- `metrics.network` names a different overlay. It must differ from `network.name`,
+  and the render fails if it does not: the peers never join it.
+- **Turning it off** leaves the services running, for the same reason as shrinking
+  the cluster (swarmcli deploys without `--prune`). Remove them yourself:
+  `docker service rm <release>_mariadb-galera-exporter-1 … <release>_mariadb-galera-exporter-user`.
+
 ## Values
 
 | Key | Default | Description |
@@ -162,6 +210,12 @@ the proxy's health checks, and `exposure.mode` does not apply.
 | `proxy.replicas` | `2` | Proxy replicas — stateless, so more than one is safe and recommended. |
 | `proxy.checkPort` | `9200` | Port the Synced responder listens on inside each peer; never published. |
 | `proxy.resources.limits.memory` | `""` | Proxy memory limit. Rendered only when set. |
+| `metrics.enabled` | `false` | One mysqld_exporter per peer, labelled for Prometheus service discovery. See *Metrics*. |
+| `metrics.image.repository` | `prom/mysqld-exporter` | Exporter image. |
+| `metrics.image.tag` | pinned in `values.yaml` | Exporter image tag (a concrete pin; Renovate maintains it). |
+| `metrics.username` | `exporter` | Database user the exporters log in as; the chart creates it. |
+| `metrics.secretName` | `mariadb_galera_exporter_password` | External secret holding that user's password. |
+| `metrics.network` | `monitoring` | External overlay the exporters share with Prometheus; no peer joins it. |
 | `exposure.enabled` | `false` | Publish the SQL port on each peer's own node, or on the proxy when `proxy.enabled`. |
 | `exposure.port` | `3306` | Published port. |
 | `exposure.protocol` | `tcp` | Published protocol. |
@@ -192,6 +246,14 @@ is no third secret and no password to leak.
 Replication carries every row written. On a multi-node swarm it crosses the
 overlay between nodes, so encrypt that overlay unless the network between nodes is
 already trusted — see *Prerequisites*.
+
+With `metrics.enabled`, the exporters are the one thing on both the Galera overlay
+and `metrics.network`, so what can reach Prometheus can reach port 9104 and never a
+peer. `/metrics` has no authentication, and mysqld_exporter's `/probe?target=`
+endpoint will log in to any address it is handed with the exporter's credentials, so
+a rogue server on that overlay can capture a login attempt: give the user a long
+random password, as above. The one-shot that creates it holds the root password and
+stays off `metrics.network`.
 
 ## Operating notes
 

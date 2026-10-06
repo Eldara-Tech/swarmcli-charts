@@ -182,6 +182,35 @@ proxy:
     limits:
       memory: ""
 
+# Prometheus metrics: one mysqld_exporter per peer, found by Docker Swarm service
+# discovery. Each exporter carries the deploy labels prometheus.io/scrape=true and
+# prometheus.io/port=9104, and joins metrics.network, the prometheus-stack chart's
+# default scrape overlay — so that chart picks the peers up with no config.
+#
+# Off by default, and nothing below renders while it is off. Turning it on adds
+# services and leaves the peers' own specs untouched, so it never restarts a peer.
+#
+# The exporter logs in as its own least-privilege user (PROCESS, REPLICATION
+# CLIENT, SLAVE MONITOR; no SELECT on your data). A one-shot service creates that
+# user, or resets its password, as root over the overlay, which is why this works
+# on a cluster that already exists. secretName is an EXTERNAL Swarm secret holding
+# its password. Pre-create it with a random one:
+#   openssl rand -base64 32 | docker secret create mariadb_galera_exporter_password -
+# To rotate it, create a secret under a new name and point secretName at it.
+metrics:
+  enabled: false
+  image:
+    repository: prom/mysqld-exporter
+    # A concrete tag, not appVersion: this is a second image, and Renovate's
+    # helm-values manager maintains pins written here.
+    tag: "v0.20.0"
+  username: exporter
+  secretName: mariadb_galera_exporter_password
+  # External overlay the exporters share with Prometheus. Only the exporters join
+  # it, never the peers, so Galera's ports stay off it. requirements.yaml declares
+  # it autoCreate:true.
+  network: monitoring
+
 # Swarm deploy resource limits per peer (optional). Rendered only when
 # limits.memory is set.
 resources:

@@ -25,6 +25,7 @@
 # PREREQUISITES (ci/e2e-setup.sh provisions these):
 #   printf test | docker secret create mariadb_galera_root_password -
 #   printf test | docker secret create mariadb_galera_password -
+#   printf test | docker secret create mariadb_galera_exporter_password -
 #   docker node update --label-add mariadb-galera-<N>=true <node>   (N = 1..5)
 set -euo pipefail
 
@@ -34,9 +35,9 @@ release="$1"
 # this works for the 3- and 5-peer fixtures alike.
 all_svcs="$(docker service ls --filter "label=com.docker.stack.namespace=${release}" --format '{{.Name}}' | sort)"
 [ -n "$all_svcs" ] || { echo "  no services found for stack ${release}"; exit 1; }
-# The proxy is a service in this stack but it is NOT a peer: counting it would make
-# `want` one too many and then try to run SQL inside HAProxy.
-peers="$(printf '%s\n' "$all_svcs" | { grep -vE -- '-proxy$' || true; })"
+# The proxy and the metrics services are in this stack but are NOT peers: counting
+# them would make `want` too large and then try to run SQL inside HAProxy.
+peers="$(printf '%s\n' "$all_svcs" | { grep -E -- '_mariadb-galera-[0-9]+$' || true; })"
 [ -n "$peers" ] || { echo "  no peer services found for stack ${release}"; exit 1; }
 want="$(printf '%s\n' "$peers" | wc -l | tr -d ' ')"
 # The expected size is derived from the stack, so it must be sanity-checked against
@@ -97,6 +98,37 @@ if [ "$got" != "replicated" ]; then
   exit 1
 fi
 
+# With the metrics fixture: every exporter answers on the metrics overlay — where
+# Prometheus would scrape it — logged in as the user the one-shot created (`--wait`
+# only returns once that one-shot completed), sees the whole cluster, and every
+# default collector succeeds. A missing grant shows up only as a collector failing,
+# never as mysql_up 0, which is why the collectors are checked one by one.
+metrics_ok=""
+exporters="$(printf '%s\n' "$all_svcs" | { grep -E -- '-exporter-[0-9]+$' || true; })"
+if [ -n "$exporters" ]; then
+  n_exp="$(printf '%s\n' "$exporters" | wc -l | tr -d ' ')"
+  [ "$n_exp" = "$want" ] || { echo "  $n_exp exporter(s) for $want peers"; exit 1; }
+  for e in $exporters; do
+    m=""
+    for _ in $(seq 1 15); do
+      m="$(docker run --rm --network monitoring curlimages/curl:latest -sSf "http://$e:9104/metrics" 2>&1 || true)"
+      grep -qx 'mysql_up 1' <<<"$m" && break
+      sleep 2
+    done
+    if ! grep -qx 'mysql_up 1' <<<"$m"; then
+      echo "  $e: mysql_up is not 1 on the metrics overlay. Scrape and exporter log:"
+      grep -E '^mysql_up|^curl' <<<"$m" | sed 's/^/    /'
+      docker service logs --tail 5 "$e" 2>&1 | sed 's/^/    /'
+      exit 1
+    fi
+    size="$(sed -n 's/^mysql_global_status_wsrep_cluster_size //p' <<<"$m")"
+    [ "$size" = "$want" ] || { echo "  $e: mysql_global_status_wsrep_cluster_size is '$size', expected $want"; exit 1; }
+    failed="$(grep -E '^mysql_exporter_collector_success\{.*\} 0$' <<<"$m" || true)"
+    [ -z "$failed" ] || { echo "  $e: collectors failing (a missing grant):"; echo "$failed" | sed 's/^/    /'; exit 1; }
+  done
+  metrics_ok=", $n_exp exporters scraped on monitoring"
+fi
+
 # With the proxy fixture, the thing worth proving is not that the cluster formed —
 # the assertions above already did that — but that the CLIENT ENDPOINT keeps
 # working while a peer is gone. That is the claim the proxy exists to make, and it
@@ -125,8 +157,8 @@ if [ -n "$proxy" ]; then
     echo "  $proxy: $fail of $((ok+fail)) queries failed with $victim down — the endpoint did not route around it"
     exit 1
   fi
-  echo "  ${release}: $want peers, all Synced, cross-peer write replicated, endpoint survived losing $victim ($ok/$((ok+fail)) queries OK)"
+  echo "  ${release}: $want peers, all Synced, cross-peer write replicated, endpoint survived losing $victim ($ok/$((ok+fail)) queries OK)$metrics_ok"
   exit 0
 fi
 
-echo "  ${release}: $want peers, all Synced, cross-peer write replicated OK"
+echo "  ${release}: $want peers, all Synced, cross-peer write replicated$metrics_ok OK"

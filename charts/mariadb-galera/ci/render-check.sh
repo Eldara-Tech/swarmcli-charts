@@ -31,7 +31,9 @@ count() { if [ -z "$1" ]; then echo 0; else printf '%s\n' "$1" | wc -l | tr -d '
 want_peers=3
 if [ "$case_name" = "five-peers" ]; then want_peers=5; fi
 
-# The proxy fixtures render one extra service; every other fixture renders peers only.
+# The proxy fixtures render one extra service, and the metrics fixture an exporter
+# per peer plus the one-shot that creates its user; every other fixture renders
+# peers only.
 proxy_svc=""
 all="$(yq -r '.services | keys | .[]' "$f")"
 if [ "$case_name" = "proxy" ] || [ "$case_name" = "proxy-published" ]; then
@@ -40,7 +42,10 @@ if [ "$case_name" = "proxy" ] || [ "$case_name" = "proxy-published" ]; then
 else
   printf '%s\n' "$all" | { grep -qE -- '-proxy$' && err "a proxy service is rendered for case '$case_name'; it must be opt-in" || true; }
 fi
-svcs="$(printf '%s\n' "$all" | { grep -vE -- '-proxy$' || true; })"
+if [ "$case_name" != "metrics" ] && grep -qE -- '-exporter-' <<<"$all"; then
+  err "exporter services are rendered for case '$case_name'; metrics must be opt-in"
+fi
+svcs="$(printf '%s\n' "$all" | { grep -E -- '^mariadb-galera-[0-9]+$' || true; })"
 n_svcs="$(count "$svcs")"
 if [ "$n_svcs" -ne "$want_peers" ]; then
   err "expected $want_peers peer services, rendered $n_svcs: $(echo "$svcs" | tr '\n' ' ')"
@@ -90,7 +95,7 @@ for s in $svcs; do
 done
 
 # Distinct per-peer identity: node labels and volume sources must never repeat.
-labels="$(yq -r '.services.*.deploy.placement.constraints // [] | .[]' "$f" | { grep -E 'node\.labels\.' || true; })"
+labels="$(for s in $svcs; do yq -r ".services.\"$s\".deploy.placement.constraints // [] | .[]" "$f"; done | { grep -E 'node\.labels\.' || true; })"
 n_labels="$(count "$labels")"
 if [ "$n_labels" -gt 0 ]; then
   uniq_labels="$(printf '%s\n' "$labels" | sort -u | wc -l | tr -d ' ')"
@@ -112,7 +117,7 @@ fi
 
 # The client alias: on every peer when there is no proxy, and on the proxy ALONE
 # when there is. Two things answering the same name would defeat the proxy.
-alias_count="$(yq -r '[.services.*.networks.*.aliases // [] | .[] | select(. == "mariadb")] | length' "$f")"
+alias_count="$(yq -r '[.services.*.networks[] | select(tag == "!!map") | .aliases // [] | .[] | select(. == "mariadb")] | length' "$f")"
 if [ -n "$proxy_svc" ]; then
   [ "$alias_count" -eq 1 ] \
     || err "client alias 'mariadb' is on $alias_count services; with the proxy on it belongs to the proxy alone"
@@ -187,6 +192,61 @@ for p in $(yq -r '.services.*.ports // [] | .[] | .published' "$f"); do
     4567|4568|4444) err "Galera port $p is published; replication must stay on the overlay" ;;
   esac
 done
+
+# Metrics: one exporter per peer, watching THAT peer. An exporter pointed at its
+# neighbour renders, scrapes and graphs perfectly well — under the wrong peer's
+# name — so identity is checked per peer, like the gcomm list above.
+if [ "$case_name" = "metrics" ]; then
+  exporters="$(printf '%s\n' "$all" | { grep -E -- '-exporter-[0-9]+$' || true; })"
+  [ "$(count "$exporters")" -eq "$want_peers" ] \
+    || err "expected $want_peers exporter services, rendered $(count "$exporters")"
+  for s in $svcs; do
+    e="mariadb-galera-exporter-${s##*-}"
+    cmd="$(yq -r ".services.\"$e\".command[0] // \"\"" "$f")"
+    grep -Eq -- "--mysqld\.address=tasks\.[A-Za-z0-9_.-]*_$s:3306( |$)" <<<"$cmd" \
+      || err "$e: does not scrape its own peer at tasks.<release>_$s:3306"
+    grep -Fq 'MYSQLD_EXPORTER_PASSWORD="$$(cat /run/secrets/mariadb_galera_exporter_password)"' <<<"$cmd" \
+      || err "$e: does not read its password from the mounted secret"
+    # Exactly the two discovery labels: once a service opts in, every deploy label
+    # it carries is readable through Prometheus's targets API, so the fixture's
+    # own `labels` must not reach it.
+    lbls="$(yq -r ".services.\"$e\".deploy.labels // [] | sort | join(\",\")" "$f")"
+    [ "$lbls" = "prometheus.io/port=9104,prometheus.io/scrape=true" ] \
+      || err "$e: deploy labels are '$lbls', expected exactly the two discovery labels"
+    nets="$(yq -r ".services.\"$e\".networks // [] | .[]" "$f" | sort | tr '\n' ' ')"
+    [ "$nets" = "mariadb-galera-net monitoring " ] \
+      || err "$e: networks are '$nets', expected the Galera overlay and the metrics overlay"
+    [ "$(yq -r ".services.\"$e\".ports // [] | length" "$f")" = "0" ] \
+      || err "$e: publishes a port; /metrics has no authentication"
+    [ "$(yq -o=json -I=0 ".services.\"$e\".deploy.placement" "$f")" = "$(yq -o=json -I=0 ".services.\"$s\".deploy.placement" "$f")" ] \
+      || err "$e: placement differs from $s's; the exporter belongs on its peer's node"
+    # The peer itself must not change: turning metrics on would otherwise restart
+    # every peer at once, and a peer on the metrics overlay exposes its SQL and
+    # Galera ports to everything that can reach Prometheus.
+    if yq -r ".services.\"$s\".networks | keys | .[]" "$f" | grep -xF monitoring >/dev/null; then
+      err "$s: the peer joined the metrics overlay"
+    fi
+    if yq -r ".services.\"$s\".secrets // [] | .[]" "$f" | grep -xF mariadb_galera_exporter_password >/dev/null; then
+      err "$s: the peer mounts the exporter secret"
+    fi
+  done
+
+  # The one-shot that creates the user: runs once, may reach any peer, and holds
+  # root, so it stays off the metrics overlay.
+  u="mariadb-galera-exporter-user"
+  [ "$(yq -r ".services.\"$u\".deploy.restart_policy.condition // \"\"" "$f")" = "on-failure" ] \
+    || err "$u: restart condition is not on-failure; it must run to completion once, and retry if the cluster is not writable yet"
+  ucmd="$(yq -r ".services.\"$u\".command[0] // \"\"" "$f")"
+  for s in $svcs; do
+    grep -Eq "tasks\.[A-Za-z0-9_.-]*_$s( |;)" <<<"$ucmd" \
+      || err "$u: does not try peer $s"
+  done
+  grep -Fq "GRANT PROCESS, REPLICATION CLIENT, SLAVE MONITOR ON *.* TO" <<<"$ucmd" \
+    || err "$u: the grant changed; anything wider than PROCESS, REPLICATION CLIENT, SLAVE MONITOR reads data, and anything narrower fails a default collector"
+  if yq -r ".services.\"$u\".networks // [] | .[]" "$f" | grep -xF monitoring >/dev/null; then
+    err "$u: joined the metrics overlay while holding the root password"
+  fi
+fi
 
 # EXACTLY ONE peer may be able to bootstrap, in any fixture. This is the assertion
 # that matters most, and the one whose absence let a broken chart reach CI: when
