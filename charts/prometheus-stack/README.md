@@ -70,12 +70,6 @@ Prometheus datasource, uid `prometheus`, as the default:
   cAdvisor. Its panel set follows swarmprom's
   services dashboard (MIT); the queries are new, keyed on the four swarm labels
   cAdvisor keeps and the `node` label discovery adds.
-- **Galera clusters**, written for this chart: members, Synced peers, primary
-  component, peer state, flow control, write-set queues and traffic, certification
-  conflicts, plus connections, queries and buffer-pool hits, from mysqld_exporter.
-  Pick a cluster by its `stack`. The mariadb-galera chart's `metrics.enabled`
-  exporters fill it with no further setup; any mysqld_exporter that discovery finds
-  works too. Empty on a swarm without one.
 
 Your own dashboards go in `grafana.dashboards`: see
 [Keeping your setup in git](#keeping-your-setup-in-git).
@@ -90,15 +84,6 @@ prove the pipeline end to end. The node alerts are derived from the
 and `PrometheusRuleFailures` from the
 [prometheus-mixin](https://github.com/prometheus/prometheus/tree/main/documentation/prometheus-mixin),
 both Apache-2.0. No CPU alerts: busy is not broken.
-
-**Galera and MySQL alerts** (`galera.yml`), for the same mysqld_exporter targets and
-silent without them: `MySQLDown`, `MySQLGaleraNotReady`, `MySQLGaleraOutOfSync` and
-`MySQLGaleraDonorFallingBehind`, derived from the
-[mysqld-mixin](https://github.com/prometheus/mysqld_exporter/tree/main/mysqld-mixin)
-(Apache-2.0); OutOfSync leaves out a donor, which keeps serving during a state
-transfer. Then two per cluster: `GaleraQuorumAtRisk` while fewer than 3 members
-remain, so the next failure loses quorum, and `GaleraClusterShrunk` while a cluster
-has fewer members than it had in the last day.
 
 Every series from discovery carries a `node` label with the Swarm node's hostname
 and a `stack` label with the stack, that is the release, it was deployed in. The

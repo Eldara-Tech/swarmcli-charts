@@ -126,18 +126,11 @@ case "$case" in
     rules_loaded() {
       local b n
       b="$(in_ns prometheus http://127.0.0.1:9090/api/v1/rules 2>/dev/null || true)"
-      for n in SwarmDiscoveryFailing NodeExporterAbsent CadvisorAbsent GaleraQuorumAtRisk; do
+      for n in SwarmDiscoveryFailing NodeExporterAbsent CadvisorAbsent; do
         grep -F "\"name\":\"$n\"" <<<"$b" >/dev/null || return 1
       done
     }
-    wait_for "prometheus: SwarmDiscoveryFailing, NodeExporterAbsent, CadvisorAbsent and GaleraQuorumAtRisk are loaded" rules_loaded
-    # The Galera alerts' logic, by the promtool of the image this chart deploys, against
-    # the rule file this task actually mounted. A Galera cluster is too heavy to deploy here.
-    pc="$(cid prometheus)"
-    docker cp "$dir/ci/galera-rules-test.yml" "$pc:/tmp/galera-rules-test.yml" >/dev/null
-    out="$(docker exec "$pc" promtool test rules /tmp/galera-rules-test.yml 2>&1)" \
-      || fail "promtool test rules fails on the mounted galera.yml: $out"
-    echo "  prometheus: the Galera rule unit tests pass"
+    wait_for "prometheus: SwarmDiscoveryFailing, NodeExporterAbsent and CadvisorAbsent are loaded" rules_loaded
     wait_for "alertmanager: the Watchdog alert arrived" \
       body_has '"alertname":"Watchdog"' in_ns alertmanager http://127.0.0.1:9093/api/v2/alerts
 
@@ -152,8 +145,7 @@ case "$case" in
     search="$(in_ns grafana -u "$ADMIN" 'http://127.0.0.1:3000/api/search?type=dash-db' 2>/dev/null || true)"
     grep -F '"uid":"rYdddlPWk"' <<<"$search" >/dev/null || fail "grafana does not list Node Exporter Full: $search"
     grep -F '"uid":"swarm-services"' <<<"$search" >/dev/null || fail "grafana does not list Swarm services: $search"
-    grep -F '"uid":"galera"' <<<"$search" >/dev/null || fail "grafana does not list Galera clusters: $search"
-    echo "  grafana: all three dashboards provisioned"
+    echo "  grafana: both dashboards provisioned"
 
     # --- the socket-proxy, probed from the Prometheus task it admits ---
     proxy="http://${release}_socket-proxy:2375"

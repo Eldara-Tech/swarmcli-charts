@@ -97,7 +97,6 @@
       "prometheus-rules" (printf "%s_rules_%s" $rel $ver)
       "prometheus-rules-node-exporter" (printf "%s_rules-node_%s" $rel $ver)
       "prometheus-rules-cadvisor" (printf "%s_rules-cadvisor_%s" $rel $ver)
-      "prometheus-rules-galera" (printf "%s_rules-galera_%s" $rel $ver)
       "alertmanager-config" (ternary (printf "%s_am_%s" $rel ($am.config | sha256sum | trunc 12)) (printf "%s_am_%s" $rel $ver) (ne $am.config ""))
       "grafana-datasources" (printf "%s_gf-ds_%s" $rel $ver)
       "grafana-datasources-alertmanager" (printf "%s_gf-ds-am_%s" $rel $ver)
@@ -106,7 +105,6 @@
       "grafana-dashboards-extra" (printf "%s_gf-dash-x_%s" $rel $ver)
       "dashboard-node-exporter-full" (printf "%s_dash-nodes_%s" $rel $ver)
       "dashboard-swarm-services" (printf "%s_dash-swarm_%s" $rel $ver)
-      "dashboard-galera" (printf "%s_dash-galera_%s" $rel $ver)
 }}
 {{- $longest := "" }}
 {{- range $k, $n := $cfg }}{{ if gt (len $n) (len $longest) }}{{ $longest = $n }}{{ end }}{{ end }}
@@ -205,10 +203,7 @@ services:
       - source: prometheus-rules-cadvisor
         target: /etc/prometheus/rules/cadvisor.yml
 {{- end }}
-{{- /* Inert without mysqld_exporter targets: none of its rules uses absent(). */}}
-      - source: prometheus-rules-galera
-        target: /etc/prometheus/rules/galera.yml
-{{- /* The extra- prefix keeps the operator's rule files clear of the four shipped ones. */}}
+{{- /* The extra- prefix keeps the operator's rule files clear of the three shipped ones. */}}
 {{- range $k, $_ := $xRules }}
       - source: prometheus-extra-rules-{{ $k }}
         target: /etc/prometheus/rules/extra-{{ $k }}.yml
@@ -375,8 +370,6 @@ services:
         target: /etc/grafana/dashboards/node-exporter-full.json
       - source: dashboard-swarm-services
         target: /etc/grafana/dashboards/swarm-services.json
-      - source: dashboard-galera
-        target: /etc/grafana/dashboards/galera.json
 {{- /* The operator's dashboards get a provider of their own, so that removing one deletes it:
        the shipped provider keeps a dashboard whose file is gone. */}}
 {{- if $xDash }}
@@ -570,9 +563,6 @@ configs:
     name: {{ index $cfg "prometheus-rules-cadvisor" | quote }}
     file: files/prometheus/rules/cadvisor.yml
 {{- end }}
-  prometheus-rules-galera:
-    name: {{ index $cfg "prometheus-rules-galera" | quote }}
-    file: files/prometheus/rules/galera.yml
 {{- range $k, $n := $xRules }}
   prometheus-extra-rules-{{ $k }}:
     name: {{ $n | quote }}
@@ -615,9 +605,6 @@ configs:
   dashboard-swarm-services:
     name: {{ index $cfg "dashboard-swarm-services" | quote }}
     file: files/grafana/dashboards/swarm-services.json
-  dashboard-galera:
-    name: {{ index $cfg "dashboard-galera" | quote }}
-    file: files/grafana/dashboards/galera.json
 {{- if $xDash }}
   grafana-dashboards-extra:
     name: {{ index $cfg "grafana-dashboards-extra" | quote }}
