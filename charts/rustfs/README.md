@@ -10,8 +10,8 @@ What the chart adds on top of the image:
 
 - **Credentials come from Swarm secrets**, which RustFS reads itself
   (`RUSTFS_ACCESS_KEY_FILE` / `RUSTFS_SECRET_KEY_FILE`). The container refuses to
-  start if either is missing, empty, or RustFS's public default `rustfsadmin` — the
-  image only warns about that one and starts anyway.
+  start if either is missing, empty, has whitespace inside it, or is RustFS's public
+  default `rustfsadmin` — the image only warns about that one and starts anyway.
 - **The web console is opt-in.** It is a second listener that serves the S3 and
   admin API as well as the UI, so it stays off unless you ask for it.
 - **Buckets are created for you** (`buckets`), once the server is up, on every
@@ -23,7 +23,7 @@ What the chart adds on top of the image:
 
 ```bash
 # The root credentials, as external Swarm secrets (never chart values). Any key id works;
-# make the secret key long and random.
+# make the secret key long and random, on one line with no whitespace inside it.
 printf '%s' 'cache-access-key' | docker secret create rustfs-access-key -
 openssl rand -base64 30 | tr -d '\n' | docker secret create rustfs-secret-key -
 
@@ -34,9 +34,10 @@ docker node update --label-add rustfs-data=true <node>
 
 ## Installing
 
-swarmcli releases after v2.1.1 come with this repository configured as
-`swarmcli-charts`. On v2.1.1 or earlier, add it first with
+If `swarmcli charts repo list` does not show `swarmcli-charts`, add it first:
 `swarmcli charts repo add swarmcli-charts https://eldara-tech.github.io/swarmcli-charts`.
+swarmcli v2.2.0-rc2 and later add it on a first run, while there is no repository
+list yet; v2.1.1, and an existing list, are left as they are.
 
 ```bash
 swarmcli charts install s3 swarmcli-charts/rustfs --set 'buckets={runner-cache}'
@@ -142,7 +143,10 @@ cache:
   appears in the manifest or in `docker inspect`. Anonymous requests are refused, and
   so is the default `rustfsadmin` pair. To rotate, create new secrets under new names,
   point `s3.accessKeySecret` / `s3.secretKeySecret` at them and upgrade. `extraEnv`
-  refuses the credential variables, so a key cannot slip into the manifest that way.
+  refuses the credential variables in both spellings (`RUSTFS_*` and the `MINIO_*`
+  ones RustFS also reads), so a key cannot slip into the manifest that way, and the
+  bucket loop hands the key pair to `curl` on stdin, so it never appears in a
+  process list.
 - Everything on `network.name`, and in traefik mode everything on `exposure.network`,
   can reach the S3 port (and the console port when enabled). That is the intent; the
   key pair is what protects the data.
@@ -176,7 +180,9 @@ the old task before starting the new one: two processes must never share `/data`
 
 The chart raises the open-file limit to `nofile` (65536): below 16384 RustFS turns
 off its per-disk file-descriptor cache, which costs performance. Set `nofile: 0` to
-keep the daemon's default.
+keep the daemon's default. swarmcli deploys through `docker stack deploy`, which
+applies `ulimits` to a Swarm service from Docker 23 on; an older Docker CLI ignores
+it with a warning.
 
 ## Metrics
 
@@ -216,7 +222,7 @@ collector.
 | `traefik.idleTimeoutSeconds` | `120` | RustFS's idle-connection timeout in traefik mode; must outlast Traefik's 90s |
 | `publish.port` / `publish.consolePort` / `publish.mode` | `9000` / `9001` / `ingress` | Published ports (published mode) |
 | `nofile` | `65536` | Open-file limit; `0` = daemon default |
-| `extraEnv` | `{}` | Extra `RUSTFS_*` environment (no credentials) |
+| `extraEnv` | `{}` | Extra `RUSTFS_*` environment. Credentials and the listener addresses are refused; `RUSTFS_OBS_LOG_DIRECTORY`, `RUSTFS_CHECK_UPDATE` and `RUSTFS_HTTP1_HEADER_READ_TIMEOUT` override the chart's defaults |
 | `healthcheck.*` | enabled, 15s/5s/4, start 30s, monitor 2m | `curl` of `/health/ready` on the S3 port |
 | `stopGracePeriod` | `30s` | SIGTERM → SIGKILL window |
 | `resources.limits.memory` / `resources.reservations.memory` | `""` | Optional memory limits |

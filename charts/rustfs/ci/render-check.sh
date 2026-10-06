@@ -57,13 +57,23 @@ done
   || bad "RUSTFS_ACCESS_KEY_FILE is not /run/secrets/$access — RustFS would fall back to rustfsadmin"
 [ "$(env_ RUSTFS_SECRET_KEY_FILE)" = "/run/secrets/$secret" ] \
   || bad "RUSTFS_SECRET_KEY_FILE is not /run/secrets/$secret"
-for v in RUSTFS_ACCESS_KEY RUSTFS_SECRET_KEY RUSTFS_ROOT_USER RUSTFS_ROOT_PASSWORD MINIO_ROOT_USER MINIO_ROOT_PASSWORD; do
+for v in RUSTFS_ACCESS_KEY RUSTFS_SECRET_KEY RUSTFS_ROOT_USER RUSTFS_ROOT_PASSWORD \
+         MINIO_ACCESS_KEY MINIO_SECRET_KEY MINIO_ROOT_USER MINIO_ROOT_PASSWORD \
+         MINIO_ACCESS_KEY_FILE MINIO_SECRET_KEY_FILE; do
   [ "$(env_ "$v")" = "null" ] || bad "$v is set in environment:, where it lands in the manifest and docker inspect (and conflicts with the _FILE variant)"
 done
 grep -F 'for f in "$$RUSTFS_ACCESS_KEY_FILE" "$$RUSTFS_SECRET_KEY_FILE"; do' <<<"$script" >/dev/null \
-  && grep -F 'case "$$v" in ""|rustfsadmin) echo' <<<"$script" >/dev/null \
-  && grep -F 'exit 1;; esac;' <<<"$script" >/dev/null \
-  || bad "the wrapper does not refuse an empty key or the public default rustfsadmin"
+  && grep -F 'w="$$(wc -w 2>/dev/null < "$$f"' <<<"$script" >/dev/null \
+  && grep -F 'if [ "$${w:-0}" != 1 ]; then echo' <<<"$script" >/dev/null \
+  || bad "the wrapper does not refuse an empty key, or one with whitespace inside it"
+# Comparing only the alphanumerics: RustFS trims every Unicode space, so a check that
+# strips less lets `rustfsadmin` plus a vertical tab or a no-break space through.
+grep -F 'if [ "$$(LC_ALL=C tr -cd '"'"'[:alnum:]'"'"' < "$$f")" = rustfsadmin ]; then echo' <<<"$script" >/dev/null \
+  || bad "the wrapper does not refuse the public default rustfsadmin (compared on alphanumerics only)"
+# A key on a command line is readable in /proc/<pid>/cmdline and exec audit logs.
+if grep -E -- '(--user|-u) ' <<<"$script" >/dev/null; then
+  bad "the wrapper passes credentials to curl as an argument; feed them through -K - instead"
+fi
 # A single-$ expansion anywhere would be resolved by Docker at deploy time.
 if grep -E '(^|[^$])\$[({A-Za-z@]' <<<"$script" >/dev/null; then
   bad "the start-up script has an unescaped \$ ($(grep -oE '(^|[^$])\$[({A-Za-z@][^ ]{0,20}' <<<"$script" | sed -n 1p)): Docker would interpolate it at deploy time"
@@ -168,8 +178,12 @@ if [ -n "$want" ]; then
   grep -F "\"http://127.0.0.1:$port/\$\$b\"" <<<"$script" >/dev/null \
     || bad "case $case: buckets are not created against the S3 port $port"
   grep -F -- '--aws-sigv4' <<<"$script" >/dev/null || bad "case $case: bucket creation is not signed — it would be refused"
+  grep -F '| curl -K - ' <<<"$script" >/dev/null \
+    || bad "case $case: curl does not read the key pair from a config on stdin"
+  grep -F '[ "$$code" = 200 ]' <<<"$script" >/dev/null \
+    || bad "case $case: 200 is not treated as done — RustFS answers an existing bucket with 200, so every restart would retry for five minutes"
   grep -F '[ "$$code" = 409 ]' <<<"$script" >/dev/null \
-    || bad "case $case: 409 (bucket exists) is not treated as done — a server answering it would make every restart retry for five minutes"
+    || bad "case $case: 409 (bucket exists) is not treated as done"
   grep -F ') & exec /entrypoint.sh' <<<"$script" >/dev/null \
     || bad "case $case: the bootstrap loop does not run in the background — it would block the server it waits for"
 else

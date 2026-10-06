@@ -128,11 +128,15 @@ publish:
 
 # Open-file limit for the RustFS process. Below 16384 RustFS disables its per-disk
 # file-descriptor cache, which costs performance. 0 leaves the daemon's default.
+# Applied by `docker stack deploy` from Docker 23 on.
 nofile: 65536
 
 # Extra environment variables, e.g. RUSTFS_SERVER_DOMAINS for virtual-hosted-style
 # addressing, RUSTFS_REGION, or RUSTFS_OBS_ENDPOINT to push OpenTelemetry metrics and
-# traces to a collector. Never put credentials here: they belong in the secrets above.
+# traces to a collector. RUSTFS_OBS_LOG_DIRECTORY, RUSTFS_CHECK_UPDATE and
+# RUSTFS_HTTP1_HEADER_READ_TIMEOUT here override the chart's own settings. The render
+# fails on credentials (they belong in the secrets above, and RustFS reads MINIO_*
+# names as well) and on the listener addresses (set s3.port / console.* instead).
 extraEnv: {}
 
 # Probes /health/ready on the S3 port with the image's curl: 503 until storage and IAM

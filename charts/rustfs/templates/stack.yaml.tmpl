@@ -23,9 +23,21 @@
 {{- if and .Values.console.enabled (eq (.Values.console.port | int) (.Values.s3.port | int)) -}}
 {{-   fail "console.port must differ from s3.port: RustFS runs the console as a second listener" -}}
 {{- end -}}
+{{- if and .Values.console.enabled (eq .Values.exposure.mode "traefik") (eq .Values.console.host .Values.ingress.host) -}}
+{{-   fail "console.host must differ from ingress.host: two routers with the same Host() rule would split requests between the S3 API and the console" -}}
+{{- end -}}
+{{- if and .Values.console.enabled (eq .Values.exposure.mode "published") (eq (.Values.publish.consolePort | int) (.Values.publish.port | int)) -}}
+{{-   fail "publish.consolePort must differ from publish.port" -}}
+{{- end -}}
+{{- /* RustFS copies every MINIO_<x> into an unset RUSTFS_<x> before parsing its flags, so
+       both spellings of a credential are refused, the *_FILE forms included. The
+       listener settings are wired from s3.port / console.*, so they are refused too. */}}
 {{- range $k, $v := .Values.extraEnv }}
-{{-   if regexMatch "^RUSTFS_(ACCESS|SECRET)_KEY|^RUSTFS_ROOT_(USER|PASSWORD)|^MINIO_ROOT_" $k }}
+{{-   if regexMatch "^(RUSTFS|MINIO)_(ACCESS_KEY|SECRET_KEY|ROOT_USER|ROOT_PASSWORD)" $k }}
 {{-     fail (printf "extraEnv: %s is a credential; it belongs in the Swarm secrets s3.accessKeySecret / s3.secretKeySecret" $k) }}
+{{-   end }}
+{{-   if has $k (list "RUSTFS_ADDRESS" "RUSTFS_CONSOLE_ENABLE" "RUSTFS_CONSOLE_ADDRESS" "MINIO_ADDRESS" "MINIO_CONSOLE_ADDRESS") }}
+{{-     fail (printf "extraEnv: %s is set by the chart from s3.port and console.*; use those values instead" $k) }}
 {{-   end }}
 {{- end -}}
 version: "3.9"
@@ -50,13 +62,17 @@ services:
     # The start-up wrapper. `$$` escapes the `$` for compose, so every expansion happens
     # inside the container and no secret is resolved into the manifest or `docker inspect`.
     #
-    #  * RustFS reads both keys itself through RUSTFS_ACCESS_KEY_FILE / _SECRET_KEY_FILE.
-    #    Its entrypoint refuses a missing or empty file, but only WARNS about the public
-    #    default `rustfsadmin` and starts anyway, so the wrapper refuses that too.
+    #  * RustFS reads both keys itself through RUSTFS_ACCESS_KEY_FILE / _SECRET_KEY_FILE,
+    #    trimming surrounding whitespace. Its entrypoint refuses a missing or empty file,
+    #    but only WARNS about the public default `rustfsadmin` and starts anyway, so the
+    #    wrapper refuses that too, after dropping every non-alphanumeric byte so that no
+    #    stray whitespace or punctuation slips it past. A key must be one word: whitespace
+    #    inside it would make the trimmed key differ from the one the bucket loop signs with.
     #  * Buckets are created by a background loop over the signed S3 API once the server
     #    answers. RustFS answers an existing bucket with 200, as S3 does in us-east-1, or
     #    409; both count as done, so a restart is a no-op, and a failure is logged rather
-    #    than taking the server down with it.
+    #    than taking the server down with it. curl reads the key pair from a config on
+    #    stdin (`-K -`, written by the printf builtin), so it never appears in an argv.
     #  * `exec` hands PID 1 to the image's entrypoint, which execs rustfs, so SIGTERM
     #    reaches the server itself.
     entrypoint:
@@ -66,20 +82,21 @@ services:
       - >-
         set -eu;
         for f in "$$RUSTFS_ACCESS_KEY_FILE" "$$RUSTFS_SECRET_KEY_FILE"; do
-        v="$$(tr -d ' \t\r\n' 2>/dev/null < "$$f" || true)";
-        case "$$v" in ""|rustfsadmin) echo "$$f is missing, empty or the public default rustfsadmin - refusing to start" >&2; exit 1;; esac;
+        w="$$(wc -w 2>/dev/null < "$$f" | tr -d ' ' || true)";
+        if [ "$${w:-0}" != 1 ]; then echo "$$f is missing or empty, or the key has whitespace inside it - refusing to start" >&2; exit 1; fi;
+        if [ "$$(LC_ALL=C tr -cd '[:alnum:]' < "$$f")" = rustfsadmin ]; then echo "$$f holds the public default rustfsadmin - refusing to start" >&2; exit 1; fi;
         done;
 {{- if .Values.buckets }}
         (
-        key="$$(tr -d '\r\n' < "$$RUSTFS_ACCESS_KEY_FILE")";
-        sec="$$(tr -d '\r\n' < "$$RUSTFS_SECRET_KEY_FILE")";
+        key="$$(tr -d '[:space:]' < "$$RUSTFS_ACCESS_KEY_FILE" | sed 's/[\\"]/\\&/g')";
+        sec="$$(tr -d '[:space:]' < "$$RUSTFS_SECRET_KEY_FILE" | sed 's/[\\"]/\\&/g')";
         for b in {{ join " " .Values.buckets }}; do
         n=0; code=000;
         until [ "$$code" = 200 ] || [ "$$code" = 409 ]; do
         n=$$((n + 1));
         if [ "$$n" -gt 150 ]; then echo "bucket $$b: not created after 150 attempts (last HTTP $$code)" >&2; exit 1; fi;
         sleep 2;
-        code="$$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 --aws-sigv4 "aws:amz:$${RUSTFS_REGION:-us-east-1}:s3" --user "$$key:$$sec" -X PUT "http://127.0.0.1:{{ $port }}/$$b" || true)";
+        code="$$(printf 'user = "%s:%s"\n' "$$key" "$$sec" | curl -K - -s -o /dev/null -w '%{http_code}' --max-time 10 --aws-sigv4 "aws:amz:$${RUSTFS_REGION:-us-east-1}:s3" -X PUT "http://127.0.0.1:{{ $port }}/$$b" || true)";
         done;
         echo "bucket $$b: ready (HTTP $$code)";
         done
@@ -95,12 +112,17 @@ services:
 {{- if $console }}
       RUSTFS_CONSOLE_ADDRESS: ":{{ $cport }}"
 {{- end }}
+{{- /* The next three are defaults extraEnv may override. */}}
+{{- if not (hasKey .Values.extraEnv "RUSTFS_OBS_LOG_DIRECTORY") }}
       # Empty sends the server log to stdout (docker service logs) instead of a file
       # inside the container, the image's default.
       RUSTFS_OBS_LOG_DIRECTORY: ""
+{{- end }}
+{{- if not (hasKey .Values.extraEnv "RUSTFS_CHECK_UPDATE") }}
       # The image is pinned and Renovate moves the pin; no call home for updates.
       RUSTFS_CHECK_UPDATE: "false"
-{{- if eq $mode "traefik" }}
+{{- end }}
+{{- if and (eq $mode "traefik") (not (hasKey .Values.extraEnv "RUSTFS_HTTP1_HEADER_READ_TIMEOUT")) }}
       RUSTFS_HTTP1_HEADER_READ_TIMEOUT: {{ .Values.traefik.idleTimeoutSeconds | quote }}
 {{- end }}
 {{- range $k, $v := .Values.extraEnv }}
