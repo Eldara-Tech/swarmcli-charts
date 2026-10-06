@@ -259,7 +259,9 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   node label + `traefik-public`, which is `autoCreate:false`, so the hook stands in for the
   operator. Both secrets are turned on by the fixture on purpose: GitLab `File.read`s them at
   reconfigure time, so a wrong path or mount raises in Ruby and the task never converges —
-  convergence *is* the assertion that the secret plumbing works.
+  convergence *is* the assertion that the secret plumbing works. The fixture also turns
+  metrics on, and `ci/e2e-check.sh` scrapes the web metrics server from the `monitoring`
+  overlay, which swarmcli creates at install.
 
 - **seaweedfs** — the two S3 credential secrets (the secret key carries a `/` and a `+`) + the
   `seaweedfs-data` node label + the `seaweedfs-net` client overlay for every fixture; per

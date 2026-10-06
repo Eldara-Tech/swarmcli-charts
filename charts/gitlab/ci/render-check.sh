@@ -16,7 +16,10 @@
 #      ADVERTISES tracks the port actually routed;
 #   5. persistence toggles the three volumes and the node pin together;
 #   6. /dev/shm is a sized tmpfs expressed the one way Swarm honours;
-#   7. no password is ever in the manifest — only the File.read call that fetches it.
+#   7. no password is ever in the manifest — only the File.read call that fetches it;
+#   9. metrics are opt-in, and when on, the web metrics server binds the overlay on
+#      metrics.port, the service carries exactly that discovery label, and the IP
+#      allow-list of /-/metrics is NOT what was widened.
 set -euo pipefail
 
 out="$1"
@@ -62,8 +65,8 @@ svcport="$(yq -r '[.services.gitlab.deploy.labels // [] | .[] | select(test("tra
 #    carry its port or every clone URL and redirect GitLab emits is unreachable.
 url="$(sed -n 's/^external_url "\(.*\)"$/\1/p' <<<"$generated")"
 case "$case" in
-  published)
-    [ "$url" = "http://gitlab.example.com:8080" ] || note "published: external_url is '$url', expected the published port in it" ;;
+  published|metrics)
+    [ "$url" = "http://gitlab.example.com:8080" ] || note "$case: external_url is '$url', expected the published port in it" ;;
   tls-off)
     [ "$url" = "http://gitlab.example.com" ] || note "tls-off: external_url is '$url', expected an http:// URL" ;;
   minimal)
@@ -75,7 +78,7 @@ esac
 # 4a. exposure.mode: Traefik labels XOR a published HTTP port XOR neither.
 http_ports="$(yq -r '[.services.gitlab.ports // [] | .[] | select(.target == 80)] | length' "$out")"
 case "$case" in
-  published)
+  published|metrics)
     grep -q 'traefik.enable=true' <<<"$labels" && note "published mode rendered Traefik labels"
     [ "$http_ports" = "1" ] || note "published mode did not publish the HTTP port"
     ;;
@@ -109,7 +112,7 @@ case "$case" in
       || note "the published SSH port and gitlab_shell_ssh_port disagree — clone URLs would name an unreachable port"
     grep -q 'traefik.tcp.routers' <<<"$labels" && note "ssh.mode published also rendered a TCP router"
     ;;
-  none)
+  none|metrics)
     [ "$ssh_ports" = "0" ] || note "ssh.mode none published port 22"
     grep -q 'traefik.tcp' <<<"$labels" && note "ssh.mode none rendered TCP router labels"
     [ -z "$advertised" ] || note "ssh.mode none still advertises gitlab_shell_ssh_port=$advertised"
@@ -209,5 +212,69 @@ esac
   || note "no healthcheck start_period — the image's own probe has none and Swarm restart-loops a cold boot"
 [ "$(yq -r '.services.gitlab.stop_grace_period // ""' "$out")" != "" ] \
   || note "no stop_grace_period — Swarm's 10s default SIGKILLs Postgres mid-shutdown"
+
+# 9. Metrics: the web metrics server is the only thing opted in, and only on request.
+case "$case" in minimal) mport=8083 ;; metrics) mport=8183 ;; *) mport="" ;; esac
+nets="$(yq -r '.services.gitlab.networks // [] | .[]' "$out")"
+disc="$(grep -E '^prometheus\.io/' <<<"$labels" | sort | tr '\n' ',' || true)"
+if [ -z "$mport" ]; then
+  [ -z "$disc" ] || note "$case: discovery labels rendered although metrics are off: $disc"
+  grep -Fx monitoring <<<"$nets" >/dev/null && note "$case: joined the metrics overlay although metrics are off"
+  grep -F "puma['exporter" <<<"$generated" >/dev/null && note "$case: the web metrics server is configured although metrics are off"
+else
+  [ "$disc" = "prometheus.io/port=$mport,prometheus.io/scrape=true," ] \
+    || note "$case: discovery labels are '$disc', expected exactly scrape=true and port=$mport"
+  for setting in "puma['exporter_enabled'] = true" "puma['exporter_address'] = \"0.0.0.0\"" "puma['exporter_port'] = $mport"; do
+    grep -Fx "$setting" <<<"$generated" >/dev/null || note "$case: missing metrics setting: $setting"
+  done
+  grep -Fx monitoring <<<"$nets" >/dev/null || note "$case: not attached to the metrics overlay — Prometheus could not reach it"
+  [ "$(yq -r '.networks.monitoring.external // false' "$out")" = "true" ] || note "$case: the metrics overlay is not declared external"
+  [ "$(yq -r "[.services.gitlab.ports // [] | .[] | select(.target == $mport)] | length" "$out")" = "0" ] \
+    || note "$case: the metrics port is published; it has no authentication"
+  # Bundled Prometheus stays off, and /-/metrics keeps its loopback-only allow-list: the
+  # dedicated server is how GitLab is scraped here, not a widened monitoring_whitelist.
+  grep -Fx "prometheus_monitoring['enable'] = false" <<<"$generated" >/dev/null \
+    || note "$case: the bundled Prometheus stack is no longer disabled"
+  grep -F "monitoring_whitelist" <<<"$generated" >/dev/null && note "$case: monitoring_whitelist is set; /-/metrics must stay loopback-only"
+  if [ "$case" = "metrics" ]; then
+    [ "$nets" = "monitoring" ] || note "$case: published mode should be on the metrics overlay alone, got: $(tr '\n' ' ' <<<"$nets")"
+    grep -Fx 'team=git' <<<"$labels" >/dev/null || note "$case: the fixture's labels did not render beside the discovery labels"
+
+    # The refusals, rendered from this chart with the renderer test-charts.sh exports.
+    chart="$(cd "$(dirname "$0")/.." && pwd)"
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    render() { "${SWARMCLI:?render-check needs SWARMCLI to test the refusals}" charts template r "$chart" -f "$chart/ci/metrics-values.yaml" "$@"; }
+    refused() {
+      local want="$1"; shift
+      if render "$@" >/dev/null 2>"$tmp/err"; then
+        note "$case: rendered with $* — it must be refused"
+      elif ! grep -F "$want" "$tmp/err" >/dev/null; then
+        note "$case: $* failed, but not with \"$want\": $(cat "$tmp/err")"
+      fi
+    }
+    # A credential in a label of the scraped service.
+    for key in traefik.http.middlewares.a.basicauth.users traefik.http.middlewares.a.DigestAuth.Users \
+               traefik.http.middlewares.a.headers.customrequestheaders.Authorization; do
+      printf 'labels:\n  %s: "x"\n' "$key" >"$tmp/cred.yaml"
+      refused "labels.$key carries a credential" -f "$tmp/cred.yaml"
+    done
+    # ... but not its file-based alternative, and nothing at all with metrics off.
+    printf 'labels:\n  traefik.http.middlewares.a.basicauth.usersfile: /run/secrets/u\n' >"$tmp/file.yaml"
+    render -f "$tmp/file.yaml" >/dev/null 2>"$tmp/err" \
+      || note "$case: basicauth.usersfile was refused; it is the safe alternative: $(cat "$tmp/err")"
+    printf 'metrics:\n  enabled: false\nlabels:\n  traefik.http.middlewares.a.basicauth.users: "x"\n' >"$tmp/off.yaml"
+    render -f "$tmp/off.yaml" >/dev/null 2>"$tmp/err" \
+      || note "$case: a basicauth.users label was refused with metrics off; that must keep working: $(cat "$tmp/err")"
+    # A metrics port something in the container already binds.
+    for p in 80 22 8060 8080 8082 8092 8150 9229 9236 9100; do
+      refused "metrics.port $p is already bound" --set "metrics.port=$p"
+    done
+  else
+    grep -Fx traefik-public <<<"$nets" >/dev/null || note "$case: lost the ingress overlay when joining the metrics overlay"
+    grep -Fx 'traefik.swarm.network=traefik-public' <<<"$labels" >/dev/null \
+      || note "$case: Traefik is not pinned to the ingress overlay — with two networks it could pick the metrics one"
+  fi
+fi
 
 exit "$fail"
