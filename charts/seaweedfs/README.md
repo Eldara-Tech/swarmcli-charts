@@ -32,8 +32,11 @@ docker node update --label-add seaweedfs-data=true <node>
 
 ## Installing
 
+swarmcli releases after v2.1.1 come with this repository configured as
+`swarmcli-charts`. On v2.1.1 or earlier, add it first with
+`swarmcli charts repo add swarmcli-charts https://eldara-tech.github.io/swarmcli-charts`.
+
 ```bash
-swarmcli charts repo add swarmcli-charts https://eldara-tech.github.io/swarmcli-charts
 swarmcli charts install s3 swarmcli-charts/seaweedfs --set 'buckets={runner-cache}'
 ```
 
