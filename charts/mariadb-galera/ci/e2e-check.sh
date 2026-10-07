@@ -30,6 +30,7 @@
 set -euo pipefail
 
 release="$1"
+case="${3:-}"
 
 # Peer services, in peer order, discovered from the stack rather than assumed, so
 # this works for the 3- and 5-peer fixtures alike.
@@ -171,4 +172,88 @@ if [ -n "$proxy" ]; then
   exit 0
 fi
 
-echo "  ${release}: $want peers, all Synced, cross-peer write replicated$metrics_ok OK"
+# With the default fixture (the pinned shape, on real volumes): the full stops a
+# chart upgrade or an outage causes. Swarm publishes a peer in DNS only once it is
+# healthy, so with every peer down none can find another. Two outcomes are owed:
+#   * peers stopped one at a time: the last one out (safe_to_bootstrap: 1) forms the
+#     cluster again by itself, and the others rejoin with every row, including the
+#     ones written after they had left;
+#   * peers stopped together (no peer holds the flag): every peer waits instead of
+#     crash-looping, and no grastate.dat is rewritten to seqno -1, since that seqno
+#     is what the operator compares to pick the peer to force.
+recovery_ok=""
+if [ "$case" = default ]; then
+  stop_peer() {
+    docker service scale --detach "$1=0" >/dev/null
+    for _ in $(seq 1 60); do
+      [ -z "$(cid_of "$1")" ] && return 0
+      sleep 2
+    done
+    echo "  $1: did not stop"; exit 1
+  }
+  start_all() { for svc in $peers; do docker service scale --detach "$svc=1" >/dev/null; done; }
+  volumes="$(docker volume ls -q --filter "label=com.docker.stack.namespace=${release}" | sort)"
+  [ "$(printf '%s\n' "$volumes" | wc -l | tr -d ' ')" = "$want" ] \
+    || { echo "  expected $want data volumes for ${release}, found: $(echo $volumes)"; exit 1; }
+  grastate() { docker run --rm -v "$1:/d:ro" busybox:1.37 grep -E '^(seqno|safe_to_bootstrap):' /d/grastate.dat | tr -s ' ' | tr '\n' ' '; }
+
+  # One at a time, writing on the last peer between stops.
+  last="$(printf '%s\n' $peers | tail -1)"
+  n=1
+  for svc in $peers; do
+    if [ "$svc" != "$last" ]; then
+      stop_peer "$svc"
+      n=$((n + 1))
+      q "$(cid_of "$last")" "REPLACE INTO e2e_galera.t VALUES ($n, 'after-$n')" >/dev/null
+    fi
+  done
+  stop_peer "$last"
+  start_all
+  size=""
+  for _ in $(seq 1 90); do
+    cid="$(cid_of "$(printf '%s\n' $peers | sed -n 1p)")"
+    size="$( [ -n "$cid" ] && status_of "$cid" 'WSREP_CLUSTER_SIZE' 2>/dev/null || true)"
+    [ "$size" = "$want" ] && break
+    sleep 5
+  done
+  if [ "$size" != "$want" ]; then
+    echo "  after a one-at-a-time stop the cluster did not form again (size '$size')"
+    for v in $volumes; do echo "    $v: $(grastate "$v")"; done
+    exit 1
+  fi
+  got="$(q "$cid" "SET SESSION wsrep_sync_wait=1; SELECT COUNT(*) FROM e2e_galera.t WHERE id <= $n")"
+  [ "$got" = "$n" ] || { echo "  rows written after peers left were lost: $got of $n"; exit 1; }
+
+  # Together, then nobody holds the flag. Clearing it on every volume makes the
+  # outcome deterministic: a simultaneous stop usually leaves no flag, not always.
+  for svc in $peers; do docker service scale --detach "$svc=0" >/dev/null; done
+  for svc in $peers; do stop_peer "$svc"; done
+  for v in $volumes; do
+    docker run --rm -v "$v:/d" busybox:1.37 sed -i 's/^safe_to_bootstrap: 1$/safe_to_bootstrap: 0/' /d/grastate.dat
+  done
+  before="$(for v in $volumes; do grastate "$v"; echo; done)"
+  start_all
+  sleep 75
+  # Each peer's own container log: `docker service logs` returned nothing at all for
+  # these tasks while they waited, which would fail this check for no reason.
+  logs="$(mktemp)"
+  for svc in $peers; do
+    c="$(cid_of "$svc")"
+    [ -n "$c" ] || { echo "  $svc: no running container 75s after a simultaneous stop"; exit 1; }
+    docker logs "$c" >>"$logs" 2>&1 || true
+  done
+  if grep -F 'No address to connect' "$logs" >/dev/null; then
+    echo "  after a simultaneous stop a peer started mariadbd with no peer to reach:"
+    grep -F -m 3 'No address to connect' "$logs" | sed 's/^/    /'
+    exit 1
+  fi
+  grep -F 'waiting for a peer to come up' "$logs" >/dev/null \
+    || { echo "  after a simultaneous stop no peer reports waiting:"; tail -5 "$logs" | sed 's/^/    /'; exit 1; }
+  after="$(for v in $volumes; do grastate "$v"; echo; done)"
+  [ "$after" = "$before" ] \
+    || { echo "  waiting rewrote grastate.dat; before: $(echo $before) after: $(echo $after)"; exit 1; }
+  rm -f "$logs"
+  recovery_ok=", re-formed after a one-at-a-time stop and waited intact after a simultaneous one"
+fi
+
+echo "  ${release}: $want peers, all Synced, cross-peer write replicated$metrics_ok$recovery_ok OK"

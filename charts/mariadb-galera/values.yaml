@@ -45,6 +45,9 @@ cluster:
   # here demotes peer 1 to joining, so exactly one peer can ever bootstrap.
   # A FIRST install therefore needs peer 1 schedulable; see README.md § How
   # bootstrapping decides.
+  #
+  # The forced peer is marked safe_to_bootstrap: 1 in its grastate.dat, which Galera
+  # requires; after peers stopped together, no peer has it otherwise.
   forceBootstrap: ""
 
 # Credentials. Passwords are read from mounted secret files via the image's

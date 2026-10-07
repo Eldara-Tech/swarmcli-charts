@@ -301,14 +301,21 @@ join. Before `mariadbd` starts:
 
 - **Peer 1, data dir empty, no peer answering on port 4567** → form the cluster.
   This is the first install.
-- **Peer 1, data dir exists** → join. This is every restart, so a restart can
-  never bootstrap.
 - **Peer 1, data dir empty but some peer answers** → join and pull a state
   transfer. This is the seed rebuilt on a new node, and it is why a lost volume
   re-syncs instead of starting a rival cluster.
-- **Any other peer** → always join. It waits up to two minutes for a peer to start
-  listening first, because a Galera node that finds no cluster exits, and without
-  the wait a first install would be a burst of crash-restarts.
+- **Every other case** → wait until another peer resolves, then join. A restart
+  never bootstraps.
+- **Waiting, no peer resolves, and this peer's `grastate.dat` says
+  `safe_to_bootstrap: 1`** → form the cluster again. Galera sets that flag on the
+  last peer to leave a cluster that stopped one peer at a time, so its data is the
+  newest and at most one peer has it.
+
+The wait is not optional. Swarm publishes a peer in DNS (`tasks.<release>_<peer>`)
+only once its healthcheck passes, and a peer passes it only inside a cluster. With
+every peer down nothing resolves, and a `mariadbd` started anyway fails with
+`No address to connect` and rewrites `grastate.dat` to `seqno: -1` on every
+attempt, so the cluster could never come back by itself.
 
 A single designated seed is what removes the race. Letting every peer bootstrap
 when it sees no peers is the tempting version and it is wrong: on a first install
@@ -322,35 +329,54 @@ it. Once the cluster exists, peer 1 is no more special than any other peer, and
 losing it costs nothing extra.
 
 When `cluster.forceBootstrap` names a peer, that peer becomes the only
-bootstrapper and peer 1 is demoted to joining — so the count never rises above
-one, whatever you set.
+unconditional bootstrapper and peer 1 is demoted to joining, so the count never
+rises above one, whatever you set.
 
 ### Recovering a fully stopped cluster
 
-If every peer stopped **gracefully**, Galera recovers the cluster by itself on
-restart. If they all died at once (power loss, a node reboot storm), no peer will
-consider itself safe to bootstrap and they will wait rather than risk losing
-committed transactions. Recover deliberately:
+If the peers stopped **one at a time**, the cluster comes back by itself: the last
+peer to leave holds `safe_to_bootstrap: 1` and forms it again, and the others join.
 
-1. Find the furthest-ahead peer. On each, read `seqno` from
-   `/var/lib/mysql/grastate.dat`, or if it says `-1`, start with
-   `--wsrep-recover` and read the recovered position from the log.
+If they stopped **together**, no peer holds the flag. Every peer then waits,
+logging `waiting for a peer to come up`, rather than risk losing committed
+transactions. That covers an upgrade that changes every peer at once (see
+*Upgrading the image*) and a power loss. Swarm replaces a waiting peer every few
+minutes as its healthcheck expires; that is harmless, because `mariadbd` never
+starts and `grastate.dat` is left as it was. Recover deliberately:
+
+1. Find the furthest-ahead peer. On each peer's node, read its `grastate.dat`:
+   `docker run --rm -v <release>_mariadb-galera-data-<N>:/d:ro busybox cat /d/grastate.dat`.
+   The highest `seqno` wins. A peer that crashed shows `-1`; recover its position
+   with `mariadbd --wsrep-recover` on that volume and read it from the log.
 2. Set `cluster.forceBootstrap` to **that peer's number** and
-   `swarmcli charts upgrade` — it forms a new cluster from the best data.
+   `swarmcli charts upgrade`. The chart marks that peer `safe_to_bootstrap: 1`,
+   which Galera insists on, and it forms a new cluster from the best data.
 3. Once the others have rejoined and the cluster is `Synced`, set
-   `cluster.forceBootstrap: ""` and upgrade again. Leaving it set means that peer
-   would form yet another cluster on its next restart.
+   `cluster.forceBootstrap: ""` and upgrade again. That restarts only the forced
+   peer and peer 1, and they rejoin the running cluster. Leaving it set means that
+   peer would form yet another cluster on its next restart.
 
-Never force-bootstrap more than one peer, and never force-bootstrap while the
-cluster is still up.
+Never force-bootstrap more than one peer, never force-bootstrap while the cluster
+is still up, and never force one while some peer still shows
+`safe_to_bootstrap: 1`: that peer restarts the cluster by itself.
 
 ### Upgrading the image
 
 Galera requires every peer on the same server version, and `swarmcli charts
-upgrade` updates all peer services at once — so the whole cluster restarts
-together. That is usually fine (a graceful full stop recovers automatically), but
-it is a full outage, and it is the one time you may need the recovery procedure
-above. To roll peers one at a time instead, update each service in place
+upgrade` updates all peer services at once, so the whole cluster stops together.
+That is a full outage, and a stop where no peer holds `safe_to_bootstrap: 1`: it
+needs the recovery procedure above.
+
+That can happen without you changing the image. Swarm resolves `mariadb:12.3` to
+a digest at every deploy, so once upstream re-tags `12.3` with a patch release,
+the next upgrade of any value changes every peer. Upgrade with
+`--resolve-image never` to keep the digest the cluster already runs, so that only
+a deliberate image change restarts the peers:
+
+```bash
+swarmcli charts upgrade db swarmcli-charts/mariadb-galera --reuse-values --resolve-image never …
+```
+ To roll peers one at a time instead, update each service in place
 (`docker service update --image mariadb:<tag> <release>_mariadb-galera-1`), waiting
 for `Synced` between peers, then bump the chart to match.
 

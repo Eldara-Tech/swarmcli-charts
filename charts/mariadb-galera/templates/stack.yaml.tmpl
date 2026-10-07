@@ -238,6 +238,7 @@ services:
           # again. Rendered whatever cluster.forceBootstrap says, so that clearing
           # that value changes only the forced peer and the seed rather than every
           # peer, and the cluster rides through the second upgrade.
+          NOTED=-60
           until
             UP=''
             for p in {{ $others }}; do
@@ -250,8 +251,9 @@ services:
               GCOMM='gcomm://'
               break
             fi
-            if [ $$((SECONDS % 60)) -lt 2 ]; then
+            if [ $$((SECONDS - NOTED)) -ge 60 ]; then
               echo 'mariadb-galera: waiting for a peer to come up. If every peer is down, see README.md, Recovering a fully stopped cluster.'
+              NOTED=$$SECONDS
             fi
             sleep 2
           done

@@ -169,12 +169,17 @@ peer needs.
   check caught it as a cluster size of 1.
   The seed still needs both halves of its own guard — no data dir *and* no peer
   answering — so a restart never bootstraps and a seed rebuilt from an empty
-  volume re-syncs from the survivors instead of starting a rival cluster. Joining
-  peers should wait for a listener rather than crash-restart until the seed
-  appears. Keep a separate, clearly labelled `forceBootstrap` value for the
-  all-peers-down recovery a human must drive, have it demote the normal seed so
-  at most one peer can ever bootstrap, and document the procedure in the chart
-  README.
+  volume re-syncs from the survivors instead of starting a rival cluster. Every
+  other peer should wait until another peer *resolves*, without a time limit,
+  rather than start. Swarm publishes a task in DNS only once its healthcheck
+  passes, so after a full stop nothing resolves. `charts/mariadb-galera` started
+  anyway and failed with `No address to connect` on every peer, forever, wiping the
+  recovery record (`seqno`) as it went. The one safe automatic exit is the peer
+  the database itself marks as last to leave (Galera's `safe_to_bootstrap: 1`).
+  Keep a separate, clearly labelled `forceBootstrap` value for the all-peers-down
+  recovery a human must drive, and make it set that mark (Galera refuses
+  otherwise). Have it demote the normal seed so at most one peer can bootstrap
+  unconditionally, and document the procedure in the chart README.
 - **Assert the cluster in `ci/render-check.sh`.** Convergence is a weak signal —
   N peers that each formed a private one-node cluster all report healthy. Check
   that volumes, node labels and peer identities are all *distinct*, that the peer
