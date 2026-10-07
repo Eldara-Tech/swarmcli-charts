@@ -241,6 +241,13 @@ if [ "$case_name" = "metrics" ]; then
     grep -Eq "tasks\.[A-Za-z0-9_.-]*_$s( |;)" <<<"$ucmd" \
       || err "$u: does not try peer $s"
   done
+  # The statements carry the exporter password, so they go in on stdin: `-e` would put
+  # it in the client's argv, readable on the node through ps and /proc/<pid>/cmdline.
+  if grep -Eq -- '(^|[[:space:]])(-e|--execute)([[:space:]=]|$)' <<<"$ucmd"; then
+    err "$u: passes SQL to the client on its command line; the exporter password would be in argv"
+  fi
+  grep -Fq 'SET SESSION sql_log_off = 1;' <<<"$ucmd" \
+    || err "$u: no longer turns off the general query log for the session that sets the password"
   grep -Fq "GRANT PROCESS, REPLICATION CLIENT, SLAVE MONITOR ON *.* TO" <<<"$ucmd" \
     || err "$u: the grant changed; anything wider than PROCESS, REPLICATION CLIENT, SLAVE MONITOR reads data, and anything narrower fails a default collector"
   if yq -r ".services.\"$u\".networks // [] | .[]" "$f" | grep -xF monitoring >/dev/null; then
@@ -263,10 +270,12 @@ fi
 # be checked on the render rather than trusted to the deploy.
 #
 # A forced peer and the seed peer both count as bootstrappers, and the template
-# renders the seed branch only when no peer is forced, so the sum is always 1.
+# renders the seed branch only when no peer is forced, so the sum is always 1. The
+# rejoin wait's safe_to_bootstrap clause is not a third: Galera marks at most one
+# peer, and only the last to leave a cluster that stopped one peer at a time.
 forced="$(grep -cF 'cluster.forceBootstrap names this peer' "$f" || true)"
 seeds="$(grep -cF 'SEED PEER:' "$f" || true)"
-waiters="$(grep -cF 'JOINING PEER:' "$f" || true)"
+waiters="$(grep -cF 'REJOINING PEER:' "$f" || true)"
 
 want_forced=0
 if [ "$case_name" = "force-bootstrap" ]; then want_forced=1; fi
@@ -274,8 +283,8 @@ if [ "$case_name" = "force-bootstrap" ]; then want_forced=1; fi
   || err "$forced peers bootstrap unconditionally, expected $want_forced"
 [ "$((seeds + forced))" -eq 1 ] \
   || err "$((seeds + forced)) peers can bootstrap ($seeds seed + $forced forced), expected exactly 1 — two racing bootstrappers each form their own cluster"
-[ "$waiters" -eq "$((want_peers - 1))" ] \
-  || err "$waiters peers are join-only, expected $((want_peers - 1))"
+[ "$waiters" -eq "$((want_peers - forced))" ] \
+  || err "$waiters peers wait to rejoin, expected every peer but the forced one ($((want_peers - forced)))"
 
 # A seed that bootstraps without first checking for live peers would, once rebuilt
 # from an empty volume, form a rival cluster beside the survivors. Both halves of
@@ -287,12 +296,36 @@ if [ "$seeds" -eq 1 ]; then
     || err "the seed peer lost its live-peer probe — a rebuilt seed would form a rival cluster"
 fi
 
-# Joining peers wait for someone to listen. Losing this does not corrupt anything —
-# Swarm's restart policy still gets them there — but it turns a quiet first install
-# into a burst of crash-restarts, so it is worth keeping honest.
-if [ "$waiters" -gt 0 ]; then
-  grep -Fq 'while [ "$$SECONDS" -lt 60 ]; do' "$f" \
-    || err "joining peers lost their wait gate — they would crash-restart until the seed appears"
+# Every peer but a forced one waits for ANOTHER peer to resolve before starting
+# mariadbd. Swarm publishes a task in DNS only once it is healthy, so after a full
+# stop nothing resolves: a peer that starts anyway dies with `No address to connect`
+# in a loop that also rewrites grastate.dat to seqno -1, so the cluster can never
+# recover on its own and the record the operator needs to recover it is gone.
+for s in $svcs; do
+  cmd="$(yq -r ".services.\"$s\".command[0]" "$f")"
+  grep -Fq 'cluster.forceBootstrap names this peer' <<<"$cmd" && continue
+  grep -Fq 'if getent hosts "$$p" >/dev/null; then UP="$$p"; break; fi' <<<"$cmd" \
+    || err "$s: starts mariadbd without waiting for a peer to resolve; after a full stop it would crash-loop"
+  wait_list="$(grep -E '^[[:space:]]*for p in tasks\.' <<<"$cmd" | tail -1)"
+  if grep -Eq "tasks\.[A-Za-z0-9_.-]*_$s( |;)" <<<"$wait_list"; then
+    err "$s: waits for its own name, which resolves only once it is already healthy"
+  fi
+  for p in $svcs; do
+    [ "$p" = "$s" ] && continue
+    grep -Eq "tasks\.[A-Za-z0-9_.-]*_$p( |;)" <<<"$wait_list" \
+      || err "$s: does not wait on peer $p"
+  done
+  # The one exit from an all-down cluster without an operator: the peer Galera marked
+  # as the last to leave. Present in every peer, whatever cluster.forceBootstrap says,
+  # so that clearing that value does not restart every peer at once.
+  grep -Fq "if grep -qx 'safe_to_bootstrap: 1' /var/lib/mysql/grastate.dat 2>/dev/null; then" <<<"$cmd" \
+    || err "$s: lost the safe_to_bootstrap exit; a cluster stopped one peer at a time would never restart"
+done
+# Galera refuses to bootstrap from safe_to_bootstrap: 0, which every peer has after a
+# simultaneous stop, so a forced peer must set it or the recovery lever does nothing.
+if [ "$forced" -gt 0 ]; then
+  grep -Fq "sed -i 's/^safe_to_bootstrap: 0\$\$/safe_to_bootstrap: 1/' /var/lib/mysql/grastate.dat" "$f" \
+    || err "the forced peer does not mark itself safe_to_bootstrap; Galera would refuse to bootstrap it"
 fi
 
 # The ephemeral fixture must render no volumes and no pins at all.

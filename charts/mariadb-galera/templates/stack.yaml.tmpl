@@ -59,6 +59,9 @@ services:
 {{- range $i := until $peers }}
 {{- $n := add1 $i }}
 {{- $name := printf "%s-%d" $prefix $n }}
+{{- $others := list }}
+{{- range $addrs }}{{ if ne . (printf "tasks.%s_%s" $.Release.Name $name) }}{{ $others = append $others . }}{{ end }}{{ end }}
+{{- $others = join " " $others }}
 
   {{ $name }}:
     image: {{ $.Values.image.repository }}:{{ if $.Values.image.tag }}{{ $.Values.image.tag }}{{ else }}{{ $.Chart.AppVersion }}{{ end }}
@@ -182,8 +185,17 @@ services:
 {{- if eq $force $n }}
         # cluster.forceBootstrap names this peer, so form a NEW cluster and skip
         # every check below. Clear the value once the cluster is healthy.
+        #
+        # Galera refuses to form a cluster from a node whose grastate.dat says
+        # safe_to_bootstrap: 0, and after peers stop together, which is what an upgrade
+        # that changes every peer does, that is every one of them. Naming a peer here is
+        # the operator taking that decision, so the flag is set for them.
+        if [ -f /var/lib/mysql/grastate.dat ]; then
+          sed -i 's/^safe_to_bootstrap: 0$$/safe_to_bootstrap: 1/' /var/lib/mysql/grastate.dat
+        fi
         GCOMM='gcomm://'
-{{- else if and (eq $n 1) (eq $force 0) }}
+{{- else }}
+{{- if and (eq $n 1) (eq $force 0) }}
         if [ ! -d /var/lib/mysql/mysql ]; then
           # SEED PEER: peer 1 is the only peer that may ever form a cluster, and
           # even it only does so with no data dir AND no peer answering on the
@@ -209,24 +221,41 @@ services:
             GCOMM='gcomm://'
           fi
         fi
-{{- else }}
-        # JOINING PEER: never bootstraps, so it has nothing to decide — it only
-        # waits for a peer to start listening, because a Galera node that finds no
-        # primary component exits and would otherwise crash-restart until the seed
-        # appears. Bounded: if nothing shows up we start anyway and let Swarm's
-        # restart policy carry it, rather than sitting here forever.
-        while [ "$$SECONDS" -lt 60 ]; do
-          PEER_UP=no
-          for p in {{ $peerList }}; do
-            if timeout 2 bash -c "exec 3<>/dev/tcp/$$p/4567" 2>/dev/null; then
-              PEER_UP=yes
+{{- end }}
+        if [ "$$GCOMM" != 'gcomm://' ]; then
+          # REJOINING PEER: start mariadbd only once another peer resolves. Swarm
+          # publishes a task in DNS, tasks.<service> included, only after its
+          # healthcheck passes, and a peer only passes it inside a cluster. With every
+          # peer down nothing resolves, and a mariadbd started anyway dies with `No
+          # address to connect`, rewriting grastate.dat to seqno -1 each time: the
+          # record the recovery procedure reads. So wait, without a limit; until a
+          # peer resolves there is nothing to join.
+          #
+          # The one way out of an all-down cluster that needs no operator: the peer
+          # Galera marked safe_to_bootstrap: 1, i.e. the last to leave a cluster that
+          # stopped one peer at a time. Its data is the newest, Galera marks at most
+          # one peer, and nothing else could restart the cluster, so it forms it
+          # again. Rendered whatever cluster.forceBootstrap says, so that clearing
+          # that value changes only the forced peer and the seed rather than every
+          # peer, and the cluster rides through the second upgrade.
+          until
+            UP=''
+            for p in {{ $others }}; do
+              if getent hosts "$$p" >/dev/null; then UP="$$p"; break; fi
+            done
+            [ -n "$$UP" ]
+          do
+            if grep -qx 'safe_to_bootstrap: 1' /var/lib/mysql/grastate.dat 2>/dev/null; then
+              echo 'mariadb-galera: no peer is up and this one left the cluster last (safe_to_bootstrap: 1), so it forms it again'
+              GCOMM='gcomm://'
+              break
             fi
+            if [ $$((SECONDS % 60)) -lt 2 ]; then
+              echo 'mariadb-galera: waiting for a peer to come up. If every peer is down, see README.md, Recovering a fully stopped cluster.'
+            fi
+            sleep 2
           done
-          if [ "$$PEER_UP" = yes ]; then
-            break
-          fi
-          sleep 2
-        done
+        fi
 {{- end }}
 {{- if $.Values.proxy.enabled }}
         # Synced responder for the proxy. socat, gosu and the mariadb client are
@@ -440,7 +469,10 @@ services:
 
     # MYSQL_PWD keeps the root password off the command line. The exporter password
     # has to travel inside the statement, so it is escaped as a SQL string literal
-    # the way the image's own entrypoint escapes the passwords it sets.
+    # the way the image's own entrypoint escapes the passwords it sets, and the
+    # statements go in on stdin: `-e` would put them, password included, in this
+    # process's argv for anyone on the node to read. sql_log_off keeps them out of a
+    # general query log the operator may have enabled.
     entrypoint:
       - /bin/bash
       - -c
@@ -454,12 +486,13 @@ services:
         pw="$${pw//$$nl/\\n}"
         pw="$${pw//\'/\\\'}"
         user="'{{ .Values.metrics.username }}'@'%'"
-        sql="CREATE USER IF NOT EXISTS $$user IDENTIFIED BY '$$pw' WITH MAX_USER_CONNECTIONS 3;
+        sql="SET SESSION sql_log_off = 1;
+        CREATE USER IF NOT EXISTS $$user IDENTIFIED BY '$$pw' WITH MAX_USER_CONNECTIONS 3;
         ALTER USER $$user IDENTIFIED BY '$$pw' WITH MAX_USER_CONNECTIONS 3;
         GRANT PROCESS, REPLICATION CLIENT, SLAVE MONITOR ON *.* TO $$user;"
         for _ in $$(seq 1 60); do
           for p in {{ $peerList }}; do
-            if err="$$(mariadb -h "$$p" -uroot -e "$$sql" 2>&1)"; then
+            if err="$$(mariadb -h "$$p" -uroot 2>&1 <<<"$$sql")"; then
               echo "mariadb-galera: exporter user {{ .Values.metrics.username }} is ready (via $$p)"
               exit 0
             fi
