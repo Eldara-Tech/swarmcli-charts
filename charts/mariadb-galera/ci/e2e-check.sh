@@ -256,4 +256,155 @@ if [ "$case" = default ]; then
   recovery_ok=", re-formed after a one-at-a-time stop and waited intact after a simultaneous one"
 fi
 
-echo "  ${release}: $want peers, all Synced, cross-peer write replicated$metrics_ok$recovery_ok OK"
+# With the lifecycle fixture (its own CI job): what a long-lived cluster goes
+# through, each step asserting the cluster and its rows rather than convergence.
+# Runs `swarmcli charts upgrade` itself, so it needs $SWARMCLI, as scripts/e2e-test.sh
+# is given.
+lifecycle_ok=""
+if [ "$case" = lifecycle ]; then
+  SWARMCLI="${SWARMCLI:-swarmcli}"
+  chart="./$2"
+  first_svc="$(printf '%s\n' $peers | sed -n 1p)"
+  stop_peer() {
+    docker service scale --detach "$1=0" >/dev/null
+    for _ in $(seq 1 60); do
+      [ -z "$(cid_of "$1")" ] && return 0
+      sleep 2
+    done
+    echo "  $1: did not stop"; exit 1
+  }
+  start_all() { for svc in $peers; do docker service scale --detach "$svc=1" >/dev/null; done; }
+  # Polls the given peer (default the first) until the cluster has every member.
+  wait_cluster() {
+    local svc="${1:-$first_svc}" c size=""
+    for _ in $(seq 1 90); do
+      c="$(cid_of "$svc")"
+      size="$( [ -n "$c" ] && status_of "$c" 'WSREP_CLUSTER_SIZE' 2>/dev/null || true)"
+      [ "$size" = "$want" ] && return 0
+      sleep 5
+    done
+    echo "  $2: the cluster did not reach $want members (seen from $svc: '$size')"
+    for v in $volumes; do echo "    $v: $(grastate "$v")"; done
+    exit 1
+  }
+  rows_ok() {  # rows_ok <svc> <ids...>
+    local svc="$1" want_n got
+    shift
+    want_n=$#
+    got="$(q "$(cid_of "$svc")" "SET SESSION wsrep_sync_wait=1; SELECT COUNT(*) FROM e2e_galera.t WHERE id IN ($(echo "$@" | tr ' ' ','))")"
+    [ "$got" = "$want_n" ] || { echo "  $svc: $got of $want_n expected rows present ($*)"; exit 1; }
+  }
+  volumes="$(docker volume ls -q --filter "label=com.docker.stack.namespace=${release}" | sort)"
+  grastate() { docker run --rm -v "$1:/d:ro" busybox:1.37 grep -E '^(seqno|safe_to_bootstrap):' /d/grastate.dat | tr -s ' ' | tr '\n' ' '; }
+  seqno_of() { docker run --rm -v "$1:/d:ro" busybox:1.37 sed -n 's/^seqno:[[:space:]]*//p' /d/grastate.dat; }
+  upgrade() { "$SWARMCLI" charts upgrade "$release" "$chart" --reuse-values "$@" >/dev/null; }
+  task_of() { docker service ps -q --filter desired-state=running "$1" | sed -n 1p; }
+
+  # 1. One peer restarted into a running cluster rejoins it.
+  second="$(printf '%s\n' $peers | sed -n 2p)"
+  docker service update --detach --force "$second" >/dev/null
+  sleep 5
+  wait_cluster "$second" "after restarting $second"
+
+  # 2. Peer 1 rebuilt from an empty volume while the others run re-syncs from them; it
+  #    must not seed a rival cluster beside the survivors (README, How bootstrapping decides).
+  q "$(cid_of "$second")" "REPLACE INTO e2e_galera.t VALUES (20, 'before-rebuild')" >/dev/null
+  stop_peer "$first_svc"
+  for c in $(docker ps -aq -f "label=com.docker.swarm.service.name=$first_svc"); do docker rm -f "$c" >/dev/null; done
+  docker volume rm "$(printf '%s\n' $volumes | sed -n 1p)" >/dev/null
+  docker service scale --detach "$first_svc=1" >/dev/null
+  wait_cluster "$second" "after rebuilding $first_svc from an empty volume"
+  rows_ok "$first_svc" 1 20
+
+  # 3. An upgrade that changes every peer, which is what a re-tagged image does: every
+  #    peer stops at once. It may come back by itself (one peer happened to leave last)
+  #    or wait; it must never crash-loop or lose the seqno the operator compares.
+  q "$(cid_of "$second")" "REPLACE INTO e2e_galera.t VALUES (30, 'before-upgrade')" >/dev/null
+  extra="$(mktemp)"
+  printf 'extraArgs:\n  - "--max-connections=201"\n' >"$extra"
+  before_tasks="$(for svc in $peers; do task_of "$svc"; done)"
+  upgrade -f "$extra"
+  for _ in $(seq 1 30); do
+    now_tasks="$(for svc in $peers; do task_of "$svc"; done)"
+    [ -z "$(comm -12 <(echo "$before_tasks" | sort) <(echo "$now_tasks" | sort))" ] && break
+    sleep 2
+  done
+  sleep 60
+  logs="$(mktemp)"
+  for svc in $peers; do c="$(cid_of "$svc")"; [ -n "$c" ] && docker logs "$c" >>"$logs" 2>&1; done
+  if grep -F 'No address to connect' "$logs" >/dev/null; then
+    echo "  after an upgrade restarting every peer, a peer started mariadbd with no peer to reach"; exit 1
+  fi
+  up_size="$(status_of "$(cid_of "$first_svc")" 'WSREP_CLUSTER_SIZE' 2>/dev/null || true)"
+  if [ "$up_size" != "$want" ]; then
+    for v in $volumes; do
+      [ "$(seqno_of "$v")" != "-1" ] || { echo "  $v: seqno -1 after an upgrade; the waiting peer started mariadbd"; exit 1; }
+    done
+  else
+    # It came back by itself, so put it into the state forceBootstrap exists for.
+    for svc in $peers; do docker service scale --detach "$svc=0" >/dev/null; done
+    for svc in $peers; do stop_peer "$svc"; done
+    for v in $volumes; do
+      docker run --rm -v "$v:/d" busybox:1.37 sed -i 's/^safe_to_bootstrap: 1$/safe_to_bootstrap: 0/' /d/grastate.dat
+    done
+    start_all
+    sleep 20
+  fi
+
+  # 4. forceBootstrap the furthest-ahead peer, as the README runbook says. It must form
+  #    the cluster with every row, though Galera marked no peer safe.
+  best=""; best_seq=-2; i=0
+  for v in $volumes; do
+    i=$((i + 1)); sq="$(seqno_of "$v")"
+    if [ "$sq" -gt "$best_seq" ]; then best_seq="$sq"; best="$i"; fi
+  done
+  upgrade -f "$extra" --set "cluster.forceBootstrap=$best" --wait --timeout 15m \
+    || { echo "  forceBootstrap=$best did not converge"; for v in $volumes; do echo "    $v: $(grastate "$v")"; done; exit 1; }
+  wait_cluster "$first_svc" "after forceBootstrap=$best"
+  rows_ok "$first_svc" 1 20 30
+
+  # 5. Clearing it restarts only the forced peer and peer 1; the rest keep their tasks,
+  #    so the cluster stays up through the second upgrade.
+  kept=""
+  n=0
+  for svc in $peers; do
+    n=$((n + 1)); [ "$n" = 1 ] || [ "$n" = "$best" ] || kept="$kept $svc=$(task_of "$svc")"
+  done
+  upgrade -f "$extra" --set "cluster.forceBootstrap=" --wait --timeout 15m \
+    || { echo "  clearing forceBootstrap did not converge"; exit 1; }
+  for kv in $kept; do
+    [ "$(task_of "${kv%%=*}")" = "${kv#*=}" ] || { echo "  ${kv%%=*} restarted when forceBootstrap was cleared"; exit 1; }
+  done
+  wait_cluster "$first_svc" "after clearing forceBootstrap"
+
+  # 6. Every peer killed at once (a power loss): grastate says seqno -1 everywhere, so
+  #    the runbook's --wsrep-recover command must yield each peer's position, and
+  #    forcing the furthest-ahead one must keep every committed row.
+  q "$(cid_of "$second")" "REPLACE INTO e2e_galera.t VALUES (40, 'before-crash')" >/dev/null
+  image="$(docker service inspect "$first_svc" --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}')"
+  docker kill $(for svc in $peers; do cid_of "$svc"; done) >/dev/null
+  sleep 10
+  for svc in $peers; do stop_peer "$svc"; done
+  best=""; best_seq=-2; i=0
+  for v in $volumes; do
+    i=$((i + 1))
+    pos="$(docker run --rm --network none -v "$v:/var/lib/mysql" "$image" \
+      mariadbd --user=mysql --wsrep-on=ON --wsrep-provider=/usr/lib/galera/libgalera_smm.so --wsrep-recover 2>&1 \
+      | sed -n 's/.*WSREP: Recovered position: [^:]*:\([-0-9]*\).*/\1/p' | tail -1)"
+    case "$pos" in
+      ''|-1) echo "  $v: --wsrep-recover gave no position ('$pos')"; exit 1 ;;
+    esac
+    if [ "$pos" -gt "$best_seq" ]; then best_seq="$pos"; best="$i"; fi
+  done
+  upgrade -f "$extra" --set "cluster.forceBootstrap=$best" --wait --timeout 15m \
+    || { echo "  forceBootstrap=$best after a crash did not converge"; exit 1; }
+  wait_cluster "$first_svc" "after a crash and forceBootstrap=$best"
+  rows_ok "$first_svc" 1 20 30 40
+  upgrade -f "$extra" --set "cluster.forceBootstrap=" --wait --timeout 15m \
+    || { echo "  clearing forceBootstrap after a crash did not converge"; exit 1; }
+  wait_cluster "$first_svc" "after clearing forceBootstrap again"
+  rm -f "$extra" "$logs"
+  lifecycle_ok=", rejoined, re-synced a rebuilt seed, survived an all-peer upgrade, forceBootstrap and a crash"
+fi
+
+echo "  ${release}: $want peers, all Synced, cross-peer write replicated$metrics_ok$recovery_ok$lifecycle_ok OK"

@@ -346,8 +346,15 @@ starts and `grastate.dat` is left as it was. Recover deliberately:
 
 1. Find the furthest-ahead peer. On each peer's node, read its `grastate.dat`:
    `docker run --rm -v <release>_mariadb-galera-data-<N>:/d:ro busybox cat /d/grastate.dat`.
-   The highest `seqno` wins. A peer that crashed shows `-1`; recover its position
-   with `mariadbd --wsrep-recover` on that volume and read it from the log.
+   The highest `seqno` wins. A peer that crashed shows `-1`; with every peer
+   stopped, recover its position from the volume itself, using the image the
+   cluster runs. The number after the last `:` is its seqno:
+
+   ```bash
+   docker run --rm --network none -v <release>_mariadb-galera-data-<N>:/var/lib/mysql mariadb:<tag> \
+     mariadbd --user=mysql --wsrep-on=ON --wsrep-provider=/usr/lib/galera/libgalera_smm.so \
+     --wsrep-recover 2>&1 | grep 'Recovered position'
+   ```
 2. Set `cluster.forceBootstrap` to **that peer's number** and
    `swarmcli charts upgrade`. The chart marks that peer `safe_to_bootstrap: 1`,
    which Galera insists on, and it forms a new cluster from the best data.

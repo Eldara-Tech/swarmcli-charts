@@ -7,7 +7,8 @@
 #
 # Each entry is { chart, cases, timeout }: `cases` is the E2E_CASES subset
 # (empty "" => every fixture, the `make e2e` default); `timeout` is the
-# per-fixture convergence budget (E2E_TIMEOUT).
+# per-fixture convergence budget (E2E_TIMEOUT). An optional `name` titles the job
+# (`e2e (<name>)`, default the chart), so one chart can run two jobs in parallel.
 include:
   # openclaw: ALL fixtures (cases: "" => no filter) — keeps the #60 backend
   # regression guard and picks up the #63 edge-routing fixture automatically. Its
@@ -57,6 +58,13 @@ include:
   # exporter over the monitoring overlay, which proves the one-shot created a user whose
   # grants every default collector accepts — a missing grant fails only its collector.
   - { chart: mariadb-galera, cases: "default ephemeral proxy metrics",                                                 timeout: 25m }
+  # mariadb-galera lifecycle, a job of its own so the chart's wall time stays ~40m: a peer
+  # restart, a peer rebuilt from an empty volume, an upgrade restarting every peer (what a
+  # re-tagged image does), recovery with cluster.forceBootstrap and clearing it, and a crash
+  # of every peer recovered through the README's --wsrep-recover runbook. It drives
+  # `swarmcli charts upgrade` itself; its fixture shortens the health windows to keep the
+  # five --wait rollouts to ~2.5 minutes each.
+  - { chart: mariadb-galera, name: "mariadb-galera lifecycle", cases: "lifecycle",                                    timeout: 25m }
   # postgres: EVERY fixture (cases: "" => no filter). bind-mount is included, unlike
   # mariadb's: PGDATA sits one level below the mount (/var/lib/postgresql/<major>/docker),
   # so initdb never has to chown or empty the bind-mounted mountpoint itself. legacy-major
