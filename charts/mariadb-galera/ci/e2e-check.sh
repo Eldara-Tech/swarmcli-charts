@@ -401,7 +401,8 @@ if [ "$case" = lifecycle ]; then
   for v in $volumes; do
     i=$((i + 1))
     if ! out="$(docker run --rm --network none -v "$v:/var/lib/mysql" "$image" \
-      mariadbd --user=mysql --wsrep-on=ON --wsrep-provider=/usr/lib/galera/libgalera_smm.so --wsrep-recover 2>&1)"; then
+      mariadbd --user=mysql --wsrep-on=ON --wsrep-provider=/usr/lib/galera/libgalera_smm.so \
+      --wsrep-cluster-address=gcomm:// --wsrep-recover 2>&1)"; then
       echo "  $v: --wsrep-recover failed:"; tail -15 <<<"$out" | sed 's/^/    /'; exit 1
     fi
     pos="$(sed -n 's/.*WSREP: Recovered position: [^:]*:\([-0-9]*\).*/\1/p' <<<"$out" | tail -1)"

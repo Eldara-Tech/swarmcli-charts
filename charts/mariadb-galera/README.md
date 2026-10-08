@@ -356,12 +356,14 @@ starts and `grastate.dat` is left as it was. Recover deliberately:
    `docker run --rm -v <release>_mariadb-galera-data-<N>:/d:ro busybox cat /d/grastate.dat`.
    The highest `seqno` wins. A peer that crashed shows `-1`; with every peer
    stopped, recover its position from the volume itself, using the image the
-   cluster runs. The number after the last `:` is its seqno:
+   cluster runs. The number after the last `:` is its seqno. MariaDB 12.3.3 and
+   later refuse to start without a cluster address, even only to recover, so the
+   command passes an empty one; `--network none` keeps it from reaching anyone:
 
    ```bash
    docker run --rm --network none -v <release>_mariadb-galera-data-<N>:/var/lib/mysql mariadb:<tag> \
      mariadbd --user=mysql --wsrep-on=ON --wsrep-provider=/usr/lib/galera/libgalera_smm.so \
-     --wsrep-recover 2>&1 | grep 'Recovered position'
+     --wsrep-cluster-address=gcomm:// --wsrep-recover 2>&1 | grep 'Recovered position'
    ```
 2. Set `cluster.forceBootstrap` to **that peer's number** and
    `swarmcli charts upgrade`. The chart marks that peer `safe_to_bootstrap: 1`,
