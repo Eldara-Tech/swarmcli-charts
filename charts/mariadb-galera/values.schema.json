@@ -156,6 +156,10 @@
         }
       }
     },
+    "stopGracePeriod": {
+      "description": "How long Swarm waits for a peer to stop before killing it, e.g. 5m.",
+      "type": "string", "minLength": 1
+    },
     "extraArgs": { "type": "array", "items": { "type": "string" } },
     "labels": { "type": "object" }
   }

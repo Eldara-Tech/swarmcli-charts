@@ -69,6 +69,9 @@ services:
     # changes on every reschedule and is what shows up in this peer's own error log
     # and in the others' membership messages.
     hostname: {{ $name }}
+    # Long enough for mariadbd to finish a clean shutdown: flush the buffer pool and
+    # write grastate.dat. Killed partway, a peer is left at seqno -1, as after a crash.
+    stop_grace_period: {{ $.Values.stopGracePeriod }}
 
     networks:
       {{ $.Values.network.name }}:
@@ -142,6 +145,10 @@ services:
     command:
       - |-
         set -eu
+        # PID 1 ignores SIGTERM unless it traps it, so without this a peer still waiting
+        # for the cluster would sit out the whole stop_grace_period on every stop. Once
+        # mariadbd is exec'd it handles SIGTERM itself.
+        trap 'exit 0' TERM INT
         # The state-transfer account. mariadb-backup connects to the DONOR peer to
         # stream its data dir; authenticating VIA unix_socket matches the account
         # against the OS user mysqld already runs as, so there is no password to

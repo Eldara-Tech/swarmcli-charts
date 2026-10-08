@@ -46,6 +46,13 @@ yourself:
 docker network create --driver overlay --attachable --opt encrypted mariadb-galera-net
 ```
 
+Across nodes, the overlay needs the usual Swarm ports open between them: 2377/tcp,
+7946/tcp+udp and 4789/udp. Galera's own ports travel inside the overlay. If the
+overlay's MTU is above what the path between nodes carries (common on cloud
+networks with an MTU of 1450 or less), small queries work but a state transfer
+hangs. Create the network with a lower MTU then, alongside any other options:
+`--opt com.docker.network.driver.mtu=1400`.
+
 ## Installing
 
 ```bash
@@ -262,6 +269,7 @@ Another Prometheus needs the same relabelling of
 | `healthcheck.retries` | `6` | Failures before unhealthy. |
 | `healthcheck.startPeriod` | `300s` | Grace period — **must exceed your worst-case state transfer**. |
 | `healthcheck.monitor` | `360s` | Rollout failure window; see below. |
+| `stopGracePeriod` | `5m` | How long Swarm waits for a peer to stop cleanly before killing it. |
 | `extraArgs` | `[]` | Extra `mariadbd` flags, appended verbatim. |
 | `labels` | `{}` | Extra deploy labels on every peer. |
 
@@ -369,23 +377,23 @@ is still up, and never force one while some peer still shows
 
 ### Upgrading the image
 
-Galera requires every peer on the same server version, and `swarmcli charts
-upgrade` updates all peer services at once, so the whole cluster stops together.
-That is a full outage, and a stop where no peer holds `safe_to_bootstrap: 1`: it
-needs the recovery procedure above.
-
-That can happen without you changing the image. Swarm resolves `mariadb:12.3` to
-a digest at every deploy, so once upstream re-tags `12.3` with a patch release,
-the next upgrade of any value changes every peer. Upgrade with
-`--resolve-image never` to keep the digest the cluster already runs, so that only
-a deliberate image change restarts the peers:
-
-```bash
-swarmcli charts upgrade db swarmcli-charts/mariadb-galera --reuse-values --resolve-image never …
-```
- To roll peers one at a time instead, update each service in place
+Galera upgrades one peer at a time: MariaDB supports a cluster running two versions
+while that happens. But `swarmcli charts upgrade` updates all peer services at
+once, so the whole cluster stops together. That is a full outage, and a stop where
+no peer holds `safe_to_bootstrap: 1`, so it needs the recovery procedure above. To
+roll peers one at a time instead, update each service in place
 (`docker service update --image mariadb:<tag> <release>_mariadb-galera-1`), waiting
 for `Synced` between peers, then bump the chart to match.
+
+That full stop can happen without you changing the image. By default Swarm resolves
+`mariadb:12.3` to a digest at every deploy, so once upstream re-tags `12.3` with a
+patch release, the next upgrade of any value changes every peer. Upgrade with
+`--resolve-image changed`: it keeps the digest the cluster already runs while the
+image is unchanged, and resolves a fresh one when you change it on purpose.
+
+```bash
+swarmcli charts upgrade db swarmcli-charts/mariadb-galera --reuse-values --resolve-image changed …
+```
 
 Note also that a MariaDB tag change is a **series** change, not a patch: check the
 release notes for on-disk format changes before upgrading a cluster you care about.

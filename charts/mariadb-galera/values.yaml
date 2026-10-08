@@ -247,6 +247,12 @@ healthcheck:
   # values above.
   monitor: 360s
 
+# How long Swarm waits for a peer to stop before killing it. A clean shutdown flushes
+# the buffer pool and records the peer's position in grastate.dat; a peer killed
+# partway is left at seqno -1, as after a crash, and needs --wsrep-recover. Raise it
+# for a buffer pool of many gigabytes.
+stopGracePeriod: 5m
+
 # Arbitrary extra mariadbd flags, appended verbatim after the chart's own. Each
 # entry is a full flag string, e.g. "--max-connections=200". Galera tuning goes
 # here too, e.g. "--wsrep-provider-options=gcache.size=1G".
