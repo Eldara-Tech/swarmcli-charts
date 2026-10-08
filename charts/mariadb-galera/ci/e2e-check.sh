@@ -274,13 +274,15 @@ if [ "$case" = lifecycle ]; then
     echo "  $1: did not stop"; exit 1
   }
   start_all() { for svc in $peers; do docker service scale --detach "$svc=1" >/dev/null; done; }
-  # Polls the given peer (default the first) until the cluster has every member.
+  # Polls the given peer (default the first) until the cluster has every member and
+  # that peer is Synced, so a query sent to it next is answered.
   wait_cluster() {
-    local svc="${1:-$first_svc}" c size=""
+    local svc="${1:-$first_svc}" c size="" state=""
     for _ in $(seq 1 90); do
       c="$(cid_of "$svc")"
       size="$( [ -n "$c" ] && status_of "$c" 'WSREP_CLUSTER_SIZE' 2>/dev/null || true)"
-      [ "$size" = "$want" ] && return 0
+      state="$( [ -n "$c" ] && status_of "$c" 'WSREP_LOCAL_STATE_COMMENT' 2>/dev/null || true)"
+      [ "$size" = "$want" ] && [ "$state" = Synced ] && return 0
       sleep 5
     done
     echo "  $2: the cluster did not reach $want members (seen from $svc: '$size')"
@@ -300,10 +302,16 @@ if [ "$case" = lifecycle ]; then
   upgrade() { "$SWARMCLI" charts upgrade "$release" "$chart" --reuse-values "$@" >/dev/null; }
   task_of() { docker service ps -q --filter desired-state=running "$1" | sed -n 1p; }
 
-  # 1. One peer restarted into a running cluster rejoins it.
+  # 1. One peer restarted into a running cluster rejoins it. Polled only once its new
+  #    task runs: the old container keeps answering for a moment while it stops.
   second="$(printf '%s\n' $peers | sed -n 2p)"
+  old_task="$(task_of "$second")"
   docker service update --detach --force "$second" >/dev/null
-  sleep 5
+  for _ in $(seq 1 60); do
+    t="$(task_of "$second")"
+    [ -n "$t" ] && [ "$t" != "$old_task" ] && break
+    sleep 2
+  done
   wait_cluster "$second" "after restarting $second"
 
   # 2. Peer 1 rebuilt from an empty volume while the others run re-syncs from them; it
@@ -314,6 +322,7 @@ if [ "$case" = lifecycle ]; then
   docker volume rm "$(printf '%s\n' $volumes | sed -n 1p)" >/dev/null
   docker service scale --detach "$first_svc=1" >/dev/null
   wait_cluster "$second" "after rebuilding $first_svc from an empty volume"
+  wait_cluster "$first_svc" "after rebuilding $first_svc from an empty volume"
   rows_ok "$first_svc" 1 20
 
   # 3. An upgrade that changes every peer, which is what a re-tagged image does: every
