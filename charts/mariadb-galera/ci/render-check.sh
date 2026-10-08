@@ -140,7 +140,8 @@ if [ -n "$proxy_svc" ]; then
   cfg="$(yq -r ".services.\"$proxy_svc\".environment.HAPROXY_CFG" "$f")"
   grep -Fq 'option httpchk' <<<"$cfg" || err "proxy does not use an HTTP check"
   grep -Fq 'http-check expect status 200' <<<"$cfg" || err "proxy does not require a 200 from the Synced responder"
-  port="$(yq -r '.services.*.command[0]' "$f" | { grep -oE 'TCP-LISTEN:[0-9]+' || true; } | sed -n 1p | cut -d: -f2)"
+  # The Synced responder's port, not the election's (4566), which listens too.
+  port="$(yq -r '.services.*.command[0]' "$f" | { grep -oE 'TCP-LISTEN:[0-9]+,fork,reuseaddr EXEC:/usr/local/bin/galera-synced-check' || true; } | sed -n 1p | sed 's/^TCP-LISTEN:\([0-9]*\),.*/\1/')"
   [ -n "$port" ] || err "no peer runs the Synced responder"
   for s in $svcs; do
     grep -Eq "server $s $s:[0-9]+ check port $port" <<<"$cfg" \
@@ -160,7 +161,7 @@ for s in $svcs; do
   # Exact, not a prefix: `--su-mysql` on its own runs no tests at all and would
   # report healthy unconditionally. The chart owns this list entirely, so there is
   # no legitimate variation to allow for.
-  want_hc='CMD healthcheck.sh --su-mysql --connect --galera_ready'
+  want_hc='CMD-SHELL test -e /tmp/galera-electing || exec healthcheck.sh --su-mysql --connect --galera_ready'
   if [ -n "$hc" ] && [ "$hc" != "$want_hc" ]; then
     err "$s: healthcheck is '$hc', expected '$want_hc' — --su-mysql must come first (the script re-execs and drops earlier options) and the probe must be --galera_ready, not --galera_online, which would kill donors"
   fi
@@ -304,8 +305,12 @@ fi
 for s in $svcs; do
   cmd="$(yq -r ".services.\"$s\".command[0]" "$f")"
   grep -Fq 'cluster.forceBootstrap names this peer' <<<"$cmd" && continue
-  grep -Fq 'if getent hosts "$$p" >/dev/null; then UP="$$p"; break; fi' <<<"$cmd" \
+  grep -Fq 'getent hosts "$$p" >/dev/null || continue' <<<"$cmd" \
     || err "$s: starts mariadbd without waiting for a peer to resolve; after a full stop it would crash-loop"
+  # A peer that resolves but does not answer on the election port is a member, the
+  # one thing worth joining; an electing peer resolves too and must not count as one.
+  grep -Fq 'MEMBER="$$p"' <<<"$cmd" \
+    || err "$s: does not tell a member from an electing peer; it would join a peer that is not in a cluster"
   wait_list="$(grep -E '^[[:space:]]*for p in tasks\.' <<<"$cmd" | tail -1)"
   if grep -Eq "tasks\.[A-Za-z0-9_.-]*_$s( |;)" <<<"$wait_list"; then
     err "$s: waits for its own name, which resolves only once it is already healthy"
@@ -320,6 +325,21 @@ for s in $svcs; do
   # so that clearing that value does not restart every peer at once.
   grep -Fq "if grep -qx 'safe_to_bootstrap: 1' /var/lib/mysql/grastate.dat 2>/dev/null; then" <<<"$cmd" \
     || err "$s: lost the safe_to_bootstrap exit; a cluster stopped one peer at a time would never restart"
+  # The election for an all-down cluster. Each property here is what keeps it from
+  # forming a cluster on stale data: only peers with data take part, all of them
+  # must have reported, and the highest seqno wins (ties to the lowest peer number,
+  # so every peer computes the same winner).
+  grep -Fq "socat TCP-LISTEN:4566,fork,reuseaddr SYSTEM:'cat /tmp/galera-position'" <<<"$cmd" \
+    || err "$s: does not serve its position for the election"
+  grep -Fq 'if [ "$$ELECTING" = no ] && [ -d /var/lib/mysql/mysql ] && [ -f /var/lib/mysql/grastate.dat ]; then' <<<"$cmd" \
+    || err "$s: may elect without data of its own; an empty peer could win and wipe the others"
+  grep -Fq "grep -c .)\" -eq $((want_peers - 1)) ]; then" <<<"$cmd" \
+    || err "$s: does not wait for all $want_peers peers before electing; a missing peer may hold the newest data"
+  grep -Fq "sort -k2,2nr -k1,1n" <<<"$cmd" \
+    || err "$s: the election no longer picks the highest seqno, then the lowest peer number"
+done
+for prt in $(yq -r '.services.*.ports // [] | .[] | .published' "$f"); do
+  [ "$prt" != 4566 ] || err "the election port 4566 is published; it must stay inside the overlay"
 done
 # Galera refuses to bootstrap from safe_to_bootstrap: 0, which every peer has after a
 # simultaneous stop, so a forced peer must set it or the recovery lever does nothing.
