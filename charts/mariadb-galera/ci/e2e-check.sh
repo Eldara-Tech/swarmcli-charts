@@ -357,7 +357,7 @@ if [ "$case" = lifecycle ]; then
     echo "  $2: the cluster did not reach $want members (seen from $svc: '$size')"
     for v in $volumes; do echo "    $v: $(grastate "$v")"; done
     # What the peer was doing: its tasks, and the end of its newest container's log.
-    docker service ps --no-trunc --format '    {{.Name}} {{.CurrentState}} {{.Error}}' "$svc" 2>&1 | head -5
+    docker service ps --no-trunc --format '    {{.Name}} {{.CurrentState}} {{.Error}}' "$svc" 2>&1 | sed -n 1,5p
     c="$(docker ps -aq -f "label=com.docker.swarm.service.name=$svc" | sed -n 1p)"
     [ -z "$c" ] || docker logs --tail 20 "$c" 2>&1 | sed 's/^/    /'
     exit 1
