@@ -105,12 +105,29 @@ proxy="$(printf '%s\n' "$all_svcs" | { grep -E -- '-proxy$' || true; })"
 if [ -n "$proxy" ]; then
   net="$(docker service inspect "$proxy" --format '{{range .Spec.TaskTemplate.Networks}}{{.Target}}{{end}}' | sed -n 1p)"
   pw="$(docker exec "$first" sh -c 'cat /run/secrets/mariadb_galera_root_password')"
-  # Query through the alias, which now belongs to the proxy.
+  # Query through the alias, which now belongs to the proxy. The client's error is kept:
+  # a failure has to say whether it was refused, timed out or found no backend.
   via_proxy() {
     docker run --rm --network "$net" -e MYSQL_PWD="$pw" mariadb:12.3 \
-      mariadb -h mariadb -uroot -N -B -e 'SELECT 1' 2>/dev/null
+      mariadb -h mariadb -uroot -N -B -e 'SELECT 1' 2>&1
   }
-  [ "$(via_proxy)" = "1" ] || { echo "  $proxy: cannot reach the cluster through the client endpoint"; exit 1; }
+  # HAProxy marks a backend up only after `rise 2` checks `inter 2s` apart, so a probe
+  # right after convergence can find none up yet: one probe made this check flaky
+  # (#229). Allow 30s, and on failure show what the client and the proxy saw.
+  out=""
+  for _ in $(seq 1 15); do
+    out="$(via_proxy || true)"
+    [ "$out" = "1" ] && break
+    sleep 2
+  done
+  if [ "$out" != "1" ]; then
+    echo "  $proxy: cannot reach the cluster through the client endpoint; the client said: $out"
+    docker service ps "$proxy" --no-trunc --format '    {{.Name}} {{.CurrentState}} {{.Error}}' | sed -n '1,6p'
+    for c in $(docker ps -q -f "label=com.docker.swarm.service.name=$proxy"); do
+      docker logs --tail 30 "$c" 2>&1 | sed 's/^/    /'
+    done
+    exit 1
+  fi
 
   # Take a peer away and keep asking. The endpoint must keep answering.
   victim="$(printf '%s\n' $peers | sed -n 2p)"
