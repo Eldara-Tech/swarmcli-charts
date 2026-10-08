@@ -52,6 +52,9 @@
 {{- $addrs = append $addrs (printf "tasks.%s_%s" $.Release.Name $nm) -}}
 {{- end -}}
 {{- $gcomm := printf "gcomm://%s" (join "," $addrs) -}}
+{{- /* Where a peer waiting in an all-down cluster serves its position to the others,
+       for the election in the rejoin wait. Inside the overlay only, never published. */ -}}
+{{- $electionPort := 4566 -}}
 {{- $peerList := join " " $addrs -}}
 version: "3.9"
 
@@ -202,69 +205,137 @@ services:
         fi
         GCOMM='gcomm://'
 {{- else }}
-{{- if and (eq $n 1) (eq $force 0) }}
-        if [ ! -d /var/lib/mysql/mysql ]; then
-          # SEED PEER: peer 1 is the only peer that may ever form a cluster, and
-          # even it only does so with no data dir AND no peer answering on the
-          # Galera port. Both halves matter. Without the data-dir test a restart
-          # would bootstrap again; without the port probe a peer 1 rebuilt from an
-          # empty volume would form a rival cluster beside the survivors instead of
-          # re-syncing from them.
-          #
-          # Letting EVERY peer bootstrap when it sees no peers is the obvious
-          # version of this and it is wrong: on a first install all peers start at
-          # once with empty data dirs and none is listening yet, so each one forms
-          # its own cluster and they never merge. One designated seed removes the
-          # race entirely. When cluster.forceBootstrap names a peer, that peer is
-          # the single bootstrapper and this branch is not rendered at all, so the
-          # count never rises above one.
-          PEER_UP=no
-          for p in {{ $peerList }}; do
+        # REJOINING PEER: start mariadbd only once a MEMBER answers on the Galera port: a
+        # peer running inside a cluster. A mariadbd started with no member to reach dies
+        # with `No address to connect`, rewriting grastate.dat to seqno -1 each time. So
+        # wait, without a limit. Swarm publishes a task in DNS only once its healthcheck
+        # passes, and a peer passes it only inside a cluster or while it elects (below).
+        #
+        # While no member is up, the peers ELECT one to form the cluster, and that is
+        # also how a first install starts. Each serves its position on port {{ $electionPort }}:
+        # its seqno, from grastate.dat or from --wsrep-recover after a crash, or -2 when
+        # its data dir is empty. Once every one of the {{ $peers }} peers has reported, the highest
+        # seqno wins, then the lowest peer number, so each peer computes the same winner:
+        #   * a peer with data beats every empty one, so an empty or rebuilt peer can
+        #     never form a cluster that the others then copy;
+        #   * when every peer is empty, as on a first install, peer 1 forms a new one;
+        #   * fewer than all never elect: a missing peer may hold the newest data, and
+        #     cluster.forceBootstrap is the way out then. So it is for a crashed peer
+        #     whose position --wsrep-recover cannot read.
+        # The peer Galera marked safe_to_bootstrap: 1, the last to leave a cluster that
+        # stopped one peer at a time, forms it again without waiting for the others.
+        # Neither depends on cluster.forceBootstrap, so setting or clearing that value
+        # changes only the forced peer.
+        if [ -f /var/lib/mysql/.galera-elected ]; then ELECTED=yes; else ELECTED=no; fi
+        rm -f /tmp/galera-electing
+        NOTED=-60
+        ELECTING=no
+        READ=no
+        SEQNO=''
+        SOCAT=''
+        while :; do
+          STATES=''
+          MEMBER=''
+          for p in {{ $others }}; do
+            getent hosts "$$p" >/dev/null || continue
             if timeout 2 bash -c "exec 3<>/dev/tcp/$$p/4567" 2>/dev/null; then
-              PEER_UP=yes
-            fi
-          done
-          if [ "$$PEER_UP" = no ]; then
-            GCOMM='gcomm://'
-          fi
-        fi
-{{- end }}
-        if [ "$$GCOMM" != 'gcomm://' ]; then
-          # REJOINING PEER: start mariadbd only once another peer resolves. Swarm
-          # publishes a task in DNS, tasks.<service> included, only after its
-          # healthcheck passes, and a peer only passes it inside a cluster. With every
-          # peer down nothing resolves, and a mariadbd started anyway dies with `No
-          # address to connect`, rewriting grastate.dat to seqno -1 each time: the
-          # record the recovery procedure reads. So wait, without a limit; until a
-          # peer resolves there is nothing to join.
-          #
-          # The one way out of an all-down cluster that needs no operator: the peer
-          # Galera marked safe_to_bootstrap: 1, i.e. the last to leave a cluster that
-          # stopped one peer at a time. Its data is the newest, Galera marks at most
-          # one peer, and nothing else could restart the cluster, so it forms it
-          # again. Rendered whatever cluster.forceBootstrap says, so that clearing
-          # that value changes only the forced peer and the seed rather than every
-          # peer, and the cluster rides through the second upgrade.
-          NOTED=-60
-          until
-            UP=''
-            for p in {{ $others }}; do
-              if getent hosts "$$p" >/dev/null; then UP="$$p"; break; fi
-            done
-            [ -n "$$UP" ]
-          do
-            if grep -qx 'safe_to_bootstrap: 1' /var/lib/mysql/grastate.dat 2>/dev/null; then
-              echo 'mariadb-galera: no peer is up and this one left the cluster last (safe_to_bootstrap: 1), so it forms it again'
-              GCOMM='gcomm://'
+              MEMBER="$$p"
               break
             fi
-            if [ $$((SECONDS - NOTED)) -ge 60 ]; then
-              echo 'mariadb-galera: waiting for a peer to come up. If every peer is down, see README.md, Recovering a fully stopped cluster.'
-              NOTED=$$SECONDS
+            if S="$$(timeout 3 bash -c "exec 3<>/dev/tcp/$$p/{{ $electionPort }} && head -n1 <&3" 2>/dev/null)" && [ -n "$$S" ]; then
+              STATES="$$STATES$$S;"
             fi
-            sleep 2
           done
-        fi
+          if [ -n "$$MEMBER" ]; then
+            rm -f /var/lib/mysql/.galera-elected
+            if [ "$$ELECTING" = yes ]; then
+              # This container reported healthy while it elected; a fresh one gets the
+              # healthcheck's full start period for its state transfer.
+              echo "mariadb-galera: $$MEMBER is up, so this peer restarts to join it"
+              exit 0
+            fi
+            break
+          fi
+          if grep -qx 'safe_to_bootstrap: 1' /var/lib/mysql/grastate.dat 2>/dev/null; then
+            echo 'mariadb-galera: no peer is up and this one left the cluster last (safe_to_bootstrap: 1), so it forms it again'
+            rm -f /var/lib/mysql/.galera-elected
+            GCOMM='gcomm://'
+            break
+          fi
+          if [ "$$READ" = no ]; then
+            READ=yes
+            if [ ! -d /var/lib/mysql/mysql ]; then
+              SEQNO=-2
+            else
+              SEQNO="$$(sed -n 's/^seqno:[[:space:]]*//p' /var/lib/mysql/grastate.dat 2>/dev/null || true)"
+              if [ -z "$$SEQNO" ] || [ "$$SEQNO" = -1 ]; then
+                # 12.3.3 and later refuse to start, even only to recover, without a
+                # cluster address; this process never connects to anyone.
+                POS="$$(gosu mysql mariadbd --wsrep-on=ON --wsrep-provider=/usr/lib/galera/libgalera_smm.so \
+                  --wsrep-cluster-address=gcomm:// --wsrep-recover 2>&1 \
+                  | sed -n 's/.*WSREP: Recovered position: \([0-9a-f-]*:[-0-9]*\).*/\1/p' | sed -n '$$p')"
+                # A data dir that was never part of a cluster, one killed during its first
+                # initialisation or its first state transfer, has no history: it is as
+                # empty as no data dir at all, and would otherwise never report.
+                case "$$POS" in
+                  00000000-0000-0000-0000-000000000000:*) SEQNO=-2 ;;
+                  *) SEQNO="$${POS##*:}" ;;
+                esac
+              fi
+              [ "$$SEQNO" != -1 ] || SEQNO=''
+            fi
+          fi
+          # A peer that already won does not report again: a healthy report would end
+          # its new container's start period before it has even begun to bootstrap.
+          if [ "$$ELECTED" = no ] && [ "$$ELECTING" = no ] && [ -n "$$SEQNO" ]; then
+            printf '%s %s\n' {{ $n }} "$$SEQNO" > /tmp/galera-position
+            socat TCP-LISTEN:{{ $electionPort }},fork,reuseaddr SYSTEM:'cat /tmp/galera-position' 2>/dev/null &
+            SOCAT=$$!
+            touch /tmp/galera-electing
+            ELECTING=yes
+            echo "mariadb-galera: no peer is up, so the peers elect one to form the cluster (this one is at seqno $$SEQNO)"
+          fi
+          if [ -n "$$SEQNO" ] && [ "$$(printf '%s' "$$STATES" | tr ';' '\n' | grep -c .)" -eq {{ sub $peers 1 }} ]; then
+            WINNER="$$(printf '%s%s %s' "$$STATES" {{ $n }} "$$SEQNO" | tr ';' '\n' | sort -k2,2nr -k1,1n | sed -n '1s/ .*//p')"
+            if [ "$$WINNER" != {{ $n }} ] && [ "$$ELECTED" = yes ]; then
+              # A marker left by an earlier round that this peer no longer wins: report
+              # again, or the others would wait for it forever.
+              rm -f /var/lib/mysql/.galera-elected
+              ELECTED=no
+            fi
+            if [ "$$WINNER" = {{ $n }} ]; then
+{{- if $.Values.persistence.enabled }}
+              if [ "$$ELECTED" = yes ]; then
+                echo "mariadb-galera: the peers elected this one at seqno $$SEQNO and none is up, so it forms the cluster"
+                rm -f /var/lib/mysql/.galera-elected
+                if [ -f /var/lib/mysql/grastate.dat ]; then
+                  sed -i 's/^safe_to_bootstrap: 0$$/safe_to_bootstrap: 1/' /var/lib/mysql/grastate.dat
+                fi
+                GCOMM='gcomm://'
+                break
+              fi
+              # The marker on the volume survives the restart, which gives the container
+              # that bootstraps the healthcheck's full start period.
+              echo "mariadb-galera: elected to form the cluster at seqno $$SEQNO; restarting to do it"
+              touch /var/lib/mysql/.galera-elected
+              exit 0
+{{- else }}
+              # Without a volume a marker would not survive a restart, and the data dir
+              # is empty, so this peer initialises and bootstraps in place.
+              echo "mariadb-galera: the peers elected this one at seqno $$SEQNO and none is up, so it forms the cluster"
+              rm -f /tmp/galera-electing
+              [ -z "$$SOCAT" ] || kill "$$SOCAT" 2>/dev/null || true
+              GCOMM='gcomm://'
+              break
+{{- end }}
+            fi
+          fi
+          if [ $$((SECONDS - NOTED)) -ge 60 ]; then
+            echo 'mariadb-galera: waiting for a peer to come up. If every peer is down, see README.md, Recovering a fully stopped cluster.'
+            NOTED=$$SECONDS
+          fi
+          sleep 2
+        done
 {{- end }}
 {{- if $.Values.proxy.enabled }}
         # Synced responder for the proxy. socat, gosu and the mariadb client are
@@ -334,13 +405,17 @@ services:
     # the mysql unix user instead authenticates through the same unix_socket account
     # this chart creates for state transfers, so it needs no password and no file in
     # the data dir.
+    #
+    # One exception: a peer electing in an all-down cluster (see REJOINING PEER above)
+    # reports healthy without running mariadbd, so that Swarm publishes it in DNS and
+    # the others can count it. The marker exists only while no member is up, so no
+    # running cluster ever waits on such a peer. An upgrade during a full stop does: the
+    # peer it updates elects, then restarts. CMD-SHELL runs dash, which is enough for
+    # `test`; exec keeps --su-mysql first.
     healthcheck:
       test:
-        - CMD
-        - healthcheck.sh
-        - --su-mysql
-        - --connect
-        - --galera_ready
+        - CMD-SHELL
+        - test -e /tmp/galera-electing || exec healthcheck.sh --su-mysql --connect --galera_ready
       interval: {{ $.Values.healthcheck.interval }}
       timeout: {{ $.Values.healthcheck.timeout }}
       retries: {{ $.Values.healthcheck.retries }}

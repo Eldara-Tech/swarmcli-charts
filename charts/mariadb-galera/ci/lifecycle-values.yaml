@@ -1,7 +1,8 @@
 # Lifecycle: the operations a long-lived cluster goes through, driven by
 # ci/e2e-check.sh in a CI job of its own (.github/e2e-matrix.yaml): a peer restart, a
-# peer rebuilt from an empty volume, an upgrade that restarts every peer, recovery
-# with cluster.forceBootstrap, and a crash of every peer. Shorter health windows than
+# peer rebuilt from an empty volume, an upgrade rolling every peer, every peer stopped
+# together, a peer lost for good and recovered with cluster.forceBootstrap, and a
+# crash of every peer. Shorter health windows than
 # the defaults, so each rollout's monitor window costs 2.5 minutes rather than 6;
 # the dataset is tiny, so a state transfer fits in them easily.
 healthcheck:

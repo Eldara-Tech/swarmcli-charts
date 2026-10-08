@@ -47,7 +47,8 @@ docker network create --driver overlay --attachable --opt encrypted mariadb-gale
 ```
 
 Across nodes, the overlay needs the usual Swarm ports open between them: 2377/tcp,
-7946/tcp+udp and 4789/udp. Galera's own ports travel inside the overlay. If the
+7946/tcp+udp and 4789/udp. Galera's own ports (4567, 4568 and 4444) and the
+peers' election port (4566) travel inside the overlay. If the
 overlay's MTU is above what the path between nodes carries (common on cloud
 networks with an MTU of 1450 or less), small queries work but a state transfer
 hangs. Create the network with a lower MTU then, alongside any other options:
@@ -86,7 +87,10 @@ task, and resolves it again once a replacement passes its healthcheck. Since thi
 chart's healthcheck asserts the peer can actually serve, that covers a peer which
 is down, one still receiving a state transfer, and one cut off from the cluster —
 none of them keeps receiving client connections. A peer *donating* a transfer
-stays in rotation on purpose: it remains writable throughout.
+stays in rotation on purpose: it remains writable throughout. So does a peer
+taking part in an election while every peer is down, which reports healthy
+without running `mariadbd`: there is no cluster to serve then, and its
+connections are refused.
 
 What it does not remove is the **detection lag**. A failing peer stays in the alias
 for up to `healthcheck.interval × healthcheck.retries` (60s at the defaults) plus
@@ -302,59 +306,83 @@ stays off `metrics.network`.
 
 ### How bootstrapping decides
 
-Exactly one peer must form the cluster, once, and never again — bootstrapping a
-second time beside a live cluster is a split brain. **Peer 1 is the designated
-seed**: it is the only peer that can ever form a cluster, and the others only ever
-join. Before `mariadbd` starts:
+Exactly one peer must form the cluster, once, and never again: bootstrapping a
+second time beside a live cluster is a split brain. Every peer makes the same
+decision before `mariadbd` starts:
 
-- **Peer 1, data dir empty, no peer answering on port 4567** → form the cluster.
-  This is the first install.
-- **Peer 1, data dir empty but some peer answers** → join and pull a state
-  transfer. This is the seed rebuilt on a new node, and it is why a lost volume
-  re-syncs instead of starting a rival cluster.
-- **Every other case** → wait until another peer resolves, then join. A restart
-  never bootstraps.
-- **Waiting, no peer resolves, and this peer's `grastate.dat` says
-  `safe_to_bootstrap: 1`** → form the cluster again. Galera sets that flag on the
-  last peer to leave a cluster that stopped one peer at a time, so its data is the
-  newest and at most one peer has it.
+- **A member answers on port 4567**, a peer running inside a cluster → join it,
+  pulling a state transfer if it needs one. This is every restart into a running
+  cluster, and a peer rebuilt from an empty volume.
+- **No member, and this peer's `grastate.dat` says `safe_to_bootstrap: 1`** → form
+  the cluster again. Galera sets that flag on the last peer to leave a cluster that
+  stopped one peer at a time, so its data is the newest and at most one peer has it.
+- **No member otherwise** → the peers elect one. Each serves its position on port
+  4566, inside the overlay and never published: its `seqno` from `grastate.dat`, or
+  from `--wsrep-recover` after a crash, or `-2` when its data dir is empty. Once
+  every peer has reported, the highest `seqno` wins and ties go to the lowest peer
+  number, so every peer computes the same winner. The winner forms the cluster and
+  the others join it.
+
+That last rule covers three cases:
+
+- **First install:** every peer is empty, so peer 1 forms the cluster.
+- **A peer with an empty volume during a full stop:** it reports `-2` and loses to
+  every peer with data. It never seeds a cluster that the others then copy.
+- **A peer missing:** no election happens until every peer has reported, because
+  the missing one may hold the newest data. See *Recovering a fully stopped
+  cluster*.
 
 The wait is not optional. Swarm publishes a peer in DNS (`tasks.<release>_<peer>`)
-only once its healthcheck passes, and a peer passes it only inside a cluster. With
-every peer down nothing resolves, and a `mariadbd` started anyway fails with
-`No address to connect` and rewrites `grastate.dat` to `seqno: -1` on every
-attempt, so the cluster could never come back by itself.
+only once its healthcheck passes. A peer passes it inside a cluster, or while it
+takes part in an election, so that the others can reach it. A `mariadbd` started
+with no member to reach fails with `No address to connect`, and rewrites
+`grastate.dat` to `seqno: -1` on every attempt.
 
-A single designated seed is what removes the race. Letting every peer bootstrap
-when it sees no peers is the tempting version and it is wrong: on a first install
-all peers start at once with empty data dirs and none is listening yet, so each
-forms its own cluster of one and they never merge — while all of them report
-healthy.
+Letting every peer bootstrap when it sees no other is the tempting version, and it
+is wrong. On a first install all peers start at once with empty data dirs, so each
+forms its own cluster of one, they never merge, and all of them report healthy.
+The election removes that race.
 
-The consequence to know: **a first install needs peer 1 to be schedulable.** If
-its node is unavailable the other peers wait rather than forming a cluster without
-it. Once the cluster exists, peer 1 is no more special than any other peer, and
-losing it costs nothing extra.
+Things to know:
 
-When `cluster.forceBootstrap` names a peer, that peer becomes the only
-unconditional bootstrapper and peer 1 is demoted to joining, so the count never
-rises above one, whatever you set.
+- **A first install needs every peer to be schedulable.** No peer forms the cluster
+  until all of them have reported.
+- **A peer takes part in an election, then restarts.** The winner restarts to
+  bootstrap and the others restart to join, so each has a fresh healthcheck start
+  period for its state transfer. Expect one completed task per peer after a first
+  install or a full stop. Without persistence the winner cannot carry its win
+  across a restart, so it bootstraps in place; with an empty data dir that fits in
+  the healthcheck's retries.
+- **While it elects, a peer reports healthy without running `mariadbd`.** Its
+  exporter shows `mysql_up 0` meanwhile, and the client alias resolves to it while
+  refusing connections; there is no cluster to serve then anyway.
+- **`cluster.forceBootstrap` overrides the election.** The peer it names bootstraps
+  unconditionally, and the others join it.
 
 ### Recovering a fully stopped cluster
 
 If the peers stopped **one at a time**, the cluster comes back by itself: the last
 peer to leave holds `safe_to_bootstrap: 1` and forms it again, and the others join.
 
-If they stopped **together**, no peer holds the flag. Every peer then waits,
-logging `waiting for a peer to come up`, rather than risk losing committed
-transactions. That covers a power loss, and an upgrade forced through a swarmcli
-older than this chart needs (see *Upgrading the image*). Swarm replaces a waiting peer every few
-minutes as its healthcheck expires; that is harmless, because `mariadbd` never
-starts and `grastate.dat` is left as it was. Recover deliberately:
+If they stopped **together**, as after a power loss, a crash, or an upgrade forced
+through a swarmcli older than this chart needs (see *Upgrading the image*), no peer
+holds the flag. The peers then elect the furthest-ahead one and form the cluster
+by themselves. They log `no peer is up, so the peers elect one`, and the winner
+logs `the peers elected this one at seqno <N>`. After a crash `grastate.dat` shows
+`seqno: -1`, so each peer first recovers its position with `--wsrep-recover`.
 
-1. Find the furthest-ahead peer. On each peer's node, read its `grastate.dat`:
+You step in only when the election cannot complete:
+
+- a peer is gone for good, for example its node is lost; or
+- a crashed peer's position cannot be recovered.
+
+The peers that are left then wait, logging `waiting for a peer to come up`, rather
+than risk losing committed transactions. Recover deliberately:
+
+1. Find the furthest-ahead of the peers you have. On each peer's node, read its
+   `grastate.dat`:
    `docker run --rm -v <release>_mariadb-galera-data-<N>:/d:ro busybox cat /d/grastate.dat`.
-   The highest `seqno` wins. A peer that crashed shows `-1`; with every peer
+   The highest `seqno` wins. A peer that crashed shows `-1`; with that peer
    stopped, recover its position from the volume itself, using the image the
    cluster runs. The number after the last `:` is its seqno. MariaDB 12.3.3 and
    later refuse to start without a cluster address, even only to recover, so the
@@ -365,17 +393,36 @@ starts and `grastate.dat` is left as it was. Recover deliberately:
      mariadbd --user=mysql --wsrep-on=ON --wsrep-provider=/usr/lib/galera/libgalera_smm.so \
      --wsrep-cluster-address=gcomm:// --wsrep-recover 2>&1 | grep 'Recovered position'
    ```
-2. Set `cluster.forceBootstrap` to **that peer's number** and
-   `swarmcli charts upgrade`. The chart marks that peer `safe_to_bootstrap: 1`,
-   which Galera insists on, and it forms a new cluster from the best data.
-3. Once the others have rejoined and the cluster is `Synced`, set
-   `cluster.forceBootstrap: ""` and upgrade again. That restarts only the forced
-   peer and peer 1, and they rejoin the running cluster. Leaving it set means that
-   peer would form yet another cluster on its next restart.
+2. Set `cluster.forceBootstrap` to **that peer's number** and run
+   `swarmcli charts upgrade`. Leave out `--wait` while a peer cannot run: the release
+   cannot converge without it, but the upgrade still waits for the forced peer. The
+   chart marks that peer `safe_to_bootstrap: 1`, which Galera insists on, and it
+   forms a new cluster from the best data you have; the others join it.
+3. Once the cluster is `Synced`, set `cluster.forceBootstrap: ""` and upgrade
+   again. That restarts only the forced peer, and it rejoins the running cluster.
+   Leaving it set means that peer would form yet another cluster on its next
+   restart.
+
+4. Before you bring the lost peer back, remove its data volume on its node
+   (`docker volume rm <release>_mariadb-galera-data-<N>`, with its task gone). It
+   then rejoins empty and takes a full state transfer. Its old data carries a
+   history the forced cluster has diverged from, under the same numbering. Back in
+   a running cluster it would be replaced by a state transfer too, but if it
+   returns during a later full stop, its higher `seqno` wins the election and
+   overwrites everything written since you forced.
+
+Anything the lost peer held beyond the forced peer is gone either way. That is the
+price of forcing, and the reason the election waits for every peer.
 
 Never force-bootstrap more than one peer, never force-bootstrap while the cluster
 is still up, and never force one while some peer still shows
 `safe_to_bootstrap: 1`: that peer restarts the cluster by itself.
+
+Upgrade only once the cluster is up. An upgrade while every peer is down still
+lets them elect and form the cluster, but each peer it updates exits after the
+election, inside its `healthcheck.monitor` window. Swarm counts that as a failed
+update and pauses it, and `swarmcli charts upgrade` reports the rollout as stuck.
+Run the upgrade again once the cluster is `Synced`.
 
 ### Upgrading the image
 

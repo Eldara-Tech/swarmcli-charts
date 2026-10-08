@@ -233,12 +233,15 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   `monitoring` overlay and asserts `mysql_up 1`, the full cluster size and no failing
   collector, which is how a grant the one-shot forgot would show. `default` also stops
   every peer, one at a time and then all together, and asserts the first re-forms by
-  itself and the second waits with `grastate.dat` intact. The `lifecycle` fixture runs
-  as a job of its own (`e2e (mariadb-galera lifecycle)`):
+  itself and the second elects a peer and re-forms with every row. The `lifecycle`
+  fixture runs as a job of its own (`e2e (mariadb-galera lifecycle)`):
   - a peer restart, and a peer rebuilt from an empty volume;
-  - an upgrade restarting every peer;
-  - `cluster.forceBootstrap` recovery and clearing it;
-  - a crash of every peer, recovered through the README's `--wsrep-recover` runbook.
+  - an upgrade rolling every peer one at a time, then every peer stopped together and
+    recovered by an election;
+  - a peer lost for good, the others refusing to elect without it, and recovery with
+    `cluster.forceBootstrap` through the README's `--wsrep-recover` runbook, then
+    clearing it;
+  - a crash of every peer, recovered by an election.
 - **keycloak** — the two operator secrets + the DB/ingress overlays + a throwaway
   co-located backend on `keycloak-db-net` — MariaDB, or PostgreSQL for the `postgres` fixture —
   because Keycloak attaches its DB overlay unconditionally and `/health/ready` only passes once

@@ -156,30 +156,30 @@ peer needs.
 - **A shared network alias** (`network.clientAlias`) declared by every peer gives
   clients one name that resolves to all of them. Say in the README that it is not
   health-aware, so clients must retry.
-- **Bootstrap must be self-deciding, restart-safe, and driven by ONE designated
-  peer.** A values flag the operator sets on install and clears afterwards is a
-  split brain waiting for someone to forget step two, so decide in the container
-  instead — but give exactly one peer (the first) the power to form a cluster, and
-  let the others only ever join.
+- **Bootstrap must be self-deciding, restart-safe, and agreed by every peer.** A
+  values flag the operator sets on install and clears afterwards is a split brain
+  waiting for someone to forget step two, so decide in the container instead.
   **Do not let every peer decide "bootstrap if no peer answers".** It reads as
   safe peer by peer and races across them: on a first install all peers start at
   once with empty data dirs and none is listening yet, so each forms its own
   cluster of one and they never merge — while every one of them converges and
   reports healthy. `charts/mariadb-galera` shipped that version to CI and its e2e
   check caught it as a cluster size of 1.
-  The seed still needs both halves of its own guard — no data dir *and* no peer
-  answering — so a restart never bootstraps and a seed rebuilt from an empty
-  volume re-syncs from the survivors instead of starting a rival cluster. Every
-  other peer should wait until another peer *resolves*, without a time limit,
-  rather than start. Swarm publishes a task in DNS only once its healthcheck
-  passes, so after a full stop nothing resolves. `charts/mariadb-galera` started
-  anyway and failed with `No address to connect` on every peer, forever, wiping the
-  recovery record (`seqno`) as it went. The one safe automatic exit is the peer
-  the database itself marks as last to leave (Galera's `safe_to_bootstrap: 1`).
-  Keep a separate, clearly labelled `forceBootstrap` value for the all-peers-down
-  recovery a human must drive, and make it set that mark (Galera refuses
-  otherwise). Have it demote the normal seed so at most one peer can bootstrap
-  unconditionally, and document the procedure in the chart README.
+  A peer should join only a peer that is actually inside a cluster, and wait for
+  one without a time limit rather than start. Swarm publishes a task in DNS only
+  once its healthcheck passes, so after a full stop nothing resolves.
+  `charts/mariadb-galera` started anyway and failed with `No address to connect`
+  on every peer, forever, wiping the recovery record (`seqno`) as it went.
+  With no member up, have the peers elect the one to bootstrap from positions they
+  all report, and only once every peer has reported. A missing peer may hold the
+  newest data, and an empty peer must report less than any peer with data, or a
+  peer rebuilt from an empty volume forms a cluster that the others then copy.
+  `charts/mariadb-galera` does this on port 4566, which also makes a first install
+  one more election (every peer empty, so peer 1 wins). The database's own
+  last-to-leave mark (Galera's `safe_to_bootstrap: 1`) is a safe exit without one.
+  Keep a separate, clearly labelled `forceBootstrap` value for the case the
+  election cannot settle, a peer gone for good, and make it set that mark (Galera
+  refuses otherwise). Document the procedure in the chart README.
 - **Assert the cluster in `ci/render-check.sh`.** Convergence is a weak signal —
   N peers that each formed a private one-node cluster all report healthy. Check
   that volumes, node labels and peer identities are all *distinct*, that the peer
