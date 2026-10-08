@@ -27,7 +27,10 @@
 #   printf test | docker secret create mariadb_galera_password -
 #   printf test | docker secret create mariadb_galera_exporter_password -
 #   docker node update --label-add mariadb-galera-<N>=true <node>   (N = 1..5)
-set -euo pipefail
+set -Eeuo pipefail
+# A command that fails without printing anything would otherwise end the check with
+# no clue where; -E carries this into functions and command substitutions.
+trap 'echo "  e2e-check.sh:$LINENO: exit $? from: $BASH_COMMAND" >&2' ERR
 
 release="$1"
 case="${3:-}"
@@ -397,11 +400,13 @@ if [ "$case" = lifecycle ]; then
   best=""; best_seq=-2; i=0
   for v in $volumes; do
     i=$((i + 1))
-    pos="$(docker run --rm --network none -v "$v:/var/lib/mysql" "$image" \
-      mariadbd --user=mysql --wsrep-on=ON --wsrep-provider=/usr/lib/galera/libgalera_smm.so --wsrep-recover 2>&1 \
-      | sed -n 's/.*WSREP: Recovered position: [^:]*:\([-0-9]*\).*/\1/p' | tail -1)"
+    if ! out="$(docker run --rm --network none -v "$v:/var/lib/mysql" "$image" \
+      mariadbd --user=mysql --wsrep-on=ON --wsrep-provider=/usr/lib/galera/libgalera_smm.so --wsrep-recover 2>&1)"; then
+      echo "  $v: --wsrep-recover failed:"; tail -15 <<<"$out" | sed 's/^/    /'; exit 1
+    fi
+    pos="$(sed -n 's/.*WSREP: Recovered position: [^:]*:\([-0-9]*\).*/\1/p' <<<"$out" | tail -1)"
     case "$pos" in
-      ''|-1) echo "  $v: --wsrep-recover gave no position ('$pos')"; exit 1 ;;
+      ''|-1) echo "  $v: --wsrep-recover gave no position ('$pos'):"; tail -15 <<<"$out" | sed 's/^/    /'; exit 1 ;;
     esac
     if [ "$pos" -gt "$best_seq" ]; then best_seq="$pos"; best="$i"; fi
   done
