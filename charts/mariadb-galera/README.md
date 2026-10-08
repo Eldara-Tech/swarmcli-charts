@@ -347,8 +347,8 @@ peer to leave holds `safe_to_bootstrap: 1` and forms it again, and the others jo
 
 If they stopped **together**, no peer holds the flag. Every peer then waits,
 logging `waiting for a peer to come up`, rather than risk losing committed
-transactions. That covers an upgrade that changes every peer at once (see
-*Upgrading the image*) and a power loss. Swarm replaces a waiting peer every few
+transactions. That covers a power loss, and an upgrade forced through a swarmcli
+older than this chart needs (see *Upgrading the image*). Swarm replaces a waiting peer every few
 minutes as its healthcheck expires; that is harmless, because `mariadbd` never
 starts and `grastate.dat` is left as it was. Recover deliberately:
 
@@ -380,14 +380,18 @@ is still up, and never force one while some peer still shows
 ### Upgrading the image
 
 Galera upgrades one peer at a time: MariaDB supports a cluster running two versions
-while that happens. But `swarmcli charts upgrade` updates all peer services at
-once, so the whole cluster stops together. That is a full outage, and a stop where
-no peer holds `safe_to_bootstrap: 1`, so it needs the recovery procedure above. To
-roll peers one at a time instead, update each service in place
-(`docker service update --image mariadb:<tag> <release>_mariadb-galera-1`), waiting
-for `Synced` between peers, then bump the chart to match.
+while that happens. Each peer carries the `com.swarmcli.rollout: sequential` deploy
+label, so `swarmcli charts upgrade`, `rollback` and `apply` replace the peers one
+at a time, in order, each healthy and past `healthcheck.monitor` before the next,
+and the cluster keeps quorum throughout. An upgrade that changes every peer
+therefore takes about three peer restarts plus three monitor windows. A peer that
+is down is not waited for, so the recovery above still reaches every peer at once.
 
-That full stop can happen without you changing the image. By default Swarm resolves
+That needs swarmcli 2.2.0 or later, which this chart declares. An older swarmcli
+refuses the chart; forced through with `--skip-compat-check`, it updates every peer
+together, a full stop with no peer holding `safe_to_bootstrap: 1`.
+
+Every peer can also restart without you changing the image. By default Swarm resolves
 `mariadb:12.3` to a digest at every deploy, so once upstream re-tags `12.3` with a
 patch release, the next upgrade of any value changes every peer. Upgrade with
 `--resolve-image changed`: it keeps the digest the cluster already runs while the

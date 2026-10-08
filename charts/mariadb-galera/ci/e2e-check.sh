@@ -328,40 +328,82 @@ if [ "$case" = lifecycle ]; then
   wait_cluster "$first_svc" "after rebuilding $first_svc from an empty volume"
   rows_ok "$first_svc" 1 20
 
-  # 3. An upgrade that changes every peer, which is what a re-tagged image does: every
-  #    peer stops at once. It may come back by itself (one peer happened to leave last)
-  #    or wait; it must never crash-loop or lose the seqno the operator compares.
+  # 3. An upgrade that changes every peer, which is what a re-tagged image does. The
+  #    peers carry com.swarmcli.rollout=sequential, so swarmcli replaces them one at a
+  #    time: the upgrade returns only once every peer runs a new task, each started a
+  #    monitor window after the one before, and some peer answers at every sample, in
+  #    a cluster of at least want-1.
   q "$(cid_of "$second")" "REPLACE INTO e2e_galera.t VALUES (30, 'before-upgrade')" >/dev/null
   extra="$(mktemp)"
   printf 'extraArgs:\n  - "--max-connections=201"\n' >"$extra"
   before_tasks="$(for svc in $peers; do task_of "$svc"; done)"
-  upgrade -f "$extra"
-  for _ in $(seq 1 30); do
+  sizes="$(mktemp)"
+  (
+    while :; do  # the cluster size seen by the first peer that answers, or "-"
+      size="-"
+      for svc in $peers; do
+        c="$(cid_of "$svc")"
+        v="$( [ -n "$c" ] && status_of "$c" 'WSREP_CLUSTER_SIZE' 2>/dev/null || true)"
+        [ -n "$v" ] && { size="$v"; break; }
+      done
+      echo "$size" >>"$sizes"
+      sleep 2
+    done
+  ) &
+  sampler=$!
+  upgrade -f "$extra" --timeout 10m || { kill "$sampler"; echo "  the all-peer upgrade did not roll out"; exit 1; }
+  # One at a time, the upgrade has already waited for every peer. All at once, it
+  # returns before swarm has even created their new tasks (stop-first), so wait for
+  # them and for the cluster, sampling all the while, before judging either.
+  now_tasks=""
+  for _ in $(seq 1 120); do
     now_tasks="$(for svc in $peers; do task_of "$svc"; done)"
-    [ -z "$(comm -12 <(echo "$before_tasks" | sort) <(echo "$now_tasks" | sort))" ] && break
-    sleep 2
+    [ "$(printf '%s\n' $now_tasks | wc -l | tr -d ' ')" = "$want" ] \
+      && [ -z "$(comm -12 <(echo "$before_tasks" | sort) <(echo "$now_tasks" | sort))" ] && break
+    sleep 5
   done
-  sleep 60
-  logs="$(mktemp)"
-  for svc in $peers; do c="$(cid_of "$svc")"; [ -n "$c" ] && docker logs "$c" >>"$logs" 2>&1; done
-  if grep -F 'No address to connect' "$logs" >/dev/null; then
-    echo "  after an upgrade restarting every peer, a peer started mariadbd with no peer to reach"; exit 1
+  [ "$(printf '%s\n' $now_tasks | wc -l | tr -d ' ')" = "$want" ] \
+    && [ -z "$(comm -12 <(echo "$before_tasks" | sort) <(echo "$now_tasks" | sort))" ] \
+    || { kill "$sampler"; echo "  the upgrade did not give every peer a new task"; exit 1; }
+  wait_cluster "$first_svc" "after the all-peer upgrade"
+  kill "$sampler"; wait "$sampler" 2>/dev/null || true
+  if grep -x -- - "$sizes" >/dev/null; then
+    echo "  no peer answered at $(grep -cx -- - "$sizes") of $(wc -l <"$sizes" | tr -d ' ') samples; the peers did not roll one at a time"
+    exit 1
   fi
-  up_size="$(status_of "$(cid_of "$first_svc")" 'WSREP_CLUSTER_SIZE' 2>/dev/null || true)"
-  if [ "$up_size" != "$want" ]; then
-    for v in $volumes; do
-      [ "$(seqno_of "$v")" != "-1" ] || { echo "  $v: seqno -1 after an upgrade; the waiting peer started mariadbd"; exit 1; }
-    done
-  else
-    # It came back by itself, so put it into the state forceBootstrap exists for.
-    for svc in $peers; do docker service scale --detach "$svc=0" >/dev/null; done
-    for svc in $peers; do stop_peer "$svc"; done
-    for v in $volumes; do
-      docker run --rm -v "$v:/d" busybox:1.37 sed -i 's/^safe_to_bootstrap: 1$/safe_to_bootstrap: 0/' /d/grastate.dat
-    done
-    start_all
-    sleep 20
-  fi
+  min="$(sort -n "$sizes" | sed -n 1p)"
+  [ "$min" -ge $((want - 1)) ] \
+    || { echo "  the cluster shrank to $min of $want during the upgrade; the peers did not roll one at a time"; exit 1; }
+  # Quorum alone does not tell one at a time from all at once: peers updated together
+  # kept it here too, by the luck of staggered shutdowns. The order does. One at a time,
+  # each new task starts only after the one before has outlived its 150s monitor
+  # window; all at once, they start within seconds of each other.
+  starts=""
+  for t in $now_tasks; do
+    c="$(docker inspect --format '{{.CreatedAt.Unix}}' "$t")"
+    starts="$starts $c"
+  done
+  [ "$(printf '%s\n' $starts | wc -l | tr -d ' ')" = "$want" ] \
+    || { echo "  read $(echo $starts) as the peers' start times, expected $want"; exit 1; }
+  prev=""
+  for t in $(printf '%s\n' $starts | sort -n); do
+    if [ -n "$prev" ] && [ $((t - prev)) -lt 120 ]; then
+      echo "  two peers' new tasks started $((t - prev))s apart; the upgrade did not wait out a monitor window between them"
+      exit 1
+    fi
+    prev="$t"
+  done
+  rows_ok "$first_svc" 1 20 30
+
+  # Then every peer stopped together with no peer holding the flag, the state
+  # forceBootstrap exists for.
+  for svc in $peers; do docker service scale --detach "$svc=0" >/dev/null; done
+  for svc in $peers; do stop_peer "$svc"; done
+  for v in $volumes; do
+    docker run --rm -v "$v:/d" busybox:1.37 sed -i 's/^safe_to_bootstrap: 1$/safe_to_bootstrap: 0/' /d/grastate.dat
+  done
+  start_all
+  sleep 20
 
   # 4. forceBootstrap the furthest-ahead peer, as the README runbook says. It must form
   #    the cluster with every row, though Galera marked no peer safe.
@@ -418,8 +460,8 @@ if [ "$case" = lifecycle ]; then
   upgrade -f "$extra" --set "cluster.forceBootstrap=" --wait --timeout 15m \
     || { echo "  clearing forceBootstrap after a crash did not converge"; exit 1; }
   wait_cluster "$first_svc" "after clearing forceBootstrap again"
-  rm -f "$extra" "$logs"
-  lifecycle_ok=", rejoined, re-synced a rebuilt seed, survived an all-peer upgrade, forceBootstrap and a crash"
+  rm -f "$extra" "$sizes"
+  lifecycle_ok=", rejoined, re-synced a rebuilt seed, rolled an all-peer upgrade with quorum kept, forceBootstrap and a crash"
 fi
 
 echo "  ${release}: $want peers, all Synced, cross-peer write replicated$metrics_ok$recovery_ok$lifecycle_ok OK"
