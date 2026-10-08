@@ -1,0 +1,4 @@
+# The default shape: all six services, discovery through the socket-proxy, data on
+# node-local named volumes pinned to the prometheus-stack-data node, Grafana routed
+# through Traefik with TLS, Prometheus and Alertmanager unrouted. This is what
+# `swarmcli charts install mon swarmcli-charts/prometheus-stack` deploys with no -f.

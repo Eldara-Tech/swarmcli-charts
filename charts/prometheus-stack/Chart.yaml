@@ -1,0 +1,59 @@
+name: prometheus-stack
+description: Prometheus, Alertmanager and Grafana for Docker Swarm — node-exporter and cAdvisor on every node, label-opt-in service discovery through a read-only Docker API proxy, dashboards and alerts out of the box
+# version is a placeholder — the git tag (prometheus-stack/vX.Y.Z) sets the real version at release.
+version: 0.1.0
+# appVersion is the default image tag for prom/prometheus. Upstream tags carry the
+# leading `v`, so it is part of the pin.
+# renovate: image=prom/prometheus
+appVersion: "v3.15.0"
+# Oldest swarmcli whose chart engine renders this chart; verified by
+# scripts/floor-check.sh against a real binary of that version. 1.13.0 is the
+# release that taught the chart engine `files/` and `values/`: this chart ships its
+# Prometheus, Alertmanager and Grafana configuration as chart files and accepts the
+# operator's own through values/, and an older swarmcli ignores the floor, resolves
+# `file: files/…` against a temp directory of its own and deploys something else
+# rather than refusing.
+swarmcliVersion: ">= 1.13.0"
+maintainers:
+  - name: Eldara
+    url: https://github.com/Eldara-Tech
+keywords:
+  - prometheus
+  - alertmanager
+  - grafana
+  - node-exporter
+  - cadvisor
+  - metrics
+  - monitoring
+  - observability
+home: https://github.com/Eldara-Tech/swarmcli-charts
+sources:
+  - https://github.com/prometheus/prometheus
+  - https://github.com/prometheus/alertmanager
+  - https://github.com/grafana/grafana
+  - https://github.com/prometheus/node_exporter
+  - https://github.com/google/cadvisor
+  - https://github.com/wollomatic/socket-proxy
+# The default render mounts the Docker socket and binds host paths, both on
+# purpose, so both keys are acknowledged. Two of the binds are ones
+# scripts/security-scan.sh cannot see, so they are named here as well:
+#   docker-socket — /var/run/docker.sock, read-only, in two services. cAdvisor
+#                   (global, root) reads container metadata through it; the
+#                   socket-proxy (one task, managers only) serves Prometheus a GET
+#                   allow-list of tasks/services/nodes/networks and nothing else.
+#                   `:ro` protects the socket file, not the API behind it.
+#   host-mount    — cAdvisor binds /sys, plus /proc and the daemon's root directory
+#                   (cadvisor.dockerRoot, default /var/lib/docker) under /rootfs,
+#                   and the containerd socket (cadvisor.containerdSocket, default
+#                   /run/containerd/containerd.sock). The scan files that socket
+#                   under host-mount, not docker-socket: it cannot tell it is an API
+#                   socket, and it grants the same root-equivalent reach.
+#                   node-exporter binds the host's whole root filesystem, `/`, as
+#                   /host. The scan's pattern needs a character after the leading
+#                   `/`, so it cannot see a bind whose source is `/` itself; it is
+#                   acknowledged here and asserted by ci/render-check.sh instead.
+#                   The *.volumePath values add host-directory persistence.
+# nodeExporter.enabled, cadvisor.enabled and discovery.enabled switch these off;
+# with all three off and no volumePath the render carries neither.
+annotations:
+  swarmcli-charts/allow: "docker-socket,host-mount"

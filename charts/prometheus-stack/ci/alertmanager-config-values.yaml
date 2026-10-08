@@ -1,0 +1,14 @@
+# An operator's own Alertmanager configuration (as --set-file would pass it), with a
+# webhook receiver whose URL comes from a Swarm secret through url_file. The config
+# is content-named, so changing it rotates the Swarm config.
+alertmanager:
+  secrets:
+    - prometheus-stack-e2e-webhook
+  config: |
+    route:
+      receiver: webhook
+      group_by: [alertname]
+    receivers:
+      - name: webhook
+        webhook_configs:
+          - url_file: /run/secrets/prometheus-stack-e2e-webhook

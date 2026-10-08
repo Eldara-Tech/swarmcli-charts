@@ -1,0 +1,13 @@
+# Mounted only while cadvisor.enabled: fires when Prometheus has no cAdvisor target at
+# all, which a per-target TargetDown cannot see (no target, nothing down).
+groups:
+  - name: prometheus-stack.cadvisor
+    rules:
+      - alert: CadvisorAbsent
+        expr: absent(up{job="cadvisor"})
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Prometheus has no cAdvisor target'
+          description: 'No cAdvisor task has been discovered for 15 minutes: container metrics are missing. Check discovery (SwarmDiscoveryFailing) and the cadvisor service.'
