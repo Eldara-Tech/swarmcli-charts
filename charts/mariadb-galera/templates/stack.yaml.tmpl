@@ -191,6 +191,8 @@ services:
           echo 'mariadb-galera: cannot determine this peer own address from /etc/hosts' >&2
           exit 1
         fi
+        # Printed first by every peer of this chart, so a log without it is an older one.
+        echo "mariadb-galera: peer {{ $n }} of {{ $peers }} starting at $$SELF_ADDR"
         GCOMM='{{ $gcomm }}'
 {{- if eq $force $n }}
         # cluster.forceBootstrap names this peer, so form a NEW cluster and skip
@@ -240,6 +242,7 @@ services:
             getent hosts "$$p" >/dev/null || continue
             if timeout 2 bash -c "exec 3<>/dev/tcp/$$p/4567" 2>/dev/null; then
               MEMBER="$$p"
+              MEMBER_ADDR="$$(getent hosts "$$p" | awk '{print $$1; exit}')"
               break
             fi
             if S="$$(timeout 3 bash -c "exec 3<>/dev/tcp/$$p/{{ $electionPort }} && head -n1 <&3" 2>/dev/null)" && [ -n "$$S" ]; then
@@ -251,9 +254,10 @@ services:
             if [ "$$ELECTING" = yes ]; then
               # This container reported healthy while it elected; a fresh one gets the
               # healthcheck's full start period for its state transfer.
-              echo "mariadb-galera: $$MEMBER is up, so this peer restarts to join it"
+              echo "mariadb-galera: $$MEMBER ($$MEMBER_ADDR) is up, so this peer restarts to join it"
               exit 0
             fi
+            echo "mariadb-galera: $$MEMBER ($$MEMBER_ADDR) is up, so this peer joins it"
             break
           fi
           if grep -qx 'safe_to_bootstrap: 1' /var/lib/mysql/grastate.dat 2>/dev/null; then
