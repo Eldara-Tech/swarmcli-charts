@@ -39,8 +39,10 @@ all="$(yq -r '.services | keys | .[]' "$f")"
 if [ "$case_name" = "proxy" ] || [ "$case_name" = "proxy-published" ]; then
   proxy_svc="$(printf '%s\n' "$all" | { grep -E -- '-proxy$' || true; })"
   [ -n "$proxy_svc" ] || err "the proxy fixture rendered no proxy service"
-else
-  printf '%s\n' "$all" | { grep -qE -- '-proxy$' && err "a proxy service is rendered for case '$case_name'; it must be opt-in" || true; }
+elif grep -qE -- '-proxy$' <<<"$all"; then
+  # Not `… | { grep -q … && err …; }`: the brace group runs in a pipeline subshell, so
+  # err's fail=1 died with it and this check printed its failure but never failed.
+  err "a proxy service is rendered for case '$case_name'; it must be opt-in"
 fi
 if [ "$case_name" != "metrics" ] && grep -qE -- '-exporter-' <<<"$all"; then
   err "exporter services are rendered for case '$case_name'; metrics must be opt-in"
@@ -123,7 +125,9 @@ alias_count="$(yq -r '[.services.*.networks[] | select(tag == "!!map") | .aliase
 if [ -n "$proxy_svc" ]; then
   [ "$alias_count" -eq 1 ] \
     || err "client alias 'mariadb' is on $alias_count services; with the proxy on it belongs to the proxy alone"
-  yq -r ".services.\"$proxy_svc\".networks.*.aliases // [] | .[]" "$f" | { grep -qxF 'mariadb' || err "the client alias is not on the proxy"; }
+  if ! yq -r ".services.\"$proxy_svc\".networks.*.aliases // [] | .[]" "$f" | grep -xF 'mariadb' >/dev/null; then
+    err "the client alias is not on the proxy"
+  fi
 else
   [ "$alias_count" -eq "$want_peers" ] \
     || err "client alias 'mariadb' is on $alias_count of $want_peers peers"
