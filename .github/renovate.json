@@ -53,12 +53,14 @@
     },
 
     {
-      "description": "Services that own a schema or a static config: minor/patch flow as normal PRs, majors are breaking. Keycloak migrates the external DB schema; superset's init service runs `superset db upgrade` irreversibly; traefik v3->v4 breaks static config; redis RDB is forward-only.",
+      "description": "Services that own a schema or a static config: minor/patch flow as normal PRs, majors are breaking. Keycloak migrates the external DB schema; superset's init service runs `superset db upgrade` irreversibly; traefik v3->v4 breaks static config; redis RDB is forward-only; a Prometheus major drops flags and config options (3.0 did), which prometheus-stack's shipped prometheus.yml depends on; a Grafana major migrates its database irreversibly (13 moved to unified storage).",
       "matchDepNames": [
         "quay.io/keycloak/keycloak",
         "apache/superset",
         "traefik",
-        "redis"
+        "redis",
+        "prom/prometheus",
+        "grafana/grafana"
       ],
       "matchUpdateTypes": ["major"],
       "dependencyDashboardApproval": true,
@@ -94,6 +96,7 @@
     { "matchFileNames": ["charts/ollama/**"], "semanticCommitScope": "ollama" },
     { "matchFileNames": ["charts/openclaw/**"], "semanticCommitScope": "openclaw" },
     { "matchFileNames": ["charts/postgres/**"], "semanticCommitScope": "postgres" },
+    { "matchFileNames": ["charts/prometheus-stack/**"], "semanticCommitScope": "prometheus-stack" },
     { "matchFileNames": ["charts/redis/**"], "semanticCommitScope": "redis" },
     { "matchFileNames": ["charts/renovate/**"], "semanticCommitScope": "renovate" },
     { "matchFileNames": ["charts/seaweedfs/**"], "semanticCommitScope": "seaweedfs" },
