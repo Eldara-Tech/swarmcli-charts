@@ -34,17 +34,17 @@ cluster:
   # an even count buys no extra fault tolerance and 1 is not a cluster.
   peers: 3
   # DISASTER RECOVERY ONLY — normally "". Names the 1-based peer that must form a
-  # NEW cluster on its next start, bypassing every check. Use it only when every
-  # peer is down and refusing to bootstrap, and only for the peer with the highest
-  # seqno. Setting it while the cluster is still up gives that peer a SECOND
-  # cluster (split brain), so clear it back to "" once the cluster is healthy.
-  # README.md § Recovering a fully stopped cluster has the procedure.
+  # NEW cluster on its next start, bypassing every check. A cluster whose peers all
+  # stopped elects that peer by itself once every peer has reported its position,
+  # so use this only when the election cannot complete: a peer is gone for good, or
+  # a crashed peer's position cannot be recovered. Name the furthest-ahead peer you
+  # have. Setting it while the cluster is still up gives that peer a SECOND cluster
+  # (split brain), so clear it back to "" once the cluster is healthy.
+  # README.md § Recovering a fully stopped cluster has the procedure, and § How
+  # bootstrapping decides the election.
   #
-  # Peer 1 is otherwise the designated seed — the only peer that can form a
-  # cluster, and only with an empty data dir and no peer answering. Naming a peer
-  # here demotes peer 1 to joining, so exactly one peer can ever bootstrap.
-  # A FIRST install therefore needs peer 1 schedulable; see README.md § How
-  # bootstrapping decides.
+  # The forced peer is marked safe_to_bootstrap: 1 in its grastate.dat, which Galera
+  # requires; after peers stopped together, no peer has it otherwise.
   forceBootstrap: ""
 
 # Credentials. Passwords are read from mounted secret files via the image's
@@ -119,7 +119,9 @@ placement:
 # It IS health-aware: Swarm stops resolving the alias to a peer that has no healthy
 # task, so a peer that is down, still receiving a state transfer, or cut off from
 # the cluster leaves the rotation on its own. A peer DONATING a transfer stays in
-# it deliberately: it is still writable. The caveat is the detection lag — up to
+# it deliberately: it is still writable. So does a peer electing while every peer is
+# down (README § How bootstrapping decides): there is no cluster to serve then, and
+# its connections are refused. The caveat is the detection lag — up to
 # healthcheck.interval x healthcheck.retries before that happens — so clients still
 # want a pool that retries. Set "" to publish no shared alias and address peers
 # individually.
@@ -182,6 +184,35 @@ proxy:
     limits:
       memory: ""
 
+# Prometheus metrics: one mysqld_exporter per peer, found by Docker Swarm service
+# discovery. Each exporter carries the deploy labels prometheus.io/scrape=true and
+# prometheus.io/port=9104, and joins metrics.network, the prometheus-stack chart's
+# default scrape overlay — so that chart picks the peers up with no config.
+#
+# Off by default, and nothing below renders while it is off. Turning it on adds
+# services and leaves the peers' own specs untouched, so it never restarts a peer.
+#
+# The exporter logs in as its own least-privilege user (PROCESS, REPLICATION
+# CLIENT, SLAVE MONITOR; no SELECT on your data). A one-shot service creates that
+# user, or resets its password, as root over the overlay, which is why this works
+# on a cluster that already exists. secretName is an EXTERNAL Swarm secret holding
+# its password. Pre-create it with a random one:
+#   openssl rand -base64 32 | docker secret create mariadb_galera_exporter_password -
+# To rotate it, create a secret under a new name and point secretName at it.
+metrics:
+  enabled: false
+  image:
+    repository: prom/mysqld-exporter
+    # A concrete tag, not appVersion: this is a second image, and Renovate's
+    # helm-values manager maintains pins written here.
+    tag: "v0.20.0"
+  username: exporter
+  secretName: mariadb_galera_exporter_password
+  # External overlay the exporters share with Prometheus. Only the exporters join
+  # it, never the peers, so Galera's ports stay off it. requirements.yaml declares
+  # it autoCreate:true.
+  network: monitoring
+
 # Swarm deploy resource limits per peer (optional). Rendered only when
 # limits.memory is set.
 resources:
@@ -191,7 +222,9 @@ resources:
 # Container healthcheck via the image's healthcheck.sh. --connect tests the TCP
 # port and --galera_ready requires WSREP_READY=ON — connected to a primary
 # component and able to serve — so a peer counts as healthy once it can actually
-# take queries rather than merely listening.
+# take queries rather than merely listening. The one exception is a peer electing
+# while no peer is up, which reports healthy without running mariadbd (README.md §
+# How bootstrapping decides).
 #
 # NOT --galera_online (Synced): a peer donating a state transfer is Donor/Desynced
 # for the whole transfer while staying writable, and the strict check would have
@@ -214,6 +247,12 @@ healthcheck:
   # unhealthy after the window does not fail the deploy. Raise it if you raise the
   # values above.
   monitor: 360s
+
+# How long Swarm waits for a peer to stop before killing it. A clean shutdown flushes
+# the buffer pool and records the peer's position in grastate.dat; a peer killed
+# partway is left at seqno -1, as after a crash, and needs --wsrep-recover. Raise it
+# for a buffer pool of many gigabytes.
+stopGracePeriod: 5m
 
 # Arbitrary extra mariadbd flags, appended verbatim after the chart's own. Each
 # entry is a full flag string, e.g. "--max-connections=200". Galera tuning goes

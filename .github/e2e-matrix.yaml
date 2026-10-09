@@ -7,7 +7,8 @@
 #
 # Each entry is { chart, cases, timeout }: `cases` is the E2E_CASES subset
 # (empty "" => every fixture, the `make e2e` default); `timeout` is the
-# per-fixture convergence budget (E2E_TIMEOUT).
+# per-fixture convergence budget (E2E_TIMEOUT). An optional `name` titles the job
+# (`e2e (<name>)`, default the chart), so one chart can run two jobs in parallel.
 include:
   # openclaw: ALL fixtures (cases: "" => no filter) — keeps the #60 backend
   # regression guard and picks up the #63 edge-routing fixture automatically. Its
@@ -53,8 +54,17 @@ include:
   # EXCLUDED: every peer publishes 3306 in host mode and three cannot bind one node's 3306.
   # five-peers, bind-mount, internal-net, force-bootstrap and unpinned are render-only in
   # charts.yml and still run in a local `make e2e` on a multi-node swarm. The 12m budget
-  # covers the image pull plus a bootstrap and two state transfers.
-  - { chart: mariadb-galera, cases: "default ephemeral proxy",                                                         timeout: 25m }
+  # covers the image pull plus a bootstrap and two state transfers. `metrics` scrapes each
+  # exporter over the monitoring overlay, which proves the one-shot created a user whose
+  # grants every default collector accepts — a missing grant fails only its collector.
+  - { chart: mariadb-galera, cases: "default ephemeral proxy metrics",                                                 timeout: 25m }
+  # mariadb-galera lifecycle, a job of its own so the chart's wall time stays ~40m: a peer
+  # restart, a peer rebuilt from an empty volume, an upgrade rolling every peer one at a time
+  # (what a re-tagged image does), every peer stopped together and killed together, each
+  # recovered by an election, and a peer lost for good, recovered with cluster.forceBootstrap
+  # through the README's --wsrep-recover runbook. It drives `swarmcli charts upgrade`
+  # itself; its fixture shortens the health windows to keep each rollout to ~2.5 minutes.
+  - { chart: mariadb-galera, name: "mariadb-galera lifecycle", cases: "lifecycle",                                    timeout: 25m }
   # postgres: EVERY fixture (cases: "" => no filter). bind-mount is included, unlike
   # mariadb's: PGDATA sits one level below the mount (/var/lib/postgresql/<major>/docker),
   # so initdb never has to chown or empty the bind-mounted mountpoint itself. legacy-major
@@ -153,3 +163,13 @@ include:
   # already at 0/5/64MB and the time goes to Chef reconfigure and database migrations.
   # The 75m job backstop still covers it comfortably.
   - { chart: gitlab,        cases: "minimal",                                                                       timeout: 30m }
+  # prometheus-stack: the six fixtures that prove what a render cannot. `default` follows the
+  # data end to end — exporters discovered through the socket-proxy and scraped, the Watchdog
+  # alert in Alertmanager, Grafana's datasources and dashboards, the proxy's allow-list — and
+  # runs promtool/amtool on the configs the tasks actually loaded (only Swarm can render
+  # prometheus.yml). `discovery` counts the targets found before relabelling against the
+  # opted-in tasks, proving an unlabelled service on the same network never reaches Prometheus.
+  # `edge` routes Grafana and a basic-auth Prometheus through the traefik chart. bind-mount,
+  # published, loki and extras run in a local `make e2e`. Six services and six images per
+  # fixture, hence the 10m convergence budget.
+  - { chart: prometheus-stack, cases: "default minimal discovery edge ephemeral alertmanager-config", timeout: 10m }

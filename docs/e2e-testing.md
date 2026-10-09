@@ -223,13 +223,25 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   release's overlay rather than `docker exec`, so the `replica-set` fixture exercises the member
   address clients are handed, not just the one the server resolves.
 - **traefik** — the `traefik-certs` node-label pin + the certs-bind-mount host dir.
-- **mariadb-galera** — the two dummy auth secrets + a node label for EVERY peer
+- **mariadb-galera** — the three dummy auth secrets + a node label for EVERY peer
   (`mariadb-galera-1` … `-5`) on the single CI node, so the pinned default fixture
   schedules all its peers there. `ci/e2e-check.sh` then asserts one cluster of the right
   size, every peer `Synced`, and a write on the first peer read back from the last.
   The `proxy` fixture additionally scales one peer to 0 and keeps querying through the
   client endpoint, asserting the HAProxy routes around it — the one claim a render
-  check cannot stand in for.
+  check cannot stand in for. The `metrics` fixture scrapes every exporter from the
+  `monitoring` overlay and asserts `mysql_up 1`, the full cluster size and no failing
+  collector, which is how a grant the one-shot forgot would show. `default` also stops
+  every peer, one at a time and then all together, and asserts the first re-forms by
+  itself and the second elects a peer and re-forms with every row. The `lifecycle`
+  fixture runs as a job of its own (`e2e (mariadb-galera lifecycle)`):
+  - a peer restart, and a peer rebuilt from an empty volume;
+  - an upgrade rolling every peer one at a time, then every peer stopped together and
+    recovered by an election;
+  - a peer lost for good, the others refusing to elect without it, and recovery with
+    `cluster.forceBootstrap` through the README's `--wsrep-recover` runbook, then
+    clearing it;
+  - a crash of every peer, recovered by an election.
 - **keycloak** — the two operator secrets + the DB/ingress overlays + a throwaway
   co-located backend on `keycloak-db-net` — MariaDB, or PostgreSQL for the `postgres` fixture —
   because Keycloak attaches its DB overlay unconditionally and `/health/ready` only passes once
@@ -280,6 +292,18 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   `ci/e2e-render-only`: Swarm refuses a task whose bind source does not exist on the node, and
   the hook's `mkdir` only reaches the node where the node *is* the host — not on a VM-backed
   engine, whose `/tmp` is its own.
+- **prometheus-stack** — the two Grafana secrets + the `prometheus-stack-data` node label + the
+  `monitoring` and `traefik-public` overlays for every fixture; per fixture, the three host
+  directories created through the daemon and owned by the images' users (`bind-mount`), a real
+  Traefik edge (`edge`), the Alertmanager webhook's `url_file` secret (`alertmanager-config`),
+  the `grafana.extraSecrets` secret (`extras`), and — for `discovery` — the
+  `prometheus.extraNetworks` overlay plus three throwaway `/metrics` services: a labelled and an
+  unlabelled twin on `monitoring` and a labelled one on the extra overlay. Its
+  `ci/e2e-check.sh` then counts the targets Prometheus discovered before relabelling against
+  the opted-in tasks the daemon lists, which is what proves the unlabelled twin never reached
+  Prometheus at all. The `default` case follows the data end to end: exporters discovered
+  through the socket-proxy, the Watchdog alert in Alertmanager, Grafana's datasources and
+  dashboards, the proxy's allow-list, and `promtool`/`amtool` on the configs the tasks run.
 
 - **airbyte** — the eight operator secrets + `airbyte-db-net`/`traefik-public` + the
   `airbyte-data` node label, and three throwaway backends: PostgreSQL, SeaweedFS for S3

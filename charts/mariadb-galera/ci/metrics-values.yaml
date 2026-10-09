@@ -1,0 +1,8 @@
+# Metrics: one exporter per peer on the monitoring overlay, labelled for Swarm
+# service discovery, plus the one-shot that creates the exporter's database user.
+# The peers must render exactly as they do without it. `labels` is set to prove it
+# stays off the exporters: their deploy labels are readable through Prometheus.
+metrics:
+  enabled: true
+labels:
+  team: db
