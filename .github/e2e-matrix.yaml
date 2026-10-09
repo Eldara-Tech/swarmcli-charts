@@ -60,10 +60,10 @@ include:
   - { chart: mariadb-galera, cases: "default ephemeral proxy metrics",                                                 timeout: 25m }
   # mariadb-galera lifecycle, a job of its own so the chart's wall time stays ~40m: a peer
   # restart, a peer rebuilt from an empty volume, an upgrade rolling every peer one at a time
-  # (what a re-tagged image does), recovery with cluster.forceBootstrap and clearing it, and a crash
-  # of every peer recovered through the README's --wsrep-recover runbook. It drives
-  # `swarmcli charts upgrade` itself; its fixture shortens the health windows to keep the
-  # five --wait rollouts to ~2.5 minutes each.
+  # (what a re-tagged image does), every peer stopped together and killed together, each
+  # recovered by an election, and a peer lost for good, recovered with cluster.forceBootstrap
+  # through the README's --wsrep-recover runbook. It drives `swarmcli charts upgrade`
+  # itself; its fixture shortens the health windows to keep each rollout to ~2.5 minutes.
   - { chart: mariadb-galera, name: "mariadb-galera lifecycle", cases: "lifecycle",                                    timeout: 25m }
   # postgres: EVERY fixture (cases: "" => no filter). bind-mount is included, unlike
   # mariadb's: PGDATA sits one level below the mount (/var/lib/postgresql/<major>/docker),

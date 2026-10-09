@@ -142,7 +142,8 @@ if [ -n "$proxy_svc" ]; then
   cfg="$(yq -r ".services.\"$proxy_svc\".environment.HAPROXY_CFG" "$f")"
   grep -Fq 'option httpchk' <<<"$cfg" || err "proxy does not use an HTTP check"
   grep -Fq 'http-check expect status 200' <<<"$cfg" || err "proxy does not require a 200 from the Synced responder"
-  port="$(yq -r '.services.*.command[0]' "$f" | { grep -oE 'TCP-LISTEN:[0-9]+' || true; } | sed -n 1p | cut -d: -f2)"
+  # The Synced responder's port, not the election's (4566), which listens too.
+  port="$(yq -r '.services.*.command[0]' "$f" | { grep -oE 'TCP-LISTEN:[0-9]+,fork,reuseaddr EXEC:/usr/local/bin/galera-synced-check' || true; } | sed -n 1p | sed 's/^TCP-LISTEN:\([0-9]*\),.*/\1/')"
   [ -n "$port" ] || err "no peer runs the Synced responder"
   for s in $svcs; do
     grep -Eq "server $s $s:[0-9]+ check port $port" <<<"$cfg" \
@@ -162,7 +163,7 @@ for s in $svcs; do
   # Exact, not a prefix: `--su-mysql` on its own runs no tests at all and would
   # report healthy unconditionally. The chart owns this list entirely, so there is
   # no legitimate variation to allow for.
-  want_hc='CMD healthcheck.sh --su-mysql --connect --galera_ready'
+  want_hc='CMD-SHELL test -e /tmp/galera-electing || exec healthcheck.sh --su-mysql --connect --galera_ready'
   if [ -n "$hc" ] && [ "$hc" != "$want_hc" ]; then
     err "$s: healthcheck is '$hc', expected '$want_hc' — --su-mysql must come first (the script re-execs and drops earlier options) and the probe must be --galera_ready, not --galera_online, which would kill donors"
   fi
@@ -271,32 +272,20 @@ fi
 # still converged and still reported healthy — which is precisely why this has to
 # be checked on the render rather than trusted to the deploy.
 #
-# A forced peer and the seed peer both count as bootstrappers, and the template
-# renders the seed branch only when no peer is forced, so the sum is always 1. The
-# rejoin wait's safe_to_bootstrap clause is not a third: Galera marks at most one
-# peer, and only the last to leave a cluster that stopped one peer at a time.
+# Only a forced peer bootstraps unconditionally; every other peer, peer 1 included,
+# goes through the rejoin wait, whose election decides who forms the cluster, a first
+# install's included. A second unconditional bootstrapper would form a rival cluster.
+# The wait's safe_to_bootstrap clause is not one: Galera marks at most one peer, and
+# only the last to leave a cluster that stopped one peer at a time.
 forced="$(grep -cF 'cluster.forceBootstrap names this peer' "$f" || true)"
-seeds="$(grep -cF 'SEED PEER:' "$f" || true)"
 waiters="$(grep -cF 'REJOINING PEER:' "$f" || true)"
 
 want_forced=0
 if [ "$case_name" = "force-bootstrap" ]; then want_forced=1; fi
 [ "$forced" -eq "$want_forced" ] \
   || err "$forced peers bootstrap unconditionally, expected $want_forced"
-[ "$((seeds + forced))" -eq 1 ] \
-  || err "$((seeds + forced)) peers can bootstrap ($seeds seed + $forced forced), expected exactly 1 — two racing bootstrappers each form their own cluster"
 [ "$waiters" -eq "$((want_peers - forced))" ] \
   || err "$waiters peers wait to rejoin, expected every peer but the forced one ($((want_peers - forced)))"
-
-# A seed that bootstraps without first checking for live peers would, once rebuilt
-# from an empty volume, form a rival cluster beside the survivors. Both halves of
-# its guard must survive: the data-dir test and the port probe.
-if [ "$seeds" -eq 1 ]; then
-  grep -Fq 'if [ ! -d /var/lib/mysql/mysql ]; then' "$f" \
-    || err "the seed peer lost its data-dir test — it would bootstrap on every restart"
-  grep -Fq 'if [ "$$PEER_UP" = no ]; then' "$f" \
-    || err "the seed peer lost its live-peer probe — a rebuilt seed would form a rival cluster"
-fi
 
 # Every peer but a forced one waits for ANOTHER peer to resolve before starting
 # mariadbd. Swarm publishes a task in DNS only once it is healthy, so after a full
@@ -306,8 +295,14 @@ fi
 for s in $svcs; do
   cmd="$(yq -r ".services.\"$s\".command[0]" "$f")"
   grep -Fq 'cluster.forceBootstrap names this peer' <<<"$cmd" && continue
-  grep -Fq 'if getent hosts "$$p" >/dev/null; then UP="$$p"; break; fi' <<<"$cmd" \
+  grep -Fq 'getent hosts "$$p" >/dev/null || continue' <<<"$cmd" \
     || err "$s: starts mariadbd without waiting for a peer to resolve; after a full stop it would crash-loop"
+  # A member is a peer that answers on the Galera port, the one thing worth joining.
+  # An electing peer resolves too, and without a healthcheck any running peer does,
+  # so resolving alone must not count.
+  grep -Fq 'if timeout 2 bash -c "exec 3<>/dev/tcp/$$p/4567" 2>/dev/null; then' <<<"$cmd" \
+    && grep -Fq 'MEMBER="$$p"' <<<"$cmd" \
+    || err "$s: does not tell a member by its Galera port; it would join a peer that is not in a cluster"
   wait_list="$(grep -E '^[[:space:]]*for p in tasks\.' <<<"$cmd" | tail -1)"
   if grep -Eq "tasks\.[A-Za-z0-9_.-]*_$s( |;)" <<<"$wait_list"; then
     err "$s: waits for its own name, which resolves only once it is already healthy"
@@ -322,7 +317,51 @@ for s in $svcs; do
   # so that clearing that value does not restart every peer at once.
   grep -Fq "if grep -qx 'safe_to_bootstrap: 1' /var/lib/mysql/grastate.dat 2>/dev/null; then" <<<"$cmd" \
     || err "$s: lost the safe_to_bootstrap exit; a cluster stopped one peer at a time would never restart"
+  # The election for an all-down cluster. Each property here is what keeps it from
+  # forming a cluster on stale data: only peers with data take part, all of them
+  # must have reported, and the highest seqno wins (ties to the lowest peer number,
+  # so every peer computes the same winner).
+  grep -Fq "socat TCP-LISTEN:4566,fork,reuseaddr SYSTEM:'cat /tmp/galera-position'" <<<"$cmd" \
+    || err "$s: does not serve its position for the election"
+  # An empty peer reports -2, below any real position, so it can win only when every
+  # peer is empty, as on a first install. Reporting anything higher would let a
+  # rebuilt peer form a cluster that the others then copy, losing every row.
+  grep -Fq 'SEQNO=-2' <<<"$cmd" \
+    || err "$s: an empty peer does not report -2; it could win and wipe the others"
+  # mariadb 12.3.3 refuses --wsrep-recover without a cluster address, which would
+  # leave every crashed peer without a position and the election stuck.
+  grep -Fq -- '--wsrep-cluster-address=gcomm:// --wsrep-recover' <<<"$cmd" \
+    || err "$s: --wsrep-recover has no cluster address; it fails on mariadb 12.3.3 and the election never completes after a crash"
+  # A marker from an earlier round that this peer no longer wins must not stop it
+  # reporting, or the others wait for it forever.
+  grep -Fq 'ELECTED=no' <<<"$(sed -n '/WINNER" != /,/fi/p' <<<"$cmd")" \
+    || err "$s: a peer holding a stale election marker never reports again; the election would never complete"
+  grep -Fq "grep -c .)\" -eq $((want_peers - 1)) ]; then" <<<"$cmd" \
+    || err "$s: does not wait for all $want_peers peers before electing; a missing peer may hold the newest data"
+  grep -Fq "sort -k2,2nr -k1,1n" <<<"$cmd" \
+    || err "$s: the election no longer picks the highest seqno, then the lowest peer number"
+  # Exactly two ways for a non-forced peer to bootstrap: the safe_to_bootstrap exit and
+  # winning the election. A third, such as the old "bootstrap if no peer answers"
+  # seed, races the election and forms a rival cluster.
+  bootstraps="$(grep -cF "GCOMM='gcomm://'" <<<"$cmd" || true)"
+  [ "$bootstraps" -eq 2 ] \
+    || err "$s: $bootstraps places set GCOMM='gcomm://', expected 2 (the safe_to_bootstrap exit and the election's winner)"
+  # A peer reports, compares and claims under its OWN number. Under another, two peers
+  # would each find themselves the winner of a tie and both bootstrap.
+  own="${s##*-}"
+  grep -Fq "printf '%s %s\n' $own \"\$\$SEQNO\" > /tmp/galera-position" <<<"$cmd" \
+    && grep -Fq "\"\$\$STATES\" $own \"\$\$SEQNO\"" <<<"$cmd" \
+    && grep -Fq "if [ \"\$\$WINNER\" = $own ]; then" <<<"$cmd" \
+    || err "$s: the election does not report, compare and claim under peer number $own; two peers could both win"
 done
+for prt in $(yq -r '.services.*.ports // [] | .[] | .published' "$f"); do
+  [ "$prt" != 4566 ] || err "the election port 4566 is published; it must stay inside the overlay"
+done
+# Without a volume a winner's marker would not survive its restart, and it would win
+# again on every one; it must bootstrap in place instead.
+if [ "$case_name" = "ephemeral" ] && grep -Fq 'touch /var/lib/mysql/.galera-elected' "$f"; then
+  err "the ephemeral fixture's winner restarts to bootstrap; without a volume its marker is lost and it never forms the cluster"
+fi
 # Galera refuses to bootstrap from safe_to_bootstrap: 0, which every peer has after a
 # simultaneous stop, so a forced peer must set it or the recovery lever does nothing.
 if [ "$forced" -gt 0 ]; then
