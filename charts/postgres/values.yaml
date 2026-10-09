@@ -80,6 +80,38 @@ exposure:
   protocol: tcp
   mode: ingress
 
+# Prometheus metrics: a postgres_exporter beside the database, found by Docker Swarm service
+# discovery. The exporter carries the deploy labels prometheus.io/scrape=true and
+# prometheus.io/port=9187, and joins metrics.network, the prometheus-stack chart's default scrape
+# overlay — so that chart picks it up with no config.
+#
+# Off by default, and nothing below renders while it is off. Turning it on adds services and
+# leaves the postgres service's spec untouched, so it never restarts the database.
+#
+# The exporter logs in as its own least-privilege role (LOGIN plus membership of the built-in
+# pg_monitor role; no access to your tables). A one-shot service creates that role, or resets its
+# password, as auth.username over the overlay, which is why this works on a database that already
+# exists. secretName is an EXTERNAL Swarm secret holding its password. Pre-create it with a random
+# one:
+#   openssl rand -base64 32 | docker secret create postgres_exporter_password -
+# To rotate it, create a secret under a new name and point secretName at it.
+metrics:
+  enabled: false
+  image:
+    repository: prometheuscommunity/postgres-exporter
+    # A concrete tag, not appVersion: this is a second image, and Renovate's helm-values manager
+    # maintains pins written here.
+    tag: "v0.20.1"
+  # The exporter's role. Must differ from auth.username: the one-shot resets this role's
+  # password, and the superuser's must never be touched. It adopts only a role it created
+  # itself, and refuses an existing one of that name.
+  username: exporter
+  secretName: postgres_exporter_password
+  # External overlay the exporter shares with Prometheus. Only the exporter joins it, never the
+  # database, so nothing there reaches its SQL port directly. requirements.yaml declares it
+  # autoCreate:true.
+  network: monitoring
+
 # Swarm deploy resource limits (optional). Rendered only when limits.memory is set.
 resources:
   limits:
