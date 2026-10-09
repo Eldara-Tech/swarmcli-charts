@@ -56,6 +56,8 @@ fi
 for s in $svcs; do
   [ "$(yq -r ".services.\"$s\".deploy.replicas" "$f")" = "1" ] \
     || err "$s: replicas is not 1 — two tasks would share one data dir"
+  yq -r ".services.\"$s\".deploy.labels // [] | .[]" "$f" | grep -xF 'com.swarmcli.rollout=sequential' >/dev/null \
+    || err "$s: lost com.swarmcli.rollout=sequential; an upgrade would restart every peer at once"
   [ "$(yq -r ".services.\"$s\".deploy.endpoint_mode" "$f")" = "vip" ] \
     || err "$s: endpoint_mode is not vip — dnsrr drops network aliases, so the per-peer and client aliases would silently not exist"
   cmd="$(yq -r ".services.\"$s\".command[0]" "$f")"

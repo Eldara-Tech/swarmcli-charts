@@ -59,8 +59,8 @@ include:
   # grants every default collector accepts — a missing grant fails only its collector.
   - { chart: mariadb-galera, cases: "default ephemeral proxy metrics",                                                 timeout: 25m }
   # mariadb-galera lifecycle, a job of its own so the chart's wall time stays ~40m: a peer
-  # restart, a peer rebuilt from an empty volume, an upgrade restarting every peer (what a
-  # re-tagged image does), recovery with cluster.forceBootstrap and clearing it, and a crash
+  # restart, a peer rebuilt from an empty volume, an upgrade rolling every peer one at a time
+  # (what a re-tagged image does), recovery with cluster.forceBootstrap and clearing it, and a crash
   # of every peer recovered through the README's --wsrep-recover runbook. It drives
   # `swarmcli charts upgrade` itself; its fixture shortens the health windows to keep the
   # five --wait rollouts to ~2.5 minutes each.

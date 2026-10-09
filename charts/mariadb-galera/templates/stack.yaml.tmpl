@@ -397,11 +397,12 @@ services:
 {{- end }}
       restart_policy:
         condition: any
-{{- if $.Values.labels }}
+      # swarmcli >= 2.2.0 updates services carrying this label one at a time, each
+      # converged before the next, so an upgrade never stops every peer together.
       labels:
+        - "com.swarmcli.rollout=sequential"
 {{- range $key, $val := $.Values.labels }}
         - "{{ $key }}={{ $val }}"
-{{- end }}
 {{- end }}
 {{- if $.Values.metrics.enabled }}
 
