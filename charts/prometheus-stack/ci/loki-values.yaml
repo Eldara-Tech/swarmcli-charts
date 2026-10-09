@@ -1,0 +1,7 @@
+# Grafana with a Loki datasource. Grafana joins the `monitoring` overlay for it. No
+# Loki is deployed; e2e asserts the provisioned URL, not its health.
+grafana:
+  datasources:
+    loki:
+      enabled: true
+      url: http://e2e-loki_loki:3100
