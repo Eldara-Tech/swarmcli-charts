@@ -17,6 +17,9 @@
 {{- if and .Values.network.encrypted .Values.network.external -}}
 {{- fail "network.encrypted only applies to a chart-managed overlay: an external network's driver options are fixed when it is created, so setting this on external:true would silently not encrypt anything. Either set network.external: false, or pre-create the overlay yourself with `docker network create --opt encrypted`." -}}
 {{- end -}}
+{{- if and .Values.metrics.enabled (eq .Values.metrics.network .Values.network.name) -}}
+{{- fail "metrics.network must differ from network.name: the exporters join both, and the point of a separate metrics overlay is that Prometheus never shares one with the peers' SQL and Galera ports." -}}
+{{- end -}}
 {{- $force := 0 -}}
 {{- if .Values.cluster.forceBootstrap -}}
 {{- $force = int .Values.cluster.forceBootstrap -}}
@@ -56,6 +59,9 @@ services:
 {{- range $i := until $peers }}
 {{- $n := add1 $i }}
 {{- $name := printf "%s-%d" $prefix $n }}
+{{- $others := list }}
+{{- range $addrs }}{{ if ne . (printf "tasks.%s_%s" $.Release.Name $name) }}{{ $others = append $others . }}{{ end }}{{ end }}
+{{- $others = join " " $others }}
 
   {{ $name }}:
     image: {{ $.Values.image.repository }}:{{ if $.Values.image.tag }}{{ $.Values.image.tag }}{{ else }}{{ $.Chart.AppVersion }}{{ end }}
@@ -63,6 +69,9 @@ services:
     # changes on every reschedule and is what shows up in this peer's own error log
     # and in the others' membership messages.
     hostname: {{ $name }}
+    # Long enough for mariadbd to finish a clean shutdown: flush the buffer pool and
+    # write grastate.dat. Killed partway, a peer is left at seqno -1, as after a crash.
+    stop_grace_period: {{ $.Values.stopGracePeriod }}
 
     networks:
       {{ $.Values.network.name }}:
@@ -136,6 +145,10 @@ services:
     command:
       - |-
         set -eu
+        # PID 1 ignores SIGTERM unless it traps it, so without this a peer still waiting
+        # for the cluster would sit out the whole stop_grace_period on every stop. Once
+        # mariadbd is exec'd it handles SIGTERM itself.
+        trap 'exit 0' TERM INT
         # The state-transfer account. mariadb-backup connects to the DONOR peer to
         # stream its data dir; authenticating VIA unix_socket matches the account
         # against the OS user mysqld already runs as, so there is no password to
@@ -179,8 +192,17 @@ services:
 {{- if eq $force $n }}
         # cluster.forceBootstrap names this peer, so form a NEW cluster and skip
         # every check below. Clear the value once the cluster is healthy.
+        #
+        # Galera refuses to form a cluster from a node whose grastate.dat says
+        # safe_to_bootstrap: 0, and after peers stop together, which is what an upgrade
+        # that changes every peer does, that is every one of them. Naming a peer here is
+        # the operator taking that decision, so the flag is set for them.
+        if [ -f /var/lib/mysql/grastate.dat ]; then
+          sed -i 's/^safe_to_bootstrap: 0$$/safe_to_bootstrap: 1/' /var/lib/mysql/grastate.dat
+        fi
         GCOMM='gcomm://'
-{{- else if and (eq $n 1) (eq $force 0) }}
+{{- else }}
+{{- if and (eq $n 1) (eq $force 0) }}
         if [ ! -d /var/lib/mysql/mysql ]; then
           # SEED PEER: peer 1 is the only peer that may ever form a cluster, and
           # even it only does so with no data dir AND no peer answering on the
@@ -206,24 +228,43 @@ services:
             GCOMM='gcomm://'
           fi
         fi
-{{- else }}
-        # JOINING PEER: never bootstraps, so it has nothing to decide — it only
-        # waits for a peer to start listening, because a Galera node that finds no
-        # primary component exits and would otherwise crash-restart until the seed
-        # appears. Bounded: if nothing shows up we start anyway and let Swarm's
-        # restart policy carry it, rather than sitting here forever.
-        while [ "$$SECONDS" -lt 60 ]; do
-          PEER_UP=no
-          for p in {{ $peerList }}; do
-            if timeout 2 bash -c "exec 3<>/dev/tcp/$$p/4567" 2>/dev/null; then
-              PEER_UP=yes
+{{- end }}
+        if [ "$$GCOMM" != 'gcomm://' ]; then
+          # REJOINING PEER: start mariadbd only once another peer resolves. Swarm
+          # publishes a task in DNS, tasks.<service> included, only after its
+          # healthcheck passes, and a peer only passes it inside a cluster. With every
+          # peer down nothing resolves, and a mariadbd started anyway dies with `No
+          # address to connect`, rewriting grastate.dat to seqno -1 each time: the
+          # record the recovery procedure reads. So wait, without a limit; until a
+          # peer resolves there is nothing to join.
+          #
+          # The one way out of an all-down cluster that needs no operator: the peer
+          # Galera marked safe_to_bootstrap: 1, i.e. the last to leave a cluster that
+          # stopped one peer at a time. Its data is the newest, Galera marks at most
+          # one peer, and nothing else could restart the cluster, so it forms it
+          # again. Rendered whatever cluster.forceBootstrap says, so that clearing
+          # that value changes only the forced peer and the seed rather than every
+          # peer, and the cluster rides through the second upgrade.
+          NOTED=-60
+          until
+            UP=''
+            for p in {{ $others }}; do
+              if getent hosts "$$p" >/dev/null; then UP="$$p"; break; fi
+            done
+            [ -n "$$UP" ]
+          do
+            if grep -qx 'safe_to_bootstrap: 1' /var/lib/mysql/grastate.dat 2>/dev/null; then
+              echo 'mariadb-galera: no peer is up and this one left the cluster last (safe_to_bootstrap: 1), so it forms it again'
+              GCOMM='gcomm://'
+              break
             fi
+            if [ $$((SECONDS - NOTED)) -ge 60 ]; then
+              echo 'mariadb-galera: waiting for a peer to come up. If every peer is down, see README.md, Recovering a fully stopped cluster.'
+              NOTED=$$SECONDS
+            fi
+            sleep 2
           done
-          if [ "$$PEER_UP" = yes ]; then
-            break
-          fi
-          sleep 2
-        done
+        fi
 {{- end }}
 {{- if $.Values.proxy.enabled }}
         # Synced responder for the proxy. socat, gosu and the mariadb client are
@@ -362,6 +403,127 @@ services:
         - "{{ $key }}={{ $val }}"
 {{- end }}
 {{- end }}
+{{- if $.Values.metrics.enabled }}
+
+  {{ $prefix }}-exporter-{{ $n }}:
+    image: {{ $.Values.metrics.image.repository }}:{{ $.Values.metrics.image.tag }}
+
+    # The Galera overlay to reach this peer, and the metrics overlay for Prometheus to
+    # reach the exporter. The peer itself never joins the metrics overlay, so nothing
+    # there can reach its SQL or Galera ports.
+    networks:
+      - {{ $.Values.network.name }}
+      - {{ $.Values.metrics.network }}
+
+    secrets:
+      - {{ $.Values.metrics.secretName }}
+
+    # The exporter takes its password only from MYSQLD_EXPORTER_PASSWORD, so it is
+    # read from the mounted secret at start and never lands in the compose file or
+    # `docker inspect`. `$$` is the compose escape for a literal `$`.
+    #
+    # tasks.<release>_<peer> resolves to this peer's task, and to nothing while it
+    # has none, so a missing peer reads as mysql_up 0 at once rather than a connect
+    # timeout against an empty VIP.
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - >-
+        export MYSQLD_EXPORTER_PASSWORD="$$(cat /run/secrets/{{ $.Values.metrics.secretName }})";
+        exec /bin/mysqld_exporter
+        --mysqld.address=tasks.{{ $.Release.Name }}_{{ $name }}:3306
+        --mysqld.username={{ $.Values.metrics.username }}
+
+    deploy:
+      replicas: 1
+{{- /* The same pin as the peer it watches: Prometheus labels every target with the
+       node it runs on, and that should be the peer's node. */}}
+{{- if $constraints }}
+      placement:
+        constraints:
+{{- range $constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+      # Only the discovery labels, never $.Values.labels: once a service opts in,
+      # every one of its deploy labels is readable through Prometheus's targets API.
+      labels:
+        - "prometheus.io/scrape=true"
+        - "prometheus.io/port=9104"
+{{- end }}
+{{- end }}
+
+{{- if .Values.metrics.enabled }}
+
+  # Creates the exporters' database user, or resets its password, then exits. It
+  # logs in as root over the overlay rather than running inside a peer, so turning
+  # metrics on works on a cluster that already exists without restarting any peer.
+  # Galera replicates the statements, so one peer that takes them is enough; a peer
+  # still joining refuses them, and the loop moves on to the next.
+  #
+  # Swarm runs it again only when its spec changes, which is what a rotation does:
+  # a new metrics.secretName.
+  {{ $prefix }}-exporter-user:
+    image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
+
+    networks:
+      - {{ .Values.network.name }}
+
+    secrets:
+      - {{ .Values.auth.rootSecretName }}
+      - {{ .Values.metrics.secretName }}
+
+    # MYSQL_PWD keeps the root password off the command line. The exporter password
+    # has to travel inside the statement, so it is escaped as a SQL string literal
+    # the way the image's own entrypoint escapes the passwords it sets, and the
+    # statements go in on stdin: `-e` would put them, password included, in this
+    # process's argv for anyone on the node to read. sql_log_off keeps them out of a
+    # general query log the operator may have enabled.
+    entrypoint:
+      - /bin/bash
+      - -c
+    command:
+      - |-
+        set -eu
+        export MYSQL_PWD="$$(cat /run/secrets/{{ .Values.auth.rootSecretName }})"
+        pw="$$(cat /run/secrets/{{ .Values.metrics.secretName }})"
+        nl=$$'\n'
+        pw="$${pw//\\/\\\\}"
+        pw="$${pw//$$nl/\\n}"
+        pw="$${pw//\'/\\\'}"
+        user="'{{ .Values.metrics.username }}'@'%'"
+        sql="SET SESSION sql_log_off = 1;
+        CREATE USER IF NOT EXISTS $$user IDENTIFIED BY '$$pw' WITH MAX_USER_CONNECTIONS 3;
+        ALTER USER $$user IDENTIFIED BY '$$pw' WITH MAX_USER_CONNECTIONS 3;
+        GRANT PROCESS, REPLICATION CLIENT, SLAVE MONITOR ON *.* TO $$user;"
+        for _ in $$(seq 1 60); do
+          for p in {{ $peerList }}; do
+            if err="$$(mariadb -h "$$p" -uroot 2>&1 <<<"$$sql")"; then
+              echo "mariadb-galera: exporter user {{ .Values.metrics.username }} is ready (via $$p)"
+              exit 0
+            fi
+          done
+          sleep 5
+        done
+        echo "mariadb-galera: no peer accepted the exporter user statements; last error: $$err" >&2
+        exit 1
+
+    deploy:
+      replicas: 1
+{{- if .Values.placement.constraints }}
+      placement:
+        constraints:
+{{- range .Values.placement.constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      # on-failure, not none: a first install can take longer than the loop above to
+      # become writable, and Swarm then simply runs it again.
+      restart_policy:
+        condition: on-failure
 {{- end }}
 
 {{- if .Values.proxy.enabled }}
@@ -492,6 +654,10 @@ secrets:
   {{ .Values.auth.appUser.secretName }}:
     external: true
 {{- end }}
+{{- if .Values.metrics.enabled }}
+  {{ .Values.metrics.secretName }}:
+    external: true
+{{- end }}
 
 networks:
   {{ .Values.network.name }}:
@@ -506,4 +672,8 @@ networks:
     driver_opts:
       encrypted: "true"
 {{- end }}
+{{- end }}
+{{- if .Values.metrics.enabled }}
+  {{ .Values.metrics.network }}:
+    external: true
 {{- end }}

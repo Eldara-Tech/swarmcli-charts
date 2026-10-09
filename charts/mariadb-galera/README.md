@@ -23,6 +23,9 @@ printf 'S3cr3t' | docker secret create mariadb_galera_root_password -
 # The app user's password (auth.appUser.enabled, on by default):
 printf 'S3cr3t' | docker secret create mariadb_galera_password -
 
+# The exporter user's password (metrics.enabled, off by default):
+openssl rand -base64 32 | docker secret create mariadb_galera_exporter_password -
+
 # One node per peer, each labelled for the peer whose volume lives there.
 # The chart pins peer N to node.labels.mariadb-galera-<N>:
 docker node update --label-add mariadb-galera-1=true <node-a>
@@ -42,6 +45,13 @@ yourself:
 ```bash
 docker network create --driver overlay --attachable --opt encrypted mariadb-galera-net
 ```
+
+Across nodes, the overlay needs the usual Swarm ports open between them: 2377/tcp,
+7946/tcp+udp and 4789/udp. Galera's own ports travel inside the overlay. If the
+overlay's MTU is above what the path between nodes carries (common on cloud
+networks with an MTU of 1450 or less), small queries work but a state transfer
+hangs. Create the network with a lower MTU then, alongside any other options:
+`--opt com.docker.network.driver.mtu=1400`.
 
 ## Installing
 
@@ -133,6 +143,86 @@ the ingress mesh: port 3306 on any node reaches the proxy, which routes to a
 `Synced` peer. The peers then publish nothing, so no external client can bypass
 the proxy's health checks, and `exposure.mode` does not apply.
 
+## Metrics
+
+MariaDB serves no Prometheus metrics of its own, so `metrics.enabled` adds one
+[mysqld_exporter](https://github.com/prometheus/mysqld_exporter) per peer. Each
+carries the deploy labels `prometheus.io/scrape=true` and `prometheus.io/port=9104`
+and joins the `monitoring` overlay, which is where the prometheus-stack chart
+scrapes by default — so Prometheus finds every peer by itself, with no scrape
+config. Any Prometheus using Docker Swarm service discovery on those labels works
+the same way.
+
+```bash
+openssl rand -base64 32 | docker secret create mariadb_galera_exporter_password -
+swarmcli charts upgrade db swarmcli-charts/mariadb-galera --reuse-values --set metrics.enabled=true
+```
+
+Turning it on adds services and changes no peer, so it is safe on a running cluster:
+nothing restarts. The exporters log in as a database user of their own, `exporter`,
+which a one-shot service (`mariadb-galera-exporter-user`) creates as root over the
+overlay and then exits; Galera replicates it to every peer. The user holds `PROCESS,
+REPLICATION CLIENT, SLAVE MONITOR` — what the default collectors need, and no
+`SELECT` on your data.
+
+You get `mysql_up` and every numeric `SHOW GLOBAL STATUS` and `SHOW GLOBAL VARIABLES`
+value, Galera's `mysql_global_status_wsrep_*` included (`wsrep_cluster_size`,
+`wsrep_local_state`, `wsrep_flow_control_paused`, …), so dashboards and alert rules
+written for mysqld_exporter apply as they are. Each exporter is its own service, so
+the `job` label names the peer it watches (`<release>_mariadb-galera-exporter-<N>`),
+and it shares that peer's node pin, so while the peers are pinned `node` is the
+peer's node.
+
+That pin also decides what a lost node looks like. Swarm cannot move the exporter
+elsewhere, so its target stays and reads down (`up 0`, not `mysql_up 0`), while the
+surviving peers report `mysql_global_status_wsrep_cluster_size` below
+`cluster.peers`. That drop is the signal to alert on, and the rules below do:
+`GaleraQuorumAtRisk` and `GaleraClusterShrunk`.
+
+- **Rotating the password**: create a secret under a new name and point
+  `metrics.secretName` at it. The changed spec runs the one-shot again, which resets
+  the password; a scrape or two may read `mysql_up 0` until it has.
+- **A cluster rebuilt from empty data** loses the user with everything else. Run the
+  one-shot again: `docker service update --force <release>_mariadb-galera-exporter-user`.
+- `metrics.network` names a different overlay. It must differ from `network.name`,
+  and the render fails if it does not: the peers never join it.
+- **Turning it off** leaves the services running, for the same reason as shrinking
+  the cluster (swarmcli deploys without `--prune`). Remove them yourself:
+  `docker service rm <release>_mariadb-galera-exporter-1 … <release>_mariadb-galera-exporter-user`.
+
+### Alerts and a dashboard
+
+The chart ships both under [`monitoring/`](monitoring) for your Prometheus and Grafana,
+and deploys neither: scraping is automatic, but which rules and dashboards a monitoring
+stack loads is its operator's choice. With the prometheus-stack chart they go in
+through its own configuration:
+
+```bash
+base=https://raw.githubusercontent.com/Eldara-Tech/swarmcli-charts/main/charts/mariadb-galera/monitoring
+curl -fsSL -O "$base/galera-rules.yml" -O "$base/galera-dashboard.json"
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --reuse-values \
+  --set-file prometheus.extraRules.galera=./galera-rules.yml \
+  --set-file grafana.dashboards.galera=./galera-dashboard.json
+```
+
+prometheus-stack's README, *Keeping your setup in git*, has the values-file form.
+
+- **Alerts** (`galera-rules.yml`): `MySQLDown`, `MySQLGaleraNotReady`,
+  `MySQLGaleraOutOfSync` and `MySQLGaleraDonorFallingBehind`, derived from the
+  [mysqld-mixin](https://github.com/prometheus/mysqld_exporter/tree/main/mysqld-mixin)
+  (Apache-2.0); OutOfSync leaves out a donor, which keeps serving during a state
+  transfer. Then one alert per cluster: `GaleraQuorumAtRisk` while fewer than 3
+  members remain, so the next failure loses quorum, and `GaleraClusterShrunk` while a
+  cluster has fewer members than it had in the last day.
+- **Dashboard** (`galera-dashboard.json`, uid `galera`): members, Synced peers,
+  primary component, peer state, flow control, write-set queues and traffic,
+  certification conflicts, plus connections, queries and buffer-pool hits. Pick a
+  cluster by its `stack`.
+
+Both group by the `stack` label prometheus-stack's discovery puts on every target.
+Another Prometheus needs the same relabelling of
+`__meta_dockerswarm_service_label_com_docker_stack_namespace` to `stack`.
+
 ## Values
 
 | Key | Default | Description |
@@ -162,6 +252,12 @@ the proxy's health checks, and `exposure.mode` does not apply.
 | `proxy.replicas` | `2` | Proxy replicas — stateless, so more than one is safe and recommended. |
 | `proxy.checkPort` | `9200` | Port the Synced responder listens on inside each peer; never published. |
 | `proxy.resources.limits.memory` | `""` | Proxy memory limit. Rendered only when set. |
+| `metrics.enabled` | `false` | One mysqld_exporter per peer, labelled for Prometheus service discovery. See *Metrics*. |
+| `metrics.image.repository` | `prom/mysqld-exporter` | Exporter image. |
+| `metrics.image.tag` | pinned in `values.yaml` | Exporter image tag (a concrete pin; Renovate maintains it). |
+| `metrics.username` | `exporter` | Database user the exporters log in as; the chart creates it. |
+| `metrics.secretName` | `mariadb_galera_exporter_password` | External secret holding that user's password. |
+| `metrics.network` | `monitoring` | External overlay the exporters share with Prometheus; no peer joins it. |
 | `exposure.enabled` | `false` | Publish the SQL port on each peer's own node, or on the proxy when `proxy.enabled`. |
 | `exposure.port` | `3306` | Published port. |
 | `exposure.protocol` | `tcp` | Published protocol. |
@@ -173,6 +269,7 @@ the proxy's health checks, and `exposure.mode` does not apply.
 | `healthcheck.retries` | `6` | Failures before unhealthy. |
 | `healthcheck.startPeriod` | `300s` | Grace period — **must exceed your worst-case state transfer**. |
 | `healthcheck.monitor` | `360s` | Rollout failure window; see below. |
+| `stopGracePeriod` | `5m` | How long Swarm waits for a peer to stop cleanly before killing it. |
 | `extraArgs` | `[]` | Extra `mariadbd` flags, appended verbatim. |
 | `labels` | `{}` | Extra deploy labels on every peer. |
 
@@ -193,6 +290,14 @@ Replication carries every row written. On a multi-node swarm it crosses the
 overlay between nodes, so encrypt that overlay unless the network between nodes is
 already trusted — see *Prerequisites*.
 
+With `metrics.enabled`, the exporters are the one thing on both the Galera overlay
+and `metrics.network`, so what can reach Prometheus can reach port 9104 and never a
+peer. `/metrics` has no authentication, and mysqld_exporter's `/probe?target=`
+endpoint will log in to any address it is handed with the exporter's credentials, so
+a rogue server on that overlay can capture a login attempt: give the user a long
+random password, as above. The one-shot that creates it holds the root password and
+stays off `metrics.network`.
+
 ## Operating notes
 
 ### How bootstrapping decides
@@ -204,14 +309,21 @@ join. Before `mariadbd` starts:
 
 - **Peer 1, data dir empty, no peer answering on port 4567** → form the cluster.
   This is the first install.
-- **Peer 1, data dir exists** → join. This is every restart, so a restart can
-  never bootstrap.
 - **Peer 1, data dir empty but some peer answers** → join and pull a state
   transfer. This is the seed rebuilt on a new node, and it is why a lost volume
   re-syncs instead of starting a rival cluster.
-- **Any other peer** → always join. It waits up to two minutes for a peer to start
-  listening first, because a Galera node that finds no cluster exits, and without
-  the wait a first install would be a burst of crash-restarts.
+- **Every other case** → wait until another peer resolves, then join. A restart
+  never bootstraps.
+- **Waiting, no peer resolves, and this peer's `grastate.dat` says
+  `safe_to_bootstrap: 1`** → form the cluster again. Galera sets that flag on the
+  last peer to leave a cluster that stopped one peer at a time, so its data is the
+  newest and at most one peer has it.
+
+The wait is not optional. Swarm publishes a peer in DNS (`tasks.<release>_<peer>`)
+only once its healthcheck passes, and a peer passes it only inside a cluster. With
+every peer down nothing resolves, and a `mariadbd` started anyway fails with
+`No address to connect` and rewrites `grastate.dat` to `seqno: -1` on every
+attempt, so the cluster could never come back by itself.
 
 A single designated seed is what removes the race. Letting every peer bootstrap
 when it sees no peers is the tempting version and it is wrong: on a first install
@@ -225,37 +337,65 @@ it. Once the cluster exists, peer 1 is no more special than any other peer, and
 losing it costs nothing extra.
 
 When `cluster.forceBootstrap` names a peer, that peer becomes the only
-bootstrapper and peer 1 is demoted to joining — so the count never rises above
-one, whatever you set.
+unconditional bootstrapper and peer 1 is demoted to joining, so the count never
+rises above one, whatever you set.
 
 ### Recovering a fully stopped cluster
 
-If every peer stopped **gracefully**, Galera recovers the cluster by itself on
-restart. If they all died at once (power loss, a node reboot storm), no peer will
-consider itself safe to bootstrap and they will wait rather than risk losing
-committed transactions. Recover deliberately:
+If the peers stopped **one at a time**, the cluster comes back by itself: the last
+peer to leave holds `safe_to_bootstrap: 1` and forms it again, and the others join.
 
-1. Find the furthest-ahead peer. On each, read `seqno` from
-   `/var/lib/mysql/grastate.dat`, or if it says `-1`, start with
-   `--wsrep-recover` and read the recovered position from the log.
+If they stopped **together**, no peer holds the flag. Every peer then waits,
+logging `waiting for a peer to come up`, rather than risk losing committed
+transactions. That covers an upgrade that changes every peer at once (see
+*Upgrading the image*) and a power loss. Swarm replaces a waiting peer every few
+minutes as its healthcheck expires; that is harmless, because `mariadbd` never
+starts and `grastate.dat` is left as it was. Recover deliberately:
+
+1. Find the furthest-ahead peer. On each peer's node, read its `grastate.dat`:
+   `docker run --rm -v <release>_mariadb-galera-data-<N>:/d:ro busybox cat /d/grastate.dat`.
+   The highest `seqno` wins. A peer that crashed shows `-1`; with every peer
+   stopped, recover its position from the volume itself, using the image the
+   cluster runs. The number after the last `:` is its seqno. MariaDB 12.3.3 and
+   later refuse to start without a cluster address, even only to recover, so the
+   command passes an empty one; `--network none` keeps it from reaching anyone:
+
+   ```bash
+   docker run --rm --network none -v <release>_mariadb-galera-data-<N>:/var/lib/mysql mariadb:<tag> \
+     mariadbd --user=mysql --wsrep-on=ON --wsrep-provider=/usr/lib/galera/libgalera_smm.so \
+     --wsrep-cluster-address=gcomm:// --wsrep-recover 2>&1 | grep 'Recovered position'
+   ```
 2. Set `cluster.forceBootstrap` to **that peer's number** and
-   `swarmcli charts upgrade` — it forms a new cluster from the best data.
+   `swarmcli charts upgrade`. The chart marks that peer `safe_to_bootstrap: 1`,
+   which Galera insists on, and it forms a new cluster from the best data.
 3. Once the others have rejoined and the cluster is `Synced`, set
-   `cluster.forceBootstrap: ""` and upgrade again. Leaving it set means that peer
-   would form yet another cluster on its next restart.
+   `cluster.forceBootstrap: ""` and upgrade again. That restarts only the forced
+   peer and peer 1, and they rejoin the running cluster. Leaving it set means that
+   peer would form yet another cluster on its next restart.
 
-Never force-bootstrap more than one peer, and never force-bootstrap while the
-cluster is still up.
+Never force-bootstrap more than one peer, never force-bootstrap while the cluster
+is still up, and never force one while some peer still shows
+`safe_to_bootstrap: 1`: that peer restarts the cluster by itself.
 
 ### Upgrading the image
 
-Galera requires every peer on the same server version, and `swarmcli charts
-upgrade` updates all peer services at once — so the whole cluster restarts
-together. That is usually fine (a graceful full stop recovers automatically), but
-it is a full outage, and it is the one time you may need the recovery procedure
-above. To roll peers one at a time instead, update each service in place
+Galera upgrades one peer at a time: MariaDB supports a cluster running two versions
+while that happens. But `swarmcli charts upgrade` updates all peer services at
+once, so the whole cluster stops together. That is a full outage, and a stop where
+no peer holds `safe_to_bootstrap: 1`, so it needs the recovery procedure above. To
+roll peers one at a time instead, update each service in place
 (`docker service update --image mariadb:<tag> <release>_mariadb-galera-1`), waiting
 for `Synced` between peers, then bump the chart to match.
+
+That full stop can happen without you changing the image. By default Swarm resolves
+`mariadb:12.3` to a digest at every deploy, so once upstream re-tags `12.3` with a
+patch release, the next upgrade of any value changes every peer. Upgrade with
+`--resolve-image changed`: it keeps the digest the cluster already runs while the
+image is unchanged, and resolves a fresh one when you change it on purpose.
+
+```bash
+swarmcli charts upgrade db swarmcli-charts/mariadb-galera --reuse-values --resolve-image changed …
+```
 
 Note also that a MariaDB tag change is a **series** change, not a patch: check the
 release notes for on-disk format changes before upgrading a cluster you care about.

@@ -31,7 +31,9 @@ count() { if [ -z "$1" ]; then echo 0; else printf '%s\n' "$1" | wc -l | tr -d '
 want_peers=3
 if [ "$case_name" = "five-peers" ]; then want_peers=5; fi
 
-# The proxy fixtures render one extra service; every other fixture renders peers only.
+# The proxy fixtures render one extra service, and the metrics fixture an exporter
+# per peer plus the one-shot that creates its user; every other fixture renders
+# peers only.
 proxy_svc=""
 all="$(yq -r '.services | keys | .[]' "$f")"
 if [ "$case_name" = "proxy" ] || [ "$case_name" = "proxy-published" ]; then
@@ -40,7 +42,10 @@ if [ "$case_name" = "proxy" ] || [ "$case_name" = "proxy-published" ]; then
 else
   printf '%s\n' "$all" | { grep -qE -- '-proxy$' && err "a proxy service is rendered for case '$case_name'; it must be opt-in" || true; }
 fi
-svcs="$(printf '%s\n' "$all" | { grep -vE -- '-proxy$' || true; })"
+if [ "$case_name" != "metrics" ] && grep -qE -- '-exporter-' <<<"$all"; then
+  err "exporter services are rendered for case '$case_name'; metrics must be opt-in"
+fi
+svcs="$(printf '%s\n' "$all" | { grep -E -- '^mariadb-galera-[0-9]+$' || true; })"
 n_svcs="$(count "$svcs")"
 if [ "$n_svcs" -ne "$want_peers" ]; then
   err "expected $want_peers peer services, rendered $n_svcs: $(echo "$svcs" | tr '\n' ' ')"
@@ -90,7 +95,7 @@ for s in $svcs; do
 done
 
 # Distinct per-peer identity: node labels and volume sources must never repeat.
-labels="$(yq -r '.services.*.deploy.placement.constraints // [] | .[]' "$f" | { grep -E 'node\.labels\.' || true; })"
+labels="$(for s in $svcs; do yq -r ".services.\"$s\".deploy.placement.constraints // [] | .[]" "$f"; done | { grep -E 'node\.labels\.' || true; })"
 n_labels="$(count "$labels")"
 if [ "$n_labels" -gt 0 ]; then
   uniq_labels="$(printf '%s\n' "$labels" | sort -u | wc -l | tr -d ' ')"
@@ -112,7 +117,7 @@ fi
 
 # The client alias: on every peer when there is no proxy, and on the proxy ALONE
 # when there is. Two things answering the same name would defeat the proxy.
-alias_count="$(yq -r '[.services.*.networks.*.aliases // [] | .[] | select(. == "mariadb")] | length' "$f")"
+alias_count="$(yq -r '[.services.*.networks[] | select(tag == "!!map") | .aliases // [] | .[] | select(. == "mariadb")] | length' "$f")"
 if [ -n "$proxy_svc" ]; then
   [ "$alias_count" -eq 1 ] \
     || err "client alias 'mariadb' is on $alias_count services; with the proxy on it belongs to the proxy alone"
@@ -188,6 +193,74 @@ for p in $(yq -r '.services.*.ports // [] | .[] | .published' "$f"); do
   esac
 done
 
+# Metrics: one exporter per peer, watching THAT peer. An exporter pointed at its
+# neighbour renders, scrapes and graphs perfectly well — under the wrong peer's
+# name — so identity is checked per peer, like the gcomm list above.
+if [ "$case_name" = "metrics" ]; then
+  exporters="$(printf '%s\n' "$all" | { grep -E -- '-exporter-[0-9]+$' || true; })"
+  [ "$(count "$exporters")" -eq "$want_peers" ] \
+    || err "expected $want_peers exporter services, rendered $(count "$exporters")"
+  for s in $svcs; do
+    e="mariadb-galera-exporter-${s##*-}"
+    cmd="$(yq -r ".services.\"$e\".command[0] // \"\"" "$f")"
+    grep -Eq -- "--mysqld\.address=tasks\.[A-Za-z0-9_.-]*_$s:3306( |$)" <<<"$cmd" \
+      || err "$e: does not scrape its own peer at tasks.<release>_$s:3306"
+    grep -Fq 'MYSQLD_EXPORTER_PASSWORD="$$(cat /run/secrets/mariadb_galera_exporter_password)"' <<<"$cmd" \
+      || err "$e: does not read its password from the mounted secret"
+    # Exactly the two discovery labels: once a service opts in, every deploy label
+    # it carries is readable through Prometheus's targets API, so the fixture's
+    # own `labels` must not reach it.
+    lbls="$(yq -r ".services.\"$e\".deploy.labels // [] | sort | join(\",\")" "$f")"
+    [ "$lbls" = "prometheus.io/port=9104,prometheus.io/scrape=true" ] \
+      || err "$e: deploy labels are '$lbls', expected exactly the two discovery labels"
+    nets="$(yq -r ".services.\"$e\".networks // [] | .[]" "$f" | sort | tr '\n' ' ')"
+    [ "$nets" = "mariadb-galera-net monitoring " ] \
+      || err "$e: networks are '$nets', expected the Galera overlay and the metrics overlay"
+    [ "$(yq -r ".services.\"$e\".ports // [] | length" "$f")" = "0" ] \
+      || err "$e: publishes a port; /metrics has no authentication"
+    [ "$(yq -o=json -I=0 ".services.\"$e\".deploy.placement" "$f")" = "$(yq -o=json -I=0 ".services.\"$s\".deploy.placement" "$f")" ] \
+      || err "$e: placement differs from $s's; the exporter belongs on its peer's node"
+    # The peer itself must not change: turning metrics on would otherwise restart
+    # every peer at once, and a peer on the metrics overlay exposes its SQL and
+    # Galera ports to everything that can reach Prometheus.
+    if yq -r ".services.\"$s\".networks | keys | .[]" "$f" | grep -xF monitoring >/dev/null; then
+      err "$s: the peer joined the metrics overlay"
+    fi
+    if yq -r ".services.\"$s\".secrets // [] | .[]" "$f" | grep -xF mariadb_galera_exporter_password >/dev/null; then
+      err "$s: the peer mounts the exporter secret"
+    fi
+  done
+
+  # The one-shot that creates the user: runs once, may reach any peer, and holds
+  # root, so it stays off the metrics overlay.
+  u="mariadb-galera-exporter-user"
+  [ "$(yq -r ".services.\"$u\".deploy.restart_policy.condition // \"\"" "$f")" = "on-failure" ] \
+    || err "$u: restart condition is not on-failure; it must run to completion once, and retry if the cluster is not writable yet"
+  ucmd="$(yq -r ".services.\"$u\".command[0] // \"\"" "$f")"
+  for s in $svcs; do
+    grep -Eq "tasks\.[A-Za-z0-9_.-]*_$s( |;)" <<<"$ucmd" \
+      || err "$u: does not try peer $s"
+  done
+  # The statements carry the exporter password, so they go in on stdin: `-e` would put
+  # it in the client's argv, readable on the node through ps and /proc/<pid>/cmdline.
+  if grep -Eq -- '(^|[[:space:]])(-e|--execute)([[:space:]=]|$)' <<<"$ucmd"; then
+    err "$u: passes SQL to the client on its command line; the exporter password would be in argv"
+  fi
+  grep -Fq 'SET SESSION sql_log_off = 1;' <<<"$ucmd" \
+    || err "$u: no longer turns off the general query log for the session that sets the password"
+  grep -Fq "GRANT PROCESS, REPLICATION CLIENT, SLAVE MONITOR ON *.* TO" <<<"$ucmd" \
+    || err "$u: the grant changed; anything wider than PROCESS, REPLICATION CLIENT, SLAVE MONITOR reads data, and anything narrower fails a default collector"
+  if yq -r ".services.\"$u\".networks // [] | .[]" "$f" | grep -xF monitoring >/dev/null; then
+    err "$u: joined the metrics overlay while holding the root password"
+  fi
+
+  # The dashboard shipped for operators (monitoring/): every query scoped to the selected
+  # cluster, or two releases' peers would mix in one panel.
+  gd="$(dirname "$0")/../monitoring/galera-dashboard.json"
+  unscoped="$(yq -p json -o yaml -r '.. | select(tag == "!!map" and has("expr")) | .expr' "$gd" | grep -vF 'stack="$stack"' || true)"
+  [ -z "$unscoped" ] || err "$gd has queries not scoped to the selected cluster: $unscoped"
+fi
+
 # EXACTLY ONE peer may be able to bootstrap, in any fixture. This is the assertion
 # that matters most, and the one whose absence let a broken chart reach CI: when
 # every peer carried the "bootstrap if no peer answers" branch, a first install
@@ -197,10 +270,12 @@ done
 # be checked on the render rather than trusted to the deploy.
 #
 # A forced peer and the seed peer both count as bootstrappers, and the template
-# renders the seed branch only when no peer is forced, so the sum is always 1.
+# renders the seed branch only when no peer is forced, so the sum is always 1. The
+# rejoin wait's safe_to_bootstrap clause is not a third: Galera marks at most one
+# peer, and only the last to leave a cluster that stopped one peer at a time.
 forced="$(grep -cF 'cluster.forceBootstrap names this peer' "$f" || true)"
 seeds="$(grep -cF 'SEED PEER:' "$f" || true)"
-waiters="$(grep -cF 'JOINING PEER:' "$f" || true)"
+waiters="$(grep -cF 'REJOINING PEER:' "$f" || true)"
 
 want_forced=0
 if [ "$case_name" = "force-bootstrap" ]; then want_forced=1; fi
@@ -208,8 +283,8 @@ if [ "$case_name" = "force-bootstrap" ]; then want_forced=1; fi
   || err "$forced peers bootstrap unconditionally, expected $want_forced"
 [ "$((seeds + forced))" -eq 1 ] \
   || err "$((seeds + forced)) peers can bootstrap ($seeds seed + $forced forced), expected exactly 1 — two racing bootstrappers each form their own cluster"
-[ "$waiters" -eq "$((want_peers - 1))" ] \
-  || err "$waiters peers are join-only, expected $((want_peers - 1))"
+[ "$waiters" -eq "$((want_peers - forced))" ] \
+  || err "$waiters peers wait to rejoin, expected every peer but the forced one ($((want_peers - forced)))"
 
 # A seed that bootstraps without first checking for live peers would, once rebuilt
 # from an empty volume, form a rival cluster beside the survivors. Both halves of
@@ -221,12 +296,36 @@ if [ "$seeds" -eq 1 ]; then
     || err "the seed peer lost its live-peer probe — a rebuilt seed would form a rival cluster"
 fi
 
-# Joining peers wait for someone to listen. Losing this does not corrupt anything —
-# Swarm's restart policy still gets them there — but it turns a quiet first install
-# into a burst of crash-restarts, so it is worth keeping honest.
-if [ "$waiters" -gt 0 ]; then
-  grep -Fq 'while [ "$$SECONDS" -lt 60 ]; do' "$f" \
-    || err "joining peers lost their wait gate — they would crash-restart until the seed appears"
+# Every peer but a forced one waits for ANOTHER peer to resolve before starting
+# mariadbd. Swarm publishes a task in DNS only once it is healthy, so after a full
+# stop nothing resolves: a peer that starts anyway dies with `No address to connect`
+# in a loop that also rewrites grastate.dat to seqno -1, so the cluster can never
+# recover on its own and the record the operator needs to recover it is gone.
+for s in $svcs; do
+  cmd="$(yq -r ".services.\"$s\".command[0]" "$f")"
+  grep -Fq 'cluster.forceBootstrap names this peer' <<<"$cmd" && continue
+  grep -Fq 'if getent hosts "$$p" >/dev/null; then UP="$$p"; break; fi' <<<"$cmd" \
+    || err "$s: starts mariadbd without waiting for a peer to resolve; after a full stop it would crash-loop"
+  wait_list="$(grep -E '^[[:space:]]*for p in tasks\.' <<<"$cmd" | tail -1)"
+  if grep -Eq "tasks\.[A-Za-z0-9_.-]*_$s( |;)" <<<"$wait_list"; then
+    err "$s: waits for its own name, which resolves only once it is already healthy"
+  fi
+  for p in $svcs; do
+    [ "$p" = "$s" ] && continue
+    grep -Eq "tasks\.[A-Za-z0-9_.-]*_$p( |;)" <<<"$wait_list" \
+      || err "$s: does not wait on peer $p"
+  done
+  # The one exit from an all-down cluster without an operator: the peer Galera marked
+  # as the last to leave. Present in every peer, whatever cluster.forceBootstrap says,
+  # so that clearing that value does not restart every peer at once.
+  grep -Fq "if grep -qx 'safe_to_bootstrap: 1' /var/lib/mysql/grastate.dat 2>/dev/null; then" <<<"$cmd" \
+    || err "$s: lost the safe_to_bootstrap exit; a cluster stopped one peer at a time would never restart"
+done
+# Galera refuses to bootstrap from safe_to_bootstrap: 0, which every peer has after a
+# simultaneous stop, so a forced peer must set it or the recovery lever does nothing.
+if [ "$forced" -gt 0 ]; then
+  grep -Fq "sed -i 's/^safe_to_bootstrap: 0\$\$/safe_to_bootstrap: 1/' /var/lib/mysql/grastate.dat" "$f" \
+    || err "the forced peer does not mark itself safe_to_bootstrap; Galera would refuse to bootstrap it"
 fi
 
 # The ephemeral fixture must render no volumes and no pins at all.

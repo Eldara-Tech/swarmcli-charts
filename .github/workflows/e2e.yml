@@ -96,7 +96,7 @@ jobs:
     # chart's converge (gitlab, 30m) plus its multi-gigabyte pull, smoke budget and teardown,
     # well under GitHub's 360m default.
     timeout-minutes: 75
-    name: e2e (${{ matrix.chart }})
+    name: e2e (${{ matrix.name || matrix.chart }})
     strategy:
       fail-fast: false          # one chart's failure must not cancel its siblings
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}

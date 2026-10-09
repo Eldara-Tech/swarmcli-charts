@@ -223,13 +223,22 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   release's overlay rather than `docker exec`, so the `replica-set` fixture exercises the member
   address clients are handed, not just the one the server resolves.
 - **traefik** — the `traefik-certs` node-label pin + the certs-bind-mount host dir.
-- **mariadb-galera** — the two dummy auth secrets + a node label for EVERY peer
+- **mariadb-galera** — the three dummy auth secrets + a node label for EVERY peer
   (`mariadb-galera-1` … `-5`) on the single CI node, so the pinned default fixture
   schedules all its peers there. `ci/e2e-check.sh` then asserts one cluster of the right
   size, every peer `Synced`, and a write on the first peer read back from the last.
   The `proxy` fixture additionally scales one peer to 0 and keeps querying through the
   client endpoint, asserting the HAProxy routes around it — the one claim a render
-  check cannot stand in for.
+  check cannot stand in for. The `metrics` fixture scrapes every exporter from the
+  `monitoring` overlay and asserts `mysql_up 1`, the full cluster size and no failing
+  collector, which is how a grant the one-shot forgot would show. `default` also stops
+  every peer, one at a time and then all together, and asserts the first re-forms by
+  itself and the second waits with `grastate.dat` intact. The `lifecycle` fixture runs
+  as a job of its own (`e2e (mariadb-galera lifecycle)`):
+  - a peer restart, and a peer rebuilt from an empty volume;
+  - an upgrade restarting every peer;
+  - `cluster.forceBootstrap` recovery and clearing it;
+  - a crash of every peer, recovered through the README's `--wsrep-recover` runbook.
 - **keycloak** — the two operator secrets + the DB/ingress overlays + a throwaway
   co-located backend on `keycloak-db-net` — MariaDB, or PostgreSQL for the `postgres` fixture —
   because Keycloak attaches its DB overlay unconditionally and `/health/ready` only passes once
