@@ -43,7 +43,7 @@
                 "uniqueItems": true
               }
             },
-            "required": ["group", "access"],
+            "required": ["group", "access", "buckets"],
             "additionalProperties": false
           }
         }

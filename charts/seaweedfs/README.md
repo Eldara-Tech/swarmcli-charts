@@ -151,9 +151,11 @@ oidc:
 A token is accepted when its `iss` equals `oidc.issuer`, its `aud` or `azp` equals
 `oidc.clientId`, and its `groups` claim names a granted group. It then gets every grant of
 every granted group it is in. A token in no granted group is refused, and so is anything no
-grant covers. `readonly` is GetObject, ListBucket and GetBucketLocation; `readwrite` adds
-PutObject (multipart uploads included) and DeleteObject. No grant can create or delete a
-bucket or change its policy, ACL or settings: that stays with the key pair.
+grant covers. Every grant must list its `buckets`; only an explicit `[]` means every bucket.
+`readonly` is GetObject, ListBucket and GetBucketLocation; `readwrite` adds PutObject
+(multipart uploads included) and DeleteObject. No grant can create or delete a bucket or
+change its policy, ACL or settings: that stays with the key pair. SeaweedFS authorizes a
+bucket's logging, website and replication settings as ListBucket, so `readonly` can read them.
 
 Group names are compared in **exact case**, and may not contain `*`, `?` or `$`. SeaweedFS
 fetches the signing keys itself, so the issuer (or `oidc.jwksUri`, when set) must be
@@ -182,11 +184,21 @@ are discovered from `<issuer>/.well-known/openid-configuration`.
 - **STS credentials outlive a group removal.** A Bearer token's groups are checked on every
   request, but STS credentials keep the grants of the token they came from for their
   lifetime: one hour by default, up to 12 hours if the client asks.
+- **The embedded IAM API is off.** With OIDC on, the chart starts SeaweedFS with
+  `-s3.iam=false`: that API answers ListAccessKeys with every identity's access key id, the
+  admin's included, to any token holder. The key pair itself works as before.
+- **Unknown key ids reach your provider.** A token whose `kid` is not among the cached keys
+  makes SeaweedFS fetch the JWKS again, on every such request, so in traefik or published
+  mode anyone can make the store call your identity provider with made-up tokens.
+- **A refused token leaves no log line.** At SeaweedFS's default log level nothing is logged
+  for a wrong `iss` or `aud`, a missing group, an unreachable provider or a trust-policy
+  denial. Only a provider configuration it cannot use is logged, once at start, as `Failed
+  to create provider`; OIDC is then off while the key pair still works. To find out why a
+  token is refused, decode it and compare `iss` with `oidc.issuer`, `aud`/`azp` with
+  `oidc.clientId` and `groups` with the grants (exact case), then check that the container
+  reaches the issuer.
 - The generated IAM configuration is in the manifest and `docker inspect` as
   `SEAWEEDFS_IAM_CONFIG`. It holds no secret.
-- If SeaweedFS cannot use it, it logs `Failed to load IAM configuration` and runs without
-  OIDC: every token is refused while the key pair still works. Check `docker service logs`
-  when tokens are refused.
 
 ## Persistence & node pinning
 
@@ -212,7 +224,7 @@ processes must never share `/data`.
 | `oidc.issuer` | `""` | Issuer URL, exactly as the token's `iss` claim |
 | `oidc.clientId` | `""` | Client the tokens are for: their `aud` or `azp` |
 | `oidc.jwksUri` | `""` | Signing keys URL; `""` = discovered from the issuer |
-| `oidc.grants` | `[]` | `{group, access: readonly\|readwrite, buckets}`; `buckets: []` = every bucket |
+| `oidc.grants` | `[]` | `{group, access: readonly\|readwrite, buckets}`, all three required; `buckets: []` = every bucket |
 | `persistence.enabled` | `true` | Persist `/data` |
 | `persistence.volumeName` | `seaweedfs-data` | Named volume |
 | `persistence.volumePath` | `""` | Host path bind-mounted at `/data` instead (precedence over `volumeName`) |

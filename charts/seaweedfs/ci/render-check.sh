@@ -192,10 +192,13 @@ iamwrite="printf '%s' \"\$\$SEAWEEDFS_IAM_CONFIG\" > /tmp/seaweedfs-iam.json;"
 iamjson="$(q "$svc.environment.SEAWEEDFS_IAM_CONFIG")"
 if [ "$case" != "oidc" ]; then
   if grep -F -- '-s3.iam.config' <<<"$args" >/dev/null; then bad "case $case: -s3.iam.config is passed although oidc is off"; fi
+  if grep -F -- '-s3.iam=' <<<"$args" >/dev/null; then bad "case $case: -s3.iam is set although oidc is off"; fi
   [ "$iamjson" = "null" ] || bad "case $case: SEAWEEDFS_IAM_CONFIG is set although oidc is off"
   if grep -F 'SEAWEEDFS_IAM_CONFIG' <<<"$script" >/dev/null; then bad "case $case: the wrapper writes an IAM file although oidc is off"; fi
 else
   grep -Fx -- "$iamarg" <<<"$args" >/dev/null || bad "case $case: $iamarg is not passed — OIDC would be off"
+  grep -Fx -- '-s3.iam=false' <<<"$args" >/dev/null \
+    || bad "case $case: -s3.iam=false is not passed — the embedded IAM API would list the admin's access key id to any granted token"
   [[ "${script%%exec /entrypoint.sh*}" == *"$iamwrite"* ]] \
     || bad "case $case: the wrapper does not write SEAWEEDFS_IAM_CONFIG to the -s3.iam.config path before exec"
   j() { yq -p json -r "$1" <<<"$iamjson"; }
@@ -213,7 +216,7 @@ else
   [ "$(j '.providers | length')" = "1" ] && [ "$(j '.providers[0].type')" = "oidc" ] || bad "case $case: not exactly one oidc provider"
   [ "$(j '.providers[0].config.issuer')" = "$iss" ] || bad "case $case: the provider issuer is not oidc.issuer"
   [ "$(j '.providers[0].config.clientId')" = "seaweedfs-s3" ] || bad "case $case: the provider clientId is not oidc.clientId"
-  [ "$(j '.providers[0].config.jwksUri')" = "$iss/jwks.json" ] || bad "case $case: the provider jwksUri is not oidc.jwksUri"
+  [ "$(j '.providers[0].config.jwksUri')" = "" ] || bad "case $case: the provider jwksUri is not oidc.jwksUri (\"\": discovery)"
   [ "$(j '[.providers[0].config.roleMapping.rules[] | .claim + " " + .role] | unique | join(",")')" = "groups $role" ] \
     || bad "case $case: a role-mapping rule does not map the groups claim to $role (without roleMapping SeaweedFS maps hard-coded group names)"
   [ "$(j '[.providers[0].config.roleMapping.rules[].value] | join(" ")')" = "$groups" ] \
@@ -277,6 +280,8 @@ else
   refused "$chart" "at '/oidc/grants/0/buckets/0'" --set 'oidc.grants[0].buckets[0]=Runner_Cache'
   refused "$chart" "additional properties 'bucket' not allowed" --set 'oidc.grants[0].bucket[0]=runner-cache'
   refused "$chart" "at '/oidc/jwksUri'" --set oidc.jwksUri=sso.example.com/certs
+  printf 'oidc:\n  grants:\n    - { group: ci-cache, access: readwrite }\n' >"$tmp/nobuckets.yaml"
+  refused "$chart" "missing property 'buckets'" -f "$tmp/nobuckets.yaml"
   ns="$tmp/noschema"
   refused "$ns" "oidc.issuer must be the identity provider's issuer URL" --set oidc.issuer=sso.example.com/realms/infra
   refused "$ns" "oidc.issuer must be the identity provider's issuer URL" --set oidc.issuer=
@@ -288,6 +293,11 @@ else
   refused "$ns" "group \"\" must be a non-empty groups-claim value" --set 'oidc.grants[0].group='
   refused "$ns" "has access \"admin\"; it must be readonly or readwrite" --set 'oidc.grants[0].access=admin'
   refused "$ns" "\"Runner_Cache\" is not a valid S3 bucket name" --set 'oidc.grants[0].buckets[0]=Runner_Cache'
+  refused "$ns" "group \"ci-cache\" has no buckets list" -f "$tmp/nobuckets.yaml"
+  # The fixture discovers its keys; an explicit jwksUri must reach the provider as given.
+  render "$chart" --set oidc.jwksUri=https://sso.example.com/certs >"$tmp/jwks.yaml" 2>"$tmp/err" \
+    && [ "$(yq -r "$svc.environment.SEAWEEDFS_IAM_CONFIG" "$tmp/jwks.yaml" | yq -p json -r '.providers[0].config.jwksUri')" = "https://sso.example.com/certs" ] \
+    || bad "an explicit oidc.jwksUri does not reach the provider config"
   # A `$` in a value must reach the container as `$`, not be interpolated by Docker.
   render "$chart" --set 'oidc.clientId=seaweedfs$s3' >"$tmp/dollar.yaml" 2>"$tmp/err" \
     && grep -F 'seaweedfs$$s3' "$tmp/dollar.yaml" >/dev/null \

@@ -162,10 +162,12 @@ if [ "$case" = "buckets" ]; then
 fi
 
 # ── oidc: a stub identity provider, then each grant and each refusal ──────────────────
-# The provider is a key pair made for this run plus the store's own filer: its JWKS goes into
-# the `idp` bucket, which the filer serves on the loopback address the fixture names as
-# jwksUri, and the tokens are signed here with the key. SeaweedFS logs an IAM file it cannot
-# use and carries on without OIDC, so every refusal below is paired with a grant that works.
+# The provider is a key pair made for this run plus the store's own filer: a discovery
+# document and the JWKS go into the `idp` bucket, which the filer serves on the loopback
+# address the fixture names as issuer, and the tokens are signed here with the key. The JWKS
+# sits at a path only the discovery document names, so a working token proves discovery.
+# SeaweedFS carries on without OIDC when its config is unusable, so every refusal below is
+# paired with a grant that works.
 if [ "$case" = "oidc" ]; then
   iss='http://127.0.0.1:8888/buckets/idp'
   role='arn:aws:iam::role/oidc'
@@ -176,23 +178,26 @@ if [ "$case" = "oidc" ]; then
   mod="$(openssl rsa -in "$tmp/idp.key" -noout -modulus | sed 's/^Modulus=//')"
   # shellcheck disable=SC2059 # the format IS the data: the modulus as \xHH escapes
   n="$(printf "$(sed 's/../\\x&/g' <<<"$mod")" | b64url)"
+  got="$(printf '{"issuer":"%s","jwks_uri":"%s/keys/e2e-jwks.json"}' "$iss" "$iss" \
+    | signed_code -X PUT --data-binary @- "$base/idp/.well-known/openid-configuration")"
+  [ "$got" = "200" ] || die "uploading the stub discovery document returned '$got'"
   got="$(printf '{"keys":[{"kty":"RSA","kid":"e2e","use":"sig","alg":"RS256","n":"%s","e":"AQAB"}]}' "$n" \
-    | signed_code -X PUT --data-binary @- "$base/idp/jwks.json")"
+    | signed_code -X PUT --data-binary @- "$base/idp/keys/e2e-jwks.json")"
   [ "$got" = "200" ] || die "uploading the stub JWKS returned '$got'"
-  # token <aud> <azp> <groups as a JSON array>
+  # token <aud as JSON> <azp> <groups as a JSON array>
   token() {
     local h p now
     now="$(date +%s)"
     h="$(printf '%s' '{"alg":"RS256","typ":"JWT","kid":"e2e"}' | b64url)"
-    p="$(printf '{"iss":"%s","aud":"%s","azp":"%s","sub":"e2e-user","groups":%s,"iat":%s,"exp":%s}' \
+    p="$(printf '{"iss":"%s","aud":%s,"azp":"%s","sub":"e2e-user","groups":%s,"iat":%s,"exp":%s}' \
       "$iss" "$1" "$2" "$3" "$now" "$((now + 900))" | b64url)"
     printf '%s.%s.%s' "$h" "$p" "$(printf '%s.%s' "$h" "$p" | openssl dgst -sha256 -sign "$tmp/idp.key" | b64url)"
   }
-  # The writer's token has Keycloak's access-token shape (aud "account", the client in azp).
-  writer="$(token account seaweedfs-s3 '["ci-cache"]')"
-  reader="$(token seaweedfs-s3 seaweedfs-s3 '["auditors"]')"
-  nogroup="$(token seaweedfs-s3 seaweedfs-s3 '[]')"
-  wrongaud="$(token other other '["ci-cache"]')"
+  # The writer's token has Keycloak's access-token shape: aud ["account"], the client in azp.
+  writer="$(token '["account"]' seaweedfs-s3 '["ci-cache"]')"
+  reader="$(token '"seaweedfs-s3"' seaweedfs-s3 '["auditors"]')"
+  nogroup="$(token '"seaweedfs-s3"' seaweedfs-s3 '[]')"
+  wrongaud="$(token '"other"' other '["ci-cache"]')"
   bearer() { local t="$1"; shift; code -H "Authorization: Bearer $t" "$@"; }
   obj="$base/runner-cache/oidc/object.txt"
 
@@ -221,6 +226,17 @@ if [ "$case" = "oidc" ]; then
   got="$(bearer "$wrongaud" "$obj")"
   [ "$got" = "403" ] || die "a token for another client got '$got', expected 403"
   echo "  ok: Bearer refusals: readonly PUT, other bucket, PutBucketPolicy, no granted group, other client (403)"
+  # The embedded IAM API would answer ListAccessKeys with every identity's key id, the
+  # admin's included; with it off the request is an unknown action.
+  no_key_list() {
+    grep -F '<Code>InvalidAction</Code>' <<<"$2" >/dev/null && ! grep -F -e "$KEY" -e 'ListAccessKeysResponse' <<<"$2" >/dev/null \
+      || die "ListAccessKeys with $1 was not refused as an unknown action: ${2:-<empty>}"
+  }
+  for who in writer reader; do
+    if [ "$who" = "writer" ]; then t="$writer"; else t="$reader"; fi
+    no_key_list "the $who's Bearer token" "$(c -X POST -H "Authorization: Bearer $t" --data Action=ListAccessKeys "$base/" 2>/dev/null || true)"
+  done
+  echo "  ok: Bearer tokens cannot list access keys (InvalidAction, no admin key id)"
 
   # STS. The caller names the role, so the trust policy is all that stands in the way.
   sts() {
@@ -241,8 +257,10 @@ if [ "$case" = "oidc" ]; then
     [ "$got" = "200" ] || die "the $who's STS credentials got '$got' reading runner-cache, expected 200"
     got="$(printf x | code --aws-sigv4 "$SIG" --user "$ak:$sk" -H "X-Amz-Security-Token: $st" -X PUT --data-binary @- "$base/runner-cache/oidc/sts.txt")"
     [ "$got" = "$want" ] || die "the $who's STS credentials got '$got' writing runner-cache, expected $want"
+    no_key_list "the $who's STS credentials" "$(c -X POST --aws-sigv4 "aws:amz:us-east-1:iam" --user "$ak:$sk" -H "X-Amz-Security-Token: $st" \
+      --data Action=ListAccessKeys "$base/" 2>/dev/null || true)"
   done
-  echo "  ok: STS credentials carry each token's grants: ci-cache writes, auditors only read"
+  echo "  ok: STS credentials carry each token's grants: ci-cache writes, auditors only read, neither lists keys"
 fi
 
 # ── published: the port is on the routing mesh ────────────────────────────────────────

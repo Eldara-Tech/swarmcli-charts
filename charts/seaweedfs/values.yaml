@@ -50,8 +50,9 @@ oidc:
   # Where the signing keys are fetched. "" discovers them from the issuer.
   jwksUri: ""
   # Who may do what. group is a value of the token's `groups` claim, matched in exact case;
-  # access is readonly or readwrite; buckets limits the grant to those buckets ([] = every
-  # bucket). A token in several granted groups gets all of their grants, e.g.:
+  # access is readonly or readwrite; buckets (required) limits the grant to those buckets,
+  # and only an explicit [] means every bucket. A token in several granted groups gets all
+  # of their grants, e.g.:
   #   - { group: ci-cache, access: readwrite, buckets: [runner-cache] }
   #   - { group: auditors, access: readonly, buckets: [] }
   grants: []

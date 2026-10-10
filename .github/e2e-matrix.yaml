@@ -141,9 +141,10 @@ include:
   # ports refuse connections and the S3 gRPC port refuses an unsigned PutIdentity. `buckets`
   # forces a restart and proves the object survives and the bootstrap sees 409; `edge` does
   # the signed round trip path-style through the traefik chart. `oidc` signs tokens with a
-  # per-run key whose JWKS the store serves itself, and proves each grant works and every
-  # ungranted request is refused, through Bearer tokens and STS — SeaweedFS drops a bad IAM
-  # file silently, so only a live grant shows OIDC is on. traefik (labels only, nothing to
+  # per-run key whose discovery document and JWKS the store serves itself, and proves each
+  # grant works and every ungranted request is refused, through Bearer tokens and STS —
+  # SeaweedFS drops a bad IAM file silently, so only a live grant shows OIDC is on — and
+  # that no token can list the admin's access key id. traefik (labels only, nothing to
   # route through) and bind-mount are covered by charts.yml and run in a full local `make e2e`.
   - { chart: seaweedfs,     cases: "default buckets ephemeral published edge oidc",                                  timeout: 6m  }
   # gitlab: ONE fixture. GitLab CE is a multi-gigabyte monolith (Postgres, Redis, Gitaly,

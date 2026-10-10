@@ -35,6 +35,10 @@
 {{-     if not (has .access (list "readonly" "readwrite")) -}}
 {{-       fail (printf "oidc.grants: group %q has access %q; it must be readonly or readwrite" .group (.access | default "")) -}}
 {{-     end -}}
+{{- /* A forgotten buckets key must not quietly mean every bucket: [] has to be said. */}}
+{{-     if not (kindIs "slice" .buckets) -}}
+{{-       fail (printf "oidc.grants: group %q has no buckets list; name its buckets, or [] for every bucket" .group) -}}
+{{-     end -}}
 {{-     range .buckets -}}
 {{-       if not (regexMatch "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" .) -}}
 {{-         fail (printf "oidc.grants: %q is not a valid S3 bucket name" .) -}}
@@ -79,6 +83,10 @@ version: "3.9"
          * Explicit actions only. s3:Put* would include s3:PutBucketPolicy, and a bucket
            policy's Allow bypasses this policy entirely.
          * roleMapping always present: without it SeaweedFS maps hard-coded group names.
+         * -s3.iam=false. The embedded IAM API, on by default, answers ListAccessKeys
+           without a UserName as self-service and returns every identity's access key id,
+           so any granted token would learn the admin's. Nothing here needs it: STS has
+           routes of its own.
        No policyClaim (it skips the trust policy), no client secret (never used), no STS
        signing key (it falls back to the per-start filer key below). */}}
 {{- $iamFile := "/tmp/seaweedfs-iam.json" }}
@@ -108,6 +116,7 @@ version: "3.9"
 {{-   $policy := dict "name" "oidc" "document" (dict "Version" "2012-10-17" "Statement" $statements) }}
 {{-   $iam = dict "policy" (dict "defaultEffect" "Deny") "providers" (list (dict "name" "oidc" "type" "oidc" "config" $provider)) "policies" (list $policy) "roles" (list $role) }}
 {{-   $args = append $args (printf "-s3.iam.config=%s" $iamFile) }}
+{{-   $args = append $args "-s3.iam=false" }}
 {{- end }}
 {{- range .Values.extraArgs }}{{ $args = append $args . }}{{- end }}
 
