@@ -117,7 +117,9 @@ services:
     #    so weed server never holds it and no argv shows it. It inherits the filer signing
     #    key, without which it cannot manage users. No -ip: with a password it binds the UI
     #    to 0.0.0.0 itself and keeps its unauthenticated worker gRPC port on 127.0.0.1.
-    #    -logtostderr, as the image's entrypoint gives weed server: no log files in /tmp.
+    #    -logtostderr and GODEBUG=fips140=on, as the image's entrypoint gives weed server
+    #    (no log files in /tmp). Its session key is deleted once per container start, not per
+    #    restart of the UI, so a redeploy (a password change included) logs everyone out.
     #  * `exec` hands PID 1 to the image's entrypoint, which fixes /data ownership and
     #    drops to the seaweed user, so SIGTERM reaches weed itself.
     entrypoint:
@@ -136,11 +138,12 @@ services:
         export AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/{{ $secret }})";
         export WEED_JWT_FILER_SIGNING_KEY="$$(head -c 32 /dev/urandom | base64)";
 {{- if $admin.enabled }}
+        rm -f /data/admin/.session_key;
         (
         until curl -fs -o /dev/null --max-time 5 http://127.0.0.1:9333/cluster/status; do sleep 2; done;
         while :; do
         rc=0;
-        ( export WEED_ADMIN_PASSWORD="$$(cat /run/secrets/{{ $pw }})"; exec su-exec seaweed weed -logtostderr=true admin -master=127.0.0.1:9333 -port={{ $adminPort }} -dataDir=/data/admin -adminUser={{ $admin.user }} ) || rc=$$?;
+        ( export WEED_ADMIN_PASSWORD="$$(cat /run/secrets/{{ $pw }})" GODEBUG=fips140=on; exec su-exec seaweed weed -logtostderr=true admin -master=127.0.0.1:9333 -port={{ $adminPort }} -dataDir=/data/admin -adminUser={{ $admin.user }} ) || rc=$$?;
         echo "weed admin exited (status $$rc) - restarting in 5s" >&2;
         sleep 5;
         done
@@ -263,9 +266,12 @@ services:
 {{- if eq $mode "traefik" }}
 {{-   template "seaweedfs.traefik-routers" (dict "router" $router "rule" (printf "Host(`%s`)" .Values.ingress.host) "tls" .Values.ingress.tls "traefik" .Values.traefik "port" $port) }}
 {{- end }}
-{{- /* /metrics answers without a login, so the edge does not serve it. */}}
+{{- /* /metrics answers without a login, so the edge does not serve it. weed admin checks no
+       CSRF token on most writes (users, groups, policies, uploads) and reads JSON whatever
+       its Content-Type, so the edge refuses any other method a browser marks as sent from
+       another site — same-site included, since the session cookie is SameSite=Lax. */}}
 {{- if eq $adminMode "traefik" }}
-{{-   template "seaweedfs.traefik-routers" (dict "router" (printf "%s-admin" $router) "rule" (printf "Host(`%s`) && !PathPrefix(`/metrics`)" $admin.ingress.host) "tls" $admin.ingress.tls "traefik" .Values.traefik "port" $adminPort) }}
+{{-   template "seaweedfs.traefik-routers" (dict "router" (printf "%s-admin" $router) "rule" (printf "Host(`%s`) && !PathPrefix(`/metrics`) && (Method(`GET`) || Method(`HEAD`) || !HeaderRegexp(`Sec-Fetch-Site`, `^(cross|same)-site`))" $admin.ingress.host) "tls" $admin.ingress.tls "traefik" .Values.traefik "port" $adminPort) }}
 {{- end }}
 {{- range $key, $val := .Values.labels }}
         - "{{ $key }}={{ $val }}"

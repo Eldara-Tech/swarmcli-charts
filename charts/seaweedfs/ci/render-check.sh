@@ -106,6 +106,10 @@ grep -Fx seaweedfs-net <<<"$nets" >/dev/null || bad "the service is not on netwo
 
 # ── exposure ──────────────────────────────────────────────────────────────────────────
 labels="$(q "$svc.deploy.labels[]")"
+# The admin routers' rule after Host(): /metrics needs no login, and weed admin checks no CSRF
+# token on most writes, so anything but GET/HEAD a browser marks same-site or cross-site is
+# refused at the edge (the session cookie is SameSite=Lax, so same-site would carry it).
+admin_guard='!PathPrefix(`/metrics`) && (Method(`GET`) || Method(`HEAD`) || !HeaderRegexp(`Sec-Fetch-Site`, `^(cross|same)-site`))'
 case "$case" in
   traefik|edge)
     grep -Fx traefik-public <<<"$nets" >/dev/null || bad "case $case: not attached to traefik-public"
@@ -155,7 +159,7 @@ case "$case" in
     ;;
   admin-traefik)
     for l in 'traefik.http.routers.ci-admin-http.middlewares=https-redirect' \
-             'traefik.http.routers.ci-admin-https.rule=Host(`seaweedfs-admin.example.com`) && !PathPrefix(`/metrics`)' \
+             "traefik.http.routers.ci-admin-https.rule=Host(\`seaweedfs-admin.example.com\`) && $admin_guard" \
              'traefik.http.routers.ci-admin-https.tls=true' 'traefik.http.routers.ci-admin-https.tls.certresolver=le' \
              'traefik.http.routers.ci-admin-https.service=ci-admin'; do
       grep -Fx "$l" <<<"$labels" >/dev/null || bad "case $case: label $l is missing"
@@ -163,8 +167,8 @@ case "$case" in
     ;;
   admin-edge)
     if grep -F 'https' <<<"$labels" >/dev/null; then bad "case $case: tls is off but an https router or redirect is rendered"; fi
-    grep -Fx 'traefik.http.routers.ci-admin-http.rule=Host(`admin.e2e.test`) && !PathPrefix(`/metrics`)' <<<"$labels" >/dev/null \
-      || bad "case $case: no HTTP router for admin.ingress.host that keeps /metrics off the edge"
+    grep -Fx "traefik.http.routers.ci-admin-http.rule=Host(\`admin.e2e.test\`) && $admin_guard" <<<"$labels" >/dev/null \
+      || bad "case $case: no HTTP router for admin.ingress.host that keeps /metrics and cross-site writes off the edge"
     ;;
   edge)
     if grep -F 'https' <<<"$labels" >/dev/null; then bad "case $case: tls is off but an https router or redirect is rendered"; fi
@@ -182,11 +186,18 @@ case "$case" in
       || bad "case $case: the admin password secret is not mounted from an external secret"
     grep -F "test -s \"/run/secrets/$pw\" || { echo \"secret $pw is missing or empty - refusing to start the admin UI without a password\" >&2; exit 1; };" <<<"$script" >/dev/null \
       || bad "case $case: the wrapper does not refuse a missing or empty admin password"
+    grep -F '( until curl -fs -o /dev/null --max-time 5 http://127.0.0.1:9333/cluster/status; do sleep 2; done; while :; do rc=0;' <<<"$script" >/dev/null \
+      || bad "case $case: the admin loop does not wait for the master on 127.0.0.1"
     # The key is exported before the loop starts, so weed admin inherits it: without it the
     # filer refuses the admin's writes and user management fails.
-    grep -F 'base64)"; ( until curl -fs -o /dev/null --max-time 5 http://127.0.0.1:9333/cluster/status; do sleep 2; done; while :; do rc=0;' <<<"$script" >/dev/null \
-      || bad "case $case: the admin loop does not start after the filer signing key is exported, or does not wait for the master on 127.0.0.1"
-    want="( export WEED_ADMIN_PASSWORD=\"\$\$(cat /run/secrets/$pw)\"; exec su-exec seaweed weed -logtostderr=true admin -master=127.0.0.1:9333 -port=23646 -dataDir=/data/admin -adminUser=admin ) || rc=\$\$?;"
+    grep -F 'export WEED_JWT_FILER_SIGNING_KEY=' <<<"${script%%"( until curl"*}" >/dev/null \
+      || bad "case $case: the admin loop starts before the filer signing key is exported — weed admin could not manage users"
+    # Once per container start, outside the restart loop: a redeploy logs everyone out, so a
+    # password change does too, while a crash of the UI alone does not.
+    [ "$(grep -o 'rm -f /data/admin/.session_key;' <<<"$script" | wc -l | tr -d ' ')" = "1" ] \
+      && grep -F 'rm -f /data/admin/.session_key;' <<<"${script%%"while :; do"*}" >/dev/null \
+      || bad "case $case: the admin session key is not deleted exactly once per container start, before the restart loop — a password change would not log anyone out"
+    want="( export WEED_ADMIN_PASSWORD=\"\$\$(cat /run/secrets/$pw)\" GODEBUG=fips140=on; exec su-exec seaweed weed -logtostderr=true admin -master=127.0.0.1:9333 -port=23646 -dataDir=/data/admin -adminUser=admin ) || rc=\$\$?;"
     grep -F -- "$want" <<<"$script" >/dev/null || bad "case $case: weed admin is not started as: $want"
     [ "$(grep -o WEED_ADMIN_PASSWORD <<<"$script" | wc -l | tr -d ' ')" = "1" ] \
       || bad "case $case: WEED_ADMIN_PASSWORD is set outside the admin's own subshell — weed server would hold the admin password"
