@@ -143,6 +143,7 @@ case "$case" in
   buckets) want='runner-cache e2e.second-bucket' ;;
   traefik|edge) want='runner-cache' ;;
   ephemeral) want='scratch' ;;
+  oidc) want='idp runner-cache reports' ;;
   *) want='' ;;
 esac
 if [ -n "$want" ]; then
@@ -180,6 +181,117 @@ case "$case" in
 esac
 if [ "$case" = "buckets" ]; then
   grep -Fx 'node.role == manager' <<<"$constraints" >/dev/null || bad "case $case: placement.constraints was not applied"
+fi
+
+# ── OIDC ──────────────────────────────────────────────────────────────────────────────
+# SeaweedFS logs a broken IAM file and carries on without OIDC, and it trusts the file for
+# every security property, so the generated JSON is checked here field by field: what each
+# of these lines guards still converges to a healthy task.
+iamarg='-s3.iam.config=/tmp/seaweedfs-iam.json'
+iamwrite="printf '%s' \"\$\$SEAWEEDFS_IAM_CONFIG\" > /tmp/seaweedfs-iam.json;"
+iamjson="$(q "$svc.environment.SEAWEEDFS_IAM_CONFIG")"
+if [ "$case" != "oidc" ]; then
+  if grep -F -- '-s3.iam.config' <<<"$args" >/dev/null; then bad "case $case: -s3.iam.config is passed although oidc is off"; fi
+  [ "$iamjson" = "null" ] || bad "case $case: SEAWEEDFS_IAM_CONFIG is set although oidc is off"
+  if grep -F 'SEAWEEDFS_IAM_CONFIG' <<<"$script" >/dev/null; then bad "case $case: the wrapper writes an IAM file although oidc is off"; fi
+else
+  grep -Fx -- "$iamarg" <<<"$args" >/dev/null || bad "case $case: $iamarg is not passed — OIDC would be off"
+  [[ "${script%%exec /entrypoint.sh*}" == *"$iamwrite"* ]] \
+    || bad "case $case: the wrapper does not write SEAWEEDFS_IAM_CONFIG to the -s3.iam.config path before exec"
+  j() { yq -p json -r "$1" <<<"$iamjson"; }
+  iss='http://127.0.0.1:8888/buckets/idp'
+  role='arn:aws:iam::role/oidc'
+  groups='ci-cache auditors'
+  [ "$(j '.policy.defaultEffect')" = "Deny" ] \
+    || bad "case $case: policy.defaultEffect is not Deny — a trust policy that matches nothing would ALLOW, so any token could assume the role"
+  keys="$(j '[.. | select(tag == "!!map") | keys | .[]] | unique | .[]')"
+  for k in sts signingKey policyClaim clientSecret defaultRole oidc:aud; do
+    if grep -Fx "$k" <<<"$keys" >/dev/null; then bad "case $case: the IAM file carries '$k'"; fi
+  done
+  # The provider: one, with the issuer and client from the fixture and a role mapping that
+  # sends every granted group, and nothing else, to the one role.
+  [ "$(j '.providers | length')" = "1" ] && [ "$(j '.providers[0].type')" = "oidc" ] || bad "case $case: not exactly one oidc provider"
+  [ "$(j '.providers[0].config.issuer')" = "$iss" ] || bad "case $case: the provider issuer is not oidc.issuer"
+  [ "$(j '.providers[0].config.clientId')" = "seaweedfs-s3" ] || bad "case $case: the provider clientId is not oidc.clientId"
+  [ "$(j '.providers[0].config.jwksUri')" = "$iss/jwks.json" ] || bad "case $case: the provider jwksUri is not oidc.jwksUri"
+  [ "$(j '[.providers[0].config.roleMapping.rules[] | .claim + " " + .role] | unique | join(",")')" = "groups $role" ] \
+    || bad "case $case: a role-mapping rule does not map the groups claim to $role (without roleMapping SeaweedFS maps hard-coded group names)"
+  [ "$(j '[.providers[0].config.roleMapping.rules[].value] | join(" ")')" = "$groups" ] \
+    || bad "case $case: the role-mapping rules do not cover exactly the granted groups"
+  # The role: one, attached to the one policy, assumable only with the issuer AND a granted
+  # group. STS lets the caller name the role, so this trust policy is the whole gate.
+  [ "$(j '.roles | length')" = "1" ] && [ "$(j '.roles[0].roleArn')" = "$role" ] && [ "$(j '.roles[0].attachedPolicies | join(",")')" = "oidc" ] \
+    || bad "case $case: not exactly one role $role attached to the oidc policy"
+  [ "$(j '.roles[0].trustPolicy.Statement | length')" = "1" ] || bad "case $case: the trust policy does not have exactly one statement"
+  tp='.roles[0].trustPolicy.Statement[0]'
+  [ "$(j "$tp.Effect + \" \" + ($tp.Action | join(\",\"))")" = "Allow sts:AssumeRoleWithWebIdentity" ] \
+    || bad "case $case: the trust statement does not allow exactly sts:AssumeRoleWithWebIdentity"
+  [ "$(j "$tp.Condition | keys | join(\",\")")" = "ForAnyValue:StringEquals,StringEquals" ] \
+    || bad "case $case: the trust condition is not exactly the issuer and the groups"
+  [ "$(j "$tp.Condition.StringEquals | to_entries | map(.key + \"=\" + .value) | join(\",\")")" = "oidc:iss=$iss" ] \
+    || bad "case $case: the trust policy does not pin oidc:iss to oidc.issuer"
+  [ "$(j "$tp.Condition.\"ForAnyValue:StringEquals\".\"oidc:groups\" | join(\" \")")" = "$groups" ] \
+    || bad "case $case: the trust policy does not require one of the granted groups — any token of the realm could assume the role"
+  # The grants: one statement each, conditioned on exactly its group, with explicit actions.
+  [ "$(j '.policies | length')" = "1" ] && [ "$(j '.policies[0].name')" = "oidc" ] || bad "case $case: not exactly one policy named oidc"
+  st='.policies[0].document.Statement'
+  [ "$(j "$st | length")" = "2" ] || bad "case $case: not one policy statement per grant"
+  [ "$(j "[${st}[] | .Condition | keys | join(\",\")] | unique | join(\" \")")" = "ForAnyValue:StringEquals" ] \
+    && [ "$(j "[${st}[] | .Condition.\"ForAnyValue:StringEquals\".\"jwt:groups\" | join(\",\")] | join(\" \")")" = "$groups" ] \
+    || bad "case $case: a grant is not conditioned on exactly its own group — it would apply to every group"
+  [ "$(j "[${st}[].Action[]] | sort | unique | join(\" \")")" = "s3:DeleteObject s3:GetBucketLocation s3:GetObject s3:ListBucket s3:PutObject" ] \
+    || bad "case $case: the grants use other actions than the five explicit ones (s3:Put* or s3:* would include s3:PutBucketPolicy)"
+  [ "$(j "${st}[0].Action | join(\" \")")" = "s3:GetObject s3:ListBucket s3:GetBucketLocation s3:PutObject s3:DeleteObject" ] \
+    && [ "$(j "${st}[0].Resource | join(\" \")")" = "arn:aws:s3:::runner-cache arn:aws:s3:::runner-cache/*" ] \
+    || bad "case $case: the readwrite grant is not read+write on runner-cache and its objects only"
+  [ "$(j "${st}[1].Action | join(\" \")")" = "s3:GetObject s3:ListBucket s3:GetBucketLocation" ] \
+    && [ "$(j "${st}[1].Resource | join(\" \")")" = "arn:aws:s3:::*" ] \
+    || bad "case $case: the readonly grant with buckets [] is not read-only on every bucket"
+
+  # ── the refusals: the schema's, then the template's own with the schema removed ─────
+  chart="$(cd "$(dirname "$0")/.." && pwd)"
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  cp -R "$chart" "$tmp/noschema"
+  rm "$tmp/noschema/values.schema.json"
+  render() { local dir="$1"; shift; "${SWARMCLI:?render-check needs SWARMCLI to test the refusals}" charts template r "$dir" -f "$chart/ci/oidc-values.yaml" "$@"; }
+  refused() {
+    local dir="$1" want="$2"; shift 2
+    if render "$dir" "$@" >/dev/null 2>"$tmp/err"; then
+      bad "rendered with $* ($dir) — it must be refused"
+    elif ! grep -F -- "$want" "$tmp/err" >/dev/null; then
+      bad "$* ($dir) failed, but not with \"$want\": $(tail -1 "$tmp/err")"
+    fi
+  }
+  for dir in "$chart" "$tmp/noschema"; do
+    render "$dir" >/dev/null 2>"$tmp/err" || bad "the oidc fixture itself does not render ($dir): $(tail -1 "$tmp/err")"
+  done
+  refused "$chart" "at '/oidc/issuer'" --set oidc.issuer=sso.example.com/realms/infra
+  refused "$chart" "at '/oidc/issuer'" --set oidc.issuer=
+  refused "$chart" "at '/oidc/clientId'" --set oidc.clientId=
+  refused "$chart" "at '/oidc/grants'" --set 'oidc.grants={}'
+  refused "$chart" "at '/oidc/grants/0/group'" --set 'oidc.grants[0].group=ci*'
+  refused "$chart" "at '/oidc/grants/0/group'" --set 'oidc.grants[0].group=ci?'
+  refused "$chart" "at '/oidc/grants/0/group'" --set 'oidc.grants[0].group=${ci}'
+  refused "$chart" "at '/oidc/grants/0/access'" --set 'oidc.grants[0].access=admin'
+  refused "$chart" "at '/oidc/grants/0/buckets/0'" --set 'oidc.grants[0].buckets[0]=Runner_Cache'
+  refused "$chart" "additional properties 'bucket' not allowed" --set 'oidc.grants[0].bucket[0]=runner-cache'
+  refused "$chart" "at '/oidc/jwksUri'" --set oidc.jwksUri=sso.example.com/certs
+  ns="$tmp/noschema"
+  refused "$ns" "oidc.issuer must be the identity provider's issuer URL" --set oidc.issuer=sso.example.com/realms/infra
+  refused "$ns" "oidc.issuer must be the identity provider's issuer URL" --set oidc.issuer=
+  refused "$ns" "oidc.clientId is required" --set oidc.clientId=
+  refused "$ns" "oidc.grants needs at least one grant" --set 'oidc.grants={}'
+  refused "$ns" "group \"ci*\" must be a non-empty groups-claim value" --set 'oidc.grants[0].group=ci*'
+  refused "$ns" "group \"ci?\" must be a non-empty groups-claim value" --set 'oidc.grants[0].group=ci?'
+  refused "$ns" "group \"\${ci}\" must be a non-empty groups-claim value" --set 'oidc.grants[0].group=${ci}'
+  refused "$ns" "group \"\" must be a non-empty groups-claim value" --set 'oidc.grants[0].group='
+  refused "$ns" "has access \"admin\"; it must be readonly or readwrite" --set 'oidc.grants[0].access=admin'
+  refused "$ns" "\"Runner_Cache\" is not a valid S3 bucket name" --set 'oidc.grants[0].buckets[0]=Runner_Cache'
+  # A `$` in a value must reach the container as `$`, not be interpolated by Docker.
+  render "$chart" --set 'oidc.clientId=seaweedfs$s3' >"$tmp/dollar.yaml" 2>"$tmp/err" \
+    && grep -F 'seaweedfs$$s3' "$tmp/dollar.yaml" >/dev/null \
+    || bad "a \$ in oidc.clientId is not escaped as \$\$ in SEAWEEDFS_IAM_CONFIG — Docker would interpolate it"
 fi
 
 exit "$fail"

@@ -34,6 +34,28 @@ s3:
 # and '-', starting and ending with a letter or digit.
 buckets: []
 
+# OpenID Connect sign-in to the S3 API (off by default), e.g. against the keycloak chart in
+# this repository. The admin key pair above keeps working unchanged. A client either sends
+# its identity provider's token as `Authorization: Bearer <token>` or exchanges it for
+# temporary keys with STS AssumeRoleWithWebIdentity (RoleArn arn:aws:iam::role/oidc) on the
+# S3 port. Access comes only from grants: a token whose `groups` claim names no granted
+# group is refused. See the chart README for the provider setup.
+oidc:
+  enabled: false
+  # The provider's issuer URL, exactly as the token's `iss` claim carries it, e.g.
+  # https://sso.example.com/realms/infra. It must be reachable from the container.
+  issuer: ""
+  # The client the tokens are issued for: their `aud` or `azp` claim must equal it.
+  clientId: ""
+  # Where the signing keys are fetched. "" discovers them from the issuer.
+  jwksUri: ""
+  # Who may do what. group is a value of the token's `groups` claim, matched in exact case;
+  # access is readonly or readwrite; buckets limits the grant to those buckets ([] = every
+  # bucket). A token in several granted groups gets all of their grants, e.g.:
+  #   - { group: ci-cache, access: readwrite, buckets: [runner-cache] }
+  #   - { group: auditors, access: readonly, buckets: [] }
+  grants: []
+
 # Persistence. Named volume at /data (needle volumes, filer metadata, master state).
 # enabled:false => ephemeral: every object is lost when the task is replaced, which is
 # useful for a smoke test and nothing else.

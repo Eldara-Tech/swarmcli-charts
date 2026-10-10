@@ -23,6 +23,41 @@
       "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" },
       "uniqueItems": true
     },
+    "oidc": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "issuer": { "type": "string", "pattern": "^$|^https?://" },
+        "clientId": { "type": "string" },
+        "jwksUri": { "type": "string", "pattern": "^$|^https?://" },
+        "grants": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "group": { "type": "string", "minLength": 1, "pattern": "^[^*?$]+$" },
+              "access": { "type": "string", "enum": ["readonly", "readwrite"] },
+              "buckets": {
+                "type": "array",
+                "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" },
+                "uniqueItems": true
+              }
+            },
+            "required": ["group", "access"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "if": { "properties": { "enabled": { "const": true } }, "required": ["enabled"] },
+      "then": {
+        "properties": {
+          "issuer": { "minLength": 1 },
+          "clientId": { "minLength": 1 },
+          "grants": { "minItems": 1 }
+        },
+        "required": ["issuer", "clientId", "grants"]
+      }
+    },
     "persistence": {
       "type": "object",
       "properties": {

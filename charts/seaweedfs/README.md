@@ -16,6 +16,8 @@ What the chart adds on top of the image:
   authentication, so they listen on 127.0.0.1 only.
 - **Buckets are created for you** (`buckets`), once the server is up, on every
   start; a bucket that already exists is left alone.
+- **Optional OIDC sign-in** (`oidc`): tokens from your identity provider, scoped by
+  group to buckets and read or read/write access.
 
 ## Prerequisites
 
@@ -122,6 +124,70 @@ exists) counts as done, so restarts and upgrades are harmless; a bucket that
 cannot be created after five minutes is logged (`docker service logs`) and the
 server keeps running. Removing a name from `buckets` does not delete the bucket.
 
+## OIDC
+
+`oidc.enabled` lets people and jobs use their identity provider's token instead of the
+key pair, which keeps working unchanged. A client sends the token as a Bearer header, or
+exchanges it for temporary S3 keys with STS on the same port:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" https://s3-cache.example.com/runner-cache/some/key
+aws sts assume-role-with-web-identity --endpoint-url https://s3-cache.example.com \
+  --role-arn arn:aws:iam::role/oidc --role-session-name "$USER" --web-identity-token "$TOKEN"
+```
+
+Access comes only from `oidc.grants`:
+
+```yaml
+oidc:
+  enabled: true
+  issuer: https://sso.example.com/realms/infra
+  clientId: seaweedfs-s3
+  grants:
+    - { group: ci-cache, access: readwrite, buckets: [runner-cache] }
+    - { group: auditors, access: readonly, buckets: [] }   # [] = every bucket
+```
+
+A token is accepted when its `iss` equals `oidc.issuer`, its `aud` or `azp` equals
+`oidc.clientId`, and its `groups` claim names a granted group. It then gets every grant of
+every granted group it is in. A token in no granted group is refused, and so is anything no
+grant covers. `readonly` is GetObject, ListBucket and GetBucketLocation; `readwrite` adds
+PutObject (multipart uploads included) and DeleteObject. No grant can create or delete a
+bucket or change its policy, ACL or settings: that stays with the key pair.
+
+Group names are compared in **exact case**, and may not contain `*`, `?` or `$`. SeaweedFS
+fetches the signing keys itself, so the issuer (or `oidc.jwksUri`, when set) must be
+reachable from the container, over a certificate the image trusts. With `jwksUri: ""` they
+are discovered from `<issuer>/.well-known/openid-configuration`.
+
+### Keycloak
+
+1. The issuer is the realm URL, `https://<keycloak-host>/realms/<realm>`, exactly as tokens
+   carry it (older Keycloak versions put `/auth` before `/realms`).
+2. Create an OpenID Connect client, e.g. `seaweedfs-s3`, and set `oidc.clientId` to it.
+   Keycloak's access tokens name it in `azp`, which is accepted. The chart needs no client
+   secret.
+3. In the client's dedicated scope, add a **Group Membership** mapper: token claim name
+   `groups`, **Full group path off** (otherwise the claim carries `/ci-cache`, which matches
+   no grant), added to the access token.
+4. Create the groups the grants name and add users to them. Decode one token and check
+   its `iss`, `azp` and `groups` before blaming the store.
+
+### What to know
+
+- **A restart ends every STS credential.** They are signed with a key the container makes
+  at each start, so after an upgrade or a node reboot clients must assume the role again.
+  SDKs cache STS credentials until shortly before they expire (one hour by default), so a
+  long-running client fails until then unless it is restarted. Bearer tokens are unaffected.
+- **STS credentials outlive a group removal.** A Bearer token's groups are checked on every
+  request, but STS credentials keep the grants of the token they came from for their
+  lifetime: one hour by default, up to 12 hours if the client asks.
+- The generated IAM configuration is in the manifest and `docker inspect` as
+  `SEAWEEDFS_IAM_CONFIG`. It holds no secret.
+- If SeaweedFS cannot use it, it logs `Failed to load IAM configuration` and runs without
+  OIDC: every token is refused while the key pair still works. Check `docker service logs`
+  when tokens are refused.
+
 ## Persistence & node pinning
 
 Everything lives under `/data` on the `seaweedfs-data` volume, pinned to the node
@@ -142,6 +208,11 @@ processes must never share `/data`.
 | `s3.accessKeySecret` | `seaweedfs-s3-access-key` | External secret holding the access key id |
 | `s3.secretKeySecret` | `seaweedfs-s3-secret-key` | External secret holding the secret key |
 | `buckets` | `[]` | Buckets created at start if missing |
+| `oidc.enabled` | `false` | OIDC sign-in to the S3 API (Bearer tokens and STS) |
+| `oidc.issuer` | `""` | Issuer URL, exactly as the token's `iss` claim |
+| `oidc.clientId` | `""` | Client the tokens are for: their `aud` or `azp` |
+| `oidc.jwksUri` | `""` | Signing keys URL; `""` = discovered from the issuer |
+| `oidc.grants` | `[]` | `{group, access: readonly\|readwrite, buckets}`; `buckets: []` = every bucket |
 | `persistence.enabled` | `true` | Persist `/data` |
 | `persistence.volumeName` | `seaweedfs-data` | Named volume |
 | `persistence.volumePath` | `""` | Host path bind-mounted at `/data` instead (precedence over `volumeName`) |

@@ -1,0 +1,22 @@
+# OIDC sign-in to the S3 API against a stub identity provider. The provider is the store
+# itself: ci/e2e-check.sh generates a key pair per run, uploads its JWKS into the `idp`
+# bucket and mints tokens with that key, and the filer serves the JWKS on loopback, where
+# SeaweedFS fetches it from. One readwrite grant scoped to one bucket and one readonly grant
+# on every bucket, so the checks can tell scoping, access level and union apart.
+buckets:
+  - idp
+  - runner-cache
+  - reports
+oidc:
+  enabled: true
+  issuer: http://127.0.0.1:8888/buckets/idp
+  clientId: seaweedfs-s3
+  jwksUri: http://127.0.0.1:8888/buckets/idp/jwks.json
+  grants:
+    - group: ci-cache
+      access: readwrite
+      buckets:
+        - runner-cache
+    - group: auditors
+      access: readonly
+      buckets: []

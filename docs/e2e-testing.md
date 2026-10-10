@@ -278,6 +278,9 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   fixture, the bind-mount host dir and its node label, and a real Traefik edge (`edge`).
   `ci/e2e-check.sh` signs its requests with the same key pair, from a throwaway client on the
   overlay, because a store with no identity converges just as well while serving everyone.
+  The `oidc` fixture needs no extra setup: the check makes an RSA key per run, uploads its
+  JWKS into the chart-created `idp` bucket (the filer serves it on the loopback address the
+  fixture names as `jwksUri`) and mints the tokens itself with `openssl`.
 - **gitlab-runner** — the runner authentication-token secret + the `gitlab-runner-data` node
   label, plus the two S3 cache secrets for the `cache` fixture (their values deliberately
   contain the `/` and `+` of a real base64 key, so the TOML quoting is exercised). The mock
