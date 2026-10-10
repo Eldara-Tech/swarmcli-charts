@@ -62,7 +62,8 @@
        s3.port / console.*, so they are refused too. OIDC is an allow-list: the provider,
        client, issuer and callback come from oidc.* (a redirect_uri here would beat the
        callback the chart sets, a suffixed key would add a second provider), so extraEnv may
-       only tune claims and display, and only with oidc.enabled. */}}
+       only tune claims and display, and only with oidc.enabled. RustFS maps only some
+       MINIO_IDENTITY_OPENID_ names and ignores the rest, so that spelling is refused. */}}
 {{- range $k, $v := .Values.extraEnv }}
 {{-   if not (regexMatch "^[A-Za-z_][A-Za-z0-9_]*$" $k) }}
 {{-     fail (printf "extraEnv: %q is not an environment variable name (letters, digits and _, not starting with a digit)" $k) }}
@@ -79,7 +80,9 @@
 {{-   if regexMatch "^(RUSTFS|MINIO)_IDENTITY_OPENID_" $k }}
 {{-     if not $oidc }}
 {{-       fail (printf "extraEnv: %s configures OIDC, which the chart owns; set oidc.enabled and oidc.* instead" $k) }}
-{{-     else if not (has (regexReplaceAll "^(RUSTFS|MINIO)_IDENTITY_OPENID_" $k "") (list "SCOPES" "CLAIM_NAME" "CLAIM_PREFIX" "ROLE_POLICY" "DISPLAY_NAME" "GROUPS_CLAIM" "ROLES_CLAIM" "EMAIL_CLAIM" "USERNAME_CLAIM" "HIDE_FROM_UI")) }}
+{{-     else if hasPrefix "MINIO_" $k }}
+{{-       fail (printf "extraEnv: %s: use the RUSTFS_IDENTITY_OPENID_ spelling; RustFS reads only some MINIO_IDENTITY_OPENID_ names and silently ignores the rest" $k) }}
+{{-     else if not (has (trimPrefix "RUSTFS_IDENTITY_OPENID_" $k) (list "SCOPES" "CLAIM_NAME" "CLAIM_PREFIX" "ROLE_POLICY" "DISPLAY_NAME" "GROUPS_CLAIM" "ROLES_CLAIM" "EMAIL_CLAIM" "USERNAME_CLAIM" "HIDE_FROM_UI")) }}
 {{-       fail (printf "extraEnv: %s is not an OIDC setting extraEnv may tune (SCOPES, CLAIM_NAME, CLAIM_PREFIX, ROLE_POLICY, DISPLAY_NAME, GROUPS_CLAIM, ROLES_CLAIM, EMAIL_CLAIM, USERNAME_CLAIM, HIDE_FROM_UI, without a provider suffix): the provider, client and callback come from oidc.*, and a second provider is not supported" $k) }}
 {{-     end }}
 {{-   end }}

@@ -319,17 +319,20 @@ if [ "$case" = "default" ]; then
   done
   # OIDC settings in extraEnv are an allow-list: only the unsuffixed tuning keys, only with oidc on.
   # A redirect_uri would beat the chart's callback; a suffix adds a second provider.
-  for k in RUSTFS_IDENTITY_OPENID_CONFIG_URL MINIO_IDENTITY_OPENID_CONFIG_URL RUSTFS_IDENTITY_OPENID_CLIENT_ID \
-           MINIO_IDENTITY_OPENID_CLIENT_ID RUSTFS_IDENTITY_OPENID_REDIRECT_URI MINIO_IDENTITY_OPENID_REDIRECT_URI \
-           RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC RUSTFS_IDENTITY_OPENID_ISSUER MINIO_IDENTITY_OPENID_ISSUER \
-           RUSTFS_IDENTITY_OPENID_OTHER_AUDIENCES RUSTFS_IDENTITY_OPENID_ENABLE RUSTFS_IDENTITY_OPENID_CONFIG_URL_x \
-           RUSTFS_IDENTITY_OPENID_SCOPES_x; do
+  for k in RUSTFS_IDENTITY_OPENID_CONFIG_URL RUSTFS_IDENTITY_OPENID_CLIENT_ID RUSTFS_IDENTITY_OPENID_REDIRECT_URI \
+           RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC RUSTFS_IDENTITY_OPENID_ISSUER RUSTFS_IDENTITY_OPENID_OTHER_AUDIENCES \
+           RUSTFS_IDENTITY_OPENID_ENABLE RUSTFS_IDENTITY_OPENID_CONFIG_URL_x RUSTFS_IDENTITY_OPENID_SCOPES_x; do
     refused "extraEnv: $k is not an OIDC setting extraEnv may tune" --set oidc.enabled=true --set oidc.configUrl=$kc --set "extraEnv.$k=x"
+  done
+  # RustFS maps only some MINIO_IDENTITY_OPENID_ names (ROLE_POLICY is not one): every one is refused.
+  for k in MINIO_IDENTITY_OPENID_SCOPES MINIO_IDENTITY_OPENID_ROLE_POLICY MINIO_IDENTITY_OPENID_CONFIG_URL \
+           MINIO_IDENTITY_OPENID_REDIRECT_URI; do
+    refused "extraEnv: $k: use the RUSTFS_IDENTITY_OPENID_ spelling" --set oidc.enabled=true --set oidc.configUrl=$kc --set "extraEnv.$k=x"
   done
   tune="SCOPES CLAIM_NAME CLAIM_PREFIX ROLE_POLICY DISPLAY_NAME GROUPS_CLAIM ROLES_CLAIM EMAIL_CLAIM USERNAME_CLAIM HIDE_FROM_UI"
   sets=(); for t in $tune; do sets+=(--set "extraEnv.RUSTFS_IDENTITY_OPENID_$t=x"); done
-  if render --set oidc.enabled=true --set oidc.configUrl=$kc --set extraEnv.MINIO_IDENTITY_OPENID_SCOPES=x "${sets[@]}"; then
-    for k in MINIO_IDENTITY_OPENID_SCOPES $(printf 'RUSTFS_IDENTITY_OPENID_%s ' $tune); do
+  if render --set oidc.enabled=true --set oidc.configUrl=$kc "${sets[@]}"; then
+    for k in $(printf 'RUSTFS_IDENTITY_OPENID_%s ' $tune); do
       [ "$(yq -r "$svc.environment.$k" "$tmp")" = "x" ] || bad "extraEnv.$k was not rendered"
     done
   else

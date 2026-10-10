@@ -234,7 +234,8 @@ oidc:
   `DISPLAY_NAME` (the button's label), `GROUPS_CLAIM`, `ROLES_CLAIM`, `EMAIL_CLAIM`,
   `USERNAME_CLAIM` and `HIDE_FROM_UI`. Every other OIDC setting is refused, since the
   provider, client, issuer and callback come from `oidc.*`, and so is a provider
-  suffix: a second provider is not supported.
+  suffix: a second provider is not supported. The `MINIO_IDENTITY_OPENID_*` spelling is
+  refused too, because RustFS reads only some of those names and ignores the rest.
 
 ## Security
 
