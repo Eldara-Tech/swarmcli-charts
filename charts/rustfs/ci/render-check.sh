@@ -314,6 +314,12 @@ if [ "$case" = "default" ]; then
   refused 'oidc.browserUrl must be scheme://host[:port] only' --set oidc.enabled=true --set oidc.configUrl=$kc \
     --set console.enabled=true --set oidc.browserUrl=https://c.example.com/console
   refused 'oidc.browserUrl must be scheme://host[:port] only' --set oidc.enabled=true --set oidc.configUrl=$kc \
+    --set console.enabled=true --set oidc.browserUrl=https://c.example.com//
+  # A trailing / is accepted: RustFS strips it from the callback base.
+  render --set oidc.enabled=true --set oidc.configUrl=$kc --set console.enabled=true --set oidc.browserUrl=https://c.example.com/ \
+    && [ "$(yq -r "$svc.environment.RUSTFS_BROWSER_REDIRECT_URL" "$tmp")" = "https://c.example.com/" ] \
+    || bad "oidc.browserUrl with a trailing / was refused or not passed on: $(tr '\n' ' ' <"$tmp.err")"
+  refused 'oidc.browserUrl must be scheme://host[:port] only' --set oidc.enabled=true --set oidc.configUrl=$kc \
     --set console.enabled=true --set 'oidc.browserUrl=https://c.example.com\,evil.example'
   refused 'oidc.clientSecretSecret: "x;id" is not a Docker secret name' --set oidc.enabled=true --set oidc.configUrl=$kc \
     --set 'oidc.clientSecretSecret=x;id'

@@ -44,7 +44,7 @@
 {{- if and $oidc (not (regexMatch `^https?://[^/?#@,%\\\s]+(/\S*)?$` .Values.oidc.configUrl)) -}}
 {{-   fail (printf "oidc.configUrl must be the http(s) URL of the provider's discovery document when oidc.enabled (got %q)" .Values.oidc.configUrl) -}}
 {{- end -}}
-{{- if and $oidc .Values.oidc.browserUrl (not (regexMatch `^https?://[^/?#@,\\\s]+$` .Values.oidc.browserUrl)) -}}
+{{- if and $oidc .Values.oidc.browserUrl (not (regexMatch `^https?://[^/?#@,\\\s]+/?$` .Values.oidc.browserUrl)) -}}
 {{-   fail (printf "oidc.browserUrl must be scheme://host[:port] only, without a path (got %q)" .Values.oidc.browserUrl) -}}
 {{- end -}}
 {{- if and $oidc (not (regexMatch "^[A-Za-z0-9]([A-Za-z0-9_.-]{0,62}[A-Za-z0-9])?$" .Values.oidc.clientSecretSecret)) -}}
