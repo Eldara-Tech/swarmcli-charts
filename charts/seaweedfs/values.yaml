@@ -10,8 +10,9 @@
 #   1. S3 authentication is ON, always. SeaweedFS serves every request anonymously when
 #      it knows no identity, so the chart refuses to start unless both credential
 #      secrets exist and are non-empty — an empty secret must never become an open store.
-#   2. Only the S3 port leaves the container. The master, volume and filer APIs carry no
-#      authentication at all and are bound to 127.0.0.1; see the chart README.
+#   2. Only the S3 port leaves the container, plus the password-protected web UI when
+#      admin.enabled. The master, volume and filer APIs carry no authentication at all
+#      and are bound to 127.0.0.1; see the chart README.
 
 image:
   repository: chrislusf/seaweedfs
@@ -64,7 +65,8 @@ placement:
 network:
   name: seaweedfs-net
 
-# How the S3 API is exposed beyond network.name:
+# How the S3 API is exposed beyond network.name (the admin UI has its own
+# admin.exposure):
 #   none      - (default) nowhere else; only services on network.name reach it.
 #   traefik   - Traefik deploy labels on exposure.network, routing ingress.host to the
 #               S3 port. Path-style addressing (https://<host>/<bucket>/<key>), which is
@@ -72,12 +74,12 @@ network:
 #   published - publish s3.port on the Swarm as publish.port.
 exposure:
   mode: none
-  # The edge proxy's overlay (traefik mode only). Provisioned by the proxy
-  # chart/operator (requirements.yaml, autoCreate:false).
+  # The edge proxy's overlay, joined when the S3 API or the admin UI is traefik-routed.
+  # Provisioned by the proxy chart/operator (requirements.yaml, autoCreate:false).
   network: traefik-public
 
-# Public-facing address for traefik mode. host drives the Traefik Host() rule; tls
-# selects whether an HTTPS router terminates TLS (and HTTP redirects to it).
+# Public-facing address of the S3 API in traefik mode. host drives the Traefik Host()
+# rule; tls selects whether an HTTPS router terminates TLS (and HTTP redirects to it).
 ingress:
   host: s3.example.com
   tls: true
@@ -89,8 +91,9 @@ traefik:
   entrypoints:
     http: http
     https: https
-  # Base name for this chart's router/service objects (`<name>-http` / `<name>-https`
-  # routers + the `<name>` service). Empty => the release name.
+  # Base name for this chart's router/service objects: `<name>-http` / `<name>-https`
+  # routers + the `<name>` service for S3, `<name>-admin-http` / `<name>-admin-https`
+  # + `<name>-admin` for the admin UI. Empty => the release name.
   routerName: ""
   # Swarm-provider constraint label. The traefik chart runs with
   # --providers.swarm.exposedByDefault=false and a constraint on this label, so a
@@ -100,11 +103,43 @@ traefik:
   # traefik chart always defines https-redirect in the swarm provider.
   redirectMiddleware: https-redirect
 
-# published-mode port publish. mode: ingress (routing mesh, every node) or host (only
-# the node running the task).
+# S3 API published-mode port publish. mode: ingress (routing mesh, every node) or host
+# (only the node running the task).
 publish:
   port: 8333
   mode: ingress
+
+# The web UI: `weed admin`, run beside the server in the same container once the master
+# answers, and restarted if it exits; S3 keeps serving either way. One password gives
+# full control of the store: users and their keys, buckets, every file, maintenance.
+# The master's own UI on 9333 is NOT exposed, and cannot be: it is the same
+# unauthenticated listener that deletes data (see the README's Web UI section).
+admin:
+  enabled: false
+  # Port the UI listens on inside the container. Its worker gRPC port, port + 10000,
+  # stays on 127.0.0.1. Neither may collide with a port weed server binds.
+  port: 23646
+  # The login name. The password comes from passwordSecret.
+  user: admin
+  # EXTERNAL Swarm secret holding the admin password. Pre-create it:
+  #   openssl rand -base64 30 | tr -d '\n' | docker secret create seaweedfs-admin-password -
+  passwordSecret: seaweedfs-admin-password
+  # How the UI is exposed beyond network.name:
+  #   none      - (default) nowhere else; only services on network.name reach it.
+  #   traefik   - Traefik deploy labels on exposure.network, routing admin.ingress.host
+  #               to the UI (all of it except /metrics, which needs no login).
+  #   published - publish admin.port on the Swarm as admin.publish.port. Plain HTTP.
+  exposure:
+    mode: none
+  # Public-facing address for traefik mode, as ingress above; must differ from
+  # ingress.host when both are routed.
+  ingress:
+    host: ""
+    tls: true
+  # published-mode port publish; must differ from publish.port when both are published.
+  publish:
+    port: 23646
+    mode: ingress
 
 # Extra `weed server` flags, appended verbatim after the chart's own, e.g.
 # ["-master.volumeSizeLimitMB=512"]. Run `docker run --rm chrislusf/seaweedfs weed

@@ -17,6 +17,54 @@
 {{- if and (eq .Values.exposure.mode "traefik") (not .Values.ingress.host) -}}
 {{-   fail "ingress.host is required when exposure.mode=traefik" -}}
 {{- end -}}
+{{- /* The web UI. Its login name is spliced into the start-up shell like the bucket names,
+       so it is validated rather than trusted; its ports must not take one weed server
+       binds, or one of the two would fail to start. */}}
+{{- if .Values.admin.enabled -}}
+{{-   if not .Values.admin.passwordSecret -}}
+{{-     fail "admin.passwordSecret is required when admin.enabled: the web UI gives full control of the store and never runs without a password" -}}
+{{-   end -}}
+{{-   if or (eq .Values.admin.passwordSecret .Values.s3.accessKeySecret) (eq .Values.admin.passwordSecret .Values.s3.secretKeySecret) -}}
+{{-     fail "admin.passwordSecret must name a secret of its own, not s3.accessKeySecret or s3.secretKeySecret" -}}
+{{-   end -}}
+{{-   if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._@-]*$" .Values.admin.user) -}}
+{{-     fail (printf "admin.user: %q is not a valid login name (letters, digits, '.', '_', '@' and '-', starting with a letter or digit)" .Values.admin.user) -}}
+{{-   end -}}
+{{-   $s3p := .Values.s3.port | int -}}
+{{-   $ap := .Values.admin.port | int -}}
+{{-   $taken := list $s3p (add $s3p 10000 | int) 9333 19333 8080 18080 8888 18888 -}}
+{{-   if or (has $ap $taken) (has (add $ap 10000 | int) $taken) -}}
+{{-     fail (printf "admin.port %d collides with weed server: the UI binds %d and its worker gRPC %d, and weed server already binds %s (S3, master, volume server, filer and their gRPC ports)" $ap $ap (add $ap 10000) (join ", " $taken)) -}}
+{{-   end -}}
+{{-   if eq .Values.admin.exposure.mode "traefik" -}}
+{{-     if not .Values.admin.ingress.host -}}
+{{-       fail "admin.ingress.host is required when admin.exposure.mode=traefik" -}}
+{{-     end -}}
+{{-     if and (eq .Values.exposure.mode "traefik") (eq .Values.admin.ingress.host .Values.ingress.host) -}}
+{{-       fail "admin.ingress.host must differ from ingress.host: the S3 API is served at the root of its host" -}}
+{{-     end -}}
+{{-   end -}}
+{{-   if and (eq .Values.admin.exposure.mode "published") (eq .Values.exposure.mode "published") (eq (.Values.admin.publish.port | int) (.Values.publish.port | int)) -}}
+{{-     fail "admin.publish.port must differ from publish.port: both are published on the swarm" -}}
+{{-   end -}}
+{{- end -}}
+{{- /* Traefik deploy labels for one routed listener: the S3 API or the admin UI. With both
+       routed the Swarm service carries two Traefik services, and Traefik links a router to
+       neither unless it names one, so every router names its own. */ -}}
+{{- define "seaweedfs.traefik-routers" }}
+        - "traefik.http.routers.{{ .router }}-http.rule={{ .rule }}"
+        - "traefik.http.routers.{{ .router }}-http.entrypoints={{ .traefik.entrypoints.http }}"
+        - "traefik.http.routers.{{ .router }}-http.service={{ .router }}"
+{{- if .tls }}
+        - "traefik.http.routers.{{ .router }}-http.middlewares={{ .traefik.redirectMiddleware }}"
+        - "traefik.http.routers.{{ .router }}-https.rule={{ .rule }}"
+        - "traefik.http.routers.{{ .router }}-https.entrypoints={{ .traefik.entrypoints.https }}"
+        - "traefik.http.routers.{{ .router }}-https.tls=true"
+        - "traefik.http.routers.{{ .router }}-https.tls.certresolver={{ .traefik.certResolver }}"
+        - "traefik.http.routers.{{ .router }}-https.service={{ .router }}"
+{{- end }}
+        - "traefik.http.services.{{ .router }}.loadbalancer.server.port={{ .port }}"
+{{- end -}}
 version: "3.9"
 
 {{- $mode := .Values.exposure.mode }}
@@ -24,9 +72,15 @@ version: "3.9"
 {{- $port := .Values.s3.port | int }}
 {{- $access := .Values.s3.accessKeySecret }}
 {{- $secret := .Values.s3.secretKeySecret }}
+{{- $admin := .Values.admin }}
+{{- $adminPort := $admin.port | int }}
+{{- $pw := $admin.passwordSecret }}
+{{- $adminMode := "none" }}
+{{- if $admin.enabled }}{{ $adminMode = $admin.exposure.mode }}{{- end }}
+{{- $routed := or (eq $mode "traefik") (eq $adminMode "traefik") }}
 
 {{- $nets := list .Values.network.name }}
-{{- if eq $mode "traefik" }}{{ $nets = append $nets .Values.exposure.network }}{{- end }}
+{{- if $routed }}{{ $nets = append $nets .Values.exposure.network }}{{- end }}
 {{- $nets = $nets | uniq }}
 
 {{- /* `weed server` flags. The image's entrypoint already adds -dir=/data. -ip and -ip.bind
@@ -57,6 +111,13 @@ services:
     #  * Buckets are created by a background loop over the authenticated S3 API once the
     #    gateway answers. 409 (already exists) counts as done, so a restart is a no-op,
     #    and a failure is logged rather than taking the server down with it.
+    #  * admin.enabled: the web UI (`weed admin`) is started by another background loop
+    #    once the master answers on 127.0.0.1, and restarted if it exits; S3 and its
+    #    healthcheck never depend on it. Its password is exported in its own subshell only,
+    #    so weed server never holds it and no argv shows it. It inherits the filer signing
+    #    key, without which it cannot manage users. No -ip: with a password it binds the UI
+    #    to 0.0.0.0 itself and keeps its unauthenticated worker gRPC port on 127.0.0.1.
+    #    -logtostderr, as the image's entrypoint gives weed server: no log files in /tmp.
     #  * `exec` hands PID 1 to the image's entrypoint, which fixes /data ownership and
     #    drops to the seaweed user, so SIGTERM reaches weed itself.
     entrypoint:
@@ -68,9 +129,23 @@ services:
         for s in {{ $access }} {{ $secret }}; do
         test -s "/run/secrets/$$s" || { echo "secret $$s is missing or empty - refusing to start an S3 store without credentials" >&2; exit 1; };
         done;
+{{- if $admin.enabled }}
+        test -s "/run/secrets/{{ $pw }}" || { echo "secret {{ $pw }} is missing or empty - refusing to start the admin UI without a password" >&2; exit 1; };
+{{- end }}
         export AWS_ACCESS_KEY_ID="$$(cat /run/secrets/{{ $access }})";
         export AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/{{ $secret }})";
         export WEED_JWT_FILER_SIGNING_KEY="$$(head -c 32 /dev/urandom | base64)";
+{{- if $admin.enabled }}
+        (
+        until curl -fs -o /dev/null --max-time 5 http://127.0.0.1:9333/cluster/status; do sleep 2; done;
+        while :; do
+        rc=0;
+        ( export WEED_ADMIN_PASSWORD="$$(cat /run/secrets/{{ $pw }})"; exec su-exec seaweed weed -logtostderr=true admin -master=127.0.0.1:9333 -port={{ $adminPort }} -dataDir=/data/admin -adminUser={{ $admin.user }} ) || rc=$$?;
+        echo "weed admin exited (status $$rc) - restarting in 5s" >&2;
+        sleep 5;
+        done
+        ) &
+{{- end }}
 {{- if .Values.buckets }}
         (
         for b in {{ join " " .Values.buckets }}; do
@@ -110,18 +185,29 @@ services:
     secrets:
       - {{ $access }}
       - {{ $secret }}
+{{- if $admin.enabled }}
+      - {{ $pw }}
+{{- end }}
 
     networks:
 {{- range $nets }}
       - {{ . }}
 {{- end }}
 
-{{- if eq $mode "published" }}
+{{- if or (eq $mode "published") (eq $adminMode "published") }}
     ports:
+{{- if eq $mode "published" }}
       - target: {{ $port }}
         published: {{ .Values.publish.port }}
         protocol: tcp
         mode: {{ .Values.publish.mode }}
+{{- end }}
+{{- if eq $adminMode "published" }}
+      - target: {{ $adminPort }}
+        published: {{ $admin.publish.port }}
+        protocol: tcp
+        mode: {{ $admin.publish.mode }}
+{{- end }}
 {{- end }}
 
 {{- if .Values.persistence.enabled }}
@@ -167,22 +253,19 @@ services:
 {{- end }}
       restart_policy:
         condition: any
-{{- if or (eq $mode "traefik") .Values.labels }}
+{{- if or $routed .Values.labels }}
       labels:
-{{- if eq $mode "traefik" }}
+{{- if $routed }}
         - "traefik.enable=true"
         - "traefik.swarm.network={{ .Values.exposure.network }}"
         - "traefik.constraint-label={{ .Values.traefik.constraintLabel }}"
-        - "traefik.http.routers.{{ $router }}-http.rule=Host(`{{ .Values.ingress.host }}`)"
-        - "traefik.http.routers.{{ $router }}-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
-{{- if .Values.ingress.tls }}
-        - "traefik.http.routers.{{ $router }}-http.middlewares={{ .Values.traefik.redirectMiddleware }}"
-        - "traefik.http.routers.{{ $router }}-https.rule=Host(`{{ .Values.ingress.host }}`)"
-        - "traefik.http.routers.{{ $router }}-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
-        - "traefik.http.routers.{{ $router }}-https.tls=true"
-        - "traefik.http.routers.{{ $router }}-https.tls.certresolver={{ .Values.traefik.certResolver }}"
 {{- end }}
-        - "traefik.http.services.{{ $router }}.loadbalancer.server.port={{ $port }}"
+{{- if eq $mode "traefik" }}
+{{-   template "seaweedfs.traefik-routers" (dict "router" $router "rule" (printf "Host(`%s`)" .Values.ingress.host) "tls" .Values.ingress.tls "traefik" .Values.traefik "port" $port) }}
+{{- end }}
+{{- /* /metrics answers without a login, so the edge does not serve it. */}}
+{{- if eq $adminMode "traefik" }}
+{{-   template "seaweedfs.traefik-routers" (dict "router" (printf "%s-admin" $router) "rule" (printf "Host(`%s`) && !PathPrefix(`/metrics`)" $admin.ingress.host) "tls" $admin.ingress.tls "traefik" .Values.traefik "port" $adminPort) }}
 {{- end }}
 {{- range $key, $val := .Values.labels }}
         - "{{ $key }}={{ $val }}"
@@ -194,6 +277,10 @@ secrets:
     external: true
   {{ $secret }}:
     external: true
+{{- if $admin.enabled }}
+  {{ $pw }}:
+    external: true
+{{- end }}
 
 networks:
 {{- range $nets }}

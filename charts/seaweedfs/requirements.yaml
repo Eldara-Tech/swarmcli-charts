@@ -10,15 +10,18 @@ networks:
     attachable: true
     autoCreate: true
     description: "Overlay S3 clients join to reach <release>_seaweedfs (network.name)"
-  # Attached in traefik mode only.
+  # Attached only while the S3 API or the admin UI is traefik-routed.
   - name: "{{ .Values.exposure.network }}"
     driver: overlay
     attachable: true
     autoCreate: false
-    description: "exposure.mode=traefik only - the edge proxy's ingress overlay; provided by the proxy stack/operator"
+    description: "exposure.mode=traefik or admin.exposure.mode=traefik only - the edge proxy's ingress overlay; provided by the proxy stack/operator"
 secrets:
   - name: "{{ .Values.s3.accessKeySecret }}"
     description: "S3 access key id of the admin identity. Pre-create: printf '%s' '<key-id>' | docker secret create seaweedfs-s3-access-key -"
   - name: "{{ .Values.s3.secretKeySecret }}"
     description: "S3 secret access key of the admin identity. Pre-create: openssl rand -base64 30 | tr -d '\\n' | docker secret create seaweedfs-s3-secret-key -"
+  # Mounted only while admin.enabled.
+  - name: "{{ .Values.admin.passwordSecret }}"
+    description: "admin.enabled only - the web UI's admin password. Pre-create: openssl rand -base64 30 | tr -d '\\n' | docker secret create seaweedfs-admin-password -"
 configs: []

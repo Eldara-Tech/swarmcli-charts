@@ -81,6 +81,35 @@
         "mode": { "type": "string", "enum": ["ingress", "host"] }
       }
     },
+    "admin": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 55535 },
+        "user": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._@-]*$" },
+        "passwordSecret": { "type": "string", "minLength": 1 },
+        "exposure": {
+          "type": "object",
+          "properties": {
+            "mode": { "type": "string", "enum": ["none", "traefik", "published"] }
+          }
+        },
+        "ingress": {
+          "type": "object",
+          "properties": {
+            "host": { "type": "string" },
+            "tls": { "type": "boolean" }
+          }
+        },
+        "publish": {
+          "type": "object",
+          "properties": {
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+            "mode": { "type": "string", "enum": ["ingress", "host"] }
+          }
+        }
+      }
+    },
     "extraArgs": { "type": "array", "items": { "type": "string" } },
     "healthcheck": {
       "type": "object",
