@@ -37,9 +37,18 @@
 {{-   fail "console.publish.port must differ from publish.port" -}}
 {{- end -}}
 {{- /* RUSTFS_OUTBOUND_ALLOW_ORIGINS is derived from configUrl's origin, and RustFS refuses an
-       invalid allow-list for every outbound connection it polices, so the shape is checked. */}}
-{{- if and $oidc (not (regexMatch "^https?://[^/?#@]+(/|$)" .Values.oidc.configUrl)) -}}
+       invalid allow-list for every outbound connection it polices, so the shape is checked.
+       The origin admits no ',' (a second list entry) and no '\' (RustFS reads http:\\host
+       as http://host), and neither URL any whitespace. The client secret's name is spliced
+       into the start-up shell, so it must be a Docker secret name. */}}
+{{- if and $oidc (not (regexMatch `^https?://[^/?#@,\\\s]+(/\S*)?$` .Values.oidc.configUrl)) -}}
 {{-   fail (printf "oidc.configUrl must be the http(s) URL of the provider's discovery document when oidc.enabled (got %q)" .Values.oidc.configUrl) -}}
+{{- end -}}
+{{- if and $oidc .Values.oidc.browserUrl (not (regexMatch `^https?://[^/?#@,\\\s]+$` .Values.oidc.browserUrl)) -}}
+{{-   fail (printf "oidc.browserUrl must be scheme://host[:port] only, without a path (got %q)" .Values.oidc.browserUrl) -}}
+{{- end -}}
+{{- if and $oidc (not (regexMatch "^[A-Za-z0-9]([A-Za-z0-9_.-]{0,62}[A-Za-z0-9])?$" .Values.oidc.clientSecretSecret)) -}}
+{{-   fail (printf "oidc.clientSecretSecret: %q is not a Docker secret name (1-64 characters of letters, digits, '_', '.' and '-', starting and ending with a letter or digit)" .Values.oidc.clientSecretSecret) -}}
 {{- end -}}
 {{- if and $oidc $console (not $consoleRouted) (not .Values.oidc.browserUrl) -}}
 {{-   fail "oidc.browserUrl is required when oidc.enabled and the console is not traefik-routed: RustFS builds the login callback from it, and without it from the request's Host header, which the client controls" -}}

@@ -294,6 +294,21 @@ if [ "$case" = "default" ]; then
   kc=https://kc.example.com/realms/r/.well-known/openid-configuration
   refused 'oidc.configUrl must be' --set oidc.enabled=true
   refused 'oidc.configUrl must be' --set oidc.enabled=true --set oidc.configUrl=https://u:p@kc.example.com/realms/r
+  # The derived allow-list must stay one origin: no ',' entry, no '\' that RustFS reads as '/'.
+  printf '%s\n' 'oidc:' '  enabled: true' "  configUrl: 'https://kc.example.com,http:\\\\10.0.0.5:8080/realms/r'" >"$tmp.values"
+  refused 'oidc.configUrl must be' -f "$tmp.values"
+  printf '%s\n' 'oidc:' '  enabled: true' "  configUrl: 'https://kc.example.com,https://10.0.0.5/realms/r'" >"$tmp.values"
+  refused 'oidc.configUrl must be' -f "$tmp.values"
+  printf '%s\n' 'oidc:' '  enabled: true' "  configUrl: 'https://kc.example.com\\\\10.0.0.5/realms/r'" >"$tmp.values"
+  refused 'oidc.configUrl must be' -f "$tmp.values"
+  printf '%s\n' 'oidc:' '  enabled: true' "  configUrl: 'https://kc.example.com /realms/r'" >"$tmp.values"
+  refused 'oidc.configUrl must be' -f "$tmp.values"
+  refused 'oidc.browserUrl must be scheme://host[:port] only' --set oidc.enabled=true --set oidc.configUrl=$kc \
+    --set console.enabled=true --set oidc.browserUrl=https://c.example.com/console
+  refused 'oidc.browserUrl must be scheme://host[:port] only' --set oidc.enabled=true --set oidc.configUrl=$kc \
+    --set console.enabled=true --set 'oidc.browserUrl=https://c.example.com\,evil.example'
+  refused 'oidc.clientSecretSecret: "x;id" is not a Docker secret name' --set oidc.enabled=true --set oidc.configUrl=$kc \
+    --set 'oidc.clientSecretSecret=x;id'
   refused 'oidc.browserUrl is required' --set oidc.enabled=true --set oidc.configUrl=$kc --set console.enabled=true
   refused '/oidc/clientSecretSecret' --set oidc.enabled=true --set oidc.configUrl=$kc --set oidc.clientSecretSecret=
   for k in RUSTFS_IDENTITY_OPENID_CLIENT_SECRET MINIO_IDENTITY_OPENID_CLIENT_SECRET RUSTFS_IDENTITY_OPENID_CLIENT_SECRET_kc2; do
