@@ -372,6 +372,21 @@ if [ "$case" = "default" ]; then
       bad "console.exposure.mode=$m with the console off was refused: $(tr '\n' ' ' <"$tmp.err")"
     fi
   done
+  # ...and an exposed S3 API leaves an enabled console where console.exposure (none) puts it.
+  if render --set exposure.mode=traefik --set console.enabled=true --set console.ingress.host=c.example.com; then
+    l="$(yq -r "$svc.deploy.labels[]" "$tmp")"
+    grep -Fx 'traefik.http.routers.ci-http.service=ci' <<<"$l" >/dev/null \
+      || bad "exposure.mode=traefik with an unexposed console: the S3 router is missing"
+    if grep -F 'console' <<<"$l" >/dev/null; then bad "exposure.mode=traefik routes the console although console.exposure.mode is none"; fi
+  else
+    bad "exposure.mode=traefik with the console on was refused: $(tr '\n' ' ' <"$tmp.err")"
+  fi
+  if render --set exposure.mode=published --set console.enabled=true; then
+    [ "$(yq -r "$svc.ports | length" "$tmp")" = "1" ] && [ "$(yq -r "$svc.ports[0].target" "$tmp")" = "9000" ] \
+      || bad "exposure.mode=published publishes more than the S3 port although console.exposure.mode is none"
+  else
+    bad "exposure.mode=published with the console on was refused: $(tr '\n' ' ' <"$tmp.err")"
+  fi
 fi
 
 exit "$fail"
