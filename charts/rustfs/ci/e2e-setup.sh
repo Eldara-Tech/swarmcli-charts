@@ -10,8 +10,8 @@
 # created here except the overlays.
 #
 # INVARIANT: the key pair below is the one ci/e2e-check.sh signs with. The secret key
-# carries a `/` and a `+`, as a real base64 key does. The stub provider's issuer and the
-# client secret are the ones ci/oidc-values.yaml and ci/e2e-check.sh expect.
+# carries a `/` and a `+`, as a real base64 key does. The stub provider's issuer is the
+# one ci/oidc-values.yaml and ci/e2e-check.sh expect.
 #
 # Idempotent: safe to re-run after a crashed run.
 set -euo pipefail

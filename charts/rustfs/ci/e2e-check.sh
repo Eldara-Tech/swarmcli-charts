@@ -35,7 +35,6 @@ case="${3:-}"
 
 CURL_IMAGE="${RUSTFS_E2E_CURL_IMAGE:-curlimages/curl:latest}"
 KEY="${RUSTFS_E2E_ACCESS_KEY:-e2e-access-key}"
-OIDC_SECRET="${RUSTFS_E2E_OIDC_SECRET:-e2e-oidc-client-secret}"
 SECRET="${RUSTFS_E2E_SECRET_KEY:-e2e/secret+key0123456789abcdef}"
 SIG='aws:amz:us-east-1:s3'
 
@@ -180,10 +179,16 @@ if [ "$case" = "oidc" ]; then
     grep -E "[?&]$cb(&|\$)" <<<"$loc" >/dev/null || die "the login (Host: $host) does not carry the callback on console.ingress.host: $loc"
   done
   echo "  ok: the login redirects to the stub with client_id rustfs-e2e and the https://rustfs-console.e2e.test callback, whatever the Host header says"
-  docker exec "$cid" sh -c 's="$(cat /run/secrets/rustfs-oidc-client-secret)"; [ -n "$s" ] && tr "\0" "\n" < /proc/1/environ | grep -Fx "RUSTFS_IDENTITY_OPENID_CLIENT_SECRET=$s" >/dev/null' \
+  # Compared against the secret the task mounts, not a known value: setup keeps a secret left
+  # over from an earlier run, which would make a check against the default pass vacuously.
+  oidc_secret="$(docker exec "$cid" cat /run/secrets/rustfs-oidc-client-secret 2>/dev/null || true)"
+  [ -n "$oidc_secret" ] || die "the task mounts no (or an empty) /run/secrets/rustfs-oidc-client-secret"
+  docker exec "$cid" sh -c 'tr "\0" "\n" < /proc/1/environ | grep -Fx "RUSTFS_IDENTITY_OPENID_CLIENT_SECRET=$(cat /run/secrets/rustfs-oidc-client-secret)" >/dev/null' \
     || die "the OIDC client secret did not reach the server's environment"
-  if docker service inspect "$svc" | grep -F "$OIDC_SECRET" >/dev/null; then die "the OIDC client secret is visible in docker service inspect"; fi
-  echo "  ok: the client secret is in the server's environment and not in docker service inspect"
+  if { docker service inspect "$svc"; docker inspect "$cid"; } | grep -F -- "$oidc_secret" >/dev/null; then
+    die "the OIDC client secret is visible in docker inspect"
+  fi
+  echo "  ok: the client secret is in the server's environment and not in docker inspect of the service or task"
 fi
 
 # ── restart: data persists, bootstrap is idempotent ───────────────────────────────────
