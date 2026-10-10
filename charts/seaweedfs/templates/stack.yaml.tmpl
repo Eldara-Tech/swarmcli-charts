@@ -50,20 +50,27 @@
 {{- end -}}
 {{- /* Traefik deploy labels for one routed listener: the S3 API or the admin UI. With both
        routed the Swarm service carries two Traefik services, and Traefik links a router to
-       neither unless it names one, so every router names its own. */ -}}
+       neither unless it names one, so every router names its own: `service`, or one of its
+       own name on `port`. `middlewares` go on whichever router serves (HTTPS with tls). */ -}}
 {{- define "seaweedfs.traefik-routers" }}
+{{- $svc := .service | default .router }}
         - "traefik.http.routers.{{ .router }}-http.rule={{ .rule }}"
         - "traefik.http.routers.{{ .router }}-http.entrypoints={{ .traefik.entrypoints.http }}"
-        - "traefik.http.routers.{{ .router }}-http.service={{ .router }}"
+        - "traefik.http.routers.{{ .router }}-http.service={{ $svc }}"
 {{- if .tls }}
         - "traefik.http.routers.{{ .router }}-http.middlewares={{ .traefik.redirectMiddleware }}"
         - "traefik.http.routers.{{ .router }}-https.rule={{ .rule }}"
         - "traefik.http.routers.{{ .router }}-https.entrypoints={{ .traefik.entrypoints.https }}"
         - "traefik.http.routers.{{ .router }}-https.tls=true"
         - "traefik.http.routers.{{ .router }}-https.tls.certresolver={{ .traefik.certResolver }}"
-        - "traefik.http.routers.{{ .router }}-https.service={{ .router }}"
+        - "traefik.http.routers.{{ .router }}-https.service={{ $svc }}"
 {{- end }}
-        - "traefik.http.services.{{ .router }}.loadbalancer.server.port={{ .port }}"
+{{- with .middlewares }}
+        - "traefik.http.routers.{{ $.router }}-{{ ternary "https" "http" $.tls }}.middlewares={{ . }}"
+{{- end }}
+{{- with .port }}
+        - "traefik.http.services.{{ $.router }}.loadbalancer.server.port={{ . }}"
+{{- end }}
 {{- end -}}
 version: "3.9"
 
@@ -269,9 +276,18 @@ services:
 {{- /* /metrics answers without a login, so the edge does not serve it. weed admin checks no
        CSRF token on most writes (users, groups, policies, uploads) and reads JSON whatever
        its Content-Type, so the edge refuses any other method a browser marks as sent from
-       another site — same-site included, since the session cookie is SameSite=Lax. */}}
+       another site — same-site included, since the session cookie is SameSite=Lax.
+       The three routes that return stored files or their metadata get a router of their own
+       — its rule is longer, so Traefik ranks it first — whose responses carry
+       `Content-Security-Policy: sandbox`: weed admin serves uploads it takes for images,
+       SVG included, inline, so an object could otherwise run script in the UI's origin,
+       where the cross-site rule above no longer applies. */}}
 {{- if eq $adminMode "traefik" }}
-{{-   template "seaweedfs.traefik-routers" (dict "router" (printf "%s-admin" $router) "rule" (printf "Host(`%s`) && !PathPrefix(`/metrics`) && (Method(`GET`) || Method(`HEAD`) || !HeaderRegexp(`Sec-Fetch-Site`, `^(cross|same)-site`))" $admin.ingress.host) "tls" $admin.ingress.tls "traefik" .Values.traefik "port" $adminPort) }}
+{{-   $adminRule := printf "Host(`%s`) && !PathPrefix(`/metrics`) && (Method(`GET`) || Method(`HEAD`) || !HeaderRegexp(`Sec-Fetch-Site`, `^(cross|same)-site`))" $admin.ingress.host }}
+{{-   template "seaweedfs.traefik-routers" (dict "router" (printf "%s-admin" $router) "rule" $adminRule "tls" $admin.ingress.tls "traefik" .Values.traefik "port" $adminPort) }}
+        - "traefik.http.middlewares.{{ $router }}-admin-sandbox.headers.contentSecurityPolicy=sandbox"
+        - "traefik.http.middlewares.{{ $router }}-admin-sandbox.headers.contentTypeNosniff=true"
+{{-   template "seaweedfs.traefik-routers" (dict "router" (printf "%s-admin-content" $router) "rule" (printf "%s && (Path(`/api/files/download`) || Path(`/api/files/view`) || Path(`/api/files/metadata`))" $adminRule) "tls" $admin.ingress.tls "traefik" .Values.traefik "service" (printf "%s-admin" $router) "middlewares" (printf "%s-admin-sandbox" $router)) }}
 {{- end }}
 {{- range $key, $val := .Values.labels }}
         - "{{ $key }}={{ $val }}"

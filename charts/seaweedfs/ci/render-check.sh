@@ -110,6 +110,9 @@ labels="$(q "$svc.deploy.labels[]")"
 # token on most writes, so anything but GET/HEAD a browser marks same-site or cross-site is
 # refused at the edge (the session cookie is SameSite=Lax, so same-site would carry it).
 admin_guard='!PathPrefix(`/metrics`) && (Method(`GET`) || Method(`HEAD`) || !HeaderRegexp(`Sec-Fetch-Site`, `^(cross|same)-site`))'
+# The routes that return stored files or their metadata ride a router of their own whose
+# responses are sandboxed: weed admin serves an uploaded SVG inline, script and all.
+content_paths='(Path(`/api/files/download`) || Path(`/api/files/view`) || Path(`/api/files/metadata`))'
 case "$case" in
   traefik|edge)
     grep -Fx traefik-public <<<"$nets" >/dev/null || bad "case $case: not attached to traefik-public"
@@ -127,6 +130,18 @@ case "$case" in
     done
     if grep -E '^traefik\.http\.(routers\.ci-https?|services\.ci)\.' <<<"$labels" >/dev/null; then
       bad "case $case: the S3 API is routed although exposure.mode is none"
+    fi
+    for l in 'traefik.http.middlewares.ci-admin-sandbox.headers.contentSecurityPolicy=sandbox' \
+             'traefik.http.middlewares.ci-admin-sandbox.headers.contentTypeNosniff=true' \
+             'traefik.http.routers.ci-admin-content-http.service=ci-admin'; do
+      grep -Fx "$l" <<<"$labels" >/dev/null || bad "case $case: label $l is missing"
+    done
+    # The sandbox would stop the UI's own scripts, so only the content router may carry it.
+    [ "$(grep -c '=ci-admin-sandbox$' <<<"$labels")" = "1" ] \
+      && grep -E '^traefik\.http\.routers\.ci-admin-content-https?\.middlewares=ci-admin-sandbox$' <<<"$labels" >/dev/null \
+      || bad "case $case: the sandbox middleware is not on exactly the content router"
+    if grep -F 'traefik.http.services.ci-admin-content.' <<<"$labels" >/dev/null; then
+      bad "case $case: the content router has a service of its own instead of the admin UI's"
     fi
     [ "$(q "$svc.ports")" = "null" ] || bad "case $case: a port is published although nothing is in published mode"
     ;;
@@ -161,7 +176,11 @@ case "$case" in
     for l in 'traefik.http.routers.ci-admin-http.middlewares=https-redirect' \
              "traefik.http.routers.ci-admin-https.rule=Host(\`seaweedfs-admin.example.com\`) && $admin_guard" \
              'traefik.http.routers.ci-admin-https.tls=true' 'traefik.http.routers.ci-admin-https.tls.certresolver=le' \
-             'traefik.http.routers.ci-admin-https.service=ci-admin'; do
+             'traefik.http.routers.ci-admin-https.service=ci-admin' \
+             'traefik.http.routers.ci-admin-content-http.middlewares=https-redirect' \
+             "traefik.http.routers.ci-admin-content-https.rule=Host(\`seaweedfs-admin.example.com\`) && $admin_guard && $content_paths" \
+             'traefik.http.routers.ci-admin-content-https.tls=true' 'traefik.http.routers.ci-admin-content-https.tls.certresolver=le' \
+             'traefik.http.routers.ci-admin-content-https.service=ci-admin' 'traefik.http.routers.ci-admin-content-https.middlewares=ci-admin-sandbox'; do
       grep -Fx "$l" <<<"$labels" >/dev/null || bad "case $case: label $l is missing"
     done
     ;;
@@ -169,6 +188,10 @@ case "$case" in
     if grep -F 'https' <<<"$labels" >/dev/null; then bad "case $case: tls is off but an https router or redirect is rendered"; fi
     grep -Fx "traefik.http.routers.ci-admin-http.rule=Host(\`admin.e2e.test\`) && $admin_guard" <<<"$labels" >/dev/null \
       || bad "case $case: no HTTP router for admin.ingress.host that keeps /metrics and cross-site writes off the edge"
+    for l in "traefik.http.routers.ci-admin-content-http.rule=Host(\`admin.e2e.test\`) && $admin_guard && $content_paths" \
+             'traefik.http.routers.ci-admin-content-http.middlewares=ci-admin-sandbox'; do
+      grep -Fx "$l" <<<"$labels" >/dev/null || bad "case $case: label $l is missing"
+    done
     ;;
   edge)
     if grep -F 'https' <<<"$labels" >/dev/null; then bad "case $case: tls is off but an https router or redirect is rendered"; fi
