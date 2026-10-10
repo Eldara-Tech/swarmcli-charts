@@ -14,8 +14,95 @@
 {{-     fail (printf "buckets: %q is not a valid S3 bucket name (3-63 characters of a-z, 0-9, '.' and '-', starting and ending with a letter or digit)" .) }}
 {{-   end }}
 {{- end -}}
+{{- /* OIDC grants become IAM policy, so they are validated here as well as by the schema.
+       A group is matched by SeaweedFS's role mapping as a case-insensitive wildcard and by
+       the trust and grant conditions as an exact string with ${...} variables expanded, so
+       `*`, `?` and `$` would make the three disagree. */}}
+{{- if .Values.oidc.enabled -}}
+{{-   if not (regexMatch "^https?://" .Values.oidc.issuer) -}}
+{{-     fail "oidc.issuer must be the identity provider's issuer URL (http:// or https://), exactly as the token's iss claim carries it" -}}
+{{-   end -}}
+{{-   if not .Values.oidc.clientId -}}
+{{-     fail "oidc.clientId is required: a token is accepted only when its aud or azp claim equals it" -}}
+{{-   end -}}
+{{-   if not .Values.oidc.grants -}}
+{{-     fail "oidc.grants needs at least one grant: access comes only from grants, so with none OIDC would admit nobody" -}}
+{{-   end -}}
+{{-   range .Values.oidc.grants -}}
+{{-     if or (not .group) (regexMatch "[*?$]" .group) -}}
+{{-       fail (printf "oidc.grants: group %q must be a non-empty groups-claim value without '*', '?' or '$'" (.group | default "")) -}}
+{{-     end -}}
+{{-     if not (has .access (list "readonly" "readwrite")) -}}
+{{-       fail (printf "oidc.grants: group %q has access %q; it must be readonly or readwrite" .group (.access | default "")) -}}
+{{-     end -}}
+{{- /* A forgotten buckets key must not quietly mean every bucket: [] has to be said. */}}
+{{-     if not (kindIs "slice" .buckets) -}}
+{{-       fail (printf "oidc.grants: group %q has no buckets list; name its buckets, or [] for every bucket" .group) -}}
+{{-     end -}}
+{{-     range .buckets -}}
+{{-       if not (regexMatch "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" .) -}}
+{{-         fail (printf "oidc.grants: %q is not a valid S3 bucket name" .) -}}
+{{-       end -}}
+{{-     end -}}
+{{-   end -}}
+{{- end -}}
 {{- if and (eq .Values.exposure.mode "traefik") (not .Values.ingress.host) -}}
 {{-   fail "ingress.host is required when exposure.mode=traefik" -}}
+{{- end -}}
+{{- /* The web UI. Its login name is spliced into the start-up shell like the bucket names,
+       so it is validated rather than trusted; its ports must not take one weed server
+       binds, or one of the two would fail to start. */}}
+{{- if .Values.admin.enabled -}}
+{{-   if not .Values.admin.passwordSecret -}}
+{{-     fail "admin.passwordSecret is required when admin.enabled: the web UI gives full control of the store and never runs without a password" -}}
+{{-   end -}}
+{{-   if or (eq .Values.admin.passwordSecret .Values.s3.accessKeySecret) (eq .Values.admin.passwordSecret .Values.s3.secretKeySecret) -}}
+{{-     fail "admin.passwordSecret must name a secret of its own, not s3.accessKeySecret or s3.secretKeySecret" -}}
+{{-   end -}}
+{{-   if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._@-]*$" .Values.admin.user) -}}
+{{-     fail (printf "admin.user: %q is not a valid login name (letters, digits, '.', '_', '@' and '-', starting with a letter or digit)" .Values.admin.user) -}}
+{{-   end -}}
+{{-   $s3p := .Values.s3.port | int -}}
+{{-   $ap := .Values.admin.port | int -}}
+{{-   $taken := list $s3p (add $s3p 10000 | int) 9333 19333 8080 18080 8888 18888 -}}
+{{-   if or (has $ap $taken) (has (add $ap 10000 | int) $taken) -}}
+{{-     fail (printf "admin.port %d collides with weed server: the UI binds %d and its worker gRPC %d, and weed server already binds %s (S3, master, volume server, filer and their gRPC ports)" $ap $ap (add $ap 10000) (join ", " $taken)) -}}
+{{-   end -}}
+{{-   if eq .Values.admin.exposure.mode "traefik" -}}
+{{-     if not .Values.admin.ingress.host -}}
+{{-       fail "admin.ingress.host is required when admin.exposure.mode=traefik" -}}
+{{-     end -}}
+{{-     if and (eq .Values.exposure.mode "traefik") (eq .Values.admin.ingress.host .Values.ingress.host) -}}
+{{-       fail "admin.ingress.host must differ from ingress.host: the S3 API is served at the root of its host" -}}
+{{-     end -}}
+{{-   end -}}
+{{-   if and (eq .Values.admin.exposure.mode "published") (eq .Values.exposure.mode "published") (eq (.Values.admin.publish.port | int) (.Values.publish.port | int)) -}}
+{{-     fail "admin.publish.port must differ from publish.port: both are published on the swarm" -}}
+{{-   end -}}
+{{- end -}}
+{{- /* Traefik deploy labels for one routed listener: the S3 API or the admin UI. With both
+       routed the Swarm service carries two Traefik services, and Traefik links a router to
+       neither unless it names one, so every router names its own: `service`, or one of its
+       own name on `port`. `middlewares` go on whichever router serves (HTTPS with tls). */ -}}
+{{- define "seaweedfs.traefik-routers" }}
+{{- $svc := .service | default .router }}
+        - "traefik.http.routers.{{ .router }}-http.rule={{ .rule }}"
+        - "traefik.http.routers.{{ .router }}-http.entrypoints={{ .traefik.entrypoints.http }}"
+        - "traefik.http.routers.{{ .router }}-http.service={{ $svc }}"
+{{- if .tls }}
+        - "traefik.http.routers.{{ .router }}-http.middlewares={{ .traefik.redirectMiddleware }}"
+        - "traefik.http.routers.{{ .router }}-https.rule={{ .rule }}"
+        - "traefik.http.routers.{{ .router }}-https.entrypoints={{ .traefik.entrypoints.https }}"
+        - "traefik.http.routers.{{ .router }}-https.tls=true"
+        - "traefik.http.routers.{{ .router }}-https.tls.certresolver={{ .traefik.certResolver }}"
+        - "traefik.http.routers.{{ .router }}-https.service={{ $svc }}"
+{{- end }}
+{{- with .middlewares }}
+        - "traefik.http.routers.{{ $.router }}-{{ ternary "https" "http" $.tls }}.middlewares={{ . }}"
+{{- end }}
+{{- with .port }}
+        - "traefik.http.services.{{ $.router }}.loadbalancer.server.port={{ . }}"
+{{- end }}
 {{- end -}}
 version: "3.9"
 
@@ -24,9 +111,15 @@ version: "3.9"
 {{- $port := .Values.s3.port | int }}
 {{- $access := .Values.s3.accessKeySecret }}
 {{- $secret := .Values.s3.secretKeySecret }}
+{{- $admin := .Values.admin }}
+{{- $adminPort := $admin.port | int }}
+{{- $pw := $admin.passwordSecret }}
+{{- $adminMode := "none" }}
+{{- if $admin.enabled }}{{ $adminMode = $admin.exposure.mode }}{{- end }}
+{{- $routed := or (eq $mode "traefik") (eq $adminMode "traefik") }}
 
 {{- $nets := list .Values.network.name }}
-{{- if eq $mode "traefik" }}{{ $nets = append $nets .Values.exposure.network }}{{- end }}
+{{- if $routed }}{{ $nets = append $nets .Values.exposure.network }}{{- end }}
 {{- $nets = $nets | uniq }}
 
 {{- /* `weed server` flags. The image's entrypoint already adds -dir=/data. -ip and -ip.bind
@@ -37,6 +130,56 @@ version: "3.9"
        chart serves S3 and nothing else. -master.telemetry is on by default and reports
        cluster statistics to telemetry.seaweedfs.com; the chart does not call home. */}}
 {{- $args := list "server" "-ip=127.0.0.1" "-ip.bind=127.0.0.1" "-s3" "-s3.ip.bind=0.0.0.0" (printf "-s3.port=%d" $port) "-s3.port.iceberg=0" "-s3.port.lance=0" "-master.telemetry=false" }}
+
+{{- /* OIDC: the advanced IAM file `-s3.iam.config` loads, built here and written by the
+       container at start (a Swarm config can carry no rendered value). Everything in it is
+       chart-owned, because each piece closes a hole SeaweedFS leaves open:
+         * defaultEffect Deny. It is also what a trust policy returns when no statement
+           matches, so Allow would let any token assume the role.
+         * ONE role, whose trust policy requires the issuer AND a granted group. STS lets
+           the caller name the role, and the trust policy is all that stands in the way.
+           There is no oidc:aud condition: SeaweedFS sets it only for a string aud, and the
+           provider already checks aud/azp against clientId on every path.
+         * Each grant is a statement conditioned on jwt:groups, so a token in several
+           granted groups gets all of their grants, through Bearer and STS alike.
+         * Explicit actions only. s3:Put* would include s3:PutBucketPolicy, and a bucket
+           policy's Allow bypasses this policy entirely.
+         * roleMapping always present: without it SeaweedFS maps hard-coded group names.
+         * -s3.iam=false. The embedded IAM API, on by default, answers ListAccessKeys
+           without a UserName as self-service and returns every identity's access key id,
+           so any granted token would learn the admin's. Nothing here needs it: STS has
+           routes of its own.
+       No policyClaim (it skips the trust policy), no client secret (never used), no STS
+       signing key (it falls back to the per-start filer key below). */}}
+{{- $iamFile := "/tmp/seaweedfs-iam.json" }}
+{{- $iam := dict }}
+{{- if .Values.oidc.enabled }}
+{{-   $roleArn := "arn:aws:iam::role/oidc" }}
+{{-   $groups := list }}
+{{-   $statements := list }}
+{{-   range .Values.oidc.grants }}
+{{-     $groups = append $groups .group }}
+{{-     $actions := list "s3:GetObject" "s3:ListBucket" "s3:GetBucketLocation" }}
+{{-     if eq .access "readwrite" }}{{ $actions = concat $actions (list "s3:PutObject" "s3:DeleteObject") }}{{ end }}
+{{-     $resources := list "arn:aws:s3:::*" }}
+{{-     if .buckets }}
+{{-       $resources = list }}
+{{-       range .buckets }}{{ $resources = append $resources (printf "arn:aws:s3:::%s" .) }}{{ $resources = append $resources (printf "arn:aws:s3:::%s/*" .) }}{{ end }}
+{{-     end }}
+{{-     $condition := dict "ForAnyValue:StringEquals" (dict "jwt:groups" (list .group)) }}
+{{-     $statements = append $statements (dict "Effect" "Allow" "Action" $actions "Resource" $resources "Condition" $condition) }}
+{{-   end }}
+{{-   $rules := list }}
+{{-   range $groups }}{{ $rules = append $rules (dict "claim" "groups" "value" . "role" $roleArn) }}{{ end }}
+{{-   $provider := dict "issuer" .Values.oidc.issuer "clientId" .Values.oidc.clientId "jwksUri" .Values.oidc.jwksUri "roleMapping" (dict "rules" $rules) }}
+{{-   $trustCondition := dict "StringEquals" (dict "oidc:iss" .Values.oidc.issuer) "ForAnyValue:StringEquals" (dict "oidc:groups" $groups) }}
+{{-   $trust := dict "Effect" "Allow" "Principal" (dict "Federated" "*") "Action" (list "sts:AssumeRoleWithWebIdentity") "Condition" $trustCondition }}
+{{-   $role := dict "roleName" "oidc" "roleArn" $roleArn "attachedPolicies" (list "oidc") "trustPolicy" (dict "Version" "2012-10-17" "Statement" (list $trust)) }}
+{{-   $policy := dict "name" "oidc" "document" (dict "Version" "2012-10-17" "Statement" $statements) }}
+{{-   $iam = dict "policy" (dict "defaultEffect" "Deny") "providers" (list (dict "name" "oidc" "type" "oidc" "config" $provider)) "policies" (list $policy) "roles" (list $role) }}
+{{-   $args = append $args (printf "-s3.iam.config=%s" $iamFile) }}
+{{-   $args = append $args "-s3.iam=false" }}
+{{- end }}
 {{- range .Values.extraArgs }}{{ $args = append $args . }}{{- end }}
 
 services:
@@ -55,9 +198,22 @@ services:
     #    accepts identity updates; without a signing key it accepts them from anyone on
     #    the overlay, so a neighbour could add itself as an admin. Everything that needs
     #    the key lives in this one process, so it never has to be shared or persisted.
+{{- if .Values.oidc.enabled }}
+    #    With OIDC on it also signs STS credentials, which therefore end at a restart.
+    #  * SEAWEEDFS_IAM_CONFIG is written to the file -s3.iam.config names, on every start.
+{{- end }}
     #  * Buckets are created by a background loop over the authenticated S3 API once the
     #    gateway answers. 409 (already exists) counts as done, so a restart is a no-op,
     #    and a failure is logged rather than taking the server down with it.
+    #  * admin.enabled: the web UI (`weed admin`) is started by another background loop
+    #    once the master answers on 127.0.0.1, and restarted if it exits; S3 and its
+    #    healthcheck never depend on it. Its password is exported in its own subshell only,
+    #    so weed server never holds it and no argv shows it. It inherits the filer signing
+    #    key, without which it cannot manage users. No -ip: with a password it binds the UI
+    #    to 0.0.0.0 itself and keeps its unauthenticated worker gRPC port on 127.0.0.1.
+    #    -logtostderr and GODEBUG=fips140=on, as the image's entrypoint gives weed server
+    #    (no log files in /tmp). Its session key is deleted once per container start, not per
+    #    restart of the UI, so a redeploy (a password change included) logs everyone out.
     #  * `exec` hands PID 1 to the image's entrypoint, which fixes /data ownership and
     #    drops to the seaweed user, so SIGTERM reaches weed itself.
     entrypoint:
@@ -69,9 +225,27 @@ services:
         for s in {{ $access }} {{ $secret }}; do
         test -s "/run/secrets/$$s" || { echo "secret $$s is missing or empty - refusing to start an S3 store without credentials" >&2; exit 1; };
         done;
+{{- if $admin.enabled }}
+        test -s "/run/secrets/{{ $pw }}" || { echo "secret {{ $pw }} is missing or empty - refusing to start the admin UI without a password" >&2; exit 1; };
+{{- end }}
         export AWS_ACCESS_KEY_ID="$$(cat /run/secrets/{{ $access }})";
         export AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/{{ $secret }})";
         export WEED_JWT_FILER_SIGNING_KEY="$$(head -c 32 /dev/urandom | base64)";
+{{- if .Values.oidc.enabled }}
+        printf '%s' "$$SEAWEEDFS_IAM_CONFIG" > {{ $iamFile }};
+{{- end }}
+{{- if $admin.enabled }}
+        rm -f /data/admin/.session_key;
+        (
+        until curl -fs -o /dev/null --max-time 5 http://127.0.0.1:9333/cluster/status; do sleep 2; done;
+        while :; do
+        rc=0;
+        ( export WEED_ADMIN_PASSWORD="$$(cat /run/secrets/{{ $pw }})" GODEBUG=fips140=on; exec su-exec seaweed weed -logtostderr=true admin -master=127.0.0.1:9333 -port={{ $adminPort }} -dataDir=/data/admin -adminUser={{ $admin.user }} ) || rc=$$?;
+        echo "weed admin exited (status $$rc) - restarting in 5s" >&2;
+        sleep 5;
+        done
+        ) &
+{{- end }}
 {{- if .Values.buckets }}
         (
         for b in {{ join " " .Values.buckets }}; do
@@ -107,22 +281,41 @@ services:
       start_period: {{ .Values.healthcheck.startPeriod }}
 {{- end }}
     stop_grace_period: {{ .Values.stopGracePeriod }}
+{{- if .Values.oidc.enabled }}
+
+    environment:
+      # The OIDC IAM file, as JSON. It holds no secret (issuer, client id, groups, buckets),
+      # so being visible in the manifest and `docker inspect` is fine. `$$` keeps Docker
+      # from interpolating a `$` in a value.
+      SEAWEEDFS_IAM_CONFIG: {{ $iam | toJson | replace "$" "$$" | quote }}
+{{- end }}
 
     secrets:
       - {{ $access }}
       - {{ $secret }}
+{{- if $admin.enabled }}
+      - {{ $pw }}
+{{- end }}
 
     networks:
 {{- range $nets }}
       - {{ . }}
 {{- end }}
 
-{{- if eq $mode "published" }}
+{{- if or (eq $mode "published") (eq $adminMode "published") }}
     ports:
+{{- if eq $mode "published" }}
       - target: {{ $port }}
         published: {{ .Values.publish.port }}
         protocol: tcp
         mode: {{ .Values.publish.mode }}
+{{- end }}
+{{- if eq $adminMode "published" }}
+      - target: {{ $adminPort }}
+        published: {{ $admin.publish.port }}
+        protocol: tcp
+        mode: {{ $admin.publish.mode }}
+{{- end }}
 {{- end }}
 
 {{- if .Values.persistence.enabled }}
@@ -168,22 +361,29 @@ services:
 {{- end }}
       restart_policy:
         condition: any
-{{- if or (eq $mode "traefik") .Values.labels }}
+{{- if or $routed .Values.labels }}
       labels:
-{{- if eq $mode "traefik" }}
+{{- if $routed }}
         - "traefik.enable=true"
         - "traefik.swarm.network={{ .Values.exposure.network }}"
         - "traefik.constraint-label={{ .Values.traefik.constraintLabel }}"
-        - "traefik.http.routers.{{ $router }}-http.rule=Host(`{{ .Values.ingress.host }}`)"
-        - "traefik.http.routers.{{ $router }}-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
-{{- if .Values.ingress.tls }}
-        - "traefik.http.routers.{{ $router }}-http.middlewares={{ .Values.traefik.redirectMiddleware }}"
-        - "traefik.http.routers.{{ $router }}-https.rule=Host(`{{ .Values.ingress.host }}`)"
-        - "traefik.http.routers.{{ $router }}-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
-        - "traefik.http.routers.{{ $router }}-https.tls=true"
-        - "traefik.http.routers.{{ $router }}-https.tls.certresolver={{ .Values.traefik.certResolver }}"
 {{- end }}
-        - "traefik.http.services.{{ $router }}.loadbalancer.server.port={{ $port }}"
+{{- if eq $mode "traefik" }}
+{{-   template "seaweedfs.traefik-routers" (dict "router" $router "rule" (printf "Host(`%s`)" .Values.ingress.host) "tls" .Values.ingress.tls "traefik" .Values.traefik "port" $port) }}
+{{- end }}
+{{- /* /metrics answers without a login, so the edge does not serve it. Any method but
+       GET/HEAD that a browser marks as sent from another site, same-site included, is
+       refused. The three routes that return stored files or their metadata get a router of
+       their own — its rule is longer, so Traefik ranks it first — whose responses carry
+       `Content-Security-Policy: sandbox` and nosniff. Traefik matches paths still escaped,
+       so an encoded slash is refused on every admin router: no request reaches those routes
+       around their router (the UI passes file paths in the query string, never the path). */}}
+{{- if eq $adminMode "traefik" }}
+{{-   $adminRule := printf "Host(`%s`) && !PathPrefix(`/metrics`) && !PathRegexp(`(?i)%%2f`) && (Method(`GET`) || Method(`HEAD`) || !HeaderRegexp(`Sec-Fetch-Site`, `^(cross|same)-site`))" $admin.ingress.host }}
+{{-   template "seaweedfs.traefik-routers" (dict "router" (printf "%s-admin" $router) "rule" $adminRule "tls" $admin.ingress.tls "traefik" .Values.traefik "port" $adminPort) }}
+        - "traefik.http.middlewares.{{ $router }}-admin-sandbox.headers.contentSecurityPolicy=sandbox"
+        - "traefik.http.middlewares.{{ $router }}-admin-sandbox.headers.contentTypeNosniff=true"
+{{-   template "seaweedfs.traefik-routers" (dict "router" (printf "%s-admin-content" $router) "rule" (printf "%s && (Path(`/api/files/download`) || Path(`/api/files/view`) || Path(`/api/files/metadata`))" $adminRule) "tls" $admin.ingress.tls "traefik" .Values.traefik "service" (printf "%s-admin" $router) "middlewares" (printf "%s-admin-sandbox" $router)) }}
 {{- end }}
 {{- range $key, $val := .Values.labels }}
         - "{{ $key }}={{ $val }}"
@@ -195,6 +395,10 @@ secrets:
     external: true
   {{ $secret }}:
     external: true
+{{- if $admin.enabled }}
+  {{ $pw }}:
+    external: true
+{{- end }}
 
 networks:
 {{- range $nets }}
