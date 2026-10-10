@@ -306,6 +306,11 @@ if [ "$case" = "default" ]; then
   refused 'oidc.configUrl must be' -f "$tmp.values"
   printf '%s\n' 'oidc:' '  enabled: true' "  configUrl: 'https://kc.example.com /realms/r'" >"$tmp.values"
   refused 'oidc.configUrl must be' -f "$tmp.values"
+  refused 'oidc.configUrl must be' --set oidc.enabled=true --set 'oidc.configUrl=https://kc.example.com%2C10.0.0.5/r'
+  render --set oidc.enabled=true --set oidc.allowPrivateIdp=true \
+    --set 'oidc.configUrl=https://kc.example.com/realms/my%20realm/.well-known/openid-configuration' \
+    && [ "$(yq -r "$svc.environment.RUSTFS_OUTBOUND_ALLOW_ORIGINS" "$tmp")" = "https://kc.example.com" ] \
+    || bad "a configUrl with a percent-encoded path was refused or allow-listed wrongly: $(tr '\n' ' ' <"$tmp.err")"
   refused 'oidc.browserUrl must be scheme://host[:port] only' --set oidc.enabled=true --set oidc.configUrl=$kc \
     --set console.enabled=true --set oidc.browserUrl=https://c.example.com/console
   refused 'oidc.browserUrl must be scheme://host[:port] only' --set oidc.enabled=true --set oidc.configUrl=$kc \
