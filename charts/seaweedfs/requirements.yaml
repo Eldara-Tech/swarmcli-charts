@@ -23,5 +23,5 @@ secrets:
     description: "S3 secret access key of the admin identity. Pre-create: openssl rand -base64 30 | tr -d '\\n' | docker secret create seaweedfs-s3-secret-key -"
   # Mounted only while admin.enabled.
   - name: "{{ .Values.admin.passwordSecret }}"
-    description: "admin.enabled only - the web UI's admin password. Pre-create: openssl rand -base64 30 | tr -d '\\n' | docker secret create seaweedfs-admin-password -"
+    description: "admin.enabled only - the web UI's admin password. Pre-create: printf '%s' '<password>' | docker secret create seaweedfs-admin-password -"
 configs: []

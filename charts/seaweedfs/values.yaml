@@ -121,8 +121,9 @@ admin:
   port: 23646
   # The login name. The password comes from passwordSecret.
   user: admin
-  # EXTERNAL Swarm secret holding the admin password. Pre-create it:
-  #   openssl rand -base64 30 | tr -d '\n' | docker secret create seaweedfs-admin-password -
+  # EXTERNAL Swarm secret holding the admin password. Swarm never shows a secret again,
+  # so keep the password you put in:
+  #   printf '%s' '<password>' | docker secret create seaweedfs-admin-password -
   passwordSecret: seaweedfs-admin-password
   # How the UI is exposed beyond network.name:
   #   none      - (default) nowhere else; only services on network.name reach it.

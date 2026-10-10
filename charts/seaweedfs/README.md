@@ -13,7 +13,8 @@ What the chart adds on top of the image:
   secrets, and the container refuses to start if either is missing or empty —
   SeaweedFS serves every request anonymously when it knows no identity.
 - **Only S3 leaves the container.** The master, volume and filer APIs have no
-  authentication, so they listen on 127.0.0.1 only.
+  authentication, so they listen on 127.0.0.1 only. The web UI is the
+  password-protected `weed admin`, opt-in (see [Web UI](#web-ui)).
 - **Buckets are created for you** (`buckets`), once the server is up, on every
   start; a bucket that already exists is left alone.
 
@@ -52,7 +53,9 @@ default for every non-AWS S3 client. The region is not checked; send any, e.g.
 
 ## Exposure
 
-`network.name` is attached in every mode. `exposure.mode` adds:
+`exposure`, `ingress` and `publish` expose the **S3 API**; the web UI has its own
+`admin.exposure` (see [Web UI](#web-ui)). `network.name` is attached in every
+mode. `exposure.mode` adds:
 
 | Mode | What it adds |
 |------|--------------|
@@ -94,6 +97,67 @@ cache:
     accessKeySecret: seaweedfs-s3-access-key
     secretKeySecret: seaweedfs-s3-secret-key
 ```
+
+## Web UI
+
+The UI is SeaweedFS's `weed admin`, off by default. With `admin.enabled` the
+container starts it beside the server once the master answers, and restarts it
+if it exits; S3 and its healthcheck never depend on it. The password, read from
+the secret, reaches that one process alone: never weed server, an argv, the
+manifest or `docker inspect`. Its settings and session key live in `/data/admin`.
+
+```bash
+# The password, as an external Swarm secret. Swarm never shows a secret again, so
+# keep the password you put in.
+printf '%s' '<password>' | docker secret create seaweedfs-admin-password -
+
+swarmcli charts install s3 swarmcli-charts/seaweedfs \
+  --set admin.enabled=true --set admin.exposure.mode=traefik \
+  --set admin.ingress.host=seaweedfs-admin.example.com
+```
+
+Log in as `admin.user` (`admin`) with that password. `admin.exposure.mode` is
+`none` (only `network.name`), `traefik` (routes `admin.ingress.host`, which must
+differ from `ingress.host`) or `published` (`admin.port` as `admin.publish.port`,
+plain HTTP). The S3 API keeps its own `exposure.mode`.
+
+**Why not port 9333?** The master's status page shares one unauthenticated
+listener with the master's admin endpoints: in testing, an anonymous
+`GET /col/delete` deleted a bucket's data, and the page cannot be split off that
+listener. The master, volume server (8080) and filer (8888) also share one bind
+address, so opening 9333 opens the filer too — where an anonymous read of
+`/etc/iam/identities/*.json` returned the S3 secret keys — and every gRPC port.
+They stay on 127.0.0.1.
+
+**One password is full control.** The admin user manages S3 users and their
+keys, buckets, every file in them, and maintenance — treat the password like the
+S3 secret key.
+
+- **No login rate limit.** `weed admin` does not throttle password guesses. Put
+  a Traefik middleware in front of the `<router>-admin-https` router
+  (`<router>-admin-http` with `admin.ingress.tls: false`; `<router>` is
+  `traefik.routerName`, or the release name) through `labels` — an
+  `ipallowlist`, or forward-auth such as oauth2-proxy for single sign-on:
+
+  ```yaml
+  labels:
+    traefik.http.middlewares.s3-admin-allow.ipallowlist.sourcerange: "192.0.2.0/24"
+    traefik.http.routers.s3-admin-https.middlewares: s3-admin-allow
+  ```
+
+- **The session cookie is not marked `Secure`** (`weed admin` sets that only when
+  it terminates TLS itself), so keep `admin.ingress.tls` on, which redirects HTTP
+  to HTTPS, and keep `published` mode to trusted networks.
+- **`/metrics` needs no login**, so the router excludes it
+  (``!PathPrefix(`/metrics`)``); it still answers on the overlays.
+- **OIDC login for the UI is SeaweedFS Enterprise only.** For SSO use the
+  forward-auth middleware above.
+- Anything on `network.name` (and, when routed, `exposure.network`) reaches the
+  login page. The UI's worker gRPC port (`admin.port + 10000`) has no
+  authentication and stays on 127.0.0.1.
+
+To change the password, create a new secret under a new name, point
+`admin.passwordSecret` at it and upgrade.
 
 ## Security
 
@@ -148,16 +212,24 @@ processes must never share `/data`.
 | `persistence.nodeLabel` | `seaweedfs-data` | Node label the service is pinned to; `""` = no pin |
 | `placement.constraints` | `[]` | Extra constraints, always applied |
 | `network.name` | `seaweedfs-net` | Overlay S3 clients join (external, auto-created) |
-| `exposure.mode` | `none` | `none`, `traefik` or `published` |
-| `exposure.network` | `traefik-public` | Edge overlay (traefik mode) |
-| `ingress.host` | `s3.example.com` | Traefik `Host()` rule |
-| `ingress.tls` | `true` | HTTPS router + redirect (traefik mode) |
+| `exposure.mode` | `none` | S3 API: `none`, `traefik` or `published` |
+| `exposure.network` | `traefik-public` | Edge overlay, joined when the S3 API or the admin UI is routed |
+| `ingress.host` | `s3.example.com` | S3 API Traefik `Host()` rule |
+| `ingress.tls` | `true` | S3 API HTTPS router + redirect (traefik mode) |
 | `traefik.certResolver` | `le` | ACME resolver |
 | `traefik.entrypoints.http` / `.https` | `http` / `https` | Traefik entrypoint names |
-| `traefik.routerName` | `""` | Router/service name; `""` = release name |
+| `traefik.routerName` | `""` | Router/service base name (`<name>`, `<name>-admin`); `""` = release name |
 | `traefik.constraintLabel` | `traefik-public` | Swarm-provider constraint label |
 | `traefik.redirectMiddleware` | `https-redirect` | HTTP→HTTPS middleware |
-| `publish.port` / `publish.mode` | `8333` / `ingress` | Published port (published mode) |
+| `publish.port` / `publish.mode` | `8333` / `ingress` | S3 API published port (published mode) |
+| `admin.enabled` | `false` | Run the web UI (`weed admin`) |
+| `admin.port` | `23646` | UI port in the container (max 55535: its worker gRPC is this + 10000) |
+| `admin.user` | `admin` | UI login name |
+| `admin.passwordSecret` | `seaweedfs-admin-password` | External secret holding the UI password |
+| `admin.exposure.mode` | `none` | UI: `none`, `traefik` or `published` |
+| `admin.ingress.host` | `""` | UI Traefik `Host()` rule; required in traefik mode, ≠ `ingress.host` |
+| `admin.ingress.tls` | `true` | UI HTTPS router + redirect (traefik mode) |
+| `admin.publish.port` / `admin.publish.mode` | `23646` / `ingress` | UI published port (published mode), ≠ `publish.port` |
 | `extraArgs` | `[]` | Extra `weed server` flags |
 | `healthcheck.*` | enabled, 15s/5s/4, start 30s, monitor 2m | `curl` of `/healthz` on the S3 port |
 | `stopGracePeriod` | `30s` | SIGTERM → SIGKILL window |
