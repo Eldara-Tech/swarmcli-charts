@@ -1,0 +1,17 @@
+# Console single sign-on against a stub OpenID provider on rustfs-net: ci/e2e-setup.sh
+# serves its discovery document and key set before install, since RustFS reads them
+# once, at start. The console is traefik-routed with TLS, so the callback base is
+# derived as https://<console.ingress.host>; labels only, nothing routes through an edge.
+console:
+  enabled: true
+  exposure:
+    mode: traefik
+  ingress:
+    host: rustfs-console.e2e.test
+    tls: true
+oidc:
+  enabled: true
+  configUrl: http://rustfs-e2e-idp:8080/realms/e2e/.well-known/openid-configuration
+  # The stub is on rustfs-net, a private overlay address.
+  allowPrivateIdp: true
+  clientId: rustfs-e2e

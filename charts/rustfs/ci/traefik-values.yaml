@@ -1,0 +1,18 @@
+# Traefik-routed with TLS, the production shape: HTTP routers redirecting to HTTPS
+# routers with the ACME resolver, for the S3 API and the console. Labels only —
+# ci/e2e-check.sh still talks to the service directly, since a local swarm has no edge
+# or certificate to route through.
+exposure:
+  mode: traefik
+ingress:
+  host: s3-cache.example.com
+  tls: true
+console:
+  enabled: true
+  exposure:
+    mode: traefik
+  ingress:
+    host: rustfs-console.example.com
+    tls: true
+buckets:
+  - runner-cache

@@ -1,0 +1,368 @@
+{{- /* The S3 API and the console are exposed independently: exposure.* is the S3 API's,
+       console.exposure.* the console's, and a disabled console is exposed nowhere. */ -}}
+{{- $console := .Values.console.enabled -}}
+{{- $s3Routed := eq .Values.exposure.mode "traefik" -}}
+{{- $consoleRouted := and $console (eq .Values.console.exposure.mode "traefik") -}}
+{{- $consolePublished := and $console (eq .Values.console.exposure.mode "published") -}}
+{{- $oidc := .Values.oidc.enabled -}}
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) (contains "/" .Values.persistence.volumeName) -}}
+{{-   fail "persistence.volumeName is a Docker named-volume name and cannot contain '/'. To store data under a host directory, set persistence.volumePath instead." -}}
+{{- end -}}
+{{- if or (not .Values.s3.accessKeySecret) (not .Values.s3.secretKeySecret) -}}
+{{-   fail "s3.accessKeySecret and s3.secretKeySecret are required: without them RustFS falls back to its public default credentials" -}}
+{{- end -}}
+{{- if eq .Values.s3.accessKeySecret .Values.s3.secretKeySecret -}}
+{{-   fail "s3.accessKeySecret and s3.secretKeySecret must name two different secrets" -}}
+{{- end -}}
+{{- /* Bucket names are spliced into the start-up shell, so they are validated here rather
+       than trusted: the S3 naming rules admit nothing a shell would interpret. */}}
+{{- range .Values.buckets }}
+{{-   if not (regexMatch "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" .) }}
+{{-     fail (printf "buckets: %q is not a valid S3 bucket name (3-63 characters of a-z, 0-9, '.' and '-', starting and ending with a letter or digit)" .) }}
+{{-   end }}
+{{- end -}}
+{{- if and $s3Routed (not .Values.ingress.host) -}}
+{{-   fail "ingress.host is required when exposure.mode=traefik" -}}
+{{- end -}}
+{{- if and $consoleRouted (not .Values.console.ingress.host) -}}
+{{-   fail "console.ingress.host is required when console.exposure.mode=traefik" -}}
+{{- end -}}
+{{- if and .Values.console.enabled (eq (.Values.console.port | int) (.Values.s3.port | int)) -}}
+{{-   fail "console.port must differ from s3.port: RustFS runs the console as a second listener" -}}
+{{- end -}}
+{{- if and $s3Routed $consoleRouted (eq .Values.console.ingress.host .Values.ingress.host) -}}
+{{-   fail "console.ingress.host must differ from ingress.host: the console calls the S3 and admin API at the root of its own host, so the two routers' Host() rules would collide" -}}
+{{- end -}}
+{{- if and (eq .Values.exposure.mode "published") $consolePublished (eq (.Values.console.publish.port | int) (.Values.publish.port | int)) -}}
+{{-   fail "console.publish.port must differ from publish.port" -}}
+{{- end -}}
+{{- /* RUSTFS_OUTBOUND_ALLOW_ORIGINS is derived from configUrl's origin, and RustFS refuses an
+       invalid allow-list for every outbound connection it polices, so the shape is checked.
+       The origin admits no ',' (a second list entry), no '%' (an encoded one) and no '\'
+       (RustFS reads http:\\host as http://host), and neither URL any whitespace. The client
+       secret's name is spliced into the start-up shell, so it must be a Docker secret name. */}}
+{{- if and $oidc (not (regexMatch `^https?://[^/?#@,%\\\s]+(/\S*)?$` .Values.oidc.configUrl)) -}}
+{{-   fail (printf "oidc.configUrl must be the http(s) URL of the provider's discovery document when oidc.enabled (got %q)" .Values.oidc.configUrl) -}}
+{{- end -}}
+{{- if and $oidc .Values.oidc.browserUrl (not (regexMatch `^https?://[^/?#@,\\\s]+/?$` .Values.oidc.browserUrl)) -}}
+{{-   fail (printf "oidc.browserUrl must be scheme://host[:port] only, without a path (got %q)" .Values.oidc.browserUrl) -}}
+{{- end -}}
+{{- if and $oidc (not (regexMatch "^[A-Za-z0-9]([A-Za-z0-9_.-]{0,62}[A-Za-z0-9])?$" .Values.oidc.clientSecretSecret)) -}}
+{{-   fail (printf "oidc.clientSecretSecret: %q is not a Docker secret name (1-64 characters of letters, digits, '_', '.' and '-', starting and ending with a letter or digit)" .Values.oidc.clientSecretSecret) -}}
+{{- end -}}
+{{- if and $oidc $console (not $consoleRouted) (not .Values.oidc.browserUrl) -}}
+{{-   fail "oidc.browserUrl is required when oidc.enabled and the console is not traefik-routed: RustFS builds the login callback from it, and refuses the login without one" -}}
+{{- end -}}
+{{- /* extraEnv keys render unquoted, so a key must be a plain variable name before anything
+       else is checked: a quoted "RUSTFS_SECRET_KEY" would slip past every pattern below and
+       still parse as RUSTFS_SECRET_KEY, and a newline would start keys of the service itself.
+       RustFS copies every MINIO_<x> into an unset RUSTFS_<x> before parsing its flags, so
+       both spellings of a credential are refused, the *_FILE forms included, and so is the
+       OIDC client secret under any provider suffix. The listener settings are wired from
+       s3.port / console.*, so they are refused too. OIDC is an allow-list: the provider,
+       client, issuer and callback come from oidc.* (a redirect_uri here would beat the
+       callback the chart sets, a suffixed key would add a second provider), so extraEnv may
+       only tune claims and display, and only with oidc.enabled. RustFS maps only some
+       MINIO_IDENTITY_OPENID_ names and ignores the rest, so that spelling is refused. */}}
+{{- range $k, $v := .Values.extraEnv }}
+{{-   if not (regexMatch "^[A-Za-z_][A-Za-z0-9_]*$" $k) }}
+{{-     fail (printf "extraEnv: %q is not an environment variable name (letters, digits and _, not starting with a digit)" $k) }}
+{{-   end }}
+{{-   if regexMatch "^(RUSTFS|MINIO)_(ACCESS_KEY|SECRET_KEY|ROOT_USER|ROOT_PASSWORD)" $k }}
+{{-     fail (printf "extraEnv: %s is a credential; it belongs in the Swarm secrets s3.accessKeySecret / s3.secretKeySecret" $k) }}
+{{-   end }}
+{{-   if has $k (list "RUSTFS_ADDRESS" "RUSTFS_CONSOLE_ENABLE" "RUSTFS_CONSOLE_ADDRESS" "MINIO_ADDRESS" "MINIO_CONSOLE_ADDRESS") }}
+{{-     fail (printf "extraEnv: %s is set by the chart from s3.port and console.*; use those values instead" $k) }}
+{{-   end }}
+{{-   if regexMatch "^(RUSTFS|MINIO)_IDENTITY_OPENID_CLIENT_SECRET" $k }}
+{{-     fail (printf "extraEnv: %s is a credential; it belongs in the Swarm secret oidc.clientSecretSecret" $k) }}
+{{-   end }}
+{{-   if regexMatch "^(RUSTFS|MINIO)_IDENTITY_OPENID_" $k }}
+{{-     if not $oidc }}
+{{-       fail (printf "extraEnv: %s configures OIDC, which the chart owns; set oidc.enabled and oidc.* instead" $k) }}
+{{-     else if hasPrefix "MINIO_" $k }}
+{{-       fail (printf "extraEnv: %s: use the RUSTFS_IDENTITY_OPENID_ spelling; RustFS reads only some MINIO_IDENTITY_OPENID_ names and silently ignores the rest" $k) }}
+{{-     else if not (has (trimPrefix "RUSTFS_IDENTITY_OPENID_" $k) (list "SCOPES" "CLAIM_NAME" "CLAIM_PREFIX" "ROLE_POLICY" "DISPLAY_NAME" "GROUPS_CLAIM" "ROLES_CLAIM" "EMAIL_CLAIM" "USERNAME_CLAIM" "HIDE_FROM_UI")) }}
+{{-       fail (printf "extraEnv: %s is not an OIDC setting extraEnv may tune (SCOPES, CLAIM_NAME, CLAIM_PREFIX, ROLE_POLICY, DISPLAY_NAME, GROUPS_CLAIM, ROLES_CLAIM, EMAIL_CLAIM, USERNAME_CLAIM, HIDE_FROM_UI, without a provider suffix): the provider, client and callback come from oidc.*, and a second provider is not supported" $k) }}
+{{-     end }}
+{{-   end }}
+{{-   if eq $k "RUSTFS_BROWSER_REDIRECT_URL" }}
+{{-     fail "extraEnv: RUSTFS_BROWSER_REDIRECT_URL is set by the chart from oidc.browserUrl; use that instead" }}
+{{-   end }}
+{{- end -}}
+version: "3.9"
+
+{{- $mode := .Values.exposure.mode }}
+{{- $router := .Values.traefik.routerName | default .Release.Name }}
+{{- $port := .Values.s3.port | int }}
+{{- $cport := .Values.console.port | int }}
+{{- $access := .Values.s3.accessKeySecret }}
+{{- $secret := .Values.s3.secretKeySecret }}
+{{- $oidcSecret := .Values.oidc.clientSecretSecret }}
+{{- $browserUrl := .Values.oidc.browserUrl }}
+{{- if and (not $browserUrl) $consoleRouted }}{{ $browserUrl = printf "%s://%s" (ternary "https" "http" .Values.console.ingress.tls) .Values.console.ingress.host }}{{- end }}
+
+{{- $nets := list .Values.network.name }}
+{{- if or $s3Routed $consoleRouted }}{{ $nets = append $nets .Values.exposure.network }}{{- end }}
+{{- $nets = $nets | uniq }}
+
+services:
+
+  rustfs:
+    image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
+
+    # The start-up wrapper. `$$` escapes the `$` for compose, so every expansion happens
+    # inside the container and no secret is resolved into the manifest or `docker inspect`.
+    #
+    #  * RustFS reads both keys itself through RUSTFS_ACCESS_KEY_FILE / _SECRET_KEY_FILE,
+    #    trimming surrounding whitespace. Its entrypoint refuses a missing or empty file,
+    #    but only WARNS about the public default `rustfsadmin` and starts anyway, so the
+    #    wrapper refuses that too, after dropping every non-alphanumeric byte so that no
+    #    stray whitespace or punctuation slips it past. A key must be one word: whitespace
+    #    inside it would make the trimmed key differ from the one the bucket loop signs with.
+    #  * With oidc.enabled it exports the OIDC client secret from its Swarm secret, and
+    #    refuses to start when that is missing or empty. RustFS has no _FILE form for it (it
+    #    would read RUSTFS_IDENTITY_OPENID_CLIENT_SECRET_FILE as a provider named FILE), so
+    #    the value lives only in the server's own environment.
+    #  * Buckets are created by a background loop over the signed S3 API once the server
+    #    answers. RustFS answers an existing bucket with 200, as S3 does in us-east-1, or
+    #    409; both count as done, so a restart is a no-op, and a failure is logged rather
+    #    than taking the server down with it. curl reads the key pair from a config on
+    #    stdin (`-K -`, written by the printf builtin), so it never appears in an argv.
+    #  * `exec` hands PID 1 to the image's entrypoint, which execs rustfs, so SIGTERM
+    #    reaches the server itself.
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - >-
+        set -eu;
+        for f in "$$RUSTFS_ACCESS_KEY_FILE" "$$RUSTFS_SECRET_KEY_FILE"; do
+        w="$$(wc -w 2>/dev/null < "$$f" | tr -d ' ' || true)";
+        if [ "$${w:-0}" != 1 ]; then echo "$$f is missing or empty, or the key has whitespace inside it - refusing to start" >&2; exit 1; fi;
+        if [ "$$(LC_ALL=C tr -cd '[:alnum:]' < "$$f")" = rustfsadmin ]; then echo "$$f holds the public default rustfsadmin - refusing to start" >&2; exit 1; fi;
+        done;
+{{- if $oidc }}
+        f=/run/secrets/{{ $oidcSecret }};
+        RUSTFS_IDENTITY_OPENID_CLIENT_SECRET="$$(cat "$$f" 2>/dev/null || true)";
+        if [ -z "$$RUSTFS_IDENTITY_OPENID_CLIENT_SECRET" ]; then echo "$$f is missing or empty - refusing to start" >&2; exit 1; fi;
+        export RUSTFS_IDENTITY_OPENID_CLIENT_SECRET;
+{{- end }}
+{{- if .Values.buckets }}
+        (
+        key="$$(tr -d '[:space:]' < "$$RUSTFS_ACCESS_KEY_FILE" | sed 's/[\\"]/\\&/g')";
+        sec="$$(tr -d '[:space:]' < "$$RUSTFS_SECRET_KEY_FILE" | sed 's/[\\"]/\\&/g')";
+        for b in {{ join " " .Values.buckets }}; do
+        n=0; code=000;
+        until [ "$$code" = 200 ] || [ "$$code" = 409 ]; do
+        n=$$((n + 1));
+        if [ "$$n" -gt 150 ]; then echo "bucket $$b: not created after 150 attempts (last HTTP $$code)" >&2; exit 1; fi;
+        sleep 2;
+        code="$$(printf 'user = "%s:%s"\n' "$$key" "$$sec" | curl -K - -s -o /dev/null -w '%{http_code}' --max-time 10 --aws-sigv4 "aws:amz:$${RUSTFS_REGION:-us-east-1}:s3" -X PUT "http://127.0.0.1:{{ $port }}/$$b" || true)";
+        done;
+        echo "bucket $$b: ready (HTTP $$code)";
+        done
+        ) &
+{{- end }}
+        exec /entrypoint.sh rustfs
+
+    environment:
+      RUSTFS_ACCESS_KEY_FILE: /run/secrets/{{ $access }}
+      RUSTFS_SECRET_KEY_FILE: /run/secrets/{{ $secret }}
+      RUSTFS_ADDRESS: ":{{ $port }}"
+      RUSTFS_CONSOLE_ENABLE: {{ $console | quote }}
+{{- if $console }}
+      RUSTFS_CONSOLE_ADDRESS: ":{{ $cport }}"
+{{- end }}
+{{- if $oidc }}
+      # Single sign-on; the wrapper above exports the client secret.
+      RUSTFS_IDENTITY_OPENID_CONFIG_URL: {{ .Values.oidc.configUrl | quote }}
+      RUSTFS_IDENTITY_OPENID_CLIENT_ID: {{ .Values.oidc.clientId | quote }}
+      # Never build the login callback from the request (X-Forwarded-Proto, Host), which
+      # the client controls, on either listener: without a callback base RustFS refuses
+      # the browser login instead.
+      RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC: "off"
+{{- with $browserUrl }}
+      # The login callback's base.
+      RUSTFS_BROWSER_REDIRECT_URL: {{ . | quote }}
+{{- end }}
+{{- end }}
+{{- /* The next four are defaults extraEnv may override. */}}
+{{- if not (hasKey .Values.extraEnv "RUSTFS_OBS_LOG_DIRECTORY") }}
+      # Empty sends the server log to stdout (docker service logs) instead of a file
+      # inside the container, the image's default.
+      RUSTFS_OBS_LOG_DIRECTORY: ""
+{{- end }}
+{{- if not (hasKey .Values.extraEnv "RUSTFS_CHECK_UPDATE") }}
+      # The image is pinned and Renovate moves the pin; no call home for updates.
+      RUSTFS_CHECK_UPDATE: "false"
+{{- end }}
+{{- if and (or $s3Routed $consoleRouted) (not (hasKey .Values.extraEnv "RUSTFS_HTTP1_HEADER_READ_TIMEOUT")) }}
+      RUSTFS_HTTP1_HEADER_READ_TIMEOUT: {{ .Values.traefik.idleTimeoutSeconds | quote }}
+{{- end }}
+{{- if and $oidc .Values.oidc.allowPrivateIdp (not (hasKey .Values.extraEnv "RUSTFS_OUTBOUND_ALLOW_ORIGINS")) }}
+      # oidc.allowPrivateIdp: RustFS contacts a provider on a private address (an overlay,
+      # a LAN) only when its origin is listed here. It is RustFS's one allow-list for every
+      # outbound connection it polices, so webhook and Object Lambda targets may reach
+      # this origin too.
+      RUSTFS_OUTBOUND_ALLOW_ORIGINS: {{ regexFind "^https?://[^/]+" .Values.oidc.configUrl | quote }}
+{{- end }}
+{{- range $k, $v := .Values.extraEnv }}
+      {{ $k }}: {{ $v | quote }}
+{{- end }}
+
+{{- if .Values.healthcheck.enabled }}
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -fsS
+        - -o
+        - /dev/null
+        - http://127.0.0.1:{{ $port }}/health/ready
+      interval: {{ .Values.healthcheck.interval }}
+      timeout: {{ .Values.healthcheck.timeout }}
+      retries: {{ .Values.healthcheck.retries }}
+      start_period: {{ .Values.healthcheck.startPeriod }}
+{{- end }}
+    stop_grace_period: {{ .Values.stopGracePeriod }}
+
+{{- if .Values.nofile }}
+    ulimits:
+      nofile:
+        soft: {{ .Values.nofile }}
+        hard: {{ .Values.nofile }}
+{{- end }}
+
+    secrets:
+      - {{ $access }}
+      - {{ $secret }}
+{{- if $oidc }}
+      - {{ $oidcSecret }}
+{{- end }}
+
+    networks:
+{{- range $nets }}
+      - {{ . }}
+{{- end }}
+
+{{- if or (eq $mode "published") $consolePublished }}
+    ports:
+{{- if eq $mode "published" }}
+      - target: {{ $port }}
+        published: {{ .Values.publish.port }}
+        protocol: tcp
+        mode: {{ .Values.publish.mode }}
+{{- end }}
+{{- if $consolePublished }}
+      - target: {{ $cport }}
+        published: {{ .Values.console.publish.port }}
+        protocol: tcp
+        mode: {{ .Values.console.publish.mode }}
+{{- end }}
+{{- end }}
+
+{{- if .Values.persistence.enabled }}
+    volumes:
+      - {{ .Values.persistence.volumePath | default .Values.persistence.volumeName }}:/data
+{{- end }}
+
+    deploy:
+      # One process owns /data: a second task on the same volume would corrupt it, so
+      # there is exactly one replica and an update stops the old task first.
+      replicas: 1
+      update_config:
+        order: stop-first
+{{- if .Values.healthcheck.enabled }}
+        monitor: {{ .Values.healthcheck.monitor }}
+{{- end }}
+{{- $constraints := list }}
+{{- if and .Values.persistence.enabled .Values.persistence.nodeLabel }}
+{{-   $constraints = append $constraints (printf "node.labels.%s == true" .Values.persistence.nodeLabel) }}
+{{- end }}
+{{- range .Values.placement.constraints }}
+{{-   $constraints = append $constraints . }}
+{{- end }}
+{{- if $constraints }}
+      placement:
+        constraints:
+{{- range $constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- $limitMem := .Values.resources.limits.memory }}
+{{- $resMem := .Values.resources.reservations.memory }}
+{{- if or $limitMem $resMem }}
+      resources:
+{{-   with $limitMem }}
+        limits:
+          memory: {{ . | quote }}
+{{-   end }}
+{{-   with $resMem }}
+        reservations:
+          memory: {{ . | quote }}
+{{-   end }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- if or $s3Routed $consoleRouted .Values.labels }}
+      labels:
+{{- if or $s3Routed $consoleRouted }}
+        - "traefik.enable=true"
+        - "traefik.swarm.network={{ .Values.exposure.network }}"
+        - "traefik.constraint-label={{ .Values.traefik.constraintLabel }}"
+{{- end }}
+{{- if $s3Routed }}
+        - "traefik.http.routers.{{ $router }}-http.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ $router }}-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
+        - "traefik.http.routers.{{ $router }}-http.service={{ $router }}"
+{{- if .Values.ingress.tls }}
+        - "traefik.http.routers.{{ $router }}-http.middlewares={{ .Values.traefik.redirectMiddleware }}"
+        - "traefik.http.routers.{{ $router }}-https.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ $router }}-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
+        - "traefik.http.routers.{{ $router }}-https.service={{ $router }}"
+        - "traefik.http.routers.{{ $router }}-https.tls=true"
+        - "traefik.http.routers.{{ $router }}-https.tls.certresolver={{ .Values.traefik.certResolver }}"
+{{- end }}
+        - "traefik.http.services.{{ $router }}.loadbalancer.server.port={{ $port }}"
+{{- end }}
+{{- if $consoleRouted }}
+        - "traefik.http.routers.{{ $router }}-console-http.rule=Host(`{{ .Values.console.ingress.host }}`)"
+        - "traefik.http.routers.{{ $router }}-console-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
+        - "traefik.http.routers.{{ $router }}-console-http.service={{ $router }}-console"
+{{- if .Values.console.ingress.tls }}
+        - "traefik.http.routers.{{ $router }}-console-http.middlewares={{ .Values.traefik.redirectMiddleware }}"
+        - "traefik.http.routers.{{ $router }}-console-https.rule=Host(`{{ .Values.console.ingress.host }}`)"
+        - "traefik.http.routers.{{ $router }}-console-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
+        - "traefik.http.routers.{{ $router }}-console-https.service={{ $router }}-console"
+        - "traefik.http.routers.{{ $router }}-console-https.tls=true"
+        - "traefik.http.routers.{{ $router }}-console-https.tls.certresolver={{ .Values.traefik.certResolver }}"
+{{- end }}
+        - "traefik.http.services.{{ $router }}-console.loadbalancer.server.port={{ $cport }}"
+{{- end }}
+{{- range $key, $val := .Values.labels }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+{{- end }}
+
+secrets:
+  {{ $access }}:
+    external: true
+  {{ $secret }}:
+    external: true
+{{- if $oidc }}
+  {{ $oidcSecret }}:
+    external: true
+{{- end }}
+
+networks:
+{{- range $nets }}
+  {{ . }}:
+    external: true
+{{- end }}
+
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) }}
+
+volumes:
+  {{ .Values.persistence.volumeName }}: {}
+{{- end }}

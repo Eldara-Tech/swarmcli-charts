@@ -1,0 +1,210 @@
+# rustfs chart default values.
+#
+# RustFS as an S3-compatible object store: ONE service, one node, one drive (/data on a
+# node-local volume). That is the shape for a build cache, a backup target or an
+# application's blob store on a small swarm. A single drive has no erasure-coding
+# redundancy, and this chart does not run RustFS's distributed mode.
+#
+# Two things drive the defaults:
+#
+#   1. Credentials come from two external Swarm secrets, read by RustFS itself through
+#      RUSTFS_ACCESS_KEY_FILE / RUSTFS_SECRET_KEY_FILE. The container refuses to start
+#      when either is missing, empty, or RustFS's public default `rustfsadmin`.
+#   2. Only the S3 API listens by default. The web console is a second listener that
+#      serves the S3 and admin API as well, so it is opt-in (console.enabled).
+
+image:
+  repository: rustfs/rustfs
+  tag: ""  # defaults to appVersion from Chart.yaml
+
+s3:
+  # Port the S3 API listens on inside the container — the port other stacks dial on
+  # network.name, the Traefik load-balancer target and the published target.
+  port: 9000
+  # EXTERNAL Swarm secrets holding the root access key and secret key. Pre-create them;
+  # the chart never creates secrets:
+  #   printf '%s' 'cache-access-key' | docker secret create rustfs-access-key -
+  #   openssl rand -base64 30 | tr -d '\n' | docker secret create rustfs-secret-key -
+  accessKeySecret: rustfs-access-key
+  secretKeySecret: rustfs-secret-key
+
+# The RustFS web console: a second listener serving the console UI under
+# /rustfs/console/, plus the same S3 and admin API as s3.port. You log in with the
+# key pair above, or through oidc below. Off by default. When on, it is reachable on
+# network.name at console.port, and console.exposure adds a route or a published port,
+# independently of the S3 API's exposure.mode.
+console:
+  enabled: false
+  port: 9001
+  # How the console is exposed beyond network.name:
+  #   none      - (default) nowhere else: network.name, and exposure.network while the
+  #               S3 API is traefik-routed.
+  #   traefik   - Traefik deploy labels on exposure.network, routing console.ingress.host
+  #               to console.port.
+  #   published - publish console.port on the Swarm as console.publish.port.
+  exposure:
+    mode: none
+  # Public-facing address for console traefik mode. host drives the console router's
+  # Host() rule (required there, and different from ingress.host: the console calls the
+  # S3 and admin API at the root of its own host); tls selects an HTTPS router.
+  ingress:
+    host: ""
+    tls: true
+  # Console published mode. mode: ingress (routing mesh) or host (the task's node only).
+  publish:
+    port: 9001
+    mode: ingress
+
+# Buckets created once the server is up, if they do not exist yet (an existing bucket
+# is left alone, so restarts are safe). Clients such as the GitLab Runner cache never
+# create their own bucket. S3 naming rules apply: 3-63 characters of a-z, 0-9, '.'
+# and '-', starting and ending with a letter or digit.
+buckets: []
+
+# Persistence. Named volume at /data. enabled:false => ephemeral: every object is lost
+# when the task is replaced, which is useful for a smoke test and nothing else.
+persistence:
+  enabled: true
+  volumeName: rustfs-data
+  # Store the data under a host directory instead of Docker's managed volume storage.
+  # When set it TAKES PRECEDENCE over volumeName: /data is bind-mounted from this
+  # absolute host path on the pinned node. It must already exist there and be owned by
+  # uid/gid 10001 (RustFS runs as that user and cannot fix ownership itself):
+  #   install -d -o 10001 -g 10001 -m 0750 <path>
+  # This is host-filesystem access, acknowledged via swarmcli-charts/allow:
+  # "host-mount" in Chart.yaml; the default named-volume render needs no acknowledgment.
+  volumePath: ""
+  # Node label pinning the service to the node carrying the data (Swarm volumes are
+  # node-local). Rendered as `node.labels.<nodeLabel> == true` while persistence is
+  # enabled, and dropped with it. Label exactly ONE node first:
+  #   docker node update --label-add rustfs-data=true <node>
+  # Set "" to schedule unpinned even with persistence on (single-node swarm).
+  nodeLabel: rustfs-data
+
+# Extra scheduling constraints, always applied (independent of the persistence pin
+# above), e.g. ["node.hostname == node-29"].
+placement:
+  constraints: []
+
+# The overlay S3 clients reach the store on, in every exposure mode. Other stacks join
+# it as an external network and dial http://<release>_rustfs:<s3.port>.
+# requirements.yaml declares it autoCreate:true, so it is created on first install.
+network:
+  name: rustfs-net
+
+# How the S3 API is exposed beyond network.name. This is the S3 API only: the console
+# has its own console.exposure, so either can be routed while the other is not.
+#   none      - (default) nowhere else; only services on network.name reach it, and
+#               those on exposure.network while the console is traefik-routed.
+#   traefik   - Traefik deploy labels on exposure.network, routing ingress.host to
+#               s3.port. Path-style addressing (https://<host>/<bucket>/<key>), which is
+#               what non-AWS S3 clients use.
+#   published - publish s3.port on the Swarm as publish.port.
+exposure:
+  mode: none
+  # The edge proxy's overlay, joined when the S3 API or the console is traefik-routed.
+  # Provisioned by the proxy chart/operator (requirements.yaml, autoCreate:false).
+  network: traefik-public
+
+# Public-facing address of the S3 API in traefik mode. host drives the Traefik Host()
+# rule; tls selects whether an HTTPS router terminates TLS (and HTTP redirects to it).
+ingress:
+  host: s3.example.com
+  tls: true
+
+# Traefik routing, shared by the S3 and console routers. The defaults match the
+# traefik chart in this repository; adjust them to your own Traefik if you run one.
+traefik:
+  certResolver: le
+  entrypoints:
+    http: http
+    https: https
+  # Base name for this chart's router/service objects (`<name>-http` / `<name>-https`
+  # routers + the `<name>` service, and `<name>-console*` for the console). Empty =>
+  # the release name.
+  routerName: ""
+  # Swarm-provider constraint label. The traefik chart runs with
+  # --providers.swarm.exposedByDefault=false and a constraint on this label, so a
+  # routed service must carry it to be discovered. Match your Traefik's.
+  constraintLabel: traefik-public
+  # Middleware on an HTTP router redirecting to HTTPS (when its ingress.tls is on). The
+  # traefik chart always defines https-redirect in the swarm provider.
+  redirectMiddleware: https-redirect
+  # Seconds RustFS keeps an idle upstream HTTP/1.1 connection open (while either
+  # listener is traefik-routed; RustFS's own default is 75). It must outlast Traefik's
+  # upstream idle timeout (90s by default), or Traefik reuses a connection RustFS has
+  # already closed and a large PUT fails with "socket hang up".
+  idleTimeoutSeconds: 120
+
+# S3 published mode. mode: ingress (routing mesh, every node) or host (only the node
+# running the task).
+publish:
+  port: 9000
+  mode: ingress
+
+# Single sign-on for the console through an OpenID Connect provider such as Keycloak
+# (README "Single sign-on"). RustFS maps the ID token's groups claim to RustFS policy
+# names and gives the console session temporary credentials with those policies; the
+# root key pair keeps working. Scopes, claims, a role policy and the button's display
+# name are RUSTFS_IDENTITY_OPENID_* settings in extraEnv.
+oidc:
+  enabled: false
+  # The provider's discovery document, e.g.
+  # https://keycloak.example.com/realms/<realm>/.well-known/openid-configuration.
+  # RustFS reads it once, at start.
+  configUrl: ""
+  # RustFS refuses to contact a provider that resolves to a private address (one on an
+  # overlay such as network.name, or on a LAN) unless its origin is allow-listed. true
+  # adds the origin of configUrl to RUSTFS_OUTBOUND_ALLOW_ORIGINS. That list is
+  # process-wide: RustFS's event and audit webhooks and Object Lambda targets may then
+  # reach that origin too. A provider on a public address needs neither.
+  allowPrivateIdp: false
+  clientId: rustfs
+  # EXTERNAL Swarm secret holding the client secret. Pre-create it:
+  #   printf '%s' '<client secret>' | docker secret create rustfs-oidc-client-secret -
+  clientSecretSecret: rustfs-oidc-client-secret
+  # The console's public base URL (scheme://host[:port], no path). RustFS builds the
+  # login callback <browserUrl>/rustfs/admin/v3/oidc/callback/default from it. "" =>
+  # http(s)://<console.ingress.host> while the console is traefik-routed; required when
+  # the console is enabled otherwise.
+  browserUrl: ""
+
+# Open-file limit for the RustFS process. Below 16384 RustFS disables its per-disk
+# file-descriptor cache, which costs performance. 0 leaves the daemon's default.
+# Applied by `docker stack deploy` from Docker 23 on.
+nofile: 65536
+
+# Extra environment variables, e.g. RUSTFS_SERVER_DOMAINS for virtual-hosted-style
+# addressing, RUSTFS_REGION, or RUSTFS_OBS_ENDPOINT to push OpenTelemetry metrics and
+# traces to a collector. RUSTFS_OBS_LOG_DIRECTORY, RUSTFS_CHECK_UPDATE,
+# RUSTFS_HTTP1_HEADER_READ_TIMEOUT and RUSTFS_OUTBOUND_ALLOW_ORIGINS here override the
+# chart's own settings. The render fails on credentials (they belong in the secrets
+# above, and RustFS reads MINIO_* names as well), on the listener addresses (set
+# s3.port / console.* instead) and on every RUSTFS_IDENTITY_OPENID_* setting except the
+# claim and display tuning README "Single sign-on" lists, allowed with oidc.enabled.
+extraEnv: {}
+
+# Probes /health/ready on the S3 port with the image's curl: 503 until storage and IAM
+# are up, 200 after.
+healthcheck:
+  enabled: true
+  interval: 15s
+  timeout: 5s
+  retries: 4
+  startPeriod: 30s
+  # Swarm's rollout monitor window. Must outlast the worst-case first failure
+  # (startPeriod + retries x interval = 1m30s here), or a broken deploy reports success.
+  monitor: 2m
+
+# Time Swarm waits after SIGTERM before SIGKILL.
+stopGracePeriod: 30s
+
+# Swarm deploy resources (optional; each rendered only when set).
+resources:
+  limits:
+    memory: ""
+  reservations:
+    memory: ""
+
+# Extra deploy labels (key: value), merged after the Traefik labels.
+labels: {}

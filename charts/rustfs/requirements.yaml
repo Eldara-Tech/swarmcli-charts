@@ -1,0 +1,26 @@
+# External resources this chart needs. Authoritative: every external network/secret the
+# rendered stack references must be listed here (swarmcli pre-flights it;
+# scripts/requirements-check.sh enforces it at PR time). Entries are declared
+# unconditionally; one a given configuration never references is inert.
+networks:
+  # Attached in every mode. autoCreate:true: this is where the store's own clients meet
+  # it, and on a fresh swarm nothing else has created it yet.
+  - name: "{{ .Values.network.name }}"
+    driver: overlay
+    attachable: true
+    autoCreate: true
+    description: "Overlay S3 clients join to reach <release>_rustfs (network.name)"
+  # Attached only while the S3 API or the console is traefik-routed.
+  - name: "{{ .Values.exposure.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "exposure.mode=traefik or console.exposure.mode=traefik only - the edge proxy's ingress overlay; provided by the proxy stack/operator"
+secrets:
+  - name: "{{ .Values.s3.accessKeySecret }}"
+    description: "RustFS root access key. Pre-create: printf '%s' '<key-id>' | docker secret create rustfs-access-key -"
+  - name: "{{ .Values.s3.secretKeySecret }}"
+    description: "RustFS root secret key. Pre-create: openssl rand -base64 30 | tr -d '\\n' | docker secret create rustfs-secret-key -"
+  - name: "{{ .Values.oidc.clientSecretSecret }}"
+    description: "oidc.enabled only - the OIDC client secret (Keycloak: the client's Credentials tab). Pre-create: printf '%s' '<client secret>' | docker secret create rustfs-oidc-client-secret -"
+configs: []

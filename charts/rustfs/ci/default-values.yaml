@@ -1,0 +1,3 @@
+# The chart defaults: overlay-only (exposure.mode none), persisted and pinned, no
+# buckets, no console. ci/e2e-check.sh reaches it as a neighbouring stack would, on
+# network.name.

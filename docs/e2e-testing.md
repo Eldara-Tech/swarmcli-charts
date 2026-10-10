@@ -273,6 +273,14 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   reconfigure time, so a wrong path or mount raises in Ruby and the task never converges —
   convergence *is* the assertion that the secret plumbing works.
 
+- **rustfs** — the two S3 credential secrets (the secret key carries a `/` and a `+`) + the
+  `rustfs-data` node label + the `rustfs-net` client overlay for every fixture; per fixture,
+  the bind-mount host dir owned by uid 10001 and its node label, a real Traefik edge
+  (`edge`, and `console-edge`, which routes only the console), and for `oidc` the client
+  secret plus a stub OpenID provider (`busybox httpd` serving a discovery document and an
+  empty key set on `rustfs-net`), up before install because RustFS discovers it only at
+  start. `ci/e2e-check.sh` signs its requests with the same key pair and also proves the
+  public default `rustfsadmin` pair is refused, because RustFS converges just as well on it.
 - **seaweedfs** — the two S3 credential secrets (the secret key carries a `/` and a `+`) + the
   `seaweedfs-data` node label + the `seaweedfs-net` client overlay for every fixture; per
   fixture, the bind-mount host dir and its node label, and a real Traefik edge (`edge`).
