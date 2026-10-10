@@ -216,6 +216,8 @@ crash of the UI alone keeps its sessions.
   gateway's address and accepts identity updates. The chart sets a fresh random
   filer signing key at every start, which makes that port refuse unsigned updates
   — without it, anything on the same overlay could add itself as an admin.
+- **No telemetry.** `weed server` reports anonymous cluster statistics to
+  telemetry.seaweedfs.com by default; the chart passes `-master.telemetry=false`.
 - Everything on `network.name`, and everything on `exposure.network` whenever
   the S3 API or the admin UI is traefik-routed, can reach the S3 port. That is
   the intent; the key pair is what protects the data.
