@@ -1,0 +1,11 @@
+# The S3 API and the web UI both published on the routing mesh, each under its own number.
+exposure:
+  mode: published
+publish:
+  port: 18333
+admin:
+  enabled: true
+  exposure:
+    mode: published
+  publish:
+    port: 24646
