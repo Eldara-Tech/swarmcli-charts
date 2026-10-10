@@ -11,12 +11,12 @@ set -uo pipefail
 dir="$2"
 case="$3"
 
-if [ "$case" = "edge" ]; then
+if [ "$case" = "edge" ] || [ "$case" = "admin-edge" ]; then
   . "$dir/../../scripts/e2e-edge/traefik-edge.sh"
   edge_down
 fi
 
-docker secret rm seaweedfs-s3-access-key seaweedfs-s3-secret-key >/dev/null 2>&1 || true
+docker secret rm seaweedfs-s3-access-key seaweedfs-s3-secret-key seaweedfs-admin-password >/dev/null 2>&1 || true
 
 node="$(docker node ls --format '{{.ID}} {{.Self}}' 2>/dev/null | awk '$2=="true"{print $1; exit}')"
 [ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | sed -n 1p)"

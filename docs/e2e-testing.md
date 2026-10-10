@@ -273,11 +273,15 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   reconfigure time, so a wrong path or mount raises in Ruby and the task never converges —
   convergence *is* the assertion that the secret plumbing works.
 
-- **seaweedfs** — the two S3 credential secrets (the secret key carries a `/` and a `+`) + the
-  `seaweedfs-data` node label + the `seaweedfs-net` client overlay for every fixture; per
-  fixture, the bind-mount host dir and its node label, and a real Traefik edge (`edge`).
-  `ci/e2e-check.sh` signs its requests with the same key pair, from a throwaway client on the
-  overlay, because a store with no identity converges just as well while serving everyone.
+- **seaweedfs** — the two S3 credential secrets (the secret key carries a `/` and a `+`), the
+  admin UI's password secret + the `seaweedfs-data` node label + the `seaweedfs-net` client
+  overlay for every fixture; per fixture, the bind-mount host dir and its node label, and a real
+  Traefik edge (`edge`, `admin-edge`). `ci/e2e-check.sh` signs its requests with the same key
+  pair, from a throwaway client on the overlay, because a store with no identity converges just
+  as well while serving everyone. The `admin-*` fixtures log in to the web UI with the same
+  password (through the edge for `admin-edge`, which also proves the S3 host and `/metrics` are
+  not routed), then stop `weed admin` in the task and assert it comes back while S3 serves on,
+  and read `/proc/<pid>/environ` and `ps` to prove the password reached `weed admin` alone.
 - **gitlab-runner** — the runner authentication-token secret + the `gitlab-runner-data` node
   label, plus the two S3 cache secrets for the `cache` fixture (their values deliberately
   contain the `/` and `+` of a real base64 key, so the TOML quoting is exercised). The mock
