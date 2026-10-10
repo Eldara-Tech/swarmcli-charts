@@ -136,21 +136,57 @@ reason.
 
 ## Metrics
 
-`metrics.enabled` makes the runner serve Prometheus metrics on the task's own address. The
-chart deliberately offers no way to publish that port: the endpoint — and `/debug/pprof`
-beside it — carries no authentication at all. Scrape it from a Prometheus inside the swarm,
-or look at it by hand:
+`metrics.enabled` makes the runner serve Prometheus metrics and opts it in to Docker Swarm
+service discovery: the service gets the deploy labels `prometheus.io/scrape=true` and
+`prometheus.io/port=<metrics.port>`, and joins the `monitoring` overlay
+(`metrics.network`) beside its own. That is where the
+[prometheus-stack chart](../prometheus-stack) scrapes by default, so Prometheus finds every
+runner task by itself, with no scrape config. Any Prometheus using Swarm service discovery
+on those labels works the same way. swarmcli creates the overlay if it is missing.
+
+```bash
+swarmcli charts upgrade runner swarmcli-charts/gitlab-runner -f runner-values.yaml --set metrics.enabled=true
+```
+
+Pass the values you installed with (`-f`, or the same `--set`s), not `--reuse-values`.
+That flag merges over the previous release's stored values *instead of* this chart
+version's defaults, so every `metrics.*` key would render empty
+([swarmcli#687](https://github.com/Eldara-Tech/swarmcli/issues/687)).
+
+You get the runner's own series — `gitlab_runner_jobs`, `gitlab_runner_concurrent`,
+`gitlab_runner_errors_total`, GitLab API request durations and statuses — plus the Go
+process metrics. Each task is its own target, labelled with the node it runs on.
+
+What joining the overlay exposes. The listener has no authentication, and it serves more
+than `/metrics`: `/debug/jobs/list` (the URL and stage of every running job),
+`/debug/process/state`, `/debug/pprof/*` (profiles and traces on demand) and
+`/health/ready`. Everything on
+`metrics.network` can read them, and **every deploy label of this service** — your
+`labels` included — becomes readable through Prometheus's targets API. Keep secrets out of
+`labels`. The chart still never publishes the port.
+
+**Upgrading from 0.1.x, where `metrics.enabled` only turned the listener on:** it now also
+joins `metrics.network` and opts in to discovery. If you turned it on only so the
+healthcheck could pass, set `metrics.enabled: false` — the healthcheck now turns the
+listener on by itself. Turning metrics off again drops the labels and detaches the runner;
+the overlay itself stays, since other services share it.
+
+**This breaks a [swarmcli-cd](https://github.com/Eldara-Tech/swarmcli-cd) deployment that
+has `metrics.enabled: true`:** the release now references one more external name, and the
+controller refuses it until you add `monitoring` (or your `metrics.network`) to the
+application's `allow.networks`. Add it before you bump the chart version.
+
+`healthcheck.enabled` probes that same listener on `127.0.0.1`, so it works with metrics on
+or off. With metrics off the runner joins no additional overlay, carries no discovery
+labels, and binds the listener to `127.0.0.1` only. The
+probe deliberately does **not** ask GitLab whether the token is valid: a GitLab outage
+would then mark every runner unhealthy and Swarm would restart them, aborting running jobs.
+For a one-off look without Prometheus:
 
 ```bash
 docker exec "$(docker ps -q -f label=com.docker.swarm.service.name=runner_gitlab-runner)" \
   curl -s http://127.0.0.1:9252/metrics
 ```
-
-`healthcheck.enabled` probes that same endpoint, and so requires `metrics.enabled` — asking
-for one without the other fails the render rather than deploying a probe that can never
-pass. The probe deliberately does **not** ask GitLab whether the token is valid: a GitLab
-outage would then mark every runner unhealthy and Swarm would restart them, aborting running
-jobs.
 
 ## Values
 
@@ -191,9 +227,10 @@ jobs.
 | `cache.s3.authenticationType` | `access-key` | `access-key` (the two secrets below) or `iam` (no secrets). |
 | `cache.s3.accessKeySecret` | `gitlab-runner-cache-access-key` | External Swarm secret with the S3 access key. |
 | `cache.s3.secretKeySecret` | `gitlab-runner-cache-secret-key` | External Swarm secret with the S3 secret key. |
-| `metrics.enabled` | `false` | Serve Prometheus metrics. Never published by this chart. |
-| `metrics.port` | `9252` | Port the runner listens on for metrics. |
-| `healthcheck.enabled` | `false` | Probe the metrics endpoint. Requires `metrics.enabled`. |
+| `metrics.enabled` | `false` | Serve Prometheus metrics, labelled for Swarm service discovery, on `metrics.network`. Never published. See *Metrics*. |
+| `metrics.port` | `9252` | Port the runner listens on for metrics (and the healthcheck). |
+| `metrics.network` | `monitoring` | External overlay shared with Prometheus (auto-created). Not `default`. |
+| `healthcheck.enabled` | `false` | Probe the runner's listener on `127.0.0.1`; turns the listener on by itself (loopback-only while metrics are off). |
 | `healthcheck.interval` | `30s` | Probe interval. |
 | `healthcheck.timeout` | `5s` | Probe timeout. |
 | `healthcheck.retries` | `3` | Failures before the container is unhealthy. |
@@ -255,7 +292,8 @@ docker exec "$(docker ps -q -f label=com.docker.swarm.service.name=runner_gitlab
 ```
 
 **A self-hosted GitLab on the same swarm** is reached by its routable URL, like any other
-client — this chart joins no other overlay. If your GitLab uses a private CA, the image
+client — this chart joins no other overlay (apart from `metrics.network` while metrics are
+on). If your GitLab uses a private CA, the image
 reads one from `/etc/gitlab-runner/certs/ca.crt`; with `persistence.enabled` you can place
 it on the volume.
 

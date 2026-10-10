@@ -1,0 +1,11 @@
+# The healthcheck without metrics: the probe turns the runner's listener on by itself, but
+# the runner must NOT opt in to discovery or join the monitoring overlay — that is what
+# metrics.enabled is for, and an install that only wanted the probe must not be widened.
+gitlab:
+  url: http://gitlab.invalid/
+healthcheck:
+  enabled: true
+# An ordinary deploy label, so the labels block renders: the discovery labels must still
+# stay out of it.
+labels:
+  team: ci
