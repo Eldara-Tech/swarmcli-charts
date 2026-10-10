@@ -198,8 +198,10 @@ oidc:
 - **The callback.** RustFS builds it from `oidc.browserUrl`, which the chart derives
   as `https://<console.ingress.host>` while the console is traefik-routed; set it
   yourself for a published console (e.g. `http://node1.example.com:9001`). It is
-  passed as `RUSTFS_BROWSER_REDIRECT_URL`, so a request's `Host` header cannot move
-  the callback.
+  passed as `RUSTFS_BROWSER_REDIRECT_URL`, and RustFS's dynamic redirect is off, so a
+  request's `Host` header can never move the callback. With the console off there is
+  no callback base, and RustFS refuses a browser login on the S3 port; STS still
+  accepts the provider's tokens.
 - **Use the provider's public URL** for `configUrl`: the browser is sent to the
   authorization endpoint the discovery document names, and RustFS checks the
   document's issuer against `configUrl`. For the keycloak chart that is its

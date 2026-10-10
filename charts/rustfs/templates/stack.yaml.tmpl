@@ -51,7 +51,7 @@
 {{-   fail (printf "oidc.clientSecretSecret: %q is not a Docker secret name (1-64 characters of letters, digits, '_', '.' and '-', starting and ending with a letter or digit)" .Values.oidc.clientSecretSecret) -}}
 {{- end -}}
 {{- if and $oidc $console (not $consoleRouted) (not .Values.oidc.browserUrl) -}}
-{{-   fail "oidc.browserUrl is required when oidc.enabled and the console is not traefik-routed: RustFS builds the login callback from it, and without it from the request's Host header, which the client controls" -}}
+{{-   fail "oidc.browserUrl is required when oidc.enabled and the console is not traefik-routed: RustFS builds the login callback from it, and refuses the login without one" -}}
 {{- end -}}
 {{- /* extraEnv keys render unquoted, so a key must be a plain variable name before anything
        else is checked: a quoted "RUSTFS_SECRET_KEY" would slip past every pattern below and
@@ -175,9 +175,12 @@ services:
       # Single sign-on; the wrapper above exports the client secret.
       RUSTFS_IDENTITY_OPENID_CONFIG_URL: {{ .Values.oidc.configUrl | quote }}
       RUSTFS_IDENTITY_OPENID_CLIENT_ID: {{ .Values.oidc.clientId | quote }}
+      # Never build the login callback from the request (X-Forwarded-Proto, Host), which
+      # the client controls, on either listener: without a callback base RustFS refuses
+      # the browser login instead.
+      RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC: "off"
 {{- with $browserUrl }}
-      # The login callback's base. Without it RustFS takes the scheme and host from the
-      # request (X-Forwarded-Proto, Host), which the client controls.
+      # The login callback's base.
       RUSTFS_BROWSER_REDIRECT_URL: {{ . | quote }}
 {{- end }}
 {{- end }}

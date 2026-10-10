@@ -201,7 +201,9 @@ if [ "$case" = "oidc" ]; then
     || bad "case $case: RUSTFS_IDENTITY_OPENID_CONFIG_URL is not oidc.configUrl"
   [ "$(env_ RUSTFS_IDENTITY_OPENID_CLIENT_ID)" = "rustfs-e2e" ] || bad "case $case: RUSTFS_IDENTITY_OPENID_CLIENT_ID is not oidc.clientId"
   [ "$(env_ RUSTFS_BROWSER_REDIRECT_URL)" = "https://rustfs-console.e2e.test" ] \
-    || bad "case $case: RUSTFS_BROWSER_REDIRECT_URL is not derived from console.ingress (got '$(env_ RUSTFS_BROWSER_REDIRECT_URL)') — the callback would follow the request's Host header"
+    || bad "case $case: RUSTFS_BROWSER_REDIRECT_URL is not derived from console.ingress (got '$(env_ RUSTFS_BROWSER_REDIRECT_URL)') — the login would fail"
+  [ "$(env_ RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC)" = "off" ] \
+    || bad "case $case: RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC is not off — without a callback base RustFS would take it from the request's Host header"
   [ "$(env_ RUSTFS_OUTBOUND_ALLOW_ORIGINS)" = "http://rustfs-e2e-idp:8080" ] \
     || bad "case $case: RUSTFS_OUTBOUND_ALLOW_ORIGINS is not the origin of oidc.configUrl (got '$(env_ RUSTFS_OUTBOUND_ALLOW_ORIGINS)') — RustFS would refuse the provider on its overlay address"
   [ "$(q "$svc.secrets[2]")" = "rustfs-oidc-client-secret" ] && [ "$(q '.secrets."rustfs-oidc-client-secret".external')" = "true" ] \
@@ -210,7 +212,8 @@ if [ "$case" = "oidc" ]; then
     && grep -F 'export RUSTFS_IDENTITY_OPENID_CLIENT_SECRET;' <<<"$script" >/dev/null \
     || bad "case $case: the wrapper does not export the client secret from /run/secrets/rustfs-oidc-client-secret, refusing an empty one"
 else
-  for v in RUSTFS_IDENTITY_OPENID_CONFIG_URL RUSTFS_IDENTITY_OPENID_CLIENT_ID RUSTFS_BROWSER_REDIRECT_URL RUSTFS_OUTBOUND_ALLOW_ORIGINS; do
+  for v in RUSTFS_IDENTITY_OPENID_CONFIG_URL RUSTFS_IDENTITY_OPENID_CLIENT_ID RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC \
+           RUSTFS_BROWSER_REDIRECT_URL RUSTFS_OUTBOUND_ALLOW_ORIGINS; do
     [ "$(env_ "$v")" = "null" ] || bad "case $case: $v is set although oidc is off"
   done
   [ "$(q "$svc.secrets | length")" = "2" ] || bad "case $case: a third secret is mounted although oidc is off"
@@ -338,13 +341,15 @@ if [ "$case" = "default" ]; then
   refused 'extraEnv: RUSTFS_BROWSER_REDIRECT_URL is set by the chart' --set extraEnv.RUSTFS_BROWSER_REDIRECT_URL=x
   refused 'extraEnv: RUSTFS_BROWSER_REDIRECT_URL is set by the chart' --set oidc.enabled=true --set oidc.configUrl=$kc \
     --set extraEnv.RUSTFS_BROWSER_REDIRECT_URL=x
-  # With the console off nothing needs a callback; an explicit browserUrl wins over the derived one;
-  # an extraEnv allow-list replaces the chart's.
+  # With the console off there is no callback base, and dynamic redirects stay off, so RustFS
+  # refuses a browser login on the S3 listener rather than build its callback from the
+  # request's Host header. An explicit browserUrl wins over the derived one; an extraEnv
+  # allow-list replaces the chart's, which widens only on oidc.allowPrivateIdp.
   envt() { yq -r "$svc.environment.$1" "$tmp"; }
-  # The process-wide allow-list widens only on oidc.allowPrivateIdp.
   if render --set oidc.enabled=true --set oidc.configUrl=$kc; then
-    [ "$(envt RUSTFS_BROWSER_REDIRECT_URL)" = "null" ] && [ "$(envt RUSTFS_OUTBOUND_ALLOW_ORIGINS)" = "null" ] \
-      || bad "oidc with the console off: callback base '$(envt RUSTFS_BROWSER_REDIRECT_URL)', allow-list '$(envt RUSTFS_OUTBOUND_ALLOW_ORIGINS)' (allowPrivateIdp is off)"
+    [ "$(envt RUSTFS_BROWSER_REDIRECT_URL)" = "null" ] && [ "$(envt RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC)" = "off" ] \
+      && [ "$(envt RUSTFS_OUTBOUND_ALLOW_ORIGINS)" = "null" ] \
+      || bad "oidc with the console off: callback base '$(envt RUSTFS_BROWSER_REDIRECT_URL)', dynamic redirect '$(envt RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC)', allow-list '$(envt RUSTFS_OUTBOUND_ALLOW_ORIGINS)' (allowPrivateIdp is off)"
   else
     bad "oidc with the console off was refused: $(tr '\n' ' ' <"$tmp.err")"
   fi
