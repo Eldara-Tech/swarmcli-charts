@@ -279,9 +279,12 @@ if [ "$case" = "admin-traefik" ]; then
   for l in 'traefik.http.routers.ci-https.service=ci' 'traefik.http.routers.ci-admin-https.service=ci-admin'; do
     grep -F -- "- $l" <<<"$both" >/dev/null || bad "with S3 and the admin UI both routed, label $l is missing"
   done
-  # Every guard is scoped to admin.enabled: off, nothing about it is checked.
-  render --set admin.enabled=false --set admin.port=8333 --set admin.passwordSecret=seaweedfs-s3-secret-key >/dev/null 2>"$tmp/err" \
+  # Off, the admin values are neither checked nor rendered, its exposure.mode included.
+  off="$(render --set admin.enabled=false --set admin.port=8333 --set admin.passwordSecret=seaweedfs-s3-secret-key 2>"$tmp/err")" \
     || bad "admin values are refused although admin.enabled is false: $(tail -1 "$tmp/err")"
+  if grep -F -e ci-admin -e traefik-public <<<"$off" >/dev/null; then
+    bad "admin.exposure.mode traefik is still routed although admin.enabled is false"
+  fi
 fi
 
 exit "$fail"
