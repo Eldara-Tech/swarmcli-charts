@@ -96,7 +96,9 @@ traefik:
     https: https
   # Base name for this chart's router/service objects: `<name>-http` / `<name>-https`
   # routers + the `<name>` service for S3, `<name>-admin-http` / `<name>-admin-https`
-  # + `<name>-admin` for the admin UI. Empty => the release name.
+  # + `<name>-admin` for the admin UI, and `<name>-admin-content-http` / `-https` with
+  # the `<name>-admin-sandbox` middleware for its stored-file routes. Empty => the
+  # release name.
   routerName: ""
   # Swarm-provider constraint label. The traefik chart runs with
   # --providers.swarm.exposedByDefault=false and a constraint on this label, so a
@@ -134,8 +136,10 @@ admin:
   #               exposure.network — directly, with none of the router's protections.
   #   traefik   - Traefik deploy labels on exposure.network, routing admin.ingress.host
   #               to the UI, except /metrics (which needs no login) and any write a
-  #               browser marks as sent from another site (the UI has no CSRF check).
-  #   published - publish admin.port on the Swarm as admin.publish.port. Plain HTTP.
+  #               browser marks as sent from another site (the UI has no CSRF check),
+  #               with the stored-file routes under `Content-Security-Policy: sandbox`.
+  #   published - publish admin.port on the Swarm as admin.publish.port. Plain HTTP,
+  #               with neither edge guard: for a trusted network only (README).
   exposure:
     mode: none
   # Public-facing address for traefik mode, as ingress above; must differ from

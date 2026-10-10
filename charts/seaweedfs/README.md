@@ -147,18 +147,29 @@ S3 secret key.
   labels:
     traefik.http.middlewares.s3-admin-allow.ipallowlist.sourcerange: "192.0.2.0/24"
     traefik.http.routers.s3-admin-https.middlewares: s3-admin-allow
+    # The stored-file routes ride a router of their own (below); keep its sandbox last.
+    traefik.http.routers.s3-admin-content-https.middlewares: s3-admin-allow,s3-admin-sandbox
   ```
 
-- **No CSRF protection on most writes.** `weed admin` checks a CSRF token only on
-  a few handlers (lifecycle, policy, S3 tables): creating users, groups and
-  policies, uploads and new folders take the session cookie alone, and its JSON
-  endpoints accept any `Content-Type`. The cookie is `SameSite=Lax`, which a
-  browser still sends from another host of the same site (`s3.example.com` →
-  `admin.example.com`). So in traefik mode the admin routers refuse every method
-  but GET and HEAD when the browser marks the request `Sec-Fetch-Site: same-site`
-  or `cross-site` — current browsers send the header; a client that sends none,
-  such as curl, passes. `published` mode has no such guard: give the UI a
-  registrable domain of its own, or put it behind forward-auth.
+- **Cross-site requests: upstream gaps the edge only narrows.** `weed admin`
+  checks a CSRF token on only a few of its writes, reads JSON whatever its
+  `Content-Type`, and serves some uploaded files inline in its own origin; its
+  session cookie is `SameSite=Lax`, which a browser still sends from another host
+  of the same site (`s3.example.com` → `admin.example.com`). These are SeaweedFS
+  bugs the chart cannot fix. In traefik mode it narrows them at the edge:
+  - the admin routers refuse every method but GET and HEAD when the browser
+    marks the request `Sec-Fetch-Site: same-site` or `cross-site` (current
+    browsers send the header; a client that sends none, such as curl, passes);
+  - the routes that return stored files or their metadata
+    (`/api/files/download`, `/api/files/view`, `/api/files/metadata`) ride a
+    router of their own, `<router>-admin-content-https`, whose responses carry
+    `Content-Security-Policy: sandbox` and `X-Content-Type-Options: nosniff`
+    (the `<router>-admin-sandbox` middleware), so a stored file opened in the
+    browser runs no script in the UI's origin. An inline PDF preview may not
+    render under the sandbox; download the file instead.
+
+  **`published` mode has neither guard: any S3 user who can get an admin to open
+  a link can take over the UI.** Publish it only on a trusted network.
 - **The session cookie is not marked `Secure`** (`weed admin` sets that only when
   it terminates TLS itself), so a browser sends it in cleartext with any
   `http://` request to the host — the HTTP→HTTPS redirect answers that request,
@@ -172,8 +183,9 @@ S3 secret key.
   forward-auth middleware above.
 - **The overlays bypass the router.** Anything on `network.name` — and on
   `exposure.network` whenever either API is traefik-routed, even with the UI's
-  own mode `none` — reaches the UI directly on `admin.port`: past the router's
-  middlewares, its `/metrics` and cross-site rules, and with no rate limit. The
+  own mode `none` — reaches the UI directly on `admin.port`: past the routers'
+  middlewares, their `/metrics`, cross-site and sandbox rules, and with no rate
+  limit. The
   UI's worker gRPC port (`admin.port + 10000`) has no authentication and stays
   on 127.0.0.1.
 
@@ -242,7 +254,7 @@ processes must never share `/data`.
 | `ingress.tls` | `true` | S3 API HTTPS router + redirect (traefik mode) |
 | `traefik.certResolver` | `le` | ACME resolver |
 | `traefik.entrypoints.http` / `.https` | `http` / `https` | Traefik entrypoint names |
-| `traefik.routerName` | `""` | Router/service base name (`<name>`, `<name>-admin`); `""` = release name |
+| `traefik.routerName` | `""` | Router/service base name (`<name>`, `<name>-admin`, `<name>-admin-content`, middleware `<name>-admin-sandbox`); `""` = release name |
 | `traefik.constraintLabel` | `traefik-public` | Swarm-provider constraint label |
 | `traefik.redirectMiddleware` | `https-redirect` | HTTP→HTTPS middleware |
 | `publish.port` / `publish.mode` | `8333` / `ingress` | S3 API published port (published mode) |

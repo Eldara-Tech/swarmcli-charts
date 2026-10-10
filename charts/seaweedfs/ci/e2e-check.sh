@@ -221,6 +221,23 @@ case "$case" in
       grep -F "\"username\":\"$u-origin\"" <<<"$users" >/dev/null || die "the same-origin user is not listed: $(tail -1 <<<"$users")"
       if grep -F "$u-site" <<<"$users" >/dev/null; then die "the same-site POST created its user anyway"; fi
       echo "  ok: a write marked Sec-Fetch-Site: same-site is refused at the edge (404, no user); same-origin creates one (201)"
+
+      # weed admin serves an uploaded SVG inline, script and all, and a top-level GET from
+      # another site passes the rule above. The edge sandboxes the stored-file routes only.
+      svg="<svg xmlns=\"http://www.w3.org/2000/svg\"><script>/* $u */</script></svg>"
+      got="$(printf '%s' "$svg" | signed_code -X PUT -H 'Content-Type: image/svg+xml' --data-binary @- "$base/$bucket/$u.svg")"
+      [ "$got" = "200" ] || die "signed PUT of the SVG returned '$got'"
+      got="$(a -H "Cookie: $sess" -H 'Sec-Fetch-Site: cross-site' "$abase/api/files/download?path=/buckets/$bucket/$u.svg&inline=true")"
+      [ "$(status <<<"$got")" = "200" ] && [ "$(sed '1,/^$/d' <<<"$got")" = "$svg" ] \
+        || die "the SVG does not download through the edge (HTTP $(status <<<"$got"))"
+      [ "$(header Content-Disposition <<<"$got" | cut -d';' -f1)" = "inline" ] \
+        || die "the SVG is not served inline ('$(header Content-Disposition <<<"$got")'), so this check proves nothing"
+      [ "$(header Content-Security-Policy <<<"$got")" = "sandbox" ] \
+        || die "the inline SVG carries no 'Content-Security-Policy: sandbox' (got '$(header Content-Security-Policy <<<"$got")')"
+      got="$(a -o /dev/null -H "Cookie: $sess" "$abase/admin")"
+      [ "$(status <<<"$got")" = "200" ] && [ -z "$(header Content-Security-Policy <<<"$got")" ] \
+        || die "the dashboard is not served unsandboxed (HTTP $(status <<<"$got"), CSP '$(header Content-Security-Policy <<<"$got")')"
+      echo "  ok: an uploaded SVG downloads inline through the edge under 'Content-Security-Policy: sandbox'; the dashboard has no CSP"
     fi
 
     # A stopped UI comes back, and S3 keeps serving from the same task meanwhile.
