@@ -12,4 +12,6 @@ console:
 oidc:
   enabled: true
   configUrl: http://rustfs-e2e-idp:8080/realms/e2e/.well-known/openid-configuration
+  # The stub is on rustfs-net, a private overlay address.
+  allowPrivateIdp: true
   clientId: rustfs-e2e

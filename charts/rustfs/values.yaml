@@ -149,9 +149,14 @@ oidc:
   enabled: false
   # The provider's discovery document, e.g.
   # https://keycloak.example.com/realms/<realm>/.well-known/openid-configuration.
-  # RustFS reads it once, at start. Its origin also becomes RUSTFS_OUTBOUND_ALLOW_ORIGINS,
-  # which RustFS needs before it contacts a provider on a private address.
+  # RustFS reads it once, at start.
   configUrl: ""
+  # RustFS refuses to contact a provider that resolves to a private address (one on an
+  # overlay such as network.name, or on a LAN) unless its origin is allow-listed. true
+  # adds the origin of configUrl to RUSTFS_OUTBOUND_ALLOW_ORIGINS. That list is
+  # process-wide: RustFS's event and audit webhooks and Object Lambda targets may then
+  # reach that origin too. A provider on a public address needs neither.
+  allowPrivateIdp: false
   clientId: rustfs
   # EXTERNAL Swarm secret holding the client secret. Pre-create it:
   #   printf '%s' '<client secret>' | docker secret create rustfs-oidc-client-secret -

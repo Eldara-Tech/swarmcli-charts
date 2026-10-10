@@ -114,6 +114,7 @@
       "properties": {
         "enabled": { "type": "boolean" },
         "configUrl": { "type": "string" },
+        "allowPrivateIdp": { "type": "boolean" },
         "clientId": { "type": "string", "minLength": 1 },
         "clientSecretSecret": { "type": "string", "minLength": 1 },
         "browserUrl": { "type": "string" }

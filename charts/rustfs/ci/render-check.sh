@@ -341,14 +341,18 @@ if [ "$case" = "default" ]; then
   # With the console off nothing needs a callback; an explicit browserUrl wins over the derived one;
   # an extraEnv allow-list replaces the chart's.
   envt() { yq -r "$svc.environment.$1" "$tmp"; }
+  # The process-wide allow-list widens only on oidc.allowPrivateIdp.
   if render --set oidc.enabled=true --set oidc.configUrl=$kc; then
-    [ "$(envt RUSTFS_BROWSER_REDIRECT_URL)" = "null" ] && [ "$(envt RUSTFS_OUTBOUND_ALLOW_ORIGINS)" = "https://kc.example.com" ] \
-      || bad "oidc with the console off: callback base '$(envt RUSTFS_BROWSER_REDIRECT_URL)', allow-list '$(envt RUSTFS_OUTBOUND_ALLOW_ORIGINS)'"
+    [ "$(envt RUSTFS_BROWSER_REDIRECT_URL)" = "null" ] && [ "$(envt RUSTFS_OUTBOUND_ALLOW_ORIGINS)" = "null" ] \
+      || bad "oidc with the console off: callback base '$(envt RUSTFS_BROWSER_REDIRECT_URL)', allow-list '$(envt RUSTFS_OUTBOUND_ALLOW_ORIGINS)' (allowPrivateIdp is off)"
   else
     bad "oidc with the console off was refused: $(tr '\n' ' ' <"$tmp.err")"
   fi
+  render --set oidc.enabled=true --set oidc.configUrl=$kc --set oidc.allowPrivateIdp=true \
+    && [ "$(envt RUSTFS_OUTBOUND_ALLOW_ORIGINS)" = "https://kc.example.com" ] \
+    || bad "oidc.allowPrivateIdp does not allow-list the origin of configUrl (got '$(envt RUSTFS_OUTBOUND_ALLOW_ORIGINS)')"
   render --set oidc.enabled=true --set oidc.configUrl=$kc --set console.enabled=true --set console.exposure.mode=traefik \
-    --set console.ingress.host=c.example.com --set oidc.browserUrl=https://sso.example.com \
+    --set console.ingress.host=c.example.com --set oidc.browserUrl=https://sso.example.com --set oidc.allowPrivateIdp=true \
     --set extraEnv.RUSTFS_OUTBOUND_ALLOW_ORIGINS=https://kc-backchannel:8443 \
     && [ "$(envt RUSTFS_BROWSER_REDIRECT_URL)" = "https://sso.example.com" ] \
     && [ "$(envt RUSTFS_OUTBOUND_ALLOW_ORIGINS)" = "https://kc-backchannel:8443" ] \

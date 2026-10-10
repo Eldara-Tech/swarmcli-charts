@@ -204,14 +204,16 @@ oidc:
   authorization endpoint the discovery document names, and RustFS checks the
   document's issuer against `configUrl`. For the keycloak chart that is its
   `ingress.host`.
-- **The provider's origin is allow-listed.** RustFS refuses to contact a provider on
-  a private address (an overlay, a LAN) unless its origin is in
-  `RUSTFS_OUTBOUND_ALLOW_ORIGINS`, and the chart sets that to the origin of
-  `configUrl`. It is RustFS's one allow-list for every outbound connection it polices,
-  so event and audit webhooks and Object Lambda targets may reach that origin too —
-  and no other. If the discovery document names endpoints on another origin, set
-  `RUSTFS_OUTBOUND_ALLOW_ORIGINS` in `extraEnv` to the full comma-separated list; it
-  replaces the chart's.
+- **A provider on a private address** needs `oidc.allowPrivateIdp: true`. That is a
+  provider whose name resolves to a private address from inside the task: one on an
+  overlay such as `rustfs-net`, or on a LAN. RustFS refuses to contact it unless its
+  origin is in `RUSTFS_OUTBOUND_ALLOW_ORIGINS`, and without that discovery fails at
+  start and the console has no single sign-on. The flag adds the origin of `configUrl`
+  to that list, which is process-wide: RustFS's event and audit webhooks and Object
+  Lambda targets may then reach that origin as well. A provider on a public address
+  needs no flag. If the discovery document names endpoints on another private origin,
+  set `RUSTFS_OUTBOUND_ALLOW_ORIGINS` in `extraEnv` to the full comma-separated list;
+  it replaces the chart's.
 - **The provider must be up when RustFS starts.** RustFS reads the discovery
   document once, at start, and does not retry. If the provider is unreachable then,
   the console has no single sign-on and STS refuses the provider's tokens until RustFS
@@ -297,6 +299,7 @@ collector.
 | `console.publish.port` / `.mode` | `9001` / `ingress` | Console published port (published mode) |
 | `oidc.enabled` | `false` | Console single sign-on through an OpenID Connect provider |
 | `oidc.configUrl` | `""` | The provider's discovery document URL (required when enabled) |
+| `oidc.allowPrivateIdp` | `false` | Allow-list the origin of `configUrl` for a provider on a private address (process-wide) |
 | `oidc.clientId` | `rustfs` | Client ID |
 | `oidc.clientSecretSecret` | `rustfs-oidc-client-secret` | External secret holding the client secret |
 | `oidc.browserUrl` | `""` | Console public base URL for the callback; `""` = from `console.ingress` when routed, required otherwise with the console on |

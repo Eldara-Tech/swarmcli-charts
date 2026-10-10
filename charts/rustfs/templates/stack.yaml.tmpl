@@ -194,10 +194,11 @@ services:
 {{- if and (or $s3Routed $consoleRouted) (not (hasKey .Values.extraEnv "RUSTFS_HTTP1_HEADER_READ_TIMEOUT")) }}
       RUSTFS_HTTP1_HEADER_READ_TIMEOUT: {{ .Values.traefik.idleTimeoutSeconds | quote }}
 {{- end }}
-{{- if and $oidc (not (hasKey .Values.extraEnv "RUSTFS_OUTBOUND_ALLOW_ORIGINS")) }}
-      # RustFS contacts a provider on a private address (an overlay, a LAN) only when its
-      # origin is listed here. It is RustFS's one allow-list for every outbound connection
-      # it polices, so webhook and Object Lambda targets may reach this origin too.
+{{- if and $oidc .Values.oidc.allowPrivateIdp (not (hasKey .Values.extraEnv "RUSTFS_OUTBOUND_ALLOW_ORIGINS")) }}
+      # oidc.allowPrivateIdp: RustFS contacts a provider on a private address (an overlay,
+      # a LAN) only when its origin is listed here. It is RustFS's one allow-list for every
+      # outbound connection it polices, so webhook and Object Lambda targets may reach
+      # this origin too.
       RUSTFS_OUTBOUND_ALLOW_ORIGINS: {{ regexFind "^https?://[^/]+" .Values.oidc.configUrl | quote }}
 {{- end }}
 {{- range $k, $v := .Values.extraEnv }}
