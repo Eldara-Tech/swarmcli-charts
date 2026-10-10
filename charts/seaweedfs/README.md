@@ -185,8 +185,8 @@ S3 secret key.
   to trusted networks.
 - **`/metrics` needs no login**, so the router excludes it
   (``!PathPrefix(`/metrics`)``); it still answers on the overlays.
-- **OIDC login for the UI is SeaweedFS Enterprise only.** For SSO use the
-  forward-auth middleware above.
+- **OIDC login for the UI is SeaweedFS Enterprise only.** [`oidc`](#oidc) covers
+  the S3 API alone. For SSO use the forward-auth middleware above.
 - **The overlays bypass the router.** Anything on `network.name` — and on
   `exposure.network` whenever either API is traefik-routed, even with the UI's
   own mode `none` — reaches the UI directly on `admin.port`: past the routers'
