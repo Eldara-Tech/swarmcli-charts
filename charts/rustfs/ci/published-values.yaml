@@ -3,7 +3,11 @@ exposure:
   mode: published
 publish:
   port: 19000
-  consolePort: 19001
   mode: ingress
 console:
   enabled: true
+  exposure:
+    mode: published
+  publish:
+    port: 19001
+    mode: ingress

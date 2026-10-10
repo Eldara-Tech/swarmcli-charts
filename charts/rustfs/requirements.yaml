@@ -10,12 +10,12 @@ networks:
     attachable: true
     autoCreate: true
     description: "Overlay S3 clients join to reach <release>_rustfs (network.name)"
-  # Attached in traefik mode only.
+  # Attached only while the S3 API or the console is traefik-routed.
   - name: "{{ .Values.exposure.network }}"
     driver: overlay
     attachable: true
     autoCreate: false
-    description: "exposure.mode=traefik only - the edge proxy's ingress overlay; provided by the proxy stack/operator"
+    description: "exposure.mode=traefik or console.exposure.mode=traefik only - the edge proxy's ingress overlay; provided by the proxy stack/operator"
 secrets:
   - name: "{{ .Values.s3.accessKeySecret }}"
     description: "RustFS root access key. Pre-create: printf '%s' '<key-id>' | docker secret create rustfs-access-key -"

@@ -66,24 +66,44 @@ A default install needs:
     networks: [rustfs-net]
 ```
 
-Add `traefik-public` to `networks` in traefik mode, and the path to `hostPaths` when
-you set `persistence.volumePath`. Each entry is the name itself, so an override in
-values needs the same change here.
+Add `traefik-public` to `networks` when the S3 API or the console is traefik-routed,
+and the path to `hostPaths` when you set `persistence.volumePath`. Each entry is the
+name itself, so an override in values needs the same change here.
 
 ## Exposure
 
-`network.name` is attached in every mode. `exposure.mode` adds:
+The S3 API and the web console are exposed independently. `network.name` is attached
+in every mode. `exposure.mode`, `ingress.*` and `publish.*` describe the **S3 API
+only**; the console has the same three under `console.*`, and a disabled console is
+exposed nowhere:
 
-| Mode | What it adds |
-|------|--------------|
-| `none` (default) | nothing — overlay clients only |
-| `traefik` | Traefik labels on `exposure.network`, routing `ingress.host` to the S3 port (and `console.host` to the console), with an HTTPS router and ACME certificate when `ingress.tls` |
-| `published` | `s3.port` published on the Swarm as `publish.port` (and the console as `publish.consolePort`) |
+| Mode | S3 API (`exposure.mode`) | Console (`console.exposure.mode`) |
+|------|--------------------------|-----------------------------------|
+| `none` (default) | nothing — overlay clients only | nothing — overlay clients only |
+| `traefik` | Traefik labels routing `ingress.host` to `s3.port`, with an HTTPS router and ACME certificate when `ingress.tls` | the same for `console.ingress.host` and `console.port`, TLS per `console.ingress.tls` |
+| `published` | `s3.port` published on the Swarm as `publish.port` | `console.port` published as `console.publish.port` |
+
+Either route joins `exposure.network`. The S3 API through Traefik:
 
 ```bash
 swarmcli charts install s3 swarmcli-charts/rustfs \
   --set exposure.mode=traefik --set ingress.host=s3-cache.example.com \
   --set 'buckets={runner-cache}'
+```
+
+The console in a browser through Traefik, with the S3 API (port 9000) left on
+`rustfs-net` only:
+
+```yaml
+# values.yaml — swarmcli charts install s3 swarmcli-charts/rustfs -f values.yaml
+exposure:
+  mode: none                    # the S3 API stays internal
+console:
+  enabled: true
+  exposure:
+    mode: traefik
+  ingress:
+    host: rustfs.example.com    # a host of its own, not ingress.host
 ```
 
 The `traefik.*` defaults match the [traefik chart](../traefik) in this repository
@@ -92,31 +112,30 @@ redirect middleware `https-redirect`); override them for your own Traefik. The
 whole bucket namespace is served at the root of `ingress.host`, which is what
 path-style requires — do not put a path prefix in front of it.
 
-In traefik mode the chart raises RustFS's idle-connection timeout to
-`traefik.idleTimeoutSeconds` (120). RustFS closes an idle upstream connection after
-75 seconds by default, Traefik keeps them for 90, and a large `PUT` sent on a
-connection RustFS has just closed fails with `socket hang up`. If you run your own
-proxy, keep its upstream keep-alive below RustFS's timeout. Traefik's entrypoints
-also time out slow requests (v3's default `readTimeout` is 60s); raise it on the
-edge if multi-gigabyte uploads fail part-way.
+While either listener is traefik-routed, the chart raises RustFS's idle-connection
+timeout to `traefik.idleTimeoutSeconds` (120). RustFS closes an idle upstream
+connection after 75 seconds by default, Traefik keeps them for 90, and a large `PUT`
+sent on a connection RustFS has just closed fails with `socket hang up`. If you run
+your own proxy, keep its upstream keep-alive below RustFS's timeout. Traefik's
+entrypoints also time out slow requests (v3's default `readTimeout` is 60s); raise it
+on the edge if multi-gigabyte uploads fail part-way.
 
 ## Web console
 
-```bash
-swarmcli charts upgrade s3 swarmcli-charts/rustfs --reuse-values \
-  --set console.enabled=true --set console.host=rustfs.example.com
-```
-
 The console listens on `console.port` (9001) and serves its UI under
 `/rustfs/console/`; you log in with the key pair from the secrets. On `rustfs-net` it
-is `http://<release>_rustfs:9001`, in traefik mode it is routed on `console.host` (a
-host of its own, required there), and in published mode it is published as
-`publish.consolePort`.
+is `http://<release>_rustfs:9001`; `console.exposure.mode` routes it on
+`console.ingress.host` or publishes it as `console.publish.port` (see
+[Exposure](#exposure) for the console-only example). A browser that opens `/` is
+redirected to `/rustfs/console/`. Routed, the console needs a host of its own, not
+`ingress.host`: its UI calls the S3 and admin API at the root of the host it was
+loaded from.
 
-That listener is the whole server, not just the UI: it answers the same signed S3 and
-admin API as the S3 port. Exposing it adds no unauthenticated surface, but it does add
-a second public endpoint for your root credentials, and the console keeps them in the
-browser's local storage. Leave it off where you do not use it.
+That listener is the whole server, not just the UI: **the console host also serves
+the full signed S3 and admin API**, exactly as the S3 port does, so routing only the
+console still puts that API on a public name. Exposing it adds no unauthenticated
+surface, but it does add a public endpoint for your root credentials, and the console
+keeps them in the browser's local storage. Leave it off where you do not use it.
 
 ### GitLab Runner cache
 
@@ -147,9 +166,9 @@ cache:
   ones RustFS also reads), so a key cannot slip into the manifest that way, and the
   bucket loop hands the key pair to `curl` on stdin, so it never appears in a
   process list.
-- Everything on `network.name`, and in traefik mode everything on `exposure.network`,
-  can reach the S3 port (and the console port when enabled). That is the intent; the
-  key pair is what protects the data.
+- Everything on `network.name`, and while either listener is traefik-routed everything
+  on `exposure.network`, can reach the S3 port (and the console port when enabled).
+  That is the intent; the key pair is what protects the data.
 - **No call home.** `RUSTFS_CHECK_UPDATE` is off: the image is pinned, and the pin is
   what moves.
 
@@ -202,7 +221,9 @@ collector.
 | `s3.secretKeySecret` | `rustfs-secret-key` | External secret holding the root secret key |
 | `console.enabled` | `false` | Run the web console listener |
 | `console.port` | `9001` | Console listen port (must differ from `s3.port`) |
-| `console.host` | `""` | Traefik `Host()` for the console (traefik mode, required when enabled) |
+| `console.exposure.mode` | `none` | Console: `none`, `traefik` or `published` |
+| `console.ingress.host` / `.tls` | `""` / `true` | Console `Host()` rule (required in traefik mode, not `ingress.host`) and HTTPS routers |
+| `console.publish.port` / `.mode` | `9001` / `ingress` | Console published port (published mode) |
 | `buckets` | `[]` | Buckets created at start if missing |
 | `persistence.enabled` | `true` | Persist `/data` |
 | `persistence.volumeName` | `rustfs-data` | Named volume |
@@ -210,17 +231,17 @@ collector.
 | `persistence.nodeLabel` | `rustfs-data` | Node label the service is pinned to; `""` = no pin |
 | `placement.constraints` | `[]` | Extra constraints, always applied |
 | `network.name` | `rustfs-net` | Overlay S3 clients join (external, auto-created) |
-| `exposure.mode` | `none` | `none`, `traefik` or `published` |
-| `exposure.network` | `traefik-public` | Edge overlay (traefik mode) |
-| `ingress.host` | `s3.example.com` | Traefik `Host()` rule |
-| `ingress.tls` | `true` | HTTPS routers + redirects (traefik mode) |
+| `exposure.mode` | `none` | S3 API: `none`, `traefik` or `published` |
+| `exposure.network` | `traefik-public` | Edge overlay (when either listener is traefik-routed) |
+| `ingress.host` | `s3.example.com` | S3 API `Host()` rule |
+| `ingress.tls` | `true` | S3 API HTTPS routers + redirects |
 | `traefik.certResolver` | `le` | ACME resolver |
 | `traefik.entrypoints.http` / `.https` | `http` / `https` | Traefik entrypoint names |
 | `traefik.routerName` | `""` | Router/service name; `""` = release name |
 | `traefik.constraintLabel` | `traefik-public` | Swarm-provider constraint label |
 | `traefik.redirectMiddleware` | `https-redirect` | HTTP→HTTPS middleware |
-| `traefik.idleTimeoutSeconds` | `120` | RustFS's idle-connection timeout in traefik mode; must outlast Traefik's 90s |
-| `publish.port` / `publish.consolePort` / `publish.mode` | `9000` / `9001` / `ingress` | Published ports (published mode) |
+| `traefik.idleTimeoutSeconds` | `120` | RustFS's idle-connection timeout while either listener is routed; must outlast Traefik's 90s |
+| `publish.port` / `publish.mode` | `9000` / `ingress` | S3 API published port (published mode) |
 | `nofile` | `65536` | Open-file limit; `0` = daemon default |
 | `extraEnv` | `{}` | Extra `RUSTFS_*` environment. Credentials and the listener addresses are refused; `RUSTFS_OBS_LOG_DIRECTORY`, `RUSTFS_CHECK_UPDATE` and `RUSTFS_HTTP1_HEADER_READ_TIMEOUT` override the chart's defaults |
 | `healthcheck.*` | enabled, 15s/5s/4, start 30s, monitor 2m | `curl` of `/health/ready` on the S3 port |

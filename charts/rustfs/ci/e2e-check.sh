@@ -16,6 +16,8 @@
 #     that same object is refused;
 #   * every bucket the fixture lists was created by the chart's bootstrap;
 #   * the console listener exists exactly when console.enabled;
+#   * `console-edge`: the console is routed through the traefik chart (its UI, the browser
+#     redirect to it, and the signed S3 API it also serves) while the S3 host is not;
 #   * the raised open-file limit reached the process, and its log reaches `docker service
 #     logs` (both are chart settings a render cannot prove the daemon applied).
 #
@@ -43,7 +45,7 @@ case "$case" in
   buckets) buckets="runner-cache e2e.second-bucket" ;;
   traefik) buckets="runner-cache"; console=1 ;;
   ephemeral) buckets="scratch" ;;
-  published) console=1 ;;
+  published|console-edge) console=1 ;;
   edge)
     buckets="runner-cache"
     . "$dir/../../scripts/e2e-edge/traefik-edge.sh"
@@ -139,6 +141,23 @@ if [ "$case" != "edge" ]; then
     [ "$got" = "000" ] || die "console.enabled is off but :9001 answered HTTP $got"
     echo "  ok: no console listener on :9001"
   fi
+fi
+
+# ── console-edge: the console through the edge, the S3 API not ───────────────────────
+if [ "$case" = "console-edge" ]; then
+  . "$dir/../../scripts/e2e-edge/traefik-edge.sh"
+  chost=rustfs-console.e2e.test
+  edge_assert_routed "$chost" /rustfs/console/ 200 || die "the console UI is not routed on $chost"
+  got="$(docker run --rm --network "$EDGE_NETWORK" "$CURL_IMAGE" -s -o /dev/null -w '%{http_code} %{redirect_url}' \
+    --max-time 10 -A 'Mozilla/5.0' --connect-to "$chost:80:${EDGE_TARGET}:80" "http://$chost/" 2>/dev/null || true)"
+  [ "$got" = "302 http://$chost/rustfs/console/" ] || die "a browser opening http://$chost/ got '$got', expected a 302 to /rustfs/console/"
+  echo "  ok: a browser opening http://$chost/ is redirected to /rustfs/console/"
+  # The console host is the whole server: a signed ListBuckets through it succeeds.
+  got="$(docker run --rm --network "$EDGE_NETWORK" "$CURL_IMAGE" -s -o /dev/null -w '%{http_code}' --max-time 15 \
+    --connect-to "$chost:80:${EDGE_TARGET}:80" --aws-sigv4 "$SIG" --user "$KEY:$SECRET" "http://$chost/" 2>/dev/null || true)"
+  [ "$got" = "200" ] || die "a signed ListBuckets through $chost returned '$got', expected 200"
+  echo "  ok: the console host also answers the signed S3 API"
+  edge_assert_unrouted s3.example.com || die "ingress.host is routed although exposure.mode is none"
 fi
 
 # ── restart: data persists, bootstrap is idempotent ───────────────────────────────────

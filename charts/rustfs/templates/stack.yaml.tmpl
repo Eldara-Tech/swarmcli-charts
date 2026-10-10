@@ -1,3 +1,9 @@
+{{- /* The S3 API and the console are exposed independently: exposure.* is the S3 API's,
+       console.exposure.* the console's, and a disabled console is exposed nowhere. */ -}}
+{{- $console := .Values.console.enabled -}}
+{{- $s3Routed := eq .Values.exposure.mode "traefik" -}}
+{{- $consoleRouted := and $console (eq .Values.console.exposure.mode "traefik") -}}
+{{- $consolePublished := and $console (eq .Values.console.exposure.mode "published") -}}
 {{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) (contains "/" .Values.persistence.volumeName) -}}
 {{-   fail "persistence.volumeName is a Docker named-volume name and cannot contain '/'. To store data under a host directory, set persistence.volumePath instead." -}}
 {{- end -}}
@@ -14,20 +20,20 @@
 {{-     fail (printf "buckets: %q is not a valid S3 bucket name (3-63 characters of a-z, 0-9, '.' and '-', starting and ending with a letter or digit)" .) }}
 {{-   end }}
 {{- end -}}
-{{- if and (eq .Values.exposure.mode "traefik") (not .Values.ingress.host) -}}
+{{- if and $s3Routed (not .Values.ingress.host) -}}
 {{-   fail "ingress.host is required when exposure.mode=traefik" -}}
 {{- end -}}
-{{- if and .Values.console.enabled (eq .Values.exposure.mode "traefik") (not .Values.console.host) -}}
-{{-   fail "console.host is required when console.enabled and exposure.mode=traefik: the console needs a host of its own, since it serves its UI at / of its listener" -}}
+{{- if and $consoleRouted (not .Values.console.ingress.host) -}}
+{{-   fail "console.ingress.host is required when console.exposure.mode=traefik" -}}
 {{- end -}}
 {{- if and .Values.console.enabled (eq (.Values.console.port | int) (.Values.s3.port | int)) -}}
 {{-   fail "console.port must differ from s3.port: RustFS runs the console as a second listener" -}}
 {{- end -}}
-{{- if and .Values.console.enabled (eq .Values.exposure.mode "traefik") (eq .Values.console.host .Values.ingress.host) -}}
-{{-   fail "console.host must differ from ingress.host: two routers with the same Host() rule would split requests between the S3 API and the console" -}}
+{{- if and $s3Routed $consoleRouted (eq .Values.console.ingress.host .Values.ingress.host) -}}
+{{-   fail "console.ingress.host must differ from ingress.host: the console calls the S3 and admin API at the root of its own host, so the two routers' Host() rules would collide" -}}
 {{- end -}}
-{{- if and .Values.console.enabled (eq .Values.exposure.mode "published") (eq (.Values.publish.consolePort | int) (.Values.publish.port | int)) -}}
-{{-   fail "publish.consolePort must differ from publish.port" -}}
+{{- if and (eq .Values.exposure.mode "published") $consolePublished (eq (.Values.console.publish.port | int) (.Values.publish.port | int)) -}}
+{{-   fail "console.publish.port must differ from publish.port" -}}
 {{- end -}}
 {{- /* RustFS copies every MINIO_<x> into an unset RUSTFS_<x> before parsing its flags, so
        both spellings of a credential are refused, the *_FILE forms included. The
@@ -46,12 +52,11 @@ version: "3.9"
 {{- $router := .Values.traefik.routerName | default .Release.Name }}
 {{- $port := .Values.s3.port | int }}
 {{- $cport := .Values.console.port | int }}
-{{- $console := .Values.console.enabled }}
 {{- $access := .Values.s3.accessKeySecret }}
 {{- $secret := .Values.s3.secretKeySecret }}
 
 {{- $nets := list .Values.network.name }}
-{{- if eq $mode "traefik" }}{{ $nets = append $nets .Values.exposure.network }}{{- end }}
+{{- if or $s3Routed $consoleRouted }}{{ $nets = append $nets .Values.exposure.network }}{{- end }}
 {{- $nets = $nets | uniq }}
 
 services:
@@ -122,7 +127,7 @@ services:
       # The image is pinned and Renovate moves the pin; no call home for updates.
       RUSTFS_CHECK_UPDATE: "false"
 {{- end }}
-{{- if and (eq $mode "traefik") (not (hasKey .Values.extraEnv "RUSTFS_HTTP1_HEADER_READ_TIMEOUT")) }}
+{{- if and (or $s3Routed $consoleRouted) (not (hasKey .Values.extraEnv "RUSTFS_HTTP1_HEADER_READ_TIMEOUT")) }}
       RUSTFS_HTTP1_HEADER_READ_TIMEOUT: {{ .Values.traefik.idleTimeoutSeconds | quote }}
 {{- end }}
 {{- range $k, $v := .Values.extraEnv }}
@@ -161,17 +166,19 @@ services:
       - {{ . }}
 {{- end }}
 
-{{- if eq $mode "published" }}
+{{- if or (eq $mode "published") $consolePublished }}
     ports:
+{{- if eq $mode "published" }}
       - target: {{ $port }}
         published: {{ .Values.publish.port }}
         protocol: tcp
         mode: {{ .Values.publish.mode }}
-{{- if $console }}
+{{- end }}
+{{- if $consolePublished }}
       - target: {{ $cport }}
-        published: {{ .Values.publish.consolePort }}
+        published: {{ .Values.console.publish.port }}
         protocol: tcp
-        mode: {{ .Values.publish.mode }}
+        mode: {{ .Values.console.publish.mode }}
 {{- end }}
 {{- end }}
 
@@ -218,12 +225,14 @@ services:
 {{- end }}
       restart_policy:
         condition: any
-{{- if or (eq $mode "traefik") .Values.labels }}
+{{- if or $s3Routed $consoleRouted .Values.labels }}
       labels:
-{{- if eq $mode "traefik" }}
+{{- if or $s3Routed $consoleRouted }}
         - "traefik.enable=true"
         - "traefik.swarm.network={{ .Values.exposure.network }}"
         - "traefik.constraint-label={{ .Values.traefik.constraintLabel }}"
+{{- end }}
+{{- if $s3Routed }}
         - "traefik.http.routers.{{ $router }}-http.rule=Host(`{{ .Values.ingress.host }}`)"
         - "traefik.http.routers.{{ $router }}-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
         - "traefik.http.routers.{{ $router }}-http.service={{ $router }}"
@@ -236,20 +245,20 @@ services:
         - "traefik.http.routers.{{ $router }}-https.tls.certresolver={{ .Values.traefik.certResolver }}"
 {{- end }}
         - "traefik.http.services.{{ $router }}.loadbalancer.server.port={{ $port }}"
-{{- if $console }}
-        - "traefik.http.routers.{{ $router }}-console-http.rule=Host(`{{ .Values.console.host }}`)"
+{{- end }}
+{{- if $consoleRouted }}
+        - "traefik.http.routers.{{ $router }}-console-http.rule=Host(`{{ .Values.console.ingress.host }}`)"
         - "traefik.http.routers.{{ $router }}-console-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
         - "traefik.http.routers.{{ $router }}-console-http.service={{ $router }}-console"
-{{- if .Values.ingress.tls }}
+{{- if .Values.console.ingress.tls }}
         - "traefik.http.routers.{{ $router }}-console-http.middlewares={{ .Values.traefik.redirectMiddleware }}"
-        - "traefik.http.routers.{{ $router }}-console-https.rule=Host(`{{ .Values.console.host }}`)"
+        - "traefik.http.routers.{{ $router }}-console-https.rule=Host(`{{ .Values.console.ingress.host }}`)"
         - "traefik.http.routers.{{ $router }}-console-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
         - "traefik.http.routers.{{ $router }}-console-https.service={{ $router }}-console"
         - "traefik.http.routers.{{ $router }}-console-https.tls=true"
         - "traefik.http.routers.{{ $router }}-console-https.tls.certresolver={{ .Values.traefik.certResolver }}"
 {{- end }}
         - "traefik.http.services.{{ $router }}-console.loadbalancer.server.port={{ $cport }}"
-{{- end }}
 {{- end }}
 {{- range $key, $val := .Values.labels }}
         - "{{ $key }}={{ $val }}"

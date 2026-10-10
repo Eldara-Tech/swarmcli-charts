@@ -5,8 +5,8 @@
 #   $1 = release name   $2 = chart directory   $3 = fixture case name
 # It provisions what swarmcli validates but does not create: the two credential secrets,
 # the data node label, the client overlay ci/e2e-check.sh attaches to, the bind-mount
-# directory, and for `edge` the traefik chart as a real edge. ci/e2e-teardown.sh removes
-# everything created here except the overlays.
+# directory, and for `edge` and `console-edge` the traefik chart as a real edge.
+# ci/e2e-teardown.sh removes everything created here except the overlays.
 #
 # INVARIANT: the key pair below is the one ci/e2e-check.sh signs with. The secret key
 # carries a `/` and a `+`, as a real base64 key does.
@@ -43,7 +43,7 @@ if [ "$case" = "bind-mount" ]; then
     -c 'mkdir -p /host-tmp/rustfs-e2e/data && chown 10001:10001 /host-tmp/rustfs-e2e/data && chmod 0750 /host-tmp/rustfs-e2e/data' >/dev/null
 fi
 
-if [ "$case" = "edge" ]; then
+if [ "$case" = "edge" ] || [ "$case" = "console-edge" ]; then
   docker network create --driver overlay --attachable traefik-public >/dev/null 2>&1 || true
   . "$dir/../../scripts/e2e-edge/traefik-edge.sh"
   edge_up

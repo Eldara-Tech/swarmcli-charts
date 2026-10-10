@@ -12,7 +12,8 @@
 #     rustfsadmin. The keys have to reach it from the secrets as *_FILE paths, never as
 #     values, and the wrapper has to refuse an empty or default key.
 #   * The console listener serves the S3 and admin API too, so it must exist only when
-#     console.enabled, and be routed or published only then.
+#     console.enabled, and be routed or published only then. The S3 API and the console
+#     are exposed independently: routing one must not route the other.
 #   * A single `$` in the wrapper is interpolated by Docker at deploy time, so the secret
 #     would be read on the deploying machine (or read as empty) instead of in the task.
 #
@@ -101,7 +102,7 @@ grep -Fx rustfs-net <<<"$nets" >/dev/null || bad "the service is not on network.
 [ "$(q '.networks."rustfs-net".external')" = "true" ] || bad "rustfs-net is not external — it would be stack-scoped and unreachable by name from other stacks"
 
 # ── the console: a second listener with the full API, only when asked for ─────────────
-case "$case" in traefik|published) console=1 ;; *) console="" ;; esac
+case "$case" in traefik|published|console-edge) console=1 ;; *) console="" ;; esac
 labels="$(q "$svc.deploy.labels[]")"
 if [ -n "$console" ]; then
   [ "$(env_ RUSTFS_CONSOLE_ENABLE)" = "true" ] || bad "case $case: console.enabled but RUSTFS_CONSOLE_ENABLE is not true"
@@ -115,10 +116,9 @@ fi
 
 # ── exposure ──────────────────────────────────────────────────────────────────────────
 case "$case" in
-  traefik|edge)
+  traefik|edge|console-edge)
     grep -Fx traefik-public <<<"$nets" >/dev/null || bad "case $case: not attached to traefik-public"
-    for l in 'traefik.enable=true' 'traefik.swarm.network=traefik-public' 'traefik.constraint-label=traefik-public' \
-             "traefik.http.services.ci.loadbalancer.server.port=$port" 'traefik.http.routers.ci-http.service=ci'; do
+    for l in 'traefik.enable=true' 'traefik.swarm.network=traefik-public' 'traefik.constraint-label=traefik-public'; do
       grep -Fx "$l" <<<"$labels" >/dev/null || bad "case $case: label $l is missing"
     done
     [ "$(q "$svc.ports")" = "null" ] || bad "case $case: a port is published in traefik mode"
@@ -130,6 +130,7 @@ case "$case" in
       || bad "case $case: the S3 port is not published as 19000 -> $port"
     [ "$(q "$svc.ports[1].target")" = "9001" ] && [ "$(q "$svc.ports[1].published")" = "19001" ] \
       || bad "case $case: the console port is not published as 19001 -> 9001"
+    [ "$(q "$svc.ports | length")" = "2" ] || bad "case $case: more than the S3 and console ports are published"
     ;;
   *)
     [ "$(q "$svc.ports")" = "null" ] || bad "case $case: a port is published although exposure.mode is none"
@@ -137,8 +138,21 @@ case "$case" in
     [ "$nets" = "rustfs-net" ] || bad "case $case: attached to more than network.name: $(tr '\n' ' ' <<<"$nets")"
     ;;
 esac
-case "$case" in traefik|edge) ;; *)
+case "$case" in traefik|edge|console-edge) ;; *)
   [ "$(env_ RUSTFS_HTTP1_HEADER_READ_TIMEOUT)" = "null" ] || bad "case $case: the idle timeout is raised outside traefik mode"
+esac
+# The S3 routers exist exactly when exposure.mode routes the S3 API.
+case "$case" in
+  traefik|edge)
+    for l in "traefik.http.services.ci.loadbalancer.server.port=$port" 'traefik.http.routers.ci-http.service=ci'; do
+      grep -Fx "$l" <<<"$labels" >/dev/null || bad "case $case: label $l is missing"
+    done
+    ;;
+  *)
+    if grep -E '^traefik\.http\.(routers\.ci-https?|services\.ci)\.' <<<"$labels" >/dev/null; then
+      bad "case $case: an S3 router or service is rendered although exposure.mode does not route the S3 API"
+    fi
+    ;;
 esac
 case "$case" in
   traefik)
@@ -163,6 +177,15 @@ case "$case" in
     if grep -F 'https' <<<"$labels" >/dev/null; then bad "case $case: tls is off but an https router or redirect is rendered"; fi
     grep -Fx 'traefik.http.routers.ci-http.rule=Host(`s3.e2e.test`)' <<<"$labels" >/dev/null \
       || bad "case $case: no HTTP router for ingress.host"
+    ;;
+  # The console alone, plain HTTP: console.ingress.tls, not ingress.tls, decides its routers.
+  console-edge)
+    if grep -F 'https' <<<"$labels" >/dev/null; then bad "case $case: console.ingress.tls is off but an https router or redirect is rendered"; fi
+    for l in 'traefik.http.routers.ci-console-http.rule=Host(`rustfs-console.e2e.test`)' \
+             'traefik.http.routers.ci-console-http.service=ci-console' \
+             'traefik.http.services.ci-console.loadbalancer.server.port=9001'; do
+      grep -Fx "$l" <<<"$labels" >/dev/null || bad "case $case: console label $l is missing"
+    done
     ;;
 esac
 
@@ -212,6 +235,38 @@ case "$case" in
 esac
 if [ "$case" = "buckets" ]; then
   grep -Fx 'node.role == manager' <<<"$constraints" >/dev/null || bad "case $case: placement.constraints was not applied"
+fi
+
+# ── refusals and one-off renders (from the default fixture only) ──────────────────────
+if [ "$case" = "default" ]; then
+  chart="$(cd "$(dirname "$0")/.." && pwd)"
+  tmp="$(mktemp)"
+  trap 'rm -f "$tmp" "$tmp.err"' EXIT
+  render() { "${SWARMCLI:?render-check needs SWARMCLI to render the refusals}" charts template ci "$chart" "$@" >"$tmp" 2>"$tmp.err"; }
+  refused() {
+    local want="$1"; shift
+    if render "$@"; then
+      bad "rendered with $* — it must be refused"
+    elif ! grep -F "$want" "$tmp.err" >/dev/null; then
+      bad "$* failed, but not with \"$want\": $(tr '\n' ' ' <"$tmp.err")"
+    fi
+  }
+  refused 'console.ingress.host is required' --set console.enabled=true --set console.exposure.mode=traefik
+  refused 'console.ingress.host must differ from ingress.host' --set exposure.mode=traefik --set console.enabled=true \
+    --set console.exposure.mode=traefik --set console.ingress.host=s3.example.com
+  refused 'console.publish.port must differ from publish.port' --set exposure.mode=published --set console.enabled=true \
+    --set console.exposure.mode=published --set console.publish.port=9000
+  refused 'console.port must differ from s3.port' --set console.enabled=true --set console.port=9000
+  # A disabled console is exposed nowhere, whatever console.exposure says (prometheus-stack's rule).
+  for m in traefik published; do
+    if render --set console.exposure.mode="$m"; then
+      [ "$(yq -r "$svc.deploy.labels" "$tmp")" = "null" ] && [ "$(yq -r "$svc.ports" "$tmp")" = "null" ] \
+        && [ "$(yq -r "$svc.networks | length" "$tmp")" = "1" ] \
+        || bad "console.exposure.mode=$m with the console off still routes, publishes or joins the edge"
+    else
+      bad "console.exposure.mode=$m with the console off was refused: $(tr '\n' ' ' <"$tmp.err")"
+    fi
+  done
 fi
 
 exit "$fail"

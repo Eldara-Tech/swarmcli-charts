@@ -9,6 +9,10 @@ ingress:
   tls: true
 console:
   enabled: true
-  host: rustfs-console.example.com
+  exposure:
+    mode: traefik
+  ingress:
+    host: rustfs-console.example.com
+    tls: true
 buckets:
   - runner-cache

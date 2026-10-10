@@ -11,7 +11,7 @@ set -uo pipefail
 dir="$2"
 case="$3"
 
-if [ "$case" = "edge" ]; then
+if [ "$case" = "edge" ] || [ "$case" = "console-edge" ]; then
   . "$dir/../../scripts/e2e-edge/traefik-edge.sh"
   edge_down
 fi
