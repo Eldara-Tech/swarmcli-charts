@@ -126,9 +126,15 @@ case "$case" in
     fi
     [ "$(q "$svc.ports")" = "null" ] || bad "case $case: a port is published although nothing is in published mode"
     ;;
-  published|admin-published)
+  published)
     [ "$(q "$svc.ports[0].target")" = "$port" ] && [ "$(q "$svc.ports[0].published")" = "18333" ] \
       || bad "case $case: the S3 port is not published as 18333 -> $port"
+    ;;
+  admin-published)
+    [ "$(q "$svc.ports | length")" = "1" ] && [ "$(q "$svc.ports[0].target")" = "23646" ] && [ "$(q "$svc.ports[0].published")" = "24646" ] \
+      || bad "case $case: not exactly the admin UI is published, as 24646 -> 23646"
+    if grep -F 'traefik.' <<<"$labels" >/dev/null; then bad "case $case: Traefik labels rendered although nothing is routed"; fi
+    [ "$nets" = "seaweedfs-net" ] || bad "case $case: attached to more than network.name: $(tr '\n' ' ' <<<"$nets")"
     ;;
   *)
     [ "$(q "$svc.ports")" = "null" ] || bad "case $case: a port is published although exposure.mode is none"
@@ -159,10 +165,6 @@ case "$case" in
     if grep -F 'https' <<<"$labels" >/dev/null; then bad "case $case: tls is off but an https router or redirect is rendered"; fi
     grep -Fx 'traefik.http.routers.ci-admin-http.rule=Host(`admin.e2e.test`) && !PathPrefix(`/metrics`)' <<<"$labels" >/dev/null \
       || bad "case $case: no HTTP router for admin.ingress.host that keeps /metrics off the edge"
-    ;;
-  admin-published)
-    [ "$(q "$svc.ports[1].target")" = "23646" ] && [ "$(q "$svc.ports[1].published")" = "24646" ] \
-      || bad "case $case: the admin UI is not published as 24646 -> 23646"
     ;;
   edge)
     if grep -F 'https' <<<"$labels" >/dev/null; then bad "case $case: tls is off but an https router or redirect is rendered"; fi
@@ -263,8 +265,11 @@ if [ "$case" = "admin-traefik" ]; then
   refused "admin.passwordSecret must name a secret of its own" --set admin.passwordSecret=seaweedfs-s3-access-key
   refused "admin.passwordSecret must name a secret of its own" --set admin.passwordSecret=seaweedfs-s3-secret-key
   refused "is not a valid login name" --set 'admin.user=a;b'
-  refused "admin.port 8333 collides" --set admin.port=8333
-  refused "admin.port 9333 collides" --set admin.port=9333
+  # One per gRPC port: each also covers its HTTP twin, which an admin.port 10000 lower
+  # reaches through the admin's own worker gRPC port.
+  refused "admin.port 18333 collides" --set admin.port=18333
+  refused "admin.port 19333 collides" --set admin.port=19333
+  refused "admin.port 18080 collides" --set admin.port=18080
   refused "admin.port 18888 collides" --set admin.port=18888
   # Only its worker gRPC port (2000 + 10000) lands on the S3 port.
   refused "admin.port 2000 collides" --set s3.port=12000 --set admin.port=2000
@@ -279,6 +284,12 @@ if [ "$case" = "admin-traefik" ]; then
   for l in 'traefik.http.routers.ci-https.service=ci' 'traefik.http.routers.ci-admin-https.service=ci-admin'; do
     grep -F -- "- $l" <<<"$both" >/dev/null || bad "with S3 and the admin UI both routed, label $l is missing"
   done
+  # Both published, each on its own port.
+  pub="$(render --set exposure.mode=published --set admin.exposure.mode=published 2>"$tmp/err")" \
+    || bad "S3 and the admin UI published on two ports is refused: $(tail -1 "$tmp/err")"
+  [ "$(yq -r '.services.seaweedfs.ports[].target' <<<"$pub" | tr '\n' ' ')" = "8333 23646 " ] \
+    && [ "$(yq -r '.services.seaweedfs.ports[].published' <<<"$pub" | tr '\n' ' ')" = "8333 23646 " ] \
+    || bad "with S3 and the admin UI both published, the ports are not 8333 -> 8333 and 23646 -> 23646"
   # Off, the admin values are neither checked nor rendered, its exposure.mode included.
   off="$(render --set admin.enabled=false --set admin.port=8333 --set admin.passwordSecret=seaweedfs-s3-secret-key 2>"$tmp/err")" \
     || bad "admin values are refused although admin.enabled is false: $(tail -1 "$tmp/err")"

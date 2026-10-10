@@ -1,8 +1,5 @@
-# The S3 API and the web UI both published on the routing mesh, each under its own number.
-exposure:
-  mode: published
-publish:
-  port: 18333
+# The web UI published on the routing mesh under a different number, the S3 API
+# overlay-only.
 admin:
   enabled: true
   exposure:
