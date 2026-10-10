@@ -143,10 +143,12 @@ include:
   # the signed round trip path-style through the traefik chart. `admin-edge` routes the web UI
   # through the traefik chart with S3 unrouted: login page, unauthenticated request sent to
   # /login, wrong password refused, right one lists the bucket, /metrics not served at the
-  # edge, 9333/8888 closed on both overlays, a stopped UI restarted while S3 keeps serving,
+  # edge, a write marked Sec-Fetch-Site: same-site refused there (weed admin has no CSRF
+  # check), 9333/8888 refused on both overlays, a stopped UI restarted while S3 keeps serving,
   # and the password in weed admin's environment only. traefik and admin-traefik (labels
-  # only, nothing to route through), admin-published and bind-mount are covered by
-  # charts.yml and run in a full local `make e2e`.
+  # only, nothing to route through), admin-published (which also proves a task restart logs
+  # every session out) and bind-mount are covered by charts.yml and run in a full local
+  # `make e2e`.
   - { chart: seaweedfs,     cases: "default buckets ephemeral published edge admin-edge",                            timeout: 6m  }
   # gitlab: ONE fixture. GitLab CE is a multi-gigabyte monolith (Postgres, Redis, Gitaly,
   # Puma, Sidekiq in one container) whose documented baseline is 8 vCPU / 16 GB, so the

@@ -125,14 +125,18 @@ if [ "$case" != "edge" ]; then
     admin-edge) overlays="seaweedfs-net traefik-public"; ports="$ports 33646" ;;
     admin-*) ports="$ports 33646" ;;
   esac
+  # curl exits 7 only when the connection is refused: a listening gRPC port gives no HTTP
+  # code either, so the code alone cannot tell the two apart.
+  refused() { local rc=0; docker run --rm --network "$1" "$CURL_IMAGE" -s -o /dev/null --max-time 5 "http://${svc}:$2/" >/dev/null 2>&1 || rc=$?; echo "$rc"; }
   for n in $overlays; do
     for p in $ports; do
-      got="$(docker run --rm --network "$n" "$CURL_IMAGE" -s -o /dev/null -w '%{http_code}' \
-        --max-time 5 "http://${svc}:$p/" 2>/dev/null || true)"
-      [ "$got" = "000" ] || die "port $p (an unauthenticated master/filer/volume API or the admin's worker gRPC) answered HTTP $got from $n"
+      rc="$(refused "$n" "$p")"
+      [ "$rc" = "7" ] || die "port $p (an unauthenticated master/filer/volume API or the admin's worker gRPC) did not refuse a connection from $n (curl exit $rc)"
     done
   done
-  echo "  ok: ports $ports refuse connections from $overlays"
+  rc="$(refused seaweedfs-net 18333)"
+  [ "$rc" != "7" ] || die "curl reports the S3 gRPC port, which listens on every interface, as refused too — the check above proves nothing"
+  echo "  ok: ports $ports refuse connections from $overlays (the listening S3 gRPC port does not: curl exit $rc)"
 
   out="$(docker run --rm --network seaweedfs-net "$GRPCURL_IMAGE" -plaintext -max-time 10 \
     -d '{"identity":{"name":"e2e-intruder","credentials":[{"accessKey":"intruderkey","secretKey":"intrudersecret"}],"actions":["Admin"]}}' \
@@ -178,15 +182,17 @@ case "$case" in
     csrf="$(sed -n 's/.*name="csrf_token" value="\([0-9a-f]*\)".*/\1/p' <<<"$page" | sed -n 1p)"
     jar="$(session <<<"$page")"
     [ -n "$csrf" ] && [ -n "$jar" ] || die "the login page carried no CSRF token or no session cookie"
-    login() { a -o /dev/null -H "Cookie: $jar" --data-urlencode "csrf_token=$csrf" --data-urlencode username=admin \
-      --data-urlencode "password=$1" "$abase/login"; }
+    login() { local pw="$1"; shift; a -o /dev/null "$@" -H "Cookie: $jar" --data-urlencode "csrf_token=$csrf" \
+      --data-urlencode username=admin --data-urlencode "password=$pw" "$abase/login"; }
     got="$(login wrong-password)"
     [ "$(status <<<"$got")" = "303" ] && grep -F 'error=Invalid credentials' <<<"$(header Location <<<"$got")" >/dev/null \
       || die "a wrong admin password was not refused (HTTP $(status <<<"$got"), Location '$(header Location <<<"$got")')"
-    got="$(login "$ADMIN_PASSWORD")"
+    # As a browser submits the login form; the wrong-password POST above carried no such header.
+    got="$(login "$ADMIN_PASSWORD" -H 'Sec-Fetch-Site: same-origin')"
     [ "$(status <<<"$got")" = "303" ] && [ "$(header Location <<<"$got")" = "/admin" ] \
       || die "the admin password was refused (HTTP $(status <<<"$got"), Location '$(header Location <<<"$got")')"
-    listing="$(a -H "Cookie: $(session <<<"$got")" "$abase/api/s3/buckets")"
+    sess="$(session <<<"$got")"
+    listing="$(a -H "Cookie: $sess" "$abase/api/s3/buckets")"
     [ "$(status <<<"$listing")" = "200" ] && grep -F "\"name\":\"$bucket\"" <<<"$listing" >/dev/null \
       || die "the admin session does not list bucket $bucket: $(tail -1 <<<"$listing")"
     echo "  ok: a wrong admin password is refused; the right one opens a session that lists bucket $bucket"
@@ -199,6 +205,22 @@ case "$case" in
       [ "$(status <<<"$got")" = "404" ] || die "/metrics, which needs no login, is served through the edge (HTTP $(status <<<"$got"))"
       echo "  ok: /metrics answers on the overlay but not through the edge (404)"
       edge_assert_unrouted s3.e2e.test || die "the S3 API's host is routed although exposure.mode is none"
+
+      # weed admin checks no CSRF token on user creation and reads JSON whatever its
+      # Content-Type, so the edge must refuse a write a browser marks as from another site.
+      mk() { a -o /dev/null -X POST -H "Cookie: $sess" -H 'Content-Type: text/plain' -H "Sec-Fetch-Site: $1" \
+        --data "{\"username\":\"$2\",\"actions\":[\"Admin\"]}" "$abase/api/users"; }
+      # Names unique to this run: the store may outlive a run, and a name it already has
+      # would fail with 500 rather than prove anything.
+      u="e2e-csrf-$$-$(date +%s)"
+      got="$(mk same-site "$u-site")"
+      [ "$(status <<<"$got")" = "404" ] || die "a same-site POST /api/users was not refused at the edge (HTTP $(status <<<"$got"))"
+      got="$(mk same-origin "$u-origin")"
+      [ "$(status <<<"$got")" = "201" ] || die "a same-origin POST /api/users did not create the user (HTTP $(status <<<"$got"))"
+      users="$(a -H "Cookie: $sess" "$abase/api/users")"
+      grep -F "\"username\":\"$u-origin\"" <<<"$users" >/dev/null || die "the same-origin user is not listed: $(tail -1 <<<"$users")"
+      if grep -F "$u-site" <<<"$users" >/dev/null; then die "the same-site POST created its user anyway"; fi
+      echo "  ok: a write marked Sec-Fetch-Site: same-site is refused at the edge (404, no user); same-origin creates one (201)"
     fi
 
     # A stopped UI comes back, and S3 keeps serving from the same task meanwhile.
@@ -218,13 +240,17 @@ case "$case" in
     [ -n "$now" ] || die "weed admin did not come back after it was stopped"
     [ "$(docker service ps -q --filter desired-state=running "$svc" | sed -n 1p)" = "$task" ] && [ "$(code "$base/")" = "403" ] \
       || die "stopping weed admin took S3 down with it"
-    echo "  ok: a stopped weed admin is restarted (pid $pid -> $now) while S3 keeps serving from the same task"
+    [ "$(status <<<"$(a -o /dev/null -H "Cookie: $sess" "$abase/api/s3/buckets")")" = "200" ] \
+      || die "a restart of weed admin alone logged its session out"
+    echo "  ok: a stopped weed admin is restarted (pid $pid -> $now), its session intact, while S3 keeps serving from the same task"
 
     # The password is in weed admin's environment alone: not weed server's (PID 1), no argv.
     # Read as seaweed, their own user: root in `docker exec` lacks the ptrace right to.
     env_of() { docker exec -u seaweed "$cid" cat "/proc/$1/environ" 2>/dev/null | tr '\000' '\n' || true; }
-    grep -Fx "WEED_ADMIN_PASSWORD=$ADMIN_PASSWORD" <<<"$(env_of "$now")" >/dev/null \
+    aenv="$(env_of "$now")"
+    grep -Fx "WEED_ADMIN_PASSWORD=$ADMIN_PASSWORD" <<<"$aenv" >/dev/null \
       || die "weed admin's environment does not hold the password from the secret"
+    grep -Fx 'GODEBUG=fips140=on' <<<"$aenv" >/dev/null || die "weed admin does not run with GODEBUG=fips140=on, as weed server does"
     pid1="$(env_of 1)"
     grep -F 'WEED_JWT_FILER_SIGNING_KEY=' <<<"$pid1" >/dev/null || die "weed server's (PID 1) environment is unreadable"
     if grep -F WEED_ADMIN_PASSWORD <<<"$pid1" >/dev/null; then die "weed server (PID 1) holds WEED_ADMIN_PASSWORD"; fi
@@ -232,6 +258,25 @@ case "$case" in
     grep -F -- '-dataDir=/data/admin -adminUser=admin' <<<"$argv" >/dev/null || die "ps in the task does not show weed admin's whole argv"
     if grep -F -- "$ADMIN_PASSWORD" <<<"$argv" >/dev/null; then die "the admin password is on an argv"; fi
     echo "  ok: the admin password is in weed admin's environment only — not weed server's, not on any argv"
+
+    # A new task deletes the session key, so a redeploy — a password change included — logs
+    # everyone out: the old cookie no longer decodes and the dashboard sends it to /login.
+    # That redirect comes from weed admin itself, so it is up and refusing, not down.
+    if [ "$case" = "admin-published" ]; then
+      [ "$(status <<<"$(a -o /dev/null -H "Cookie: $sess" "$abase/admin")")" = "200" ] \
+        || die "the admin session does not open the dashboard before the task restart"
+      docker service update --force --detach "$svc" >/dev/null
+      got=""
+      for _ in $(seq 1 60); do
+        sleep 3
+        [ "$(docker service ps -q --filter desired-state=running "$svc" | sed -n 1p)" != "$task" ] || continue
+        got="$(a -o /dev/null -H "Cookie: $sess" "$abase/admin")"
+        [ -n "$(status <<<"$got")" ] && break
+      done
+      [ "$(status <<<"$got")" = "307" ] && [ "$(header Location <<<"$got" | cut -d'?' -f1)" = "/login" ] \
+        || die "after a task restart the old admin session got HTTP $(status <<<"$got") ('$(header Location <<<"$got")'), expected a redirect to /login"
+      echo "  ok: after a task restart the old admin session is sent back to /login"
+    fi
     ;;
 esac
 

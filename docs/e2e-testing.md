@@ -279,9 +279,12 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   Traefik edge (`edge`, `admin-edge`). `ci/e2e-check.sh` signs its requests with the same key
   pair, from a throwaway client on the overlay, because a store with no identity converges just
   as well while serving everyone. The `admin-*` fixtures log in to the web UI with the same
-  password (through the edge for `admin-edge`, which also proves the S3 host and `/metrics` are
-  not routed), then stop `weed admin` in the task and assert it comes back while S3 serves on,
-  and read `/proc/<pid>/environ` and `ps` to prove the password reached `weed admin` alone.
+  password (through the edge for `admin-edge`, which also proves the S3 host, `/metrics` and a
+  write marked `Sec-Fetch-Site: same-site` are not routed), then stop `weed admin` in the task
+  and assert it comes back with its session while S3 serves on, and read `/proc/<pid>/environ`
+  (as `seaweed`: root in `docker exec` may not) and `ps` to prove the password reached
+  `weed admin` alone. `admin-published` also restarts the task and asserts the old session is
+  sent back to `/login`.
 - **gitlab-runner** — the runner authentication-token secret + the `gitlab-runner-data` node
   label, plus the two S3 cache secrets for the `cache` fixture (their values deliberately
   contain the `/` and `+` of a real base64 key, so the TOML quoting is exercised). The mock
