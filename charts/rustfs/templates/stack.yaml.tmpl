@@ -44,12 +44,18 @@
 {{- if and $oidc $console (not $consoleRouted) (not .Values.oidc.browserUrl) -}}
 {{-   fail "oidc.browserUrl is required when oidc.enabled and the console is not traefik-routed: RustFS builds the login callback from it, and without it from the request's Host header, which the client controls" -}}
 {{- end -}}
-{{- /* RustFS copies every MINIO_<x> into an unset RUSTFS_<x> before parsing its flags, so
+{{- /* extraEnv keys render unquoted, so a key must be a plain variable name before anything
+       else is checked: a quoted "RUSTFS_SECRET_KEY" would slip past every pattern below and
+       still parse as RUSTFS_SECRET_KEY, and a newline would start keys of the service itself.
+       RustFS copies every MINIO_<x> into an unset RUSTFS_<x> before parsing its flags, so
        both spellings of a credential are refused, the *_FILE forms included, and so is the
        OIDC client secret under any provider suffix. The listener settings are wired from
        s3.port / console.*, and with oidc.enabled the provider from oidc.*, so they are
        refused too. */}}
 {{- range $k, $v := .Values.extraEnv }}
+{{-   if not (regexMatch "^[A-Za-z_][A-Za-z0-9_]*$" $k) }}
+{{-     fail (printf "extraEnv: %q is not an environment variable name (letters, digits and _, not starting with a digit)" $k) }}
+{{-   end }}
 {{-   if regexMatch "^(RUSTFS|MINIO)_(ACCESS_KEY|SECRET_KEY|ROOT_USER|ROOT_PASSWORD)" $k }}
 {{-     fail (printf "extraEnv: %s is a credential; it belongs in the Swarm secrets s3.accessKeySecret / s3.secretKeySecret" $k) }}
 {{-   end }}

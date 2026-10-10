@@ -269,7 +269,7 @@ fi
 if [ "$case" = "default" ]; then
   chart="$(cd "$(dirname "$0")/.." && pwd)"
   tmp="$(mktemp)"
-  trap 'rm -f "$tmp" "$tmp.err"' EXIT
+  trap 'rm -f "$tmp" "$tmp.err" "$tmp.values"' EXIT
   render() { "${SWARMCLI:?render-check needs SWARMCLI to render the refusals}" charts template ci "$chart" "$@" >"$tmp" 2>"$tmp.err"; }
   refused() {
     local want="$1"; shift
@@ -285,6 +285,12 @@ if [ "$case" = "default" ]; then
   refused 'console.publish.port must differ from publish.port' --set exposure.mode=published --set console.enabled=true \
     --set console.exposure.mode=published --set console.publish.port=9000
   refused 'console.port must differ from s3.port' --set console.enabled=true --set console.port=9000
+  # extraEnv keys render unquoted: a quoted key would pass every name pattern and still parse as
+  # the credential, and a newline would add keys to the service itself.
+  printf '%s\n' 'extraEnv:' "  '\"RUSTFS_SECRET_KEY\"': x" >"$tmp.values"
+  refused 'is not an environment variable name' -f "$tmp.values"
+  printf '%s\n' 'extraEnv:' '  "X: y\n    cap_add: [SYS_ADMIN]\n    Z": z' >"$tmp.values"
+  refused 'is not an environment variable name' -f "$tmp.values"
   kc=https://kc.example.com/realms/r/.well-known/openid-configuration
   refused 'oidc.configUrl must be' --set oidc.enabled=true
   refused 'oidc.configUrl must be' --set oidc.enabled=true --set oidc.configUrl=https://u:p@kc.example.com/realms/r
