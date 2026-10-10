@@ -81,7 +81,7 @@ exposed nowhere:
 
 | Mode | S3 API (`exposure.mode`) | Console (`console.exposure.mode`) |
 |------|--------------------------|-----------------------------------|
-| `none` (default) | nothing — overlay clients only | nothing — overlay clients only |
+| `none` (default) | nothing — overlay clients only (on `exposure.network` too while the console is routed) | nothing — overlay clients only (on `exposure.network` too while the S3 API is routed) |
 | `traefik` | Traefik labels routing `ingress.host` to `s3.port`, with an HTTPS router and ACME certificate when `ingress.tls` | the same for `console.ingress.host` and `console.port`, TLS per `console.ingress.tls` |
 | `published` | `s3.port` published on the Swarm as `publish.port` | `console.port` published as `console.publish.port` |
 
@@ -93,13 +93,13 @@ swarmcli charts install s3 swarmcli-charts/rustfs \
   --set 'buckets={runner-cache}'
 ```
 
-The console in a browser through Traefik, with the S3 API (port 9000) left on
-`rustfs-net` only:
+The console in a browser through Traefik, with no route or published port for the S3
+API (port 9000):
 
 ```yaml
 # values.yaml — swarmcli charts install s3 swarmcli-charts/rustfs -f values.yaml
 exposure:
-  mode: none                    # the S3 API stays internal
+  mode: none                    # no route or published port for the S3 API
 console:
   enabled: true
   exposure:
@@ -107,6 +107,11 @@ console:
   ingress:
     host: rustfs.example.com    # a host of its own, not ingress.host
 ```
+
+That keeps port 9000 off the edge's routers, not off its network: a routed console
+attaches the service to `exposure.network`, and every service on that overlay can
+reach port 9000 (and 9001) directly. The console host itself serves the full signed
+S3 API too (see [Web console](#web-console)).
 
 The `traefik.*` defaults match the [traefik chart](../traefik) in this repository
 (entrypoints `http`/`https`, resolver `le`, constraint label `traefik-public`,

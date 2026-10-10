@@ -37,7 +37,8 @@ console:
   enabled: false
   port: 9001
   # How the console is exposed beyond network.name:
-  #   none      - (default) nowhere else.
+  #   none      - (default) nowhere else: network.name, and exposure.network while the
+  #               S3 API is traefik-routed.
   #   traefik   - Traefik deploy labels on exposure.network, routing console.ingress.host
   #               to console.port.
   #   published - publish console.port on the Swarm as console.publish.port.
@@ -92,8 +93,9 @@ network:
   name: rustfs-net
 
 # How the S3 API is exposed beyond network.name. This is the S3 API only: the console
-# has its own console.exposure, so either can be routed while the other stays internal.
-#   none      - (default) nowhere else; only services on network.name reach it.
+# has its own console.exposure, so either can be routed while the other is not.
+#   none      - (default) nowhere else; only services on network.name reach it, and
+#               those on exposure.network while the console is traefik-routed.
 #   traefik   - Traefik deploy labels on exposure.network, routing ingress.host to
 #               s3.port. Path-style addressing (https://<host>/<bucket>/<key>), which is
 #               what non-AWS S3 clients use.
