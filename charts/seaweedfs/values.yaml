@@ -67,7 +67,9 @@ network:
 
 # How the S3 API is exposed beyond network.name (the admin UI has its own
 # admin.exposure):
-#   none      - (default) nowhere else; only services on network.name reach it.
+#   none      - (default) no route or port of its own: services on network.name reach
+#               it, and while the admin UI is traefik-routed so does everything on
+#               exposure.network (the service joins it, and S3 listens on all interfaces).
 #   traefik   - Traefik deploy labels on exposure.network, routing ingress.host to the
 #               S3 port. Path-style addressing (https://<host>/<bucket>/<key>), which is
 #               what non-AWS S3 clients use, including the GitLab Runner cache.
@@ -75,6 +77,7 @@ network:
 exposure:
   mode: none
   # The edge proxy's overlay, joined when the S3 API or the admin UI is traefik-routed.
+  # Once joined, everything on it reaches BOTH listeners directly, past the routers.
   # Provisioned by the proxy chart/operator (requirements.yaml, autoCreate:false).
   network: traefik-public
 
@@ -126,9 +129,12 @@ admin:
   #   printf '%s' '<password>' | docker secret create seaweedfs-admin-password -
   passwordSecret: seaweedfs-admin-password
   # How the UI is exposed beyond network.name:
-  #   none      - (default) nowhere else; only services on network.name reach it.
+  #   none      - (default) no route or port of its own: services on network.name reach
+  #               it, and while the S3 API is traefik-routed so does everything on
+  #               exposure.network — directly, with none of the router's protections.
   #   traefik   - Traefik deploy labels on exposure.network, routing admin.ingress.host
-  #               to the UI (all of it except /metrics, which needs no login).
+  #               to the UI, except /metrics (which needs no login) and any write a
+  #               browser marks as sent from another site (the UI has no CSRF check).
   #   published - publish admin.port on the Swarm as admin.publish.port. Plain HTTP.
   exposure:
     mode: none

@@ -59,7 +59,7 @@ mode. `exposure.mode` adds:
 
 | Mode | What it adds |
 |------|--------------|
-| `none` (default) | nothing — overlay clients only |
+| `none` (default) | no route or port of its own — overlay clients only; on `exposure.network` too while the admin UI is traefik-routed, as the service then joins it |
 | `traefik` | Traefik labels on `exposure.network`, routing `ingress.host` to the S3 port, with an HTTPS router and ACME certificate when `ingress.tls` |
 | `published` | `s3.port` published on the Swarm as `publish.port` |
 
@@ -102,9 +102,13 @@ cache:
 
 The UI is SeaweedFS's `weed admin`, off by default. With `admin.enabled` the
 container starts it beside the server once the master answers, and restarts it
-if it exits; S3 and its healthcheck never depend on it. The password, read from
-the secret, reaches that one process alone: never weed server, an argv, the
-manifest or `docker inspect`. Its settings and session key live in `/data/admin`.
+if it exits; S3 and its healthcheck never depend on it. Its settings live in
+`/data/admin`; its session key there is deleted at every container start, so a
+redeploy logs everyone out. The password, read from the secret, is kept out of
+weed server's environment, every argv, the manifest and `docker inspect`. That
+is no boundary inside the container: Swarm mounts the secret world-readable
+(0444), and any process running as `seaweed` — weed server included — can read
+it, or weed admin's environment.
 
 ```bash
 # The password, as an external Swarm secret. Swarm never shows a secret again, so
@@ -145,19 +149,39 @@ S3 secret key.
     traefik.http.routers.s3-admin-https.middlewares: s3-admin-allow
   ```
 
+- **No CSRF protection on most writes.** `weed admin` checks a CSRF token only on
+  a few handlers (lifecycle, policy, S3 tables): creating users, groups and
+  policies, uploads and new folders take the session cookie alone, and its JSON
+  endpoints accept any `Content-Type`. The cookie is `SameSite=Lax`, which a
+  browser still sends from another host of the same site (`s3.example.com` →
+  `admin.example.com`). So in traefik mode the admin routers refuse every method
+  but GET and HEAD when the browser marks the request `Sec-Fetch-Site: same-site`
+  or `cross-site` — current browsers send the header; a client that sends none,
+  such as curl, passes. `published` mode has no such guard: give the UI a
+  registrable domain of its own, or put it behind forward-auth.
 - **The session cookie is not marked `Secure`** (`weed admin` sets that only when
-  it terminates TLS itself), so keep `admin.ingress.tls` on, which redirects HTTP
-  to HTTPS, and keep `published` mode to trusted networks.
+  it terminates TLS itself), so a browser sends it in cleartext with any
+  `http://` request to the host — the HTTP→HTTPS redirect answers that request,
+  it does not stop it. HSTS does, from the browser's first HTTPS visit on: the
+  [traefik chart](../traefik) sends it by default (`traefik.hsts`); a Traefik of
+  your own may not. Keep `published` mode
+  to trusted networks.
 - **`/metrics` needs no login**, so the router excludes it
   (``!PathPrefix(`/metrics`)``); it still answers on the overlays.
 - **OIDC login for the UI is SeaweedFS Enterprise only.** For SSO use the
   forward-auth middleware above.
-- Anything on `network.name` (and, when routed, `exposure.network`) reaches the
-  login page. The UI's worker gRPC port (`admin.port + 10000`) has no
-  authentication and stays on 127.0.0.1.
+- **The overlays bypass the router.** Anything on `network.name` — and on
+  `exposure.network` whenever either API is traefik-routed, even with the UI's
+  own mode `none` — reaches the UI directly on `admin.port`: past the router's
+  middlewares, its `/metrics` and cross-site rules, and with no rate limit. The
+  UI's worker gRPC port (`admin.port + 10000`) has no authentication and stays
+  on 127.0.0.1.
 
 To change the password, create a new secret under a new name, point
-`admin.passwordSecret` at it and upgrade.
+`admin.passwordSecret` at it and upgrade. The new task deletes the session key,
+so every session ends with the redeploy, those opened with the old password
+included; `docker service update --force <release>_seaweedfs` does the same. A
+crash of the UI alone keeps its sessions.
 
 ## Security
 
@@ -174,9 +198,9 @@ To change the password, create a new secret under a new name, point
   gateway's address and accepts identity updates. The chart sets a fresh random
   filer signing key at every start, which makes that port refuse unsigned updates
   — without it, anything on the same overlay could add itself as an admin.
-- Everything on `network.name`, and in traefik mode everything on
-  `exposure.network`, can reach the S3 port. That is the intent; the key pair is
-  what protects the data.
+- Everything on `network.name`, and everything on `exposure.network` whenever
+  the S3 API or the admin UI is traefik-routed, can reach the S3 port. That is
+  the intent; the key pair is what protects the data.
 
 ## Buckets
 
