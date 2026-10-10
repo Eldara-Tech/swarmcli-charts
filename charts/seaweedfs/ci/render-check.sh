@@ -108,8 +108,9 @@ grep -Fx seaweedfs-net <<<"$nets" >/dev/null || bad "the service is not on netwo
 labels="$(q "$svc.deploy.labels[]")"
 # The admin routers' rule after Host(): /metrics needs no login, and weed admin checks no CSRF
 # token on most writes, so anything but GET/HEAD a browser marks same-site or cross-site is
-# refused at the edge (the session cookie is SameSite=Lax, so same-site would carry it).
-admin_guard='!PathPrefix(`/metrics`) && (Method(`GET`) || Method(`HEAD`) || !HeaderRegexp(`Sec-Fetch-Site`, `^(cross|same)-site`))'
+# refused at the edge (the session cookie is SameSite=Lax, so same-site would carry it). An
+# encoded slash is refused too: Traefik matches the escaped path, weed admin the decoded one.
+admin_guard='!PathPrefix(`/metrics`) && !PathRegexp(`(?i)%2f`) && (Method(`GET`) || Method(`HEAD`) || !HeaderRegexp(`Sec-Fetch-Site`, `^(cross|same)-site`))'
 # The routes that return stored files or their metadata ride a router of their own whose
 # responses are sandboxed: weed admin serves an uploaded SVG inline, script and all.
 content_paths='(Path(`/api/files/download`) || Path(`/api/files/view`) || Path(`/api/files/metadata`))'

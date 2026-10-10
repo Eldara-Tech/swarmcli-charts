@@ -166,7 +166,11 @@ S3 secret key.
     `Content-Security-Policy: sandbox` and `X-Content-Type-Options: nosniff`
     (the `<router>-admin-sandbox` middleware), so a stored file opened in the
     browser runs no script in the UI's origin. An inline PDF preview may not
-    render under the sandbox; download the file instead.
+    render under the sandbox; download the file instead;
+  - every admin router refuses a path with an encoded slash (`%2F`): Traefik
+    matches the path still encoded and `weed admin` decodes it, so
+    `/api%2Ffiles%2Fdownload` would otherwise reach the download handler without
+    the sandbox. The UI passes file paths in the query string, never the path.
 
   **`published` mode has neither guard: any S3 user who can get an admin to open
   a link can take over the UI.** Publish it only on a trusted network.

@@ -281,9 +281,12 @@ services:
        — its rule is longer, so Traefik ranks it first — whose responses carry
        `Content-Security-Policy: sandbox`: weed admin serves uploads it takes for images,
        SVG included, inline, so an object could otherwise run script in the UI's origin,
-       where the cross-site rule above no longer applies. */}}
+       where the cross-site rule above no longer applies. Traefik matches paths still
+       escaped and weed admin decodes them, so /api%2Ffiles%2Fdownload would miss the content
+       router and reach the download handler unsandboxed: an encoded slash is refused on
+       every admin router (the UI passes file paths in the query string, never the path). */}}
 {{- if eq $adminMode "traefik" }}
-{{-   $adminRule := printf "Host(`%s`) && !PathPrefix(`/metrics`) && (Method(`GET`) || Method(`HEAD`) || !HeaderRegexp(`Sec-Fetch-Site`, `^(cross|same)-site`))" $admin.ingress.host }}
+{{-   $adminRule := printf "Host(`%s`) && !PathPrefix(`/metrics`) && !PathRegexp(`(?i)%%2f`) && (Method(`GET`) || Method(`HEAD`) || !HeaderRegexp(`Sec-Fetch-Site`, `^(cross|same)-site`))" $admin.ingress.host }}
 {{-   template "seaweedfs.traefik-routers" (dict "router" (printf "%s-admin" $router) "rule" $adminRule "tls" $admin.ingress.tls "traefik" .Values.traefik "port" $adminPort) }}
         - "traefik.http.middlewares.{{ $router }}-admin-sandbox.headers.contentSecurityPolicy=sandbox"
         - "traefik.http.middlewares.{{ $router }}-admin-sandbox.headers.contentTypeNosniff=true"
