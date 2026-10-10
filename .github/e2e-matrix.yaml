@@ -39,7 +39,10 @@ include:
   # stands up the traefik chart and ci/e2e-check.sh routes /healthz through it. The other
   # fixtures are ci/e2e-render-only (an SSH forge, a real app-set repo, ACME, host paths).
   - { chart: swarmcli-cd,   cases: "default ephemeral published dir edge",                                            timeout: 6m  }
-  - { chart: redis,         cases: "default no-auth ephemeral bind-mount published-port",                             timeout: 6m  }
+  # redis: every fixture. `metrics` scrapes the exporter on the monitoring overlay, proves
+  # no scrape command is denied, and that its ACL user reads INFO but is refused a key,
+  # CONFIG GET and FLUSHALL; `metrics-no-auth` covers the exporter with no user or secret.
+  - { chart: redis,         cases: "default no-auth ephemeral bind-mount published-port metrics metrics-no-auth",     timeout: 6m  }
   # bind-mount excluded from CI: MariaDB's healthcheck cannot authenticate on a
   # host bind-mounted datadir in this Swarm CI environment (it works on a named
   # volume, so all other fixtures pass); the host-path render is covered by

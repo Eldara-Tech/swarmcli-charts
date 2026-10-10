@@ -1,6 +1,26 @@
 {{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) (contains "/" .Values.persistence.volumeName) -}}
 {{- fail "persistence.volumeName is a Docker named-volume name and cannot contain '/'. To store data under a host directory, set persistence.volumePath instead." -}}
 {{- end -}}
+{{- $acl := and .Values.metrics.enabled .Values.auth.enabled -}}
+{{- if and .Values.metrics.enabled (eq .Values.metrics.network .Values.network.name) -}}
+{{- fail "metrics.network must differ from network.name: the exporter joins both, and the point of a separate metrics overlay is that Prometheus never shares one with redis's port." -}}
+{{- end -}}
+{{- if $acl -}}
+{{- if not (regexMatch "^[A-Za-z0-9_.-]+$" .Values.metrics.username) -}}
+{{- fail "metrics.username must match ^[A-Za-z0-9_.-]+$: it is spliced into the redis-server command line as an ACL user name." -}}
+{{- end -}}
+{{- if eq .Values.metrics.username "default" -}}
+{{- fail "metrics.username must not be 'default': that is the user requirepass protects, and redefining it would strip the application's access." -}}
+{{- end -}}
+{{- if eq .Values.metrics.secretName .Values.auth.secretName -}}
+{{- fail "metrics.secretName must differ from auth.secretName: the exporter's user would otherwise share the admin password, and anyone holding it has full access." -}}
+{{- end -}}
+{{- range .Values.extraConfig -}}
+{{- if regexMatch "(^|\\s)--aclfile(\\s|=|$)" . -}}
+{{- fail "metrics.enabled with auth.enabled defines the exporter's ACL user on the command line, and redis-server refuses to start with both command-line users and an aclfile. Define the exporter user in your ACL file instead and leave metrics off here, or drop --aclfile." -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 version: "3.9"
 
 services:
@@ -31,6 +51,9 @@ services:
 {{- if .Values.auth.enabled }}
     secrets:
       - {{ .Values.auth.secretName }}
+{{- if $acl }}
+      - {{ .Values.metrics.secretName }}
+{{- end }}
 {{- end }}
 
     # Read the password from the mounted secret at start and pass it to
@@ -40,9 +63,20 @@ services:
     # file or `docker inspect`, only in the in-container process args. We re-invoke
     # the image's docker-entrypoint.sh (not redis-server directly) so its gosu step
     # still drops to the unprivileged `redis` user and chowns /data.
+    #
+    # With metrics on, the exporter's ACL user is defined here too. Only the SHA-256
+    # of its password reaches the command line (`#<hex>`), computed from the mounted
+    # secret exactly as the exporter reads it (trailing newlines stripped); a secret
+    # that is empty or only whitespace stops the start rather than create a user with
+    # an empty password. Its grants read server state and the slow log, and nothing
+    # else: no key, no CONFIG (CONFIG GET returns requirepass).
 {{- $args := list }}
 {{- if .Values.auth.enabled }}
 {{-   $args = append $args (printf "test -s /run/secrets/%s || { echo '%s secret is empty' >&2; exit 1; };" .Values.auth.secretName .Values.auth.secretName) }}
+{{- end }}
+{{- if $acl }}
+{{-   $args = append $args (printf "e=\"$$(cat /run/secrets/%s)\"; [ -n \"$$(printf '%%s' \"$$e\" | tr -d '[:space:]')\" ] || { echo '%s secret is empty' >&2; exit 1; };" .Values.metrics.secretName .Values.metrics.secretName) }}
+{{-   $args = append $args "h=\"$$(printf '%s' \"$$e\" | sha256sum | cut -d' ' -f1)\";" }}
 {{- end }}
 {{- $args = append $args "exec docker-entrypoint.sh redis-server" }}
 {{- if .Values.persistence.enabled }}
@@ -51,6 +85,9 @@ services:
 {{- end }}
 {{- if .Values.auth.enabled }}
 {{-   $args = append $args (printf "--requirepass \"$$(cat /run/secrets/%s)\"" .Values.auth.secretName) }}
+{{- end }}
+{{- if $acl }}
+{{-   $args = append $args (printf "--user '%s' on \"#$$h\" -@all '+client|setname' '+info' '+latency|latest' '+latency|histogram' '+slowlog|len' '+slowlog|get' '+command|info'" .Values.metrics.username) }}
 {{- end }}
 {{- if .Values.maxmemory }}
 {{-   $args = append $args (printf "--maxmemory %s" .Values.maxmemory) }}
@@ -118,6 +155,70 @@ services:
         - "{{ $key }}={{ $val }}"
 {{- end }}
 {{- end }}
+{{- if .Values.metrics.enabled }}
+
+  redis-exporter:
+    image: {{ .Values.metrics.image.repository }}:{{ .Values.metrics.image.tag }}
+
+    # Redis's overlay to reach it, and the metrics overlay for Prometheus to reach the
+    # exporter. Redis itself never joins the metrics overlay.
+    networks:
+      - {{ .Values.network.name }}
+      - {{ .Values.metrics.network }}
+{{- if $acl }}
+
+    secrets:
+      - {{ .Values.metrics.secretName }}
+{{- end }}
+
+    # tasks.<release>_redis resolves to redis's task, and to nothing while it has none,
+    # so a stopped redis reads as redis_up 0 at once rather than a connect timeout
+    # against an empty VIP.
+    #
+    # --disable-scrape-endpoint removes /scrape?target=, which would otherwise dial any
+    # address a caller names and send it this exporter's credentials in an AUTH command.
+    # --config-command=- skips CONFIG GET, which the ACL user may not run.
+{{- if $acl }}
+    # The password is read from the mounted secret at start, so it never lands in the
+    # compose file or `docker inspect`. `$$` is the compose escape for a literal `$`.
+{{- end }}
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - >-
+{{- if $acl }}
+        p="$$(cat /run/secrets/{{ .Values.metrics.secretName }})";
+        [ -n "$$(printf '%s' "$$p" | tr -d '[:space:]')" ] || { echo '{{ .Values.metrics.secretName }} secret is empty' >&2; exit 1; };
+        export REDIS_PASSWORD="$$p";
+{{- end }}
+        exec /redis_exporter
+        --redis.addr=redis://tasks.{{ .Release.Name }}_redis:6379
+{{- if $acl }}
+        --redis.user={{ .Values.metrics.username }}
+{{- end }}
+        --config-command=-
+        --disable-scrape-endpoint
+
+    deploy:
+      replicas: 1
+{{- /* The same constraints as redis: Prometheus labels every target with the node it
+       runs on, and that should be redis's node. */}}
+{{- if $constraints }}
+      placement:
+        constraints:
+{{- range $constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+      # Only the discovery labels, never .Values.labels: once a service opts in, every
+      # one of its deploy labels is readable through Prometheus's targets API.
+      labels:
+        - "prometheus.io/scrape=true"
+        - "prometheus.io/port=9121"
+{{- end }}
 
 {{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) }}
 
@@ -130,6 +231,10 @@ volumes:
 secrets:
   {{ .Values.auth.secretName }}:
     external: true
+{{- if $acl }}
+  {{ .Values.metrics.secretName }}:
+    external: true
+{{- end }}
 {{- end }}
 
 networks:
@@ -139,4 +244,8 @@ networks:
 {{- else }}
     driver: overlay
     attachable: true
+{{- end }}
+{{- if .Values.metrics.enabled }}
+  {{ .Values.metrics.network }}:
+    external: true
 {{- end }}
