@@ -143,9 +143,9 @@ include:
   # the signed round trip path-style through the traefik chart. `admin-edge` routes the web UI
   # through the traefik chart with S3 unrouted: login page, unauthenticated request sent to
   # /login, wrong password refused, right one lists the bucket, /metrics not served at the
-  # edge, a write marked Sec-Fetch-Site: same-site refused there (weed admin has no CSRF
-  # check), 9333/8888 refused on both overlays, a stopped UI restarted while S3 keeps serving,
-  # and the password in weed admin's environment only. `oidc` signs tokens with a
+  # edge, a write marked Sec-Fetch-Site: same-site refused there, a stored file served
+  # under a CSP sandbox, 9333/8888 refused on both overlays, a stopped UI restarted while
+  # S3 keeps serving, and the password in weed admin's environment only. `oidc` signs tokens with a
   # per-run key whose discovery document and JWKS the store serves itself, and proves each
   # grant works and every ungranted request is refused, through Bearer tokens and STS —
   # SeaweedFS drops a bad IAM file silently, so only a live grant shows OIDC is on — and

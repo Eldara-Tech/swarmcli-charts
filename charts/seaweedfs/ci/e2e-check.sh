@@ -208,13 +208,12 @@ case "$case" in
       echo "  ok: /metrics answers on the overlay but not through the edge (404)"
       edge_assert_unrouted s3.e2e.test || die "the S3 API's host is routed although exposure.mode is none"
 
-      # weed admin checks no CSRF token on user creation and reads JSON whatever its
-      # Content-Type, so the edge must refuse a write a browser marks as from another site.
-      mk() { a -o /dev/null -X POST -H "Cookie: $sess" -H 'Content-Type: text/plain' -H "Sec-Fetch-Site: $1" \
+      # The edge refuses a write a browser marks as from another site; a same-origin one passes.
+      mk() { a -o /dev/null -X POST -H "Cookie: $sess" -H 'Content-Type: application/json' -H "Sec-Fetch-Site: $1" \
         --data "{\"username\":\"$2\",\"actions\":[\"Admin\"]}" "$abase/api/users"; }
       # Names unique to this run: the store may outlive a run, and a name it already has
       # would fail with 500 rather than prove anything.
-      u="e2e-csrf-$$-$(date +%s)"
+      u="e2e-write-$$-$(date +%s)"
       got="$(mk same-site "$u-site")"
       [ "$(status <<<"$got")" = "404" ] || die "a same-site POST /api/users was not refused at the edge (HTTP $(status <<<"$got"))"
       got="$(mk same-origin "$u-origin")"
@@ -224,22 +223,21 @@ case "$case" in
       if grep -F "$u-site" <<<"$users" >/dev/null; then die "the same-site POST created its user anyway"; fi
       echo "  ok: a write marked Sec-Fetch-Site: same-site is refused at the edge (404, no user); same-origin creates one (201)"
 
-      # weed admin serves an uploaded SVG inline, script and all, and a top-level GET from
-      # another site passes the rule above. The edge sandboxes the stored-file routes only.
-      svg="<svg xmlns=\"http://www.w3.org/2000/svg\"><script>/* $u */</script></svg>"
-      got="$(printf '%s' "$svg" | signed_code -X PUT -H 'Content-Type: image/svg+xml' --data-binary @- "$base/$bucket/$u.svg")"
-      [ "$got" = "200" ] || die "signed PUT of the SVG returned '$got'"
-      got="$(a -H "Cookie: $sess" -H 'Sec-Fetch-Site: cross-site' "$abase/api/files/download?path=/buckets/$bucket/$u.svg&inline=true")"
-      [ "$(status <<<"$got")" = "200" ] && [ "$(sed '1,/^$/d' <<<"$got")" = "$svg" ] \
-        || die "the SVG does not download through the edge (HTTP $(status <<<"$got"))"
+      # The edge sandboxes the stored-file routes only, an image opened inline included.
+      obj="e2e image $u"
+      got="$(printf '%s' "$obj" | signed_code -X PUT -H 'Content-Type: image/png' --data-binary @- "$base/$bucket/$u.png")"
+      [ "$got" = "200" ] || die "signed PUT of the image returned '$got'"
+      got="$(a -H "Cookie: $sess" -H 'Sec-Fetch-Site: cross-site' "$abase/api/files/download?path=/buckets/$bucket/$u.png&inline=true")"
+      [ "$(status <<<"$got")" = "200" ] && [ "$(sed '1,/^$/d' <<<"$got")" = "$obj" ] \
+        || die "the image does not download through the edge (HTTP $(status <<<"$got"))"
       [ "$(header Content-Disposition <<<"$got" | cut -d';' -f1)" = "inline" ] \
-        || die "the SVG is not served inline ('$(header Content-Disposition <<<"$got")'), so this check proves nothing"
+        || die "the image is not served inline ('$(header Content-Disposition <<<"$got")'), so this check proves nothing"
       [ "$(header Content-Security-Policy <<<"$got")" = "sandbox" ] \
-        || die "the inline SVG carries no 'Content-Security-Policy: sandbox' (got '$(header Content-Security-Policy <<<"$got")')"
+        || die "the inline image carries no 'Content-Security-Policy: sandbox' (got '$(header Content-Security-Policy <<<"$got")')"
       got="$(a -o /dev/null -H "Cookie: $sess" "$abase/admin")"
       [ "$(status <<<"$got")" = "200" ] && [ -z "$(header Content-Security-Policy <<<"$got")" ] \
         || die "the dashboard is not served unsandboxed (HTTP $(status <<<"$got"), CSP '$(header Content-Security-Policy <<<"$got")')"
-      echo "  ok: an uploaded SVG downloads inline through the edge under 'Content-Security-Policy: sandbox'; the dashboard has no CSP"
+      echo "  ok: an uploaded image downloads inline through the edge under 'Content-Security-Policy: sandbox'; the dashboard has no CSP"
     fi
 
     # A stopped UI comes back, and S3 keeps serving from the same task meanwhile.

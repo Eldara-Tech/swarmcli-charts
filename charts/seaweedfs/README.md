@@ -153,26 +153,21 @@ S3 secret key.
     traefik.http.routers.s3-admin-content-https.middlewares: s3-admin-allow,s3-admin-sandbox
   ```
 
-- **Cross-site requests: upstream gaps the edge only narrows.** `weed admin`
-  checks a CSRF token on only a few of its writes, reads JSON whatever its
-  `Content-Type`, and serves some uploaded files inline in its own origin; its
-  session cookie is `SameSite=Lax`, which a browser still sends from another host
-  of the same site (`s3.example.com` → `admin.example.com`). These are SeaweedFS
-  bugs the chart cannot fix. In traefik mode it narrows them at the edge:
-  - the admin routers refuse every method but GET and HEAD when the browser
-    marks the request `Sec-Fetch-Site: same-site` or `cross-site` (current
-    browsers send the header; a client that sends none, such as curl, passes);
+- **What the edge adds in front of `weed admin`.** In traefik mode the admin
+  routers carry three protections that `published` mode and the overlays lack:
+  - they refuse every method but GET and HEAD when the browser marks the request
+    `Sec-Fetch-Site: same-site` or `cross-site` (current browsers send the
+    header; a client that sends none, such as curl, passes);
   - the routes that return stored files or their metadata
     (`/api/files/download`, `/api/files/view`, `/api/files/metadata`) ride a
     router of their own, `<router>-admin-content-https`, whose responses carry
     `Content-Security-Policy: sandbox` and `X-Content-Type-Options: nosniff`
-    (the `<router>-admin-sandbox` middleware), so a stored file opened in the
-    browser runs no script in the UI's origin. An inline PDF preview may not
+    (the `<router>-admin-sandbox` middleware). An inline PDF preview may not
     render under the sandbox; download the file instead;
-  - every admin router refuses a path with an encoded slash (`%2F`): Traefik
-    matches the path still encoded and `weed admin` decodes it, so
-    `/api%2Ffiles%2Fdownload` would otherwise reach the download handler without
-    the sandbox. The UI passes file paths in the query string, never the path.
+  - every admin router refuses a path with an encoded slash (`%2F`). Traefik
+    matches the path still encoded, and this keeps every request for those
+    routes on their router. The UI passes file paths in the query string, never
+    the path.
 
   **`published` mode has neither guard: any S3 user who can get an admin to open
   a link can take over the UI.** Publish it only on a trusted network.

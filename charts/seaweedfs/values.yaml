@@ -159,8 +159,8 @@ admin:
   #               exposure.network — directly, with none of the router's protections.
   #   traefik   - Traefik deploy labels on exposure.network, routing admin.ingress.host
   #               to the UI, except /metrics (which needs no login) and any write a
-  #               browser marks as sent from another site (the UI has no CSRF check),
-  #               with the stored-file routes under `Content-Security-Policy: sandbox`.
+  #               browser marks as sent from another site, with the stored-file
+  #               routes under `Content-Security-Policy: sandbox`.
   #   published - publish admin.port on the Swarm as admin.publish.port. Plain HTTP,
   #               with neither edge guard: for a trusted network only (README).
   exposure:
