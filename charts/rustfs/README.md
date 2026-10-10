@@ -219,10 +219,13 @@ oidc:
   keeps working.
 - **The client secret** goes from the Swarm secret into the server's environment at
   start, by the start-up wrapper; it is never in the manifest or `docker inspect`.
-  `extraEnv` refuses it in every spelling, and with `oidc.enabled` also refuses the
-  settings the chart makes from `oidc.*`. Scopes, claim names, the button's
-  `RUSTFS_IDENTITY_OPENID_DISPLAY_NAME` and a fixed `RUSTFS_IDENTITY_OPENID_ROLE_POLICY`
-  go in `extraEnv`.
+  `extraEnv` refuses it in every spelling.
+- **What `extraEnv` may tune**, as `RUSTFS_IDENTITY_OPENID_<name>` and only with
+  `oidc.enabled`: `SCOPES`, `CLAIM_NAME`, `CLAIM_PREFIX`, `ROLE_POLICY`,
+  `DISPLAY_NAME` (the button's label), `GROUPS_CLAIM`, `ROLES_CLAIM`, `EMAIL_CLAIM`,
+  `USERNAME_CLAIM` and `HIDE_FROM_UI`. Every other OIDC setting is refused, since the
+  provider, client, issuer and callback come from `oidc.*`, and so is a provider
+  suffix: a second provider is not supported.
 
 ## Security
 
@@ -316,7 +319,7 @@ collector.
 | `traefik.idleTimeoutSeconds` | `120` | RustFS's idle-connection timeout while either listener is routed; must outlast Traefik's 90s |
 | `publish.port` / `publish.mode` | `9000` / `ingress` | S3 API published port (published mode) |
 | `nofile` | `65536` | Open-file limit; `0` = daemon default |
-| `extraEnv` | `{}` | Extra `RUSTFS_*` environment. Credentials, the listener addresses and (with `oidc.enabled`) the OIDC settings from `oidc.*` are refused; `RUSTFS_OBS_LOG_DIRECTORY`, `RUSTFS_CHECK_UPDATE`, `RUSTFS_HTTP1_HEADER_READ_TIMEOUT` and `RUSTFS_OUTBOUND_ALLOW_ORIGINS` override the chart's defaults |
+| `extraEnv` | `{}` | Extra `RUSTFS_*` environment. Credentials, the listener addresses and every OIDC setting but the tuning ones ([Single sign-on](#single-sign-on)) are refused; `RUSTFS_OBS_LOG_DIRECTORY`, `RUSTFS_CHECK_UPDATE`, `RUSTFS_HTTP1_HEADER_READ_TIMEOUT` and `RUSTFS_OUTBOUND_ALLOW_ORIGINS` override the chart's defaults |
 | `healthcheck.*` | enabled, 15s/5s/4, start 30s, monitor 2m | `curl` of `/health/ready` on the S3 port |
 | `stopGracePeriod` | `30s` | SIGTERM → SIGKILL window |
 | `resources.limits.memory` / `resources.reservations.memory` | `""` | Optional memory limits |

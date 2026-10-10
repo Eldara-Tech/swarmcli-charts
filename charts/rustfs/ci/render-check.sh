@@ -299,11 +299,30 @@ if [ "$case" = "default" ]; then
   for k in RUSTFS_IDENTITY_OPENID_CLIENT_SECRET MINIO_IDENTITY_OPENID_CLIENT_SECRET RUSTFS_IDENTITY_OPENID_CLIENT_SECRET_kc2; do
     refused "extraEnv: $k is a credential" --set "extraEnv.$k=x"
   done
+  # OIDC settings in extraEnv are an allow-list: only the unsuffixed tuning keys, only with oidc on.
+  # A redirect_uri would beat the chart's callback; a suffix adds a second provider.
   for k in RUSTFS_IDENTITY_OPENID_CONFIG_URL MINIO_IDENTITY_OPENID_CONFIG_URL RUSTFS_IDENTITY_OPENID_CLIENT_ID \
-           MINIO_IDENTITY_OPENID_CLIENT_ID RUSTFS_BROWSER_REDIRECT_URL; do
-    refused "extraEnv: $k is set by the chart from oidc" --set oidc.enabled=true --set oidc.configUrl=$kc --set "extraEnv.$k=x"
-    render --set "extraEnv.$k=x" || bad "extraEnv.$k was refused although oidc is off: $(tr '\n' ' ' <"$tmp.err")"
+           MINIO_IDENTITY_OPENID_CLIENT_ID RUSTFS_IDENTITY_OPENID_REDIRECT_URI MINIO_IDENTITY_OPENID_REDIRECT_URI \
+           RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC RUSTFS_IDENTITY_OPENID_ISSUER MINIO_IDENTITY_OPENID_ISSUER \
+           RUSTFS_IDENTITY_OPENID_OTHER_AUDIENCES RUSTFS_IDENTITY_OPENID_ENABLE RUSTFS_IDENTITY_OPENID_CONFIG_URL_x \
+           RUSTFS_IDENTITY_OPENID_SCOPES_x; do
+    refused "extraEnv: $k is not an OIDC setting extraEnv may tune" --set oidc.enabled=true --set oidc.configUrl=$kc --set "extraEnv.$k=x"
   done
+  tune="SCOPES CLAIM_NAME CLAIM_PREFIX ROLE_POLICY DISPLAY_NAME GROUPS_CLAIM ROLES_CLAIM EMAIL_CLAIM USERNAME_CLAIM HIDE_FROM_UI"
+  sets=(); for t in $tune; do sets+=(--set "extraEnv.RUSTFS_IDENTITY_OPENID_$t=x"); done
+  if render --set oidc.enabled=true --set oidc.configUrl=$kc --set extraEnv.MINIO_IDENTITY_OPENID_SCOPES=x "${sets[@]}"; then
+    for k in MINIO_IDENTITY_OPENID_SCOPES $(printf 'RUSTFS_IDENTITY_OPENID_%s ' $tune); do
+      [ "$(yq -r "$svc.environment.$k" "$tmp")" = "x" ] || bad "extraEnv.$k was not rendered"
+    done
+  else
+    bad "the OIDC tuning keys in extraEnv were refused with oidc on: $(tr '\n' ' ' <"$tmp.err")"
+  fi
+  for k in RUSTFS_IDENTITY_OPENID_SCOPES MINIO_IDENTITY_OPENID_CONFIG_URL; do
+    refused "extraEnv: $k configures OIDC" --set "extraEnv.$k=x"
+  done
+  refused 'extraEnv: RUSTFS_BROWSER_REDIRECT_URL is set by the chart' --set extraEnv.RUSTFS_BROWSER_REDIRECT_URL=x
+  refused 'extraEnv: RUSTFS_BROWSER_REDIRECT_URL is set by the chart' --set oidc.enabled=true --set oidc.configUrl=$kc \
+    --set extraEnv.RUSTFS_BROWSER_REDIRECT_URL=x
   # With the console off nothing needs a callback; an explicit browserUrl wins over the derived one;
   # an extraEnv allow-list replaces the chart's.
   envt() { yq -r "$svc.environment.$1" "$tmp"; }

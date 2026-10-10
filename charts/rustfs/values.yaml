@@ -173,7 +173,8 @@ nofile: 65536
 # RUSTFS_HTTP1_HEADER_READ_TIMEOUT and RUSTFS_OUTBOUND_ALLOW_ORIGINS here override the
 # chart's own settings. The render fails on credentials (they belong in the secrets
 # above, and RustFS reads MINIO_* names as well), on the listener addresses (set
-# s3.port / console.* instead) and, with oidc.enabled, on the settings oidc.* makes.
+# s3.port / console.* instead) and on every RUSTFS_IDENTITY_OPENID_* setting except the
+# claim and display tuning README "Single sign-on" lists, allowed with oidc.enabled.
 extraEnv: {}
 
 # Probes /health/ready on the S3 port with the image's curl: 503 until storage and IAM
