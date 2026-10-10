@@ -16,6 +16,9 @@
 #     are exposed independently: routing one must not route the other.
 #   * A single `$` in the wrapper is interpolated by Docker at deploy time, so the secret
 #     would be read on the deploying machine (or read as empty) instead of in the task.
+#   * The OIDC client secret has no _FILE form in RustFS, so the wrapper exports it; it
+#     must never reach environment:, and RustFS must be told the callback base and the
+#     provider's origin, or SSO silently disappears or follows a client's Host header.
 #
 # No check pipes into `grep -q` (scripts/lint.sh enforces it): match with `grep … >/dev/null`
 # or a here-string.
@@ -102,7 +105,7 @@ grep -Fx rustfs-net <<<"$nets" >/dev/null || bad "the service is not on network.
 [ "$(q '.networks."rustfs-net".external')" = "true" ] || bad "rustfs-net is not external — it would be stack-scoped and unreachable by name from other stacks"
 
 # ── the console: a second listener with the full API, only when asked for ─────────────
-case "$case" in traefik|published|console-edge) console=1 ;; *) console="" ;; esac
+case "$case" in traefik|published|console-edge|oidc) console=1 ;; *) console="" ;; esac
 labels="$(q "$svc.deploy.labels[]")"
 if [ -n "$console" ]; then
   [ "$(env_ RUSTFS_CONSOLE_ENABLE)" = "true" ] || bad "case $case: console.enabled but RUSTFS_CONSOLE_ENABLE is not true"
@@ -116,7 +119,7 @@ fi
 
 # ── exposure ──────────────────────────────────────────────────────────────────────────
 case "$case" in
-  traefik|edge|console-edge)
+  traefik|edge|console-edge|oidc)
     grep -Fx traefik-public <<<"$nets" >/dev/null || bad "case $case: not attached to traefik-public"
     for l in 'traefik.enable=true' 'traefik.swarm.network=traefik-public' 'traefik.constraint-label=traefik-public'; do
       grep -Fx "$l" <<<"$labels" >/dev/null || bad "case $case: label $l is missing"
@@ -138,7 +141,7 @@ case "$case" in
     [ "$nets" = "rustfs-net" ] || bad "case $case: attached to more than network.name: $(tr '\n' ' ' <<<"$nets")"
     ;;
 esac
-case "$case" in traefik|edge|console-edge) ;; *)
+case "$case" in traefik|edge|console-edge|oidc) ;; *)
   [ "$(env_ RUSTFS_HTTP1_HEADER_READ_TIMEOUT)" = "null" ] || bad "case $case: the idle timeout is raised outside traefik mode"
 esac
 # The S3 routers exist exactly when exposure.mode routes the S3 API.
@@ -188,6 +191,31 @@ case "$case" in
     done
     ;;
 esac
+
+# ── single sign-on: the client secret only through the wrapper ───────────────────────
+if [ "$(q "$svc.environment | keys | .[]" | grep -E 'IDENTITY_OPENID_CLIENT_SECRET' || true)" != "" ]; then
+  bad "case $case: an OIDC client secret is set in environment:, where it lands in the manifest and docker inspect"
+fi
+if [ "$case" = "oidc" ]; then
+  [ "$(env_ RUSTFS_IDENTITY_OPENID_CONFIG_URL)" = "http://rustfs-e2e-idp:8080/realms/e2e/.well-known/openid-configuration" ] \
+    || bad "case $case: RUSTFS_IDENTITY_OPENID_CONFIG_URL is not oidc.configUrl"
+  [ "$(env_ RUSTFS_IDENTITY_OPENID_CLIENT_ID)" = "rustfs-e2e" ] || bad "case $case: RUSTFS_IDENTITY_OPENID_CLIENT_ID is not oidc.clientId"
+  [ "$(env_ RUSTFS_BROWSER_REDIRECT_URL)" = "https://rustfs-console.e2e.test" ] \
+    || bad "case $case: RUSTFS_BROWSER_REDIRECT_URL is not derived from console.ingress (got '$(env_ RUSTFS_BROWSER_REDIRECT_URL)') — the callback would follow the request's Host header"
+  [ "$(env_ RUSTFS_OUTBOUND_ALLOW_ORIGINS)" = "http://rustfs-e2e-idp:8080" ] \
+    || bad "case $case: RUSTFS_OUTBOUND_ALLOW_ORIGINS is not the origin of oidc.configUrl (got '$(env_ RUSTFS_OUTBOUND_ALLOW_ORIGINS)') — RustFS would refuse the provider on its overlay address"
+  [ "$(q "$svc.secrets[2]")" = "rustfs-oidc-client-secret" ] && [ "$(q '.secrets."rustfs-oidc-client-secret".external')" = "true" ] \
+    || bad "case $case: the OIDC client secret is not mounted as the external secret rustfs-oidc-client-secret"
+  grep -F 'done; f=/run/secrets/rustfs-oidc-client-secret; RUSTFS_IDENTITY_OPENID_CLIENT_SECRET="$$(cat "$$f" 2>/dev/null || true)"; if [ -z "$$RUSTFS_IDENTITY_OPENID_CLIENT_SECRET" ]; then echo' <<<"$script" >/dev/null \
+    && grep -F 'export RUSTFS_IDENTITY_OPENID_CLIENT_SECRET;' <<<"$script" >/dev/null \
+    || bad "case $case: the wrapper does not export the client secret from /run/secrets/rustfs-oidc-client-secret, refusing an empty one"
+else
+  for v in RUSTFS_IDENTITY_OPENID_CONFIG_URL RUSTFS_IDENTITY_OPENID_CLIENT_ID RUSTFS_BROWSER_REDIRECT_URL RUSTFS_OUTBOUND_ALLOW_ORIGINS; do
+    [ "$(env_ "$v")" = "null" ] || bad "case $case: $v is set although oidc is off"
+  done
+  [ "$(q "$svc.secrets | length")" = "2" ] || bad "case $case: a third secret is mounted although oidc is off"
+  if grep -F 'CLIENT_SECRET' <<<"$script" >/dev/null; then bad "case $case: the wrapper reads an OIDC client secret although oidc is off"; fi
+fi
 
 # ── buckets ───────────────────────────────────────────────────────────────────────────
 case "$case" in
@@ -257,6 +285,34 @@ if [ "$case" = "default" ]; then
   refused 'console.publish.port must differ from publish.port' --set exposure.mode=published --set console.enabled=true \
     --set console.exposure.mode=published --set console.publish.port=9000
   refused 'console.port must differ from s3.port' --set console.enabled=true --set console.port=9000
+  kc=https://kc.example.com/realms/r/.well-known/openid-configuration
+  refused 'oidc.configUrl must be' --set oidc.enabled=true
+  refused 'oidc.configUrl must be' --set oidc.enabled=true --set oidc.configUrl=https://u:p@kc.example.com/realms/r
+  refused 'oidc.browserUrl is required' --set oidc.enabled=true --set oidc.configUrl=$kc --set console.enabled=true
+  refused '/oidc/clientSecretSecret' --set oidc.enabled=true --set oidc.configUrl=$kc --set oidc.clientSecretSecret=
+  for k in RUSTFS_IDENTITY_OPENID_CLIENT_SECRET MINIO_IDENTITY_OPENID_CLIENT_SECRET RUSTFS_IDENTITY_OPENID_CLIENT_SECRET_kc2; do
+    refused "extraEnv: $k is a credential" --set "extraEnv.$k=x"
+  done
+  for k in RUSTFS_IDENTITY_OPENID_CONFIG_URL MINIO_IDENTITY_OPENID_CONFIG_URL RUSTFS_IDENTITY_OPENID_CLIENT_ID \
+           MINIO_IDENTITY_OPENID_CLIENT_ID RUSTFS_BROWSER_REDIRECT_URL; do
+    refused "extraEnv: $k is set by the chart from oidc" --set oidc.enabled=true --set oidc.configUrl=$kc --set "extraEnv.$k=x"
+    render --set "extraEnv.$k=x" || bad "extraEnv.$k was refused although oidc is off: $(tr '\n' ' ' <"$tmp.err")"
+  done
+  # With the console off nothing needs a callback; an explicit browserUrl wins over the derived one;
+  # an extraEnv allow-list replaces the chart's.
+  envt() { yq -r "$svc.environment.$1" "$tmp"; }
+  if render --set oidc.enabled=true --set oidc.configUrl=$kc; then
+    [ "$(envt RUSTFS_BROWSER_REDIRECT_URL)" = "null" ] && [ "$(envt RUSTFS_OUTBOUND_ALLOW_ORIGINS)" = "https://kc.example.com" ] \
+      || bad "oidc with the console off: callback base '$(envt RUSTFS_BROWSER_REDIRECT_URL)', allow-list '$(envt RUSTFS_OUTBOUND_ALLOW_ORIGINS)'"
+  else
+    bad "oidc with the console off was refused: $(tr '\n' ' ' <"$tmp.err")"
+  fi
+  render --set oidc.enabled=true --set oidc.configUrl=$kc --set console.enabled=true --set console.exposure.mode=traefik \
+    --set console.ingress.host=c.example.com --set oidc.browserUrl=https://sso.example.com \
+    --set extraEnv.RUSTFS_OUTBOUND_ALLOW_ORIGINS=https://kc-backchannel:8443 \
+    && [ "$(envt RUSTFS_BROWSER_REDIRECT_URL)" = "https://sso.example.com" ] \
+    && [ "$(envt RUSTFS_OUTBOUND_ALLOW_ORIGINS)" = "https://kc-backchannel:8443" ] \
+    || bad "oidc.browserUrl or an extraEnv RUSTFS_OUTBOUND_ALLOW_ORIGINS does not win over the chart's own"
   # A disabled console is exposed nowhere, whatever console.exposure says (prometheus-stack's rule).
   for m in traefik published; do
     if render --set console.exposure.mode="$m"; then

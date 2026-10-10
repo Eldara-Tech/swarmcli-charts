@@ -130,16 +130,17 @@ include:
   # the signed round trip path-style through the traefik chart. traefik (labels only, nothing
   # to route through) and bind-mount are covered by charts.yml and run in a full local `make e2e`.
   - { chart: seaweedfs,     cases: "default buckets ephemeral published edge",                                       timeout: 6m  }
-  # rustfs: the same five as seaweedfs, for the same reason: RustFS converges just as well on
+  # rustfs: seaweedfs's five plus two, for the same reason: RustFS converges just as well on
   # its public default rustfsadmin pair, so ci/e2e-check.sh proves from a client on the overlay
   # that anonymous, wrong-key and default-pair requests get 403, a signed PUT/GET round-trips and
   # the listed buckets were created. `buckets` forces a restart and proves the object survives
   # and the bootstrap passes again over buckets that now exist; `published` also publishes the
   # console and proves its UI answers; `edge` does the signed round trip path-style through the
   # traefik chart; `console-edge` routes only the console through it and proves the S3 host is
-  # not routed. traefik (labels only) and bind-mount are covered by charts.yml and run in a
-  # full local `make e2e`.
-  - { chart: rustfs,        cases: "default buckets ephemeral published edge console-edge",                          timeout: 6m  }
+  # not routed; `oidc` proves single sign-on against a stub provider (discovery, the login
+  # redirect and its callback, the client secret reaching the process). traefik (labels only)
+  # and bind-mount are covered by charts.yml and run in a full local `make e2e`.
+  - { chart: rustfs,        cases: "default buckets ephemeral published edge console-edge oidc",                     timeout: 6m  }
   # gitlab: ONE fixture. GitLab CE is a multi-gigabyte monolith (Postgres, Redis, Gitaly,
   # Puma, Sidekiq in one container) whose documented baseline is 8 vCPU / 16 GB, so the
   # runner boots exactly the case that carries the most signal per minute: `minimal` is the

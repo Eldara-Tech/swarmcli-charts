@@ -4,6 +4,7 @@
 {{- $s3Routed := eq .Values.exposure.mode "traefik" -}}
 {{- $consoleRouted := and $console (eq .Values.console.exposure.mode "traefik") -}}
 {{- $consolePublished := and $console (eq .Values.console.exposure.mode "published") -}}
+{{- $oidc := .Values.oidc.enabled -}}
 {{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) (contains "/" .Values.persistence.volumeName) -}}
 {{-   fail "persistence.volumeName is a Docker named-volume name and cannot contain '/'. To store data under a host directory, set persistence.volumePath instead." -}}
 {{- end -}}
@@ -35,15 +36,31 @@
 {{- if and (eq .Values.exposure.mode "published") $consolePublished (eq (.Values.console.publish.port | int) (.Values.publish.port | int)) -}}
 {{-   fail "console.publish.port must differ from publish.port" -}}
 {{- end -}}
+{{- /* RUSTFS_OUTBOUND_ALLOW_ORIGINS is derived from configUrl's origin, and RustFS refuses an
+       invalid allow-list for every outbound connection it polices, so the shape is checked. */}}
+{{- if and $oidc (not (regexMatch "^https?://[^/?#@]+(/|$)" .Values.oidc.configUrl)) -}}
+{{-   fail (printf "oidc.configUrl must be the http(s) URL of the provider's discovery document when oidc.enabled (got %q)" .Values.oidc.configUrl) -}}
+{{- end -}}
+{{- if and $oidc $console (not $consoleRouted) (not .Values.oidc.browserUrl) -}}
+{{-   fail "oidc.browserUrl is required when oidc.enabled and the console is not traefik-routed: RustFS builds the login callback from it, and without it from the request's Host header, which the client controls" -}}
+{{- end -}}
 {{- /* RustFS copies every MINIO_<x> into an unset RUSTFS_<x> before parsing its flags, so
-       both spellings of a credential are refused, the *_FILE forms included. The
-       listener settings are wired from s3.port / console.*, so they are refused too. */}}
+       both spellings of a credential are refused, the *_FILE forms included, and so is the
+       OIDC client secret under any provider suffix. The listener settings are wired from
+       s3.port / console.*, and with oidc.enabled the provider from oidc.*, so they are
+       refused too. */}}
 {{- range $k, $v := .Values.extraEnv }}
 {{-   if regexMatch "^(RUSTFS|MINIO)_(ACCESS_KEY|SECRET_KEY|ROOT_USER|ROOT_PASSWORD)" $k }}
 {{-     fail (printf "extraEnv: %s is a credential; it belongs in the Swarm secrets s3.accessKeySecret / s3.secretKeySecret" $k) }}
 {{-   end }}
 {{-   if has $k (list "RUSTFS_ADDRESS" "RUSTFS_CONSOLE_ENABLE" "RUSTFS_CONSOLE_ADDRESS" "MINIO_ADDRESS" "MINIO_CONSOLE_ADDRESS") }}
 {{-     fail (printf "extraEnv: %s is set by the chart from s3.port and console.*; use those values instead" $k) }}
+{{-   end }}
+{{-   if regexMatch "^(RUSTFS|MINIO)_IDENTITY_OPENID_CLIENT_SECRET" $k }}
+{{-     fail (printf "extraEnv: %s is a credential; it belongs in the Swarm secret oidc.clientSecretSecret" $k) }}
+{{-   end }}
+{{-   if and $oidc (has $k (list "RUSTFS_IDENTITY_OPENID_CONFIG_URL" "MINIO_IDENTITY_OPENID_CONFIG_URL" "RUSTFS_IDENTITY_OPENID_CLIENT_ID" "MINIO_IDENTITY_OPENID_CLIENT_ID" "RUSTFS_BROWSER_REDIRECT_URL")) }}
+{{-     fail (printf "extraEnv: %s is set by the chart from oidc.*; use those values instead" $k) }}
 {{-   end }}
 {{- end -}}
 version: "3.9"
@@ -54,6 +71,9 @@ version: "3.9"
 {{- $cport := .Values.console.port | int }}
 {{- $access := .Values.s3.accessKeySecret }}
 {{- $secret := .Values.s3.secretKeySecret }}
+{{- $oidcSecret := .Values.oidc.clientSecretSecret }}
+{{- $browserUrl := .Values.oidc.browserUrl }}
+{{- if and (not $browserUrl) $consoleRouted }}{{ $browserUrl = printf "%s://%s" (ternary "https" "http" .Values.console.ingress.tls) .Values.console.ingress.host }}{{- end }}
 
 {{- $nets := list .Values.network.name }}
 {{- if or $s3Routed $consoleRouted }}{{ $nets = append $nets .Values.exposure.network }}{{- end }}
@@ -73,6 +93,10 @@ services:
     #    wrapper refuses that too, after dropping every non-alphanumeric byte so that no
     #    stray whitespace or punctuation slips it past. A key must be one word: whitespace
     #    inside it would make the trimmed key differ from the one the bucket loop signs with.
+    #  * With oidc.enabled it exports the OIDC client secret from its Swarm secret, and
+    #    refuses to start when that is missing or empty. RustFS has no _FILE form for it (it
+    #    would read RUSTFS_IDENTITY_OPENID_CLIENT_SECRET_FILE as a provider named FILE), so
+    #    the value lives only in the server's own environment.
     #  * Buckets are created by a background loop over the signed S3 API once the server
     #    answers. RustFS answers an existing bucket with 200, as S3 does in us-east-1, or
     #    409; both count as done, so a restart is a no-op, and a failure is logged rather
@@ -91,6 +115,12 @@ services:
         if [ "$${w:-0}" != 1 ]; then echo "$$f is missing or empty, or the key has whitespace inside it - refusing to start" >&2; exit 1; fi;
         if [ "$$(LC_ALL=C tr -cd '[:alnum:]' < "$$f")" = rustfsadmin ]; then echo "$$f holds the public default rustfsadmin - refusing to start" >&2; exit 1; fi;
         done;
+{{- if $oidc }}
+        f=/run/secrets/{{ $oidcSecret }};
+        RUSTFS_IDENTITY_OPENID_CLIENT_SECRET="$$(cat "$$f" 2>/dev/null || true)";
+        if [ -z "$$RUSTFS_IDENTITY_OPENID_CLIENT_SECRET" ]; then echo "$$f is missing or empty - refusing to start" >&2; exit 1; fi;
+        export RUSTFS_IDENTITY_OPENID_CLIENT_SECRET;
+{{- end }}
 {{- if .Values.buckets }}
         (
         key="$$(tr -d '[:space:]' < "$$RUSTFS_ACCESS_KEY_FILE" | sed 's/[\\"]/\\&/g')";
@@ -117,7 +147,17 @@ services:
 {{- if $console }}
       RUSTFS_CONSOLE_ADDRESS: ":{{ $cport }}"
 {{- end }}
-{{- /* The next three are defaults extraEnv may override. */}}
+{{- if $oidc }}
+      # Single sign-on; the wrapper above exports the client secret.
+      RUSTFS_IDENTITY_OPENID_CONFIG_URL: {{ .Values.oidc.configUrl | quote }}
+      RUSTFS_IDENTITY_OPENID_CLIENT_ID: {{ .Values.oidc.clientId | quote }}
+{{- with $browserUrl }}
+      # The login callback's base. Without it RustFS takes the scheme and host from the
+      # request (X-Forwarded-Proto, Host), which the client controls.
+      RUSTFS_BROWSER_REDIRECT_URL: {{ . | quote }}
+{{- end }}
+{{- end }}
+{{- /* The next four are defaults extraEnv may override. */}}
 {{- if not (hasKey .Values.extraEnv "RUSTFS_OBS_LOG_DIRECTORY") }}
       # Empty sends the server log to stdout (docker service logs) instead of a file
       # inside the container, the image's default.
@@ -129,6 +169,12 @@ services:
 {{- end }}
 {{- if and (or $s3Routed $consoleRouted) (not (hasKey .Values.extraEnv "RUSTFS_HTTP1_HEADER_READ_TIMEOUT")) }}
       RUSTFS_HTTP1_HEADER_READ_TIMEOUT: {{ .Values.traefik.idleTimeoutSeconds | quote }}
+{{- end }}
+{{- if and $oidc (not (hasKey .Values.extraEnv "RUSTFS_OUTBOUND_ALLOW_ORIGINS")) }}
+      # RustFS contacts a provider on a private address (an overlay, a LAN) only when its
+      # origin is listed here. It is RustFS's one allow-list for every outbound connection
+      # it polices, so webhook and Object Lambda targets may reach this origin too.
+      RUSTFS_OUTBOUND_ALLOW_ORIGINS: {{ regexFind "^https?://[^/]+" .Values.oidc.configUrl | quote }}
 {{- end }}
 {{- range $k, $v := .Values.extraEnv }}
       {{ $k }}: {{ $v | quote }}
@@ -160,6 +206,9 @@ services:
     secrets:
       - {{ $access }}
       - {{ $secret }}
+{{- if $oidc }}
+      - {{ $oidcSecret }}
+{{- end }}
 
     networks:
 {{- range $nets }}
@@ -270,6 +319,10 @@ secrets:
     external: true
   {{ $secret }}:
     external: true
+{{- if $oidc }}
+  {{ $oidcSecret }}:
+    external: true
+{{- end }}
 
 networks:
 {{- range $nets }}

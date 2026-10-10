@@ -30,9 +30,9 @@ s3:
 
 # The RustFS web console: a second listener serving the console UI under
 # /rustfs/console/, plus the same S3 and admin API as s3.port. You log in with the
-# key pair above. Off by default. When on, it is reachable on network.name at
-# console.port, and console.exposure adds a route or a published port, independently
-# of the S3 API's exposure.mode.
+# key pair above, or through oidc below. Off by default. When on, it is reachable on
+# network.name at console.port, and console.exposure adds a route or a published port,
+# independently of the S3 API's exposure.mode.
 console:
   enabled: false
   port: 9001
@@ -140,6 +140,28 @@ publish:
   port: 9000
   mode: ingress
 
+# Single sign-on for the console through an OpenID Connect provider such as Keycloak
+# (README "Single sign-on"). RustFS maps the ID token's groups claim to RustFS policy
+# names and gives the console session temporary credentials with those policies; the
+# root key pair keeps working. Scopes, claims, a role policy and the button's display
+# name are RUSTFS_IDENTITY_OPENID_* settings in extraEnv.
+oidc:
+  enabled: false
+  # The provider's discovery document, e.g.
+  # https://keycloak.example.com/realms/<realm>/.well-known/openid-configuration.
+  # RustFS reads it once, at start. Its origin also becomes RUSTFS_OUTBOUND_ALLOW_ORIGINS,
+  # which RustFS needs before it contacts a provider on a private address.
+  configUrl: ""
+  clientId: rustfs
+  # EXTERNAL Swarm secret holding the client secret. Pre-create it:
+  #   printf '%s' '<client secret>' | docker secret create rustfs-oidc-client-secret -
+  clientSecretSecret: rustfs-oidc-client-secret
+  # The console's public base URL (scheme://host[:port], no path). RustFS builds the
+  # login callback <browserUrl>/rustfs/admin/v3/oidc/callback/default from it. "" =>
+  # http(s)://<console.ingress.host> while the console is traefik-routed; required when
+  # the console is enabled otherwise.
+  browserUrl: ""
+
 # Open-file limit for the RustFS process. Below 16384 RustFS disables its per-disk
 # file-descriptor cache, which costs performance. 0 leaves the daemon's default.
 # Applied by `docker stack deploy` from Docker 23 on.
@@ -147,10 +169,11 @@ nofile: 65536
 
 # Extra environment variables, e.g. RUSTFS_SERVER_DOMAINS for virtual-hosted-style
 # addressing, RUSTFS_REGION, or RUSTFS_OBS_ENDPOINT to push OpenTelemetry metrics and
-# traces to a collector. RUSTFS_OBS_LOG_DIRECTORY, RUSTFS_CHECK_UPDATE and
-# RUSTFS_HTTP1_HEADER_READ_TIMEOUT here override the chart's own settings. The render
-# fails on credentials (they belong in the secrets above, and RustFS reads MINIO_*
-# names as well) and on the listener addresses (set s3.port / console.* instead).
+# traces to a collector. RUSTFS_OBS_LOG_DIRECTORY, RUSTFS_CHECK_UPDATE,
+# RUSTFS_HTTP1_HEADER_READ_TIMEOUT and RUSTFS_OUTBOUND_ALLOW_ORIGINS here override the
+# chart's own settings. The render fails on credentials (they belong in the secrets
+# above, and RustFS reads MINIO_* names as well), on the listener addresses (set
+# s3.port / console.* instead) and, with oidc.enabled, on the settings oidc.* makes.
 extraEnv: {}
 
 # Probes /health/ready on the S3 port with the image's curl: 503 until storage and IAM

@@ -109,6 +109,16 @@
         "mode": { "type": "string", "enum": ["ingress", "host"] }
       }
     },
+    "oidc": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "configUrl": { "type": "string" },
+        "clientId": { "type": "string", "minLength": 1 },
+        "clientSecretSecret": { "type": "string", "minLength": 1 },
+        "browserUrl": { "type": "string" }
+      }
+    },
     "nofile": { "type": "integer", "minimum": 0 },
     "extraEnv": {
       "type": "object",

@@ -16,6 +16,11 @@ if [ "$case" = "edge" ] || [ "$case" = "console-edge" ]; then
   edge_down
 fi
 
+if [ "$case" = "oidc" ]; then
+  docker service rm rustfs-e2e-idp >/dev/null 2>&1 || true
+  docker secret rm rustfs-oidc-client-secret >/dev/null 2>&1 || true
+fi
+
 docker secret rm rustfs-access-key rustfs-secret-key >/dev/null 2>&1 || true
 
 node="$(docker node ls --format '{{.ID}} {{.Self}}' 2>/dev/null | awk '$2=="true"{print $1; exit}')"

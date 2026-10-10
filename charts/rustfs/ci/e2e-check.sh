@@ -18,6 +18,9 @@
 #   * the console listener exists exactly when console.enabled;
 #   * `console-edge`: the console is routed through the traefik chart (its UI, the browser
 #     redirect to it, and the signed S3 API it also serves) while the S3 host is not;
+#   * `oidc`: the stub provider was discovered, the login redirects to its authorization
+#     endpoint with the chart's client id and callback (a spoofed Host cannot move it),
+#     and the client secret reached the server's environment but not `docker inspect`;
 #   * the raised open-file limit reached the process, and its log reaches `docker service
 #     logs` (both are chart settings a render cannot prove the daemon applied).
 #
@@ -32,6 +35,7 @@ case="${3:-}"
 
 CURL_IMAGE="${RUSTFS_E2E_CURL_IMAGE:-curlimages/curl:latest}"
 KEY="${RUSTFS_E2E_ACCESS_KEY:-e2e-access-key}"
+OIDC_SECRET="${RUSTFS_E2E_OIDC_SECRET:-e2e-oidc-client-secret}"
 SECRET="${RUSTFS_E2E_SECRET_KEY:-e2e/secret+key0123456789abcdef}"
 SIG='aws:amz:us-east-1:s3'
 
@@ -45,7 +49,7 @@ case "$case" in
   buckets) buckets="runner-cache e2e.second-bucket" ;;
   traefik) buckets="runner-cache"; console=1 ;;
   ephemeral) buckets="scratch" ;;
-  published|console-edge) console=1 ;;
+  published|console-edge|oidc) console=1 ;;
   edge)
     buckets="runner-cache"
     . "$dir/../../scripts/e2e-edge/traefik-edge.sh"
@@ -158,6 +162,28 @@ if [ "$case" = "console-edge" ]; then
   [ "$got" = "200" ] || die "a signed ListBuckets through $chost returned '$got', expected 200"
   echo "  ok: the console host also answers the signed S3 API"
   edge_assert_unrouted s3.example.com || die "ingress.host is routed although exposure.mode is none"
+fi
+
+# ── oidc: the stub provider is loaded and the login goes to it ───────────────────────
+if [ "$case" = "oidc" ]; then
+  api="http://${svc}:9001/rustfs/admin/v3/oidc"
+  got="$(c "$api/providers" 2>/dev/null || true)"
+  grep -F '"provider_id":"default"' <<<"$got" >/dev/null \
+    || die "the stub provider was not loaded (providers: ${got:-<empty>}); was it reachable at start?"
+  echo "  ok: the provider was discovered at start"
+  auth='http://rustfs-e2e-idp:8080/realms/e2e/protocol/openid-connect/auth?'
+  cb='redirect_uri=https%3A%2F%2Frustfs-console.e2e.test%2Frustfs%2Fadmin%2Fv3%2Foidc%2Fcallback%2Fdefault'
+  for host in "${svc}:9001" evil.example; do
+    loc="$(c -o /dev/null -w '%{redirect_url}' -H "Host: $host" -H 'X-Forwarded-Proto: http' "$api/authorize/default" 2>/dev/null || true)"
+    case "$loc" in "$auth"*) ;; *) die "the login (Host: $host) redirected to '${loc:-<nothing>}', not to the stub's authorization endpoint" ;; esac
+    grep -E '[?&]client_id=rustfs-e2e(&|$)' <<<"$loc" >/dev/null || die "the login does not carry client_id=rustfs-e2e: $loc"
+    grep -E "[?&]$cb(&|\$)" <<<"$loc" >/dev/null || die "the login (Host: $host) does not carry the callback on console.ingress.host: $loc"
+  done
+  echo "  ok: the login redirects to the stub with client_id rustfs-e2e and the https://rustfs-console.e2e.test callback, whatever the Host header says"
+  docker exec "$cid" sh -c 's="$(cat /run/secrets/rustfs-oidc-client-secret)"; [ -n "$s" ] && tr "\0" "\n" < /proc/1/environ | grep -Fx "RUSTFS_IDENTITY_OPENID_CLIENT_SECRET=$s" >/dev/null' \
+    || die "the OIDC client secret did not reach the server's environment"
+  if docker service inspect "$svc" | grep -F "$OIDC_SECRET" >/dev/null; then die "the OIDC client secret is visible in docker service inspect"; fi
+  echo "  ok: the client secret is in the server's environment and not in docker service inspect"
 fi
 
 # ── restart: data persists, bootstrap is idempotent ───────────────────────────────────

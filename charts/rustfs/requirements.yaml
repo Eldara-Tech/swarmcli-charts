@@ -21,4 +21,6 @@ secrets:
     description: "RustFS root access key. Pre-create: printf '%s' '<key-id>' | docker secret create rustfs-access-key -"
   - name: "{{ .Values.s3.secretKeySecret }}"
     description: "RustFS root secret key. Pre-create: openssl rand -base64 30 | tr -d '\\n' | docker secret create rustfs-secret-key -"
+  - name: "{{ .Values.oidc.clientSecretSecret }}"
+    description: "oidc.enabled only - the OIDC client secret (Keycloak: the client's Credentials tab). Pre-create: printf '%s' '<client secret>' | docker secret create rustfs-oidc-client-secret -"
 configs: []
