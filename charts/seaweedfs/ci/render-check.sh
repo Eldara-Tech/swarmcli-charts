@@ -119,9 +119,80 @@ case "$case" in
   *)
     [ "$(q "$svc.ports")" = "null" ] || bad "case $case: a port is published although exposure.mode is none"
     if grep -F 'traefik.' <<<"$labels" >/dev/null; then bad "case $case: Traefik labels rendered although exposure.mode is none"; fi
-    [ "$nets" = "seaweedfs-net" ] || bad "case $case: attached to more than network.name: $(tr '\n' ' ' <<<"$nets")"
+    want_nets=seaweedfs-net
+    [ "$case" = "metrics" ] && want_nets="$(printf 'seaweedfs-net\nmonitoring')"
+    [ "$nets" = "$want_nets" ] || bad "case $case: attached to $(tr '\n' ' ' <<<"$nets")instead of $(tr '\n' ' ' <<<"$want_nets")"
     ;;
 esac
+
+# ── metrics: opt-in, never published, one port value drives listener and label ──────
+# A listener left on loopback still renders, labels and deploys cleanly — and every
+# scrape fails. A label naming another port fails the same way.
+if [ "$case" = "metrics" ]; then
+  mport="$(sed -n 's/^-metricsPort=\([0-9]*\)$/\1/p' <<<"$args")"
+  [ "$mport" = "9327" ] || bad "case $case: -metricsPort is '$mport', expected 9327"
+  grep -Fx -- '-metricsIp=0.0.0.0' <<<"$args" >/dev/null \
+    || bad "case $case: -metricsIp=0.0.0.0 is missing — the listener would follow -ip.bind onto loopback, out of Prometheus's reach"
+  # Exactly the two discovery labels: an extra prometheus.io/path would point every
+  # scrape somewhere else on this listener, /debug/pprof included.
+  disc="$(grep -E '^prometheus\.io/' <<<"$labels" | LC_ALL=C sort | tr '\n' ' ' || true)"
+  [ "$disc" = "prometheus.io/port=$mport prometheus.io/scrape=true " ] \
+    || bad "case $case: discovery labels are '$disc', expected exactly prometheus.io/port=$mport and prometheus.io/scrape=true"
+  [ "$(q '.networks.monitoring.external')" = "true" ] || bad "case $case: the monitoring overlay is not external — Prometheus in another stack could not reach it"
+  if q "$svc.ports[].target" | grep -Fx "$mport" >/dev/null; then bad "case $case: the metrics port is published; /metrics and /debug/pprof have no authentication"; fi
+else
+  if grep -E -- '^-metrics(Port|Ip)=' <<<"$args" >/dev/null; then bad "case $case: a metrics listener is rendered although metrics.enabled is off"; fi
+  if grep -F 'prometheus.io/' <<<"$labels" >/dev/null; then bad "case $case: discovery labels are rendered although metrics.enabled is off"; fi
+  if grep -Fx monitoring <<<"$nets" >/dev/null; then bad "case $case: attached to the monitoring overlay although metrics.enabled is off"; fi
+fi
+
+# ── the refusals ──────────────────────────────────────────────────────────────────────
+# Rendered once, from the metrics fixture, with the renderer test-charts.sh runs.
+if [ "$case" = "metrics" ]; then
+  chart="$(cd "$(dirname "$0")/.." && pwd)"
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  render() { "${SWARMCLI:?render-check needs SWARMCLI to test the refusals}" charts template r "$chart" -f "$chart/ci/metrics-values.yaml" "$@"; }
+  refused() {
+    local want="$1"; shift
+    if render "$@" >/dev/null 2>"$tmp/err"; then
+      bad "rendered with $* — it must be refused"
+    elif ! grep -F -- "$want" "$tmp/err" >/dev/null; then
+      bad "$* failed, but not with \"$want\": $(cat "$tmp/err")"
+    fi
+  }
+  # Every port weed binds inside the container: a second listener on one of them
+  # takes the whole process down at start.
+  for p in 8333 18333 9333 19333 8080 18080 8888 18888; do
+    refused "metrics.port $p is already taken" --set "metrics.port=$p"
+  done
+  refused "metrics.port 19000 is already taken" --set s3.port=9000 --set metrics.port=19000
+  cat >"$tmp/basic.yaml" <<'EOF'
+labels:
+  traefik.http.middlewares.ops.BasicAuth.Users: "ops:$$apr1$$x$$y"
+EOF
+  cat >"$tmp/digest.yaml" <<'EOF'
+labels:
+  traefik.http.middlewares.ops.digestauth.users: "ops:realm:abc"
+EOF
+  cat >"$tmp/header.yaml" <<'EOF'
+labels:
+  traefik.http.middlewares.up.headers.customRequestHeaders.Authorization: "Bearer x"
+EOF
+  cat >"$tmp/usersfile.yaml" <<'EOF'
+labels:
+  traefik.http.middlewares.ops.basicauth.usersfile: /run/secrets/ops-users
+EOF
+  refused '"traefik.http.middlewares.ops.BasicAuth.Users" carries credentials' -f "$tmp/basic.yaml"
+  refused '"traefik.http.middlewares.ops.digestauth.users" carries credentials' -f "$tmp/digest.yaml"
+  refused 'customRequestHeaders.Authorization" carries credentials' -f "$tmp/header.yaml"
+  render -f "$tmp/usersfile.yaml" >/dev/null 2>"$tmp/err" \
+    || bad "a basicauth.usersfile label was refused with metrics on; it is the alternative the refusal recommends: $(cat "$tmp/err")"
+  render -f "$tmp/basic.yaml" --set metrics.enabled=false >/dev/null 2>"$tmp/err" \
+    || bad "a basic-auth label was refused with metrics off; only metrics makes it readable: $(cat "$tmp/err")"
+  render --set metrics.port=9100 >/dev/null 2>"$tmp/err" \
+    || bad "metrics.port 9100 was refused; only ports weed binds may be: $(cat "$tmp/err")"
+fi
 case "$case" in
   traefik)
     grep -Fx 'traefik.http.routers.ci-http.middlewares=https-redirect' <<<"$labels" >/dev/null \

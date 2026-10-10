@@ -17,6 +17,23 @@
 {{- if and (eq .Values.exposure.mode "traefik") (not .Values.ingress.host) -}}
 {{-   fail "ingress.host is required when exposure.mode=traefik" -}}
 {{- end -}}
+{{- if .Values.metrics.enabled -}}
+{{-   $mp := .Values.metrics.port | int -}}
+{{-   $sp := .Values.s3.port | int -}}
+{{- /* weed binds every one of these, so a metrics listener on any of them fails the
+       whole process at start: the S3 port and its gRPC twin, and the master, volume
+       and filer ports and theirs on loopback. */}}
+{{-   if has $mp (list $sp (add $sp 10000 | int) 9333 19333 8080 18080 8888 18888) -}}
+{{-     fail (printf "metrics.port %d is already taken inside the container: weed binds the S3 port %d and its gRPC port %d, and the master, volume and filer ports 9333, 8080 and 8888 and their gRPC ports 19333, 18080 and 18888. Pick another port." $mp $sp (add $sp 10000)) -}}
+{{-   end -}}
+{{- /* Once a service opts in to discovery, every deploy label it carries is readable
+       through Prometheus's targets API, so credential material must not ride along. */}}
+{{-   range $key, $val := .Values.labels -}}
+{{-     if regexMatch "(?i)((basic|digest)auth\\.users|customrequestheaders\\.authorization)$" $key -}}
+{{-       fail (printf "labels %q carries credentials, and metrics.enabled makes every deploy label of this service readable through Prometheus's targets API. Point the middleware's usersfile at a file the proxy reads (a mounted secret), or leave metrics off." $key) -}}
+{{-     end -}}
+{{-   end -}}
+{{- end -}}
 version: "3.9"
 
 {{- $mode := .Values.exposure.mode }}
@@ -27,6 +44,7 @@ version: "3.9"
 
 {{- $nets := list .Values.network.name }}
 {{- if eq $mode "traefik" }}{{ $nets = append $nets .Values.exposure.network }}{{- end }}
+{{- if .Values.metrics.enabled }}{{ $nets = append $nets .Values.metrics.network }}{{- end }}
 {{- $nets = $nets | uniq }}
 
 {{- /* `weed server` flags. The image's entrypoint already adds -dir=/data. -ip and -ip.bind
@@ -36,6 +54,12 @@ version: "3.9"
        Iceberg and Lance catalog listeners `-s3` starts by default are switched off — this
        chart serves S3 and nothing else. */}}
 {{- $args := list "server" "-ip=127.0.0.1" "-ip.bind=127.0.0.1" "-s3" "-s3.ip.bind=0.0.0.0" (printf "-s3.port=%d" $port) "-s3.port.iceberg=0" "-s3.port.lance=0" }}
+{{- /* One metrics listener serves the registry of every role in the process. Its address
+       defaults to -ip.bind, i.e. loopback, so it is bound to every interface explicitly. */}}
+{{- if .Values.metrics.enabled }}
+{{-   $args = append $args (printf "-metricsPort=%d" (.Values.metrics.port | int)) }}
+{{-   $args = append $args "-metricsIp=0.0.0.0" }}
+{{- end }}
 {{- range .Values.extraArgs }}{{ $args = append $args . }}{{- end }}
 
 services:
@@ -167,8 +191,13 @@ services:
 {{- end }}
       restart_policy:
         condition: any
-{{- if or (eq $mode "traefik") .Values.labels }}
+{{- if or (eq $mode "traefik") .Values.metrics.enabled .Values.labels }}
       labels:
+{{- if .Values.metrics.enabled }}
+        # Docker Swarm service discovery (the prometheus-stack chart's swarm-tasks job).
+        - "prometheus.io/scrape=true"
+        - "prometheus.io/port={{ .Values.metrics.port }}"
+{{- end }}
 {{- if eq $mode "traefik" }}
         - "traefik.enable=true"
         - "traefik.swarm.network={{ .Values.exposure.network }}"
