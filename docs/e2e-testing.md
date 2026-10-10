@@ -285,6 +285,10 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   (as `seaweed`: root in `docker exec` may not) and `ps` to prove the password reached
   `weed admin` alone. `admin-published` also restarts the task and asserts the old session is
   sent back to `/login`.
+  The `oidc` fixture needs no extra setup: the check makes an RSA key per run, uploads a
+  discovery document and its JWKS into the chart-created `idp` bucket (the filer serves them
+  on the loopback address the fixture names as issuer, and `jwksUri: ""` makes SeaweedFS
+  find the keys through discovery) and mints the tokens itself with `openssl`.
 - **gitlab-runner** — the runner authentication-token secret + the `gitlab-runner-data` node
   label, plus the two S3 cache secrets for the `cache` fixture (their values deliberately
   contain the `/` and `+` of a real base64 key, so the TOML quoting is exercised). The mock

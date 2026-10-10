@@ -21,7 +21,8 @@
 # bootstrap treats the buckets that now exist as done. The admin-* fixtures log in to the
 # web UI (`admin-edge`: through the traefik chart, with the S3 host unrouted): a wrong
 # password is refused, the right one lists the bucket, and a stopped UI comes back while
-# S3 keeps serving from the same task.
+# S3 keeps serving from the same task. `oidc` stands up a stub identity provider and proves
+# both grants work, through Bearer tokens and STS, and that what they do not grant is refused.
 set -euo pipefail
 
 release="$1"
@@ -44,6 +45,7 @@ case "$case" in
   buckets) buckets="runner-cache e2e.second-bucket" ;;
   traefik) buckets="runner-cache" ;;
   ephemeral) buckets="scratch" ;;
+  oidc) buckets="idp runner-cache reports" ;;
   edge)
     buckets="runner-cache"
     . "$dir/../../scripts/e2e-edge/traefik-edge.sh"
@@ -322,6 +324,108 @@ if [ "$case" = "buckets" ]; then
       || die "after the restart the bootstrap did not report $b as already existing (409)"
   done
   echo "  ok: forced restart kept the object; the bootstrap found the buckets already there (409)"
+fi
+
+# ── oidc: a stub identity provider, then each grant and each refusal ──────────────────
+# The provider is a key pair made for this run plus the store's own filer: a discovery
+# document and the JWKS go into the `idp` bucket, which the filer serves on the loopback
+# address the fixture names as issuer, and the tokens are signed here with the key. The JWKS
+# sits at a path only the discovery document names, so a working token proves discovery.
+# SeaweedFS carries on without OIDC when its config is unusable, so every refusal below is
+# paired with a grant that works.
+if [ "$case" = "oidc" ]; then
+  iss='http://127.0.0.1:8888/buckets/idp'
+  role='arn:aws:iam::role/oidc'
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+  openssl genrsa -out "$tmp/idp.key" 2048 2>/dev/null
+  mod="$(openssl rsa -in "$tmp/idp.key" -noout -modulus | sed 's/^Modulus=//')"
+  # shellcheck disable=SC2059 # the format IS the data: the modulus as \xHH escapes
+  n="$(printf "$(sed 's/../\\x&/g' <<<"$mod")" | b64url)"
+  got="$(printf '{"issuer":"%s","jwks_uri":"%s/keys/e2e-jwks.json"}' "$iss" "$iss" \
+    | signed_code -X PUT --data-binary @- "$base/idp/.well-known/openid-configuration")"
+  [ "$got" = "200" ] || die "uploading the stub discovery document returned '$got'"
+  got="$(printf '{"keys":[{"kty":"RSA","kid":"e2e","use":"sig","alg":"RS256","n":"%s","e":"AQAB"}]}' "$n" \
+    | signed_code -X PUT --data-binary @- "$base/idp/keys/e2e-jwks.json")"
+  [ "$got" = "200" ] || die "uploading the stub JWKS returned '$got'"
+  # token <aud as JSON> <azp> <groups as a JSON array>
+  token() {
+    local h p now
+    now="$(date +%s)"
+    h="$(printf '%s' '{"alg":"RS256","typ":"JWT","kid":"e2e"}' | b64url)"
+    p="$(printf '{"iss":"%s","aud":%s,"azp":"%s","sub":"e2e-user","groups":%s,"iat":%s,"exp":%s}' \
+      "$iss" "$1" "$2" "$3" "$now" "$((now + 900))" | b64url)"
+    printf '%s.%s.%s' "$h" "$p" "$(printf '%s.%s' "$h" "$p" | openssl dgst -sha256 -sign "$tmp/idp.key" | b64url)"
+  }
+  # The writer's token has Keycloak's access-token shape: aud ["account"], the client in azp.
+  writer="$(token '["account"]' seaweedfs-s3 '["ci-cache"]')"
+  reader="$(token '"seaweedfs-s3"' seaweedfs-s3 '["auditors"]')"
+  nogroup="$(token '"seaweedfs-s3"' seaweedfs-s3 '[]')"
+  wrongaud="$(token '"other"' other '["ci-cache"]')"
+  bearer() { local t="$1"; shift; code -H "Authorization: Bearer $t" "$@"; }
+  obj="$base/runner-cache/oidc/object.txt"
+
+  # Bearer. The first request also makes SeaweedFS fetch the JWKS, so it gets a few tries.
+  got=""
+  for _ in $(seq 1 10); do
+    got="$(printf '%s' "$payload" | bearer "$writer" -X PUT --data-binary @- "$obj")"
+    [ "$got" = "200" ] && break
+    sleep 2
+  done
+  [ "$got" = "200" ] || die "a ci-cache token's PUT to runner-cache returned '$got', expected 200 (is the IAM file loaded?)"
+  back="$(c -H "Authorization: Bearer $writer" "$obj")" || die "a ci-cache token's GET failed"
+  [ "$back" = "$payload" ] || die "the ci-cache token read back '$back', expected '$payload'"
+  got="$(bearer "$reader" "$obj")"
+  [ "$got" = "200" ] || die "an auditors token's GET returned '$got', expected 200 (readonly on every bucket)"
+  echo "  ok: Bearer grants work: ci-cache reads and writes runner-cache, auditors read it"
+  got="$(printf x | bearer "$reader" -X PUT --data-binary @- "$obj")"
+  [ "$got" = "403" ] || die "an auditors token's PUT returned '$got', expected 403 (its grant is readonly)"
+  got="$(printf x | bearer "$writer" -X PUT --data-binary @- "$base/reports/oidc.txt")"
+  [ "$got" = "403" ] || die "a ci-cache token's PUT to reports returned '$got', expected 403 (its grant is runner-cache only)"
+  got="$(printf '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":"*","Action":"s3:*","Resource":"arn:aws:s3:::runner-cache/*"}]}' \
+    | bearer "$writer" -X PUT --data-binary @- "$base/runner-cache?policy")"
+  [ "$got" = "403" ] || die "a ci-cache token's PutBucketPolicy returned '$got', expected 403"
+  got="$(bearer "$nogroup" "$obj")"
+  [ "$got" = "403" ] || die "a token in no granted group got '$got', expected 403"
+  got="$(bearer "$wrongaud" "$obj")"
+  [ "$got" = "403" ] || die "a token for another client got '$got', expected 403"
+  echo "  ok: Bearer refusals: readonly PUT, other bucket, PutBucketPolicy, no granted group, other client (403)"
+  # The embedded IAM API would answer ListAccessKeys with every identity's key id, the
+  # admin's included; with it off the request is an unknown action.
+  no_key_list() {
+    grep -F '<Code>InvalidAction</Code>' <<<"$2" >/dev/null && ! grep -F -e "$KEY" -e 'ListAccessKeysResponse' <<<"$2" >/dev/null \
+      || die "ListAccessKeys with $1 was not refused as an unknown action: ${2:-<empty>}"
+  }
+  for who in writer reader; do
+    if [ "$who" = "writer" ]; then t="$writer"; else t="$reader"; fi
+    no_key_list "the $who's Bearer token" "$(c -X POST -H "Authorization: Bearer $t" --data Action=ListAccessKeys "$base/" 2>/dev/null || true)"
+  done
+  echo "  ok: Bearer tokens cannot list access keys (InvalidAction, no admin key id)"
+
+  # STS. The caller names the role, so the trust policy is all that stands in the way.
+  sts() {
+    c -X POST "$base/" --data-urlencode Action=AssumeRoleWithWebIdentity --data-urlencode Version=2011-06-15 \
+      --data-urlencode "RoleArn=$role" --data-urlencode RoleSessionName=e2e --data-urlencode "WebIdentityToken=$1" 2>/dev/null || true
+  }
+  field() { sed -n "s:.*<$1>\(.*\)</$1>.*:\1:p" <<<"$2"; }
+  out="$(sts "$nogroup")"
+  grep -F '<Code>AccessDenied</Code>' <<<"$out" >/dev/null && [ -z "$(field AccessKeyId "$out")" ] \
+    || die "a token in no granted group was not refused the role: $out"
+  echo "  ok: STS refuses the role to a token in no granted group (AccessDenied)"
+  for who in writer reader; do
+    if [ "$who" = "writer" ]; then t="$writer"; want=200; else t="$reader"; want=403; fi
+    out="$(sts "$t")"
+    ak="$(field AccessKeyId "$out")"; sk="$(field SecretAccessKey "$out")"; st="$(field SessionToken "$out")"
+    [ -n "$ak" ] && [ -n "$sk" ] && [ -n "$st" ] || die "STS gave the $who token no credentials: $out"
+    got="$(code --aws-sigv4 "$SIG" --user "$ak:$sk" -H "X-Amz-Security-Token: $st" "$obj")"
+    [ "$got" = "200" ] || die "the $who's STS credentials got '$got' reading runner-cache, expected 200"
+    got="$(printf x | code --aws-sigv4 "$SIG" --user "$ak:$sk" -H "X-Amz-Security-Token: $st" -X PUT --data-binary @- "$base/runner-cache/oidc/sts.txt")"
+    [ "$got" = "$want" ] || die "the $who's STS credentials got '$got' writing runner-cache, expected $want"
+    no_key_list "the $who's STS credentials" "$(c -X POST --aws-sigv4 "aws:amz:us-east-1:iam" --user "$ak:$sk" -H "X-Amz-Security-Token: $st" \
+      --data Action=ListAccessKeys "$base/" 2>/dev/null || true)"
+  done
+  echo "  ok: STS credentials carry each token's grants: ci-cache writes, auditors only read, neither lists keys"
 fi
 
 # ── published: the port is on the routing mesh ────────────────────────────────────────

@@ -14,6 +14,38 @@
 {{-     fail (printf "buckets: %q is not a valid S3 bucket name (3-63 characters of a-z, 0-9, '.' and '-', starting and ending with a letter or digit)" .) }}
 {{-   end }}
 {{- end -}}
+{{- /* OIDC grants become IAM policy, so they are validated here as well as by the schema.
+       A group is matched by SeaweedFS's role mapping as a case-insensitive wildcard and by
+       the trust and grant conditions as an exact string with ${...} variables expanded, so
+       `*`, `?` and `$` would make the three disagree. */}}
+{{- if .Values.oidc.enabled -}}
+{{-   if not (regexMatch "^https?://" .Values.oidc.issuer) -}}
+{{-     fail "oidc.issuer must be the identity provider's issuer URL (http:// or https://), exactly as the token's iss claim carries it" -}}
+{{-   end -}}
+{{-   if not .Values.oidc.clientId -}}
+{{-     fail "oidc.clientId is required: a token is accepted only when its aud or azp claim equals it" -}}
+{{-   end -}}
+{{-   if not .Values.oidc.grants -}}
+{{-     fail "oidc.grants needs at least one grant: access comes only from grants, so with none OIDC would admit nobody" -}}
+{{-   end -}}
+{{-   range .Values.oidc.grants -}}
+{{-     if or (not .group) (regexMatch "[*?$]" .group) -}}
+{{-       fail (printf "oidc.grants: group %q must be a non-empty groups-claim value without '*', '?' or '$'" (.group | default "")) -}}
+{{-     end -}}
+{{-     if not (has .access (list "readonly" "readwrite")) -}}
+{{-       fail (printf "oidc.grants: group %q has access %q; it must be readonly or readwrite" .group (.access | default "")) -}}
+{{-     end -}}
+{{- /* A forgotten buckets key must not quietly mean every bucket: [] has to be said. */}}
+{{-     if not (kindIs "slice" .buckets) -}}
+{{-       fail (printf "oidc.grants: group %q has no buckets list; name its buckets, or [] for every bucket" .group) -}}
+{{-     end -}}
+{{-     range .buckets -}}
+{{-       if not (regexMatch "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" .) -}}
+{{-         fail (printf "oidc.grants: %q is not a valid S3 bucket name" .) -}}
+{{-       end -}}
+{{-     end -}}
+{{-   end -}}
+{{- end -}}
 {{- if and (eq .Values.exposure.mode "traefik") (not .Values.ingress.host) -}}
 {{-   fail "ingress.host is required when exposure.mode=traefik" -}}
 {{- end -}}
@@ -97,6 +129,56 @@ version: "3.9"
        Iceberg and Lance catalog listeners `-s3` starts by default are switched off — this
        chart serves S3 and nothing else. */}}
 {{- $args := list "server" "-ip=127.0.0.1" "-ip.bind=127.0.0.1" "-s3" "-s3.ip.bind=0.0.0.0" (printf "-s3.port=%d" $port) "-s3.port.iceberg=0" "-s3.port.lance=0" }}
+
+{{- /* OIDC: the advanced IAM file `-s3.iam.config` loads, built here and written by the
+       container at start (a Swarm config can carry no rendered value). Everything in it is
+       chart-owned, because each piece closes a hole SeaweedFS leaves open:
+         * defaultEffect Deny. It is also what a trust policy returns when no statement
+           matches, so Allow would let any token assume the role.
+         * ONE role, whose trust policy requires the issuer AND a granted group. STS lets
+           the caller name the role, and the trust policy is all that stands in the way.
+           There is no oidc:aud condition: SeaweedFS sets it only for a string aud, and the
+           provider already checks aud/azp against clientId on every path.
+         * Each grant is a statement conditioned on jwt:groups, so a token in several
+           granted groups gets all of their grants, through Bearer and STS alike.
+         * Explicit actions only. s3:Put* would include s3:PutBucketPolicy, and a bucket
+           policy's Allow bypasses this policy entirely.
+         * roleMapping always present: without it SeaweedFS maps hard-coded group names.
+         * -s3.iam=false. The embedded IAM API, on by default, answers ListAccessKeys
+           without a UserName as self-service and returns every identity's access key id,
+           so any granted token would learn the admin's. Nothing here needs it: STS has
+           routes of its own.
+       No policyClaim (it skips the trust policy), no client secret (never used), no STS
+       signing key (it falls back to the per-start filer key below). */}}
+{{- $iamFile := "/tmp/seaweedfs-iam.json" }}
+{{- $iam := dict }}
+{{- if .Values.oidc.enabled }}
+{{-   $roleArn := "arn:aws:iam::role/oidc" }}
+{{-   $groups := list }}
+{{-   $statements := list }}
+{{-   range .Values.oidc.grants }}
+{{-     $groups = append $groups .group }}
+{{-     $actions := list "s3:GetObject" "s3:ListBucket" "s3:GetBucketLocation" }}
+{{-     if eq .access "readwrite" }}{{ $actions = concat $actions (list "s3:PutObject" "s3:DeleteObject") }}{{ end }}
+{{-     $resources := list "arn:aws:s3:::*" }}
+{{-     if .buckets }}
+{{-       $resources = list }}
+{{-       range .buckets }}{{ $resources = append $resources (printf "arn:aws:s3:::%s" .) }}{{ $resources = append $resources (printf "arn:aws:s3:::%s/*" .) }}{{ end }}
+{{-     end }}
+{{-     $condition := dict "ForAnyValue:StringEquals" (dict "jwt:groups" (list .group)) }}
+{{-     $statements = append $statements (dict "Effect" "Allow" "Action" $actions "Resource" $resources "Condition" $condition) }}
+{{-   end }}
+{{-   $rules := list }}
+{{-   range $groups }}{{ $rules = append $rules (dict "claim" "groups" "value" . "role" $roleArn) }}{{ end }}
+{{-   $provider := dict "issuer" .Values.oidc.issuer "clientId" .Values.oidc.clientId "jwksUri" .Values.oidc.jwksUri "roleMapping" (dict "rules" $rules) }}
+{{-   $trustCondition := dict "StringEquals" (dict "oidc:iss" .Values.oidc.issuer) "ForAnyValue:StringEquals" (dict "oidc:groups" $groups) }}
+{{-   $trust := dict "Effect" "Allow" "Principal" (dict "Federated" "*") "Action" (list "sts:AssumeRoleWithWebIdentity") "Condition" $trustCondition }}
+{{-   $role := dict "roleName" "oidc" "roleArn" $roleArn "attachedPolicies" (list "oidc") "trustPolicy" (dict "Version" "2012-10-17" "Statement" (list $trust)) }}
+{{-   $policy := dict "name" "oidc" "document" (dict "Version" "2012-10-17" "Statement" $statements) }}
+{{-   $iam = dict "policy" (dict "defaultEffect" "Deny") "providers" (list (dict "name" "oidc" "type" "oidc" "config" $provider)) "policies" (list $policy) "roles" (list $role) }}
+{{-   $args = append $args (printf "-s3.iam.config=%s" $iamFile) }}
+{{-   $args = append $args "-s3.iam=false" }}
+{{- end }}
 {{- range .Values.extraArgs }}{{ $args = append $args . }}{{- end }}
 
 services:
@@ -115,6 +197,10 @@ services:
     #    accepts identity updates; without a signing key it accepts them from anyone on
     #    the overlay, so a neighbour could add itself as an admin. Everything that needs
     #    the key lives in this one process, so it never has to be shared or persisted.
+{{- if .Values.oidc.enabled }}
+    #    With OIDC on it also signs STS credentials, which therefore end at a restart.
+    #  * SEAWEEDFS_IAM_CONFIG is written to the file -s3.iam.config names, on every start.
+{{- end }}
     #  * Buckets are created by a background loop over the authenticated S3 API once the
     #    gateway answers. 409 (already exists) counts as done, so a restart is a no-op,
     #    and a failure is logged rather than taking the server down with it.
@@ -144,6 +230,9 @@ services:
         export AWS_ACCESS_KEY_ID="$$(cat /run/secrets/{{ $access }})";
         export AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/{{ $secret }})";
         export WEED_JWT_FILER_SIGNING_KEY="$$(head -c 32 /dev/urandom | base64)";
+{{- if .Values.oidc.enabled }}
+        printf '%s' "$$SEAWEEDFS_IAM_CONFIG" > {{ $iamFile }};
+{{- end }}
 {{- if $admin.enabled }}
         rm -f /data/admin/.session_key;
         (
@@ -191,6 +280,14 @@ services:
       start_period: {{ .Values.healthcheck.startPeriod }}
 {{- end }}
     stop_grace_period: {{ .Values.stopGracePeriod }}
+{{- if .Values.oidc.enabled }}
+
+    environment:
+      # The OIDC IAM file, as JSON. It holds no secret (issuer, client id, groups, buckets),
+      # so being visible in the manifest and `docker inspect` is fine. `$$` keeps Docker
+      # from interpolating a `$` in a value.
+      SEAWEEDFS_IAM_CONFIG: {{ $iam | toJson | replace "$" "$$" | quote }}
+{{- end }}
 
     secrets:
       - {{ $access }}
