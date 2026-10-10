@@ -186,7 +186,10 @@ are discovered from `<issuer>/.well-known/openid-configuration`.
   lifetime: one hour by default, up to 12 hours if the client asks.
 - **The embedded IAM API is off.** With OIDC on, the chart starts SeaweedFS with
   `-s3.iam=false`: that API answers ListAccessKeys with every identity's access key id, the
-  admin's included, to any token holder. The key pair itself works as before.
+  admin's included, to any token holder. The key pair keeps working for S3, but loses the
+  read-only IAM calls (ListUsers and the like), and signed STS calls sent as an SDK sends
+  them, a form-encoded POST, fail their signature check: `aws sts get-caller-identity`
+  does not work while OIDC is on. AssumeRoleWithWebIdentity is unsigned and unaffected.
 - **Unknown key ids reach your provider.** A token whose `kid` is not among the cached keys
   makes SeaweedFS fetch the JWKS again, on every such request, so in traefik or published
   mode anyone can make the store call your identity provider with made-up tokens.
