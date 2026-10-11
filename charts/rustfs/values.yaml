@@ -182,8 +182,7 @@ nofile: 65536
 # chart's own settings. The render fails on credentials (they belong in the secrets
 # above, and RustFS reads MINIO_* names as well), on the listener addresses (set
 # s3.port / console.* instead) and on every RUSTFS_IDENTITY_OPENID_* setting except the
-# claim and display tuning README "Single sign-on" lists, allowed with
-# console.oidc.enabled.
+# tuning keys README "Single sign-on" lists, allowed with console.oidc.enabled.
 extraEnv: {}
 
 # Probes /health/ready on the S3 port with the image's curl: 503 until storage and IAM

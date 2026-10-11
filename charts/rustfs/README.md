@@ -206,8 +206,9 @@ console:
 ```
 
 - **The callback.** RustFS builds it from `console.oidc.browserUrl`, which the chart
-  derives as `https://<console.ingress.host>` while the console is traefik-routed; set
-  it yourself otherwise (e.g. `http://node1.example.com:9001` for a published console).
+  derives as `https://<console.ingress.host>` while the console is traefik-routed
+  (`http://` with `console.ingress.tls: false`); set it yourself otherwise (e.g.
+  `http://node1.example.com:9001` for a published console).
   It is passed as `RUSTFS_BROWSER_REDIRECT_URL`, and RustFS's dynamic redirect is off,
   so a request's `Host` header can never move the callback. `default` in its path is
   RustFS's id for the one provider, not the button's label.
