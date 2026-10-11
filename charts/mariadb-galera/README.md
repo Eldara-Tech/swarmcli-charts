@@ -159,8 +159,13 @@ the same way.
 
 ```bash
 openssl rand -base64 32 | docker secret create mariadb_galera_exporter_password -
-swarmcli charts upgrade db swarmcli-charts/mariadb-galera --reuse-values --set metrics.enabled=true
+swarmcli charts upgrade db swarmcli-charts/mariadb-galera -f db-values.yaml --set metrics.enabled=true
 ```
+
+Pass the values you installed with (`-f`, or the same `--set`s), not `--reuse-values`.
+That flag merges over the previous release's stored values *instead of* this chart
+version's defaults, so every `metrics.*` key would render empty
+([swarmcli#687](https://github.com/Eldara-Tech/swarmcli/issues/687)).
 
 Turning it on adds services and changes no peer, so it is safe on a running cluster:
 nothing restarts. The exporters log in as a database user of their own, `exporter`,
@@ -445,7 +450,7 @@ patch release, the next upgrade of any value changes every peer. Upgrade with
 image is unchanged, and resolves a fresh one when you change it on purpose.
 
 ```bash
-swarmcli charts upgrade db swarmcli-charts/mariadb-galera --reuse-values --resolve-image changed …
+swarmcli charts upgrade db swarmcli-charts/mariadb-galera -f db-values.yaml --resolve-image changed …
 ```
 
 Note also that a MariaDB tag change is a **series** change, not a patch: check the
