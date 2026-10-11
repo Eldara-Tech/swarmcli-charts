@@ -7,7 +7,8 @@
 #
 # Each entry is { chart, cases, timeout }: `cases` is the E2E_CASES subset
 # (empty "" => every fixture, the `make e2e` default); `timeout` is the
-# per-fixture convergence budget (E2E_TIMEOUT).
+# per-fixture convergence budget (E2E_TIMEOUT). An optional `name` titles the job
+# (`e2e (<name>)`, default the chart), so one chart can run two jobs in parallel.
 include:
   # openclaw: ALL fixtures (cases: "" => no filter) — keeps the #60 backend
   # regression guard and picks up the #63 edge-routing fixture automatically. Its
@@ -19,15 +20,18 @@ include:
   # ci/e2e-check.sh then runs a source-faker connection check through the launcher and FakeK8s.
   # Nine JVM/Temporal images plus the connector images it pulls on demand need the long budget.
   - { chart: airbyte,       cases: "mock noauth login",                                                               timeout: 15m }
-  # gitlab-runner: the three fixtures that prove something a render cannot. `mock` stands up
+  # gitlab-runner: the five fixtures that prove something a render cannot. `mock` stands up
   # a mock GitLab on the release's own overlay (ci/e2e-check.sh, after install — that overlay
   # does not exist before it) and asserts the runner authenticated with exactly the token
   # from the Swarm secret; convergence proves nothing on its own here, because a runner with
   # an empty or bogus token reports Running just the same. `cache` proves the container
   # really appends the S3 credentials to config.toml, with a secret carrying the / and + of a
-  # real base64 key. `ephemeral` proves the no-volume shape schedules with no node pin. The
-  # rest are render-only (charts.yml) and still run in a local `make e2e`.
-  - { chart: gitlab-runner, cases: "mock cache ephemeral",                                            timeout: 6m  }
+  # real base64 key. `ephemeral` proves the no-volume shape schedules with no node pin.
+  # `metrics` scrapes the runner from the monitoring overlay at the port its discovery label
+  # names; `healthcheck-only` proves the probe passes on its own listener while the runner
+  # stays off that overlay. The rest are render-only (charts.yml) and still run in a local
+  # `make e2e`.
+  - { chart: gitlab-runner, cases: "mock cache ephemeral metrics healthcheck-only",                   timeout: 6m  }
   - { chart: whoami,        cases: "",                                                                                timeout: 5m  }
   - { chart: swarm-cronjob, cases: "",                                                                                timeout: 5m  }
   # swarmcli-cd: the four fixtures that can converge without a forge to clone from.
@@ -38,7 +42,10 @@ include:
   # stands up the traefik chart and ci/e2e-check.sh routes /healthz through it. The other
   # fixtures are ci/e2e-render-only (an SSH forge, a real app-set repo, ACME, host paths).
   - { chart: swarmcli-cd,   cases: "default ephemeral published dir edge",                                            timeout: 6m  }
-  - { chart: redis,         cases: "default no-auth ephemeral bind-mount published-port",                             timeout: 6m  }
+  # redis: every fixture. `metrics` scrapes the exporter on the monitoring overlay, proves
+  # no scrape command is denied, and that its ACL user reads INFO but is refused a key,
+  # CONFIG GET and FLUSHALL; `metrics-no-auth` covers the exporter with no user or secret.
+  - { chart: redis,         cases: "default no-auth ephemeral bind-mount published-port metrics metrics-no-auth",     timeout: 6m  }
   # bind-mount excluded from CI: MariaDB's healthcheck cannot authenticate on a
   # host bind-mounted datadir in this Swarm CI environment (it works on a named
   # volume, so all other fixtures pass); the host-path render is covered by
@@ -53,8 +60,17 @@ include:
   # EXCLUDED: every peer publishes 3306 in host mode and three cannot bind one node's 3306.
   # five-peers, bind-mount, internal-net, force-bootstrap and unpinned are render-only in
   # charts.yml and still run in a local `make e2e` on a multi-node swarm. The 12m budget
-  # covers the image pull plus a bootstrap and two state transfers.
-  - { chart: mariadb-galera, cases: "default ephemeral proxy",                                                         timeout: 25m }
+  # covers the image pull plus a bootstrap and two state transfers. `metrics` scrapes each
+  # exporter over the monitoring overlay, which proves the one-shot created a user whose
+  # grants every default collector accepts — a missing grant fails only its collector.
+  - { chart: mariadb-galera, cases: "default ephemeral proxy metrics",                                                 timeout: 25m }
+  # mariadb-galera lifecycle, a job of its own so the chart's wall time stays ~40m: a peer
+  # restart, a peer rebuilt from an empty volume, an upgrade rolling every peer one at a time
+  # (what a re-tagged image does), every peer stopped together and killed together, each
+  # recovered by an election, and a peer lost for good, recovered with cluster.forceBootstrap
+  # through the README's --wsrep-recover runbook. It drives `swarmcli charts upgrade`
+  # itself; its fixture shortens the health windows to keep each rollout to ~2.5 minutes.
+  - { chart: mariadb-galera, name: "mariadb-galera lifecycle", cases: "lifecycle",                                    timeout: 25m }
   # postgres: EVERY fixture (cases: "" => no filter). bind-mount is included, unlike
   # mariadb's: PGDATA sits one level below the mount (/var/lib/postgresql/<major>/docker),
   # so initdb never has to chown or empty the bind-mounted mountpoint itself. legacy-major
@@ -164,3 +180,13 @@ include:
   # already at 0/5/64MB and the time goes to Chef reconfigure and database migrations.
   # The 75m job backstop still covers it comfortably.
   - { chart: gitlab,        cases: "minimal",                                                                       timeout: 30m }
+  # prometheus-stack: the six fixtures that prove what a render cannot. `default` follows the
+  # data end to end — exporters discovered through the socket-proxy and scraped, the Watchdog
+  # alert in Alertmanager, Grafana's datasources and dashboards, the proxy's allow-list — and
+  # runs promtool/amtool on the configs the tasks actually loaded (only Swarm can render
+  # prometheus.yml). `discovery` counts the targets found before relabelling against the
+  # opted-in tasks, proving an unlabelled service on the same network never reaches Prometheus.
+  # `edge` routes Grafana and a basic-auth Prometheus through the traefik chart. bind-mount,
+  # published, loki and extras run in a local `make e2e`. Six services and six images per
+  # fixture, hence the 10m convergence budget.
+  - { chart: prometheus-stack, cases: "default minimal discovery edge ephemeral alertmanager-config", timeout: 10m }

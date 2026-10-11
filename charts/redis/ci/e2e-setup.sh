@@ -4,7 +4,7 @@
 # install`, once per fixture:
 #   $1 = release name   $2 = chart directory   $3 = fixture case name
 # It provisions the external prerequisites swarmcli validates but never creates: the
-# operator-supplied auth secret and the persistence node-label pin. For the bind-mount
+# operator-supplied auth and exporter secrets and the persistence node-label pin. For the bind-mount
 # fixture it also pre-creates the host data dir owned by the container's redis uid.
 # The shared redis-net overlay is autoCreate:true, so swarmcli creates it at install —
 # not this hook. ci/e2e-teardown.sh removes everything created here.
@@ -18,6 +18,11 @@ case="$3"
 # which reads it back from the mounted file — it just has to exist.
 docker secret inspect redis_password >/dev/null 2>&1 \
   || printf 'test' | docker secret create redis_password - >/dev/null
+# The metrics fixture's exporter password, with a space, a quote, a `$` and a trailing
+# newline: redis hashes it and the exporter sends it, and both must strip and quote it
+# the same way or the exporter cannot log in.
+docker secret inspect redis_exporter_password >/dev/null 2>&1 \
+  || printf "e2e 'exp\$pw\"x\n" | docker secret create redis_exporter_password - >/dev/null
 
 # Pin: label this (single-node) swarm's node so the persistence.nodeLabel constraint
 # (node.labels.redis-data == true) schedules. Harmless for the ephemeral fixture (no pin).

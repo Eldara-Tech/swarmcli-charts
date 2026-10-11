@@ -1,0 +1,6 @@
+# Metrics with auth off: no ACL user and no exporter secret — redis's default user is
+# open, so there is nothing to restrict and nothing to log in with.
+auth:
+  enabled: false
+metrics:
+  enabled: true

@@ -1,0 +1,13 @@
+# Prometheus alone: no Grafana, no Alertmanager, no exporters and no discovery, so
+# no Docker socket and no host bind of any kind. It scrapes itself and whatever
+# prometheus.extraScrapeConfigs names.
+grafana:
+  enabled: false
+alertmanager:
+  enabled: false
+nodeExporter:
+  enabled: false
+cadvisor:
+  enabled: false
+discovery:
+  enabled: false

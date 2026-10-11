@@ -1,4 +1,9 @@
-# Metrics on, and the healthcheck that probes them (it renders only with metrics.enabled).
+# Metrics on, and the healthcheck that probes the same listener: the runner opts in to
+# Swarm service discovery (prometheus.io labels) and joins the monitoring overlay beside
+# its own. Deployed in CI (e2e), so the url is deliberately non-routable; ci/e2e-check.sh
+# scrapes /metrics from a container on the monitoring overlay, as Prometheus would.
+gitlab:
+  url: http://gitlab.invalid/
 metrics:
   enabled: true
   port: 9252

@@ -4,8 +4,9 @@ version: 0.1.0
 # renovate: image=mariadb
 appVersion: "12.3"
 # Oldest swarmcli whose chart engine renders this chart; verified by
-# scripts/floor-check.sh against a real binary of that version.
-swarmcliVersion: ">= 1.11.0"
+# scripts/floor-check.sh against a real binary of that version. 2.2.0 is the first
+# to roll the peers one at a time (com.swarmcli.rollout on each peer).
+swarmcliVersion: ">= 2.2.0"
 # host-mount is acknowledged because persistence.volumePaths can bind-mount each
 # peer's data dir from an operator-chosen host path. The default (named volumes)
 # render mounts no host path — no docker.sock, unprivileged — so the annotation is

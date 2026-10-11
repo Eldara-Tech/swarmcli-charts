@@ -1,0 +1,18 @@
+# Grafana and Prometheus both routed through a real Traefik edge (the traefik chart,
+# stood up by ci/e2e-setup.sh). Plain HTTP (tls:false): CI cannot issue an ACME
+# certificate, so the public router is the HTTP one and carries Prometheus's
+# basic-auth middleware.
+#
+# The credential is a throwaway for e2e: user `e2e`, password `e2e-secret`. The `$`
+# characters are DOUBLED because Compose eats single ones.
+grafana:
+  ingress:
+    host: grafana.e2e.test
+    tls: false
+prometheus:
+  exposure:
+    mode: traefik
+  ingress:
+    host: prometheus.e2e.test
+    tls: false
+  basicAuthUsers: "e2e:$$apr1$$e2eSalt1$$1s/hES2iWPor3OWxBdGX./"

@@ -1,0 +1,9 @@
+# Host-path persistence for all three stateful services. The paths are under /tmp
+# so ci/e2e-setup.sh can create them through the daemon, owned 65534 (Prometheus,
+# Alertmanager) and 472 (Grafana), the users the images run as.
+prometheus:
+  volumePath: /tmp/prometheus-stack-e2e/prometheus
+alertmanager:
+  volumePath: /tmp/prometheus-stack-e2e/alertmanager
+grafana:
+  volumePath: /tmp/prometheus-stack-e2e/grafana
