@@ -236,8 +236,27 @@ console:
   `GROUPS_CLAIM`, `ROLES_CLAIM`, `EMAIL_CLAIM`, `USERNAME_CLAIM` and `HIDE_FROM_UI`.
   Every other OIDC setting is refused, since the provider, client, issuer, callback
   and label come from `console.oidc.*`, and so is a provider suffix: a second provider
-  is not supported. The `MINIO_IDENTITY_OPENID_*` spelling is
-  refused too, because RustFS reads only some of those names and ignores the rest.
+  is not supported. The `MINIO_IDENTITY_OPENID_*` spelling is refused too, because
+  RustFS reads only some of those names and ignores the rest.
+- **`OIDC policy mapping did not resolve to current policies`** at the callback means
+  the token's `groups` claim is missing or holds a value that names no RustFS policy:
+  RustFS checks every value, and one miss refuses the whole login. With Keycloak that is
+  a missing groups mapper (or one not added to the ID token), **Full group path** on, a
+  group named differently from its policy (names are case-sensitive), or a user who is
+  also in any group that is not a RustFS policy. Keycloak shows the claim under
+  **Clients → rustfs → Client scopes → Evaluate → Generated ID token**. Where users
+  belong to other groups too, give RustFS a claim of its own: a **User Client Role**
+  mapper on the `rustfs` client with token claim name `rustfs_policies`, **Multivalued**
+  and **Add to ID token** on, client roles named after the policies, and
+
+  ```yaml
+  extraEnv:
+    RUSTFS_IDENTITY_OPENID_GROUPS_CLAIM: rustfs_policies
+    RUSTFS_IDENTITY_OPENID_CLAIM_NAME: rustfs_policies
+  ```
+
+  Set both: with `GROUPS_CLAIM` alone, RustFS still reads `groups` through
+  `CLAIM_NAME`'s default and refuses the login the same way.
 
 ## Security
 
