@@ -65,9 +65,9 @@
        s3.port / console.*, so they are refused too. OIDC is an allow-list: the provider,
        client, issuer, callback and label come from console.oidc.* (a redirect_uri here would
        beat the callback the chart sets, a suffixed key would add a second provider), so
-       extraEnv may only tune claims and hide the button, and only with
-       console.oidc.enabled. RustFS maps only some MINIO_IDENTITY_OPENID_ names and ignores
-       the rest, so that spelling is refused. */}}
+       extraEnv may only tune scopes, claims, a role policy and whether the button shows,
+       and only with console.oidc.enabled. RustFS maps only some MINIO_IDENTITY_OPENID_
+       names and ignores the rest, so that spelling is refused. */}}
 {{- range $k, $v := .Values.extraEnv }}
 {{-   if not (regexMatch "^[A-Za-z_][A-Za-z0-9_]*$" $k) }}
 {{-     fail (printf "extraEnv: %q is not an environment variable name (letters, digits and _, not starting with a digit)" $k) }}
@@ -188,10 +188,8 @@ services:
       # and with this off it never falls back to the request's X-Forwarded-Proto and Host,
       # which the client controls, on either listener.
       RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC: "off"
-{{- with $browserUrl }}
       # The login callback's base.
-      RUSTFS_BROWSER_REDIRECT_URL: {{ . | quote }}
-{{- end }}
+      RUSTFS_BROWSER_REDIRECT_URL: {{ $browserUrl | quote }}
 {{- end }}
 {{- /* The next four are defaults extraEnv may override. */}}
 {{- if not (hasKey .Values.extraEnv "RUSTFS_OBS_LOG_DIRECTORY") }}

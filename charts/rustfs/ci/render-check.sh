@@ -373,6 +373,10 @@ if [ "$case" = "default" ]; then
   else
     bad "oidc with an unrouted console and a browserUrl was refused: $(tr '\n' ' ' <"$tmp.err")"
   fi
+  render "${on[@]}" --set console.oidc.configUrl=$kc --set console.exposure.mode=traefik \
+    --set console.ingress.host=c.example.com --set console.ingress.tls=false \
+    && [ "$(envt RUSTFS_BROWSER_REDIRECT_URL)" = "http://c.example.com" ] \
+    || bad "a traefik-routed console without TLS does not derive the callback base http://c.example.com (got '$(envt RUSTFS_BROWSER_REDIRECT_URL)')"
   render "${kco[@]}" --set console.oidc.allowPrivateIdp=true \
     && [ "$(envt RUSTFS_OUTBOUND_ALLOW_ORIGINS)" = "https://kc.example.com" ] \
     || bad "console.oidc.allowPrivateIdp does not allow-list the origin of configUrl (got '$(envt RUSTFS_OUTBOUND_ALLOW_ORIGINS)')"

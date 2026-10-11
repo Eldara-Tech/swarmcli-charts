@@ -167,14 +167,14 @@ cache:
 ## Single sign-on
 
 With `console.oidc.enabled` the console offers a login through an OpenID Connect
-provider beside the key-pair login. Its button reads **Login with SSO**;
+provider beside the key-pair login. Its button reads **Login with SSO**, and
 `console.oidc.displayName` sets the label. RustFS's STS (`AssumeRoleWithWebIdentity`)
 accepts that provider's tokens too. RustFS maps each value of the ID token's `groups`
 claim to the RustFS policy of the same name (`consoleAdmin`, `readwrite`, `readonly`, or
 your own) and gives the session temporary credentials with those policies. Each value
 must name an existing policy, or RustFS refuses the whole login (see the last point
-below). Policies attached inside RustFS to the user's groups, or a `ROLE_POLICY` in
-`extraEnv`, take the claim's place.
+below). Policies attached inside RustFS to a group named like a claim value take the
+claim's place, and so does a `ROLE_POLICY` in `extraEnv`.
 
 With [Keycloak](../keycloak), in your realm:
 
@@ -208,9 +208,9 @@ console:
 - **The callback.** RustFS builds it from `console.oidc.browserUrl`, which the chart
   derives as `https://<console.ingress.host>` while the console is traefik-routed
   (`http://` with `console.ingress.tls: false`); set it yourself otherwise (e.g.
-  `http://node1.example.com:9001` for a published console).
-  It is passed as `RUSTFS_BROWSER_REDIRECT_URL`, and RustFS's dynamic redirect is off,
-  so a request's `Host` header can never move the callback. `default` in its path is
+  `http://node1.example.com:9001` for a published console). It is passed as
+  `RUSTFS_BROWSER_REDIRECT_URL`, and RustFS's dynamic redirect is off, so a request's
+  `Host` header can never move the callback. `default` in its path is
   RustFS's id for the one provider, not the button's label.
 - **Use the provider's public URL** for `configUrl`: the browser is sent to the
   authorization endpoint the discovery document names, and RustFS checks the
@@ -247,12 +247,12 @@ console:
   a missing groups mapper (or one not added to the ID token), **Full group path** on, a
   group named differently from its policy (names are case-sensitive), or a user who is
   also in a group that is not a RustFS policy. Keycloak shows the claim under
-  **Clients → rustfs → Client scopes → Evaluate → Generated ID token**. Where users
-  belong to other groups too, give RustFS a claim of its own: a **User Client Role**
-  mapper on the `rustfs` client with **Client ID** `rustfs` (unset, Keycloak adds every
-  client's roles, `account`'s included), token claim name `rustfs_policies`,
-  **Multivalued** and **Add to ID token** on, client roles named after the policies,
-  and
+  **Clients → rustfs → Client scopes → Evaluate**: pick a user, then **Generated ID
+  token**. Where users belong to other groups too, give RustFS a claim of its own: a
+  **User Client Role** mapper on the `rustfs` client with **Client ID** `rustfs` (unset,
+  Keycloak adds every client's roles, `account`'s included), token claim name
+  `rustfs_policies`, **Multivalued** and **Add to ID token** on; client roles named
+  after the policies, assigned to the users or their Keycloak groups; and
 
   ```yaml
   extraEnv:
