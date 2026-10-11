@@ -157,6 +157,16 @@ if [ -n "$proxy" ]; then
     docker run --rm --network "$net" -e MYSQL_PWD="$pw" mariadb:12.3 \
       mariadb -h mariadb -uroot -N -B -e 'SELECT 1' 2>&1
   }
+  # What the proxy saw: its tasks, and every line HAProxy logged that is not a client
+  # connection — start-up alerts, each peer's resolved address, and every UP/DOWN with
+  # its reason. A tail of connection lines says only <NOSRV>, and hid these once.
+  proxy_seen() {
+    docker service ps "$proxy" --no-trunc --format '    {{.Name}} {{.CurrentState}} {{.Error}}' | sed -n '1,6p'
+    for c in $(docker ps -q -f "label=com.docker.swarm.service.name=$proxy"); do
+      echo "    proxy container $c:"
+      docker logs "$c" 2>&1 | { grep -vE '^[0-9.]+:[0-9]+ \[' || true; } | tail -n 40 | sed 's/^/      /'
+    done
+  }
   # HAProxy marks a backend up only after `rise 2` checks `inter 2s` apart, so a probe
   # right after convergence can find none up yet: one probe made this check flaky
   # (#229). Allow 30s, and on failure show what the client and the proxy saw.
@@ -168,24 +178,23 @@ if [ -n "$proxy" ]; then
   done
   if [ "$out" != "1" ]; then
     echo "  $proxy: cannot reach the cluster through the client endpoint; the client said: $out"
-    docker service ps "$proxy" --no-trunc --format '    {{.Name}} {{.CurrentState}} {{.Error}}' | sed -n '1,6p'
-    for c in $(docker ps -q -f "label=com.docker.swarm.service.name=$proxy"); do
-      docker logs --tail 30 "$c" 2>&1 | sed 's/^/    /'
-    done
+    proxy_seen
     exit 1
   fi
 
   # Take a peer away and keep asking. The endpoint must keep answering.
   victim="$(printf '%s\n' $peers | sed -n 2p)"
   docker service scale "${victim}=0" >/dev/null 2>&1
-  ok=0; fail=0
+  ok=0; fail=0; last_err=""
   for _ in $(seq 1 20); do
-    if [ "$(via_proxy)" = "1" ]; then ok=$((ok+1)); else fail=$((fail+1)); fi
+    out="$(via_proxy || true)"
+    if [ "$out" = "1" ]; then ok=$((ok+1)); else fail=$((fail+1)); last_err="$out"; fi
     sleep 2
   done
   docker service scale "${victim}=1" >/dev/null 2>&1
   if [ "$fail" -gt 2 ]; then
-    echo "  $proxy: $fail of $((ok+fail)) queries failed with $victim down — the endpoint did not route around it"
+    echo "  $proxy: $fail of $((ok+fail)) queries failed with $victim down — the endpoint did not route around it; the client last said: $last_err"
+    proxy_seen
     exit 1
   fi
   echo "  ${release}: $want peers, all Synced, cross-peer write replicated, endpoint survived losing $victim ($ok/$((ok+fail)) queries OK)$metrics_ok"

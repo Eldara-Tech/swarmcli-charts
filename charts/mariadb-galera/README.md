@@ -120,6 +120,10 @@ it adds no package and no sidecar, and it listens only inside the peer on
 `proxy.replicas: 2` by default, because a single proxy in front of an HA cluster is
 a single point of failure.
 
+The proxy reaches each peer at its task address (`tasks.<release>_<peer>`, see
+below), and looks it up through Docker's DNS while it runs rather than once at
+start. So it starts before any peer is up, and follows a peer Swarm reschedules.
+
 Connections are spread across all `Synced` peers. Galera is multi-primary so that is
 correct, but writing the same rows from several peers at once raises certification
 conflicts; an application with heavy write contention on the same keys may prefer to
