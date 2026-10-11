@@ -36,14 +36,14 @@
 {{- if and (eq .Values.exposure.mode "published") $consolePublished (eq (.Values.console.publish.port | int) (.Values.publish.port | int)) -}}
 {{-   fail "console.publish.port must differ from publish.port" -}}
 {{- end -}}
+{{- if and $oidc (not $console) -}}
+{{-   fail "console.oidc.enabled needs console.enabled: the single sign-on login and its callback are the console's" -}}
+{{- end -}}
 {{- /* RUSTFS_OUTBOUND_ALLOW_ORIGINS is derived from configUrl's origin, and RustFS refuses an
        invalid allow-list for every outbound connection it polices, so the shape is checked.
        The origin admits no ',' (a second list entry), no '%' (an encoded one) and no '\'
        (RustFS reads http:\\host as http://host), and neither URL any whitespace. The client
        secret's name is spliced into the start-up shell, so it must be a Docker secret name. */}}
-{{- if and $oidc (not $console) -}}
-{{-   fail "console.oidc.enabled needs console.enabled: the single sign-on login and its callback are the console's" -}}
-{{- end -}}
 {{- if and $oidc (not (regexMatch `^https?://[^/?#@,%\\\s]+(/\S*)?$` .Values.console.oidc.configUrl)) -}}
 {{-   fail (printf "console.oidc.configUrl must be the http(s) URL of the provider's discovery document when console.oidc.enabled (got %q)" .Values.console.oidc.configUrl) -}}
 {{- end -}}
@@ -184,9 +184,9 @@ services:
       RUSTFS_IDENTITY_OPENID_CLIENT_ID: {{ .Values.console.oidc.clientId | quote }}
       # The login button's label; without it RustFS shows the provider id, "default".
       RUSTFS_IDENTITY_OPENID_DISPLAY_NAME: {{ .Values.console.oidc.displayName | quote }}
-      # Never build the login callback from the request (X-Forwarded-Proto, Host), which
-      # the client controls, on either listener: without a callback base RustFS refuses
-      # the browser login instead.
+      # A backstop: RustFS takes the login callback from RUSTFS_BROWSER_REDIRECT_URL below,
+      # and with this off it never falls back to the request's X-Forwarded-Proto and Host,
+      # which the client controls, on either listener.
       RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC: "off"
 {{- with $browserUrl }}
       # The login callback's base.

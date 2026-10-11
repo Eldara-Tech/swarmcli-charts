@@ -166,13 +166,15 @@ cache:
 
 ## Single sign-on
 
-With `console.oidc.enabled` the console offers a **Login with SSO** button beside the
-key-pair login, through an OpenID Connect provider; `console.oidc.displayName` sets the
-label. RustFS's STS (`AssumeRoleWithWebIdentity`) accepts that provider's tokens too.
-RustFS maps each value of the ID token's `groups` claim to the RustFS policy of the same
-name (`consoleAdmin`, `readwrite`, `readonly`, or your own) and gives the session
-temporary credentials with those policies. Every value must name an existing policy:
-one that does not refuses the whole login (see the last point below).
+With `console.oidc.enabled` the console offers a login through an OpenID Connect
+provider beside the key-pair login. Its button reads **Login with SSO**;
+`console.oidc.displayName` sets the label. RustFS's STS (`AssumeRoleWithWebIdentity`)
+accepts that provider's tokens too. RustFS maps each value of the ID token's `groups`
+claim to the RustFS policy of the same name (`consoleAdmin`, `readwrite`, `readonly`, or
+your own) and gives the session temporary credentials with those policies. Each value
+must name an existing policy, or RustFS refuses the whole login (see the last point
+below). Policies attached inside RustFS to the user's groups, or a `ROLE_POLICY` in
+`extraEnv`, take the claim's place.
 
 With [Keycloak](../keycloak), in your realm:
 
@@ -243,11 +245,13 @@ console:
   RustFS checks every value, and one miss refuses the whole login. With Keycloak that is
   a missing groups mapper (or one not added to the ID token), **Full group path** on, a
   group named differently from its policy (names are case-sensitive), or a user who is
-  also in any group that is not a RustFS policy. Keycloak shows the claim under
+  also in a group that is not a RustFS policy. Keycloak shows the claim under
   **Clients → rustfs → Client scopes → Evaluate → Generated ID token**. Where users
   belong to other groups too, give RustFS a claim of its own: a **User Client Role**
-  mapper on the `rustfs` client with token claim name `rustfs_policies`, **Multivalued**
-  and **Add to ID token** on, client roles named after the policies, and
+  mapper on the `rustfs` client with **Client ID** `rustfs` (unset, Keycloak adds every
+  client's roles, `account`'s included), token claim name `rustfs_policies`,
+  **Multivalued** and **Add to ID token** on, client roles named after the policies,
+  and
 
   ```yaml
   extraEnv:
