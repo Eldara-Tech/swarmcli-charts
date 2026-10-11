@@ -124,11 +124,12 @@ most need — the Traefik constraint-label contract, the `http`/`https` entrypoi
 names, the `$$` secret-wrapper escape, and the swarmcli floor. Those are now where
 the person writing a chart is already reading.
 
-What stays here is the part that is about *this sandbox*, not about authoring:
+What stays here is the part that is about running the checks, not about authoring:
 
-- **`make e2e` and `make local-repo` cannot run here** — no Docker daemon. e2e is
-  CI-only, permanently. `make test` works because `docker compose config` does not
-  need the daemon.
+- **`make e2e` needs a reachable swarm** (`E2E_SWARM_INIT=1` initialises one), and
+  `make local-repo` a Docker daemon. Where there is no daemon, e2e runs only in CI:
+  push, then read the chart's `e2e (<chart>)` job. `make test` works anywhere, because `docker compose
+  config` does not need the daemon.
 - **Never let a check degrade to a skip.** `scripts/test-charts.sh` pre-flights
   `yq` and refuses to run without it, because the old behaviour printed "All charts
   passed." while asserting nothing. Mutation-test any new `ci/render-check.sh`
@@ -156,6 +157,11 @@ silently DROPS tag-push events beyond 3 tags per `git push`, so some charts woul
 tagged and never published. One dispatch is always exactly one release — which is
 what you want after merging a grouped Renovate PR that touched several charts.
 
+**Reconcile releases most changes by itself.** `release-reconcile.yml` (daily, 05:43 UTC) dispatches a
+patch release for every chart whose `charts/<c>/` differs from its newest tag, once
+`Charts` is green for that `main` commit. Release by hand only to ship sooner, for a
+minor or major bump, or for a chart's first version, which reconcile never starts.
+
 ## CI & testing
 
 - `charts.yml` — runs on `charts/**`/`scripts/**`/`Makefile`/`.yamllint` PRs and
@@ -172,6 +178,9 @@ what you want after merging a grouped Renovate PR that touched several charts.
   extracts zero deps and silently stops maintaining the pins — so the validator is
   the only thing that turns that into a failure.
 - Doc-only changes outside those paths trigger no CI.
+- Every PR workflow filters `pull_request: branches: [main]`, so a PR based on another
+  branch gets no CI at all. Push a fix onto the PR's own branch rather than stacking a
+  second PR on it.
 
 **E2E.** `make e2e` / `scripts/e2e-test.sh` deploys each chart × fixture to a real
 Swarm, asserts convergence, runs optional per-chart `ci/e2e-setup.sh` (before
@@ -219,9 +228,3 @@ workflows.
 
 Actions for new contributors are gated by the "Require approval for outside
 collaborators" repo setting so CI auto-runs and reports before review.
-
-## Git / pushing (within /claude-go)
-
-`origin` here is the sanctioned token HTTPS remote — push directly to it:
-`git push -u origin <branch>`. Never direct-push to `main`; open a PR. Match
-existing commit authorship (`eldara-cruncher <hello@eldara.io>`).

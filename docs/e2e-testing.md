@@ -184,6 +184,15 @@ docker run --rm --network traefik-public curlimages/curl:latest \
   -fsS --max-time 10 "http://${release}_whoami:80" >/dev/null
 ```
 
+To assert on a log, capture it to a file and match a literal there —
+`docker logs "$cid" >"$log" 2>&1; grep -qF '<line>' "$log"` — inside a bounded retry
+that prints what it saw on every attempt, never over a pipe (see
+[CONTRIBUTING.md](../CONTRIBUTING.md#ci-and-scripting-semantics-that-have-bitten-this-repo)).
+Read the task's own container
+(`docker ps -q --filter label=com.docker.swarm.service.name=<release>_<svc>`) rather
+than `docker service logs`, which has returned no lines at all for tasks whose
+healthcheck was still `starting`.
+
 Charts without a hook (e.g. `swarm-cronjob`) are verified by convergence alone.
 
 ## Setup / teardown hooks (`ci/e2e-setup.sh`)
@@ -201,6 +210,13 @@ two **optional**, executable per-chart hooks the harness runs around each fixtur
   the release is uninstalled. Best-effort (tolerate already-gone resources); remove
   exactly what setup created, but **leave shared overlays** like `traefik-public`
   (other releases use them).
+
+Create a helper service with `docker service create --detach`, then wait for it in a
+bounded loop that fails loudly (`charts/airbyte/ci/e2e-setup.sh`). Without `--detach`
+the command waits for convergence, so an image that can never be pulled blocks it
+until the CI job's own timeout. The keycloak, openclaw, superset and vaultwarden setup
+hooks, gitlab-runner's `ci/e2e-check.sh` and `scripts/e2e-edge/traefik-edge.sh`
+predate this and still create without it.
 
 The `openclaw` chart is the reference: its setup creates the dummy gateway-token
 secret and the persistence node label for every fixture, and — for the `backend`
@@ -456,7 +472,7 @@ fail on the released swarmcli a user actually runs. That is not hypothetical:
 `main`, in no release yet), so it renders in CI and fails on *every* release with
 an opaque `parse requirements.yaml: could not find expected ':'`.
 
-**`scripts/floor-check.sh` proves a floor** by building a *real* binary of the
+**`scripts/floor-check.sh` proves a floor** by downloading a *real* binary of the
 declared version and rendering the chart with it — the only thing that settles
 whether the chart runs there. It runs in the `Charts` workflow, and locally:
 
@@ -466,16 +482,17 @@ scripts/floor-check.sh          # render every chart with a real binary of its f
 
 Expect one `rendering with real swarmcli vX.Y.Z → OK` block per chart, then a
 summary. It **fails** (exit 1) if a chart does not run on the version it declares.
+It needs GNU sed and bash 4 (`mapfile`), so on macOS's stock `/bin/bash` 3.2 and
+BSD sed it exits before checking anything; measure the floor by hand there, as below.
 
-- **Raise a floor only to a *released* version.** floor-check builds that version
-  to test it, so a floor naming an unreleased tag cannot be proven: it is
+- **Raise a floor only to a *released* version.** floor-check downloads that
+  version to test it, so a floor naming an unreleased tag cannot be proven: it is
   reported as `NOT verified` (with a `::warning::`) and skipped — visible in the
-  log, never silently passed. `zammad` is in that state today (`>= 1.13.0`, which
-  documents *why* it cannot publish yet) and will verify automatically once that
-  release ships.
+  log, never silently passed.
 - **Find a floor by measuring, not guessing.** Render the chart against
   successively older releases (`SWARMCLI_REF=vX.Y.Z scripts/install-swarmcli.sh
-  ./bin` then `make test`); the oldest that still renders is the floor.
+  .floor-bin`, then `make test CHART=<c> SWARMCLI_BIN=$PWD/.floor-bin/swarmcli`); the
+  oldest that still renders is the floor.
 - **`swarmcli charts lint --for-version X`** is the quick check — but know its
   limit: it tests whether the chart's declared floor *admits* X, i.e. the claim's
   shape, not whether the chart *runs* on X. A swarmcli carries one engine's
@@ -502,6 +519,26 @@ summary. It **fails** (exit 1) if a chart does not run on the version it declare
   See [CONTRIBUTING.md](../CONTRIBUTING.md#external-resources-requirementsyaml).
 - **A release is stuck after a crash** — `swarmcli charts uninstall <release>
   --purge-volumes`, or drop to Docker: `docker stack rm <release>`.
+- **A local result disagrees with CI** — `make test` and `make e2e` build
+  `.swarmcli-bin/swarmcli` from swarmcli `main` once and reuse it forever, while CI
+  builds `main` on every run. It reports its version as `dev`, so judge it by the
+  file's date, and rebuild with `rm -rf .swarmcli-bin && make install-tools`. A
+  build older than Eldara-Tech/swarmcli#673 does not wait for volumes to be released
+  on `uninstall --purge-volumes`, and the harness swallows that error, so
+  `e2e-<chart>-<case>_*` volumes survive and the next run mounts them: a check that
+  reads stored state can pass on old data. Remove them before such a check.
+- **A one-shot is `Rejected` with `invalid pool request: Pool overlaps with other
+  one on this address space`** — uninstalling a release frees its overlay's /24,
+  and the next install is handed it back before the node has finished removing the
+  old network. A service with the default restart policy rides that out with a new
+  task; a `restart_policy: condition: none` one-shot cannot, and stays dead. So a
+  case that passes alone can fail after another: reproduce with the chart's whole
+  case list. A larger `--default-addr-pool` does not help, because the allocator
+  always takes the lowest free index.
+- **A task list looks nothing like a first deploy** — Swarm keeps terminal tasks
+  up to its `--task-history-limit`, so `docker stack ps` on a release deployed
+  several times shows their history too. Deploy twice before trusting a check that
+  reads the task list.
 
 ## Cleanup
 
