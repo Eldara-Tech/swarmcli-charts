@@ -650,6 +650,12 @@ services:
         global
           log stdout format raw local0
           maxconn 4096
+        # Docker's embedded DNS, asked again while the proxy runs. Without this,
+        # HAProxy looks each peer up once at start, keeps that address for its whole
+        # life, and refuses to start while any peer is not yet in DNS. In CI a replica
+        # so started routed nothing for minutes while every peer was Synced (#229).
+        resolvers docker
+          nameserver dns 127.0.0.11:53
         defaults
           mode tcp
           log global
@@ -659,7 +665,7 @@ services:
           # timeout here would sever them mid-transaction.
           timeout client 1h
           timeout server 1h
-          default-server inter 2s fall 3 rise 2
+          default-server inter 2s fall 3 rise 2 resolvers docker resolve-prefer ipv4
         listen galera
           bind :{{ .Values.exposure.port }}
           # The check is the Synced responder each peer runs, on its own port —
@@ -667,8 +673,10 @@ services:
           # listening but not Synced.
           option httpchk GET /
           http-check expect status 200
+          # Each peer at its task address, the name the peers dial each other by,
+          # so no service VIP sits between the proxy and the peer it checks.
 {{- range $i := until $peers }}
-          server {{ printf "%s-%d" $prefix (add1 $i) }} {{ printf "%s-%d" $prefix (add1 $i) }}:{{ $.Values.exposure.port }} check port {{ $.Values.proxy.checkPort }}
+          server {{ printf "%s-%d" $prefix (add1 $i) }} {{ index $addrs $i }}:{{ $.Values.exposure.port }} check port {{ $.Values.proxy.checkPort }}
 {{- end }}
 
     healthcheck:
