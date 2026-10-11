@@ -30,7 +30,7 @@ s3:
 
 # The RustFS web console: a second listener serving the console UI under
 # /rustfs/console/, plus the same S3 and admin API as s3.port. You log in with the
-# key pair above, or through oidc below. Off by default. When on, it is reachable on
+# key pair above, or through console.oidc. Off by default. When on, it is reachable on
 # network.name at console.port, and console.exposure adds a route or a published port,
 # independently of the S3 API's exposure.mode.
 console:
@@ -54,6 +54,34 @@ console:
   publish:
     port: 9001
     mode: ingress
+  # Single sign-on through an OpenID Connect provider such as Keycloak (README "Single
+  # sign-on"); needs the console enabled. RustFS maps the ID token's groups claim to
+  # RustFS policy names and gives the console session temporary credentials with those
+  # policies; the root key pair keeps working. Scopes, claims and a role policy are
+  # RUSTFS_IDENTITY_OPENID_* settings in extraEnv.
+  oidc:
+    enabled: false
+    # The provider's discovery document, e.g.
+    # https://keycloak.example.com/realms/<realm>/.well-known/openid-configuration.
+    # RustFS reads it once, at start.
+    configUrl: ""
+    # RustFS refuses to contact a provider that resolves to a private address (one on an
+    # overlay such as network.name, or on a LAN) unless its origin is allow-listed. true
+    # adds the origin of configUrl to RUSTFS_OUTBOUND_ALLOW_ORIGINS. That list is
+    # process-wide: RustFS's event and audit webhooks and Object Lambda targets may then
+    # reach that origin too. A provider on a public address needs neither.
+    allowPrivateIdp: false
+    clientId: rustfs
+    # EXTERNAL Swarm secret holding the client secret. Pre-create it:
+    #   printf '%s' '<client secret>' | docker secret create rustfs-oidc-client-secret -
+    clientSecretSecret: rustfs-oidc-client-secret
+    # The console's public base URL (scheme://host[:port], no path). RustFS builds the
+    # login callback <browserUrl>/rustfs/admin/v3/oidc/callback/default from it. "" =>
+    # http(s)://<console.ingress.host> while the console is traefik-routed; required
+    # otherwise.
+    browserUrl: ""
+    # The login button's label: "Login with <displayName>".
+    displayName: SSO
 
 # Buckets created once the server is up, if they do not exist yet (an existing bucket
 # is left alone, so restarts are safe). Clients such as the GitLab Runner cache never
@@ -142,33 +170,6 @@ publish:
   port: 9000
   mode: ingress
 
-# Single sign-on for the console through an OpenID Connect provider such as Keycloak
-# (README "Single sign-on"). RustFS maps the ID token's groups claim to RustFS policy
-# names and gives the console session temporary credentials with those policies; the
-# root key pair keeps working. Scopes, claims, a role policy and the button's display
-# name are RUSTFS_IDENTITY_OPENID_* settings in extraEnv.
-oidc:
-  enabled: false
-  # The provider's discovery document, e.g.
-  # https://keycloak.example.com/realms/<realm>/.well-known/openid-configuration.
-  # RustFS reads it once, at start.
-  configUrl: ""
-  # RustFS refuses to contact a provider that resolves to a private address (one on an
-  # overlay such as network.name, or on a LAN) unless its origin is allow-listed. true
-  # adds the origin of configUrl to RUSTFS_OUTBOUND_ALLOW_ORIGINS. That list is
-  # process-wide: RustFS's event and audit webhooks and Object Lambda targets may then
-  # reach that origin too. A provider on a public address needs neither.
-  allowPrivateIdp: false
-  clientId: rustfs
-  # EXTERNAL Swarm secret holding the client secret. Pre-create it:
-  #   printf '%s' '<client secret>' | docker secret create rustfs-oidc-client-secret -
-  clientSecretSecret: rustfs-oidc-client-secret
-  # The console's public base URL (scheme://host[:port], no path). RustFS builds the
-  # login callback <browserUrl>/rustfs/admin/v3/oidc/callback/default from it. "" =>
-  # http(s)://<console.ingress.host> while the console is traefik-routed; required when
-  # the console is enabled otherwise.
-  browserUrl: ""
-
 # Open-file limit for the RustFS process. Below 16384 RustFS disables its per-disk
 # file-descriptor cache, which costs performance. 0 leaves the daemon's default.
 # Applied by `docker stack deploy` from Docker 23 on.
@@ -181,7 +182,7 @@ nofile: 65536
 # chart's own settings. The render fails on credentials (they belong in the secrets
 # above, and RustFS reads MINIO_* names as well), on the listener addresses (set
 # s3.port / console.* instead) and on every RUSTFS_IDENTITY_OPENID_* setting except the
-# claim and display tuning README "Single sign-on" lists, allowed with oidc.enabled.
+# claim and display tuning README "Single sign-on" lists, allowed with console.oidc.enabled.
 extraEnv: {}
 
 # Probes /health/ready on the S3 port with the image's curl: 503 until storage and IAM

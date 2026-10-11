@@ -198,14 +198,16 @@ if [ "$(q "$svc.environment | keys | .[]" | grep -E 'IDENTITY_OPENID_CLIENT_SECR
 fi
 if [ "$case" = "oidc" ]; then
   [ "$(env_ RUSTFS_IDENTITY_OPENID_CONFIG_URL)" = "http://rustfs-e2e-idp:8080/realms/e2e/.well-known/openid-configuration" ] \
-    || bad "case $case: RUSTFS_IDENTITY_OPENID_CONFIG_URL is not oidc.configUrl"
-  [ "$(env_ RUSTFS_IDENTITY_OPENID_CLIENT_ID)" = "rustfs-e2e" ] || bad "case $case: RUSTFS_IDENTITY_OPENID_CLIENT_ID is not oidc.clientId"
+    || bad "case $case: RUSTFS_IDENTITY_OPENID_CONFIG_URL is not console.oidc.configUrl"
+  [ "$(env_ RUSTFS_IDENTITY_OPENID_CLIENT_ID)" = "rustfs-e2e" ] || bad "case $case: RUSTFS_IDENTITY_OPENID_CLIENT_ID is not console.oidc.clientId"
+  [ "$(env_ RUSTFS_IDENTITY_OPENID_DISPLAY_NAME)" = "SSO" ] \
+    || bad "case $case: RUSTFS_IDENTITY_OPENID_DISPLAY_NAME is not the default console.oidc.displayName, SSO (got '$(env_ RUSTFS_IDENTITY_OPENID_DISPLAY_NAME)') — the button would read 'Login with default'"
   [ "$(env_ RUSTFS_BROWSER_REDIRECT_URL)" = "https://rustfs-console.e2e.test" ] \
     || bad "case $case: RUSTFS_BROWSER_REDIRECT_URL is not derived from console.ingress (got '$(env_ RUSTFS_BROWSER_REDIRECT_URL)') — the login would fail"
   [ "$(env_ RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC)" = "off" ] \
     || bad "case $case: RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC is not off — without a callback base RustFS would take it from the request's Host header"
   [ "$(env_ RUSTFS_OUTBOUND_ALLOW_ORIGINS)" = "http://rustfs-e2e-idp:8080" ] \
-    || bad "case $case: RUSTFS_OUTBOUND_ALLOW_ORIGINS is not the origin of oidc.configUrl (got '$(env_ RUSTFS_OUTBOUND_ALLOW_ORIGINS)') — RustFS would refuse the provider on its overlay address"
+    || bad "case $case: RUSTFS_OUTBOUND_ALLOW_ORIGINS is not the origin of console.oidc.configUrl (got '$(env_ RUSTFS_OUTBOUND_ALLOW_ORIGINS)') — RustFS would refuse the provider on its overlay address"
   [ "$(q "$svc.secrets[2]")" = "rustfs-oidc-client-secret" ] && [ "$(q '.secrets."rustfs-oidc-client-secret".external')" = "true" ] \
     || bad "case $case: the OIDC client secret is not mounted as the external secret rustfs-oidc-client-secret"
   grep -F 'done; f=/run/secrets/rustfs-oidc-client-secret; RUSTFS_IDENTITY_OPENID_CLIENT_SECRET="$$(cat "$$f" 2>/dev/null || true)"; if [ -z "$$RUSTFS_IDENTITY_OPENID_CLIENT_SECRET" ]; then echo' <<<"$script" >/dev/null \
@@ -213,7 +215,7 @@ if [ "$case" = "oidc" ]; then
     || bad "case $case: the wrapper does not export the client secret from /run/secrets/rustfs-oidc-client-secret, refusing an empty one"
 else
   for v in RUSTFS_IDENTITY_OPENID_CONFIG_URL RUSTFS_IDENTITY_OPENID_CLIENT_ID RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC \
-           RUSTFS_BROWSER_REDIRECT_URL RUSTFS_OUTBOUND_ALLOW_ORIGINS; do
+           RUSTFS_IDENTITY_OPENID_DISPLAY_NAME RUSTFS_BROWSER_REDIRECT_URL RUSTFS_OUTBOUND_ALLOW_ORIGINS; do
     [ "$(env_ "$v")" = "null" ] || bad "case $case: $v is set although oidc is off"
   done
   [ "$(q "$svc.secrets | length")" = "2" ] || bad "case $case: a third secret is mounted although oidc is off"
@@ -295,54 +297,59 @@ if [ "$case" = "default" ]; then
   printf '%s\n' 'extraEnv:' '  "X: y\n    cap_add: [SYS_ADMIN]\n    Z": z' >"$tmp.values"
   refused 'is not an environment variable name' -f "$tmp.values"
   kc=https://kc.example.com/realms/r/.well-known/openid-configuration
-  refused 'oidc.configUrl must be' --set oidc.enabled=true
-  refused 'oidc.configUrl must be' --set oidc.enabled=true --set oidc.configUrl=https://u:p@kc.example.com/realms/r
+  on=(--set console.enabled=true --set console.oidc.enabled=true)
+  kco=("${on[@]}" --set console.oidc.configUrl=$kc --set console.oidc.browserUrl=https://c.example.com)
+  refused 'console.oidc.enabled needs console.enabled' --set console.oidc.enabled=true --set console.oidc.configUrl=$kc
+  refused 'console.oidc.configUrl must be' "${on[@]}"
+  refused 'console.oidc.configUrl must be' "${on[@]}" --set console.oidc.configUrl=https://u:p@kc.example.com/realms/r
   # The derived allow-list must stay one origin: no ',' entry, no '\' that RustFS reads as '/'.
-  printf '%s\n' 'oidc:' '  enabled: true' "  configUrl: 'https://kc.example.com,http:\\\\10.0.0.5:8080/realms/r'" >"$tmp.values"
-  refused 'oidc.configUrl must be' -f "$tmp.values"
-  printf '%s\n' 'oidc:' '  enabled: true' "  configUrl: 'https://kc.example.com,https://10.0.0.5/realms/r'" >"$tmp.values"
-  refused 'oidc.configUrl must be' -f "$tmp.values"
-  printf '%s\n' 'oidc:' '  enabled: true' "  configUrl: 'https://kc.example.com\\\\10.0.0.5/realms/r'" >"$tmp.values"
-  refused 'oidc.configUrl must be' -f "$tmp.values"
-  printf '%s\n' 'oidc:' '  enabled: true' "  configUrl: 'https://kc.example.com /realms/r'" >"$tmp.values"
-  refused 'oidc.configUrl must be' -f "$tmp.values"
-  refused 'oidc.configUrl must be' --set oidc.enabled=true --set 'oidc.configUrl=https://kc.example.com%2C10.0.0.5/r'
-  render --set oidc.enabled=true --set oidc.allowPrivateIdp=true \
-    --set 'oidc.configUrl=https://kc.example.com/realms/my%20realm/.well-known/openid-configuration' \
+  for u in 'https://kc.example.com,http:\\10.0.0.5:8080/realms/r' 'https://kc.example.com,https://10.0.0.5/realms/r' \
+           'https://kc.example.com\\10.0.0.5/realms/r' 'https://kc.example.com /realms/r'; do
+    printf '%s\n' 'console:' '  enabled: true' '  oidc:' '    enabled: true' "    configUrl: '$u'" >"$tmp.values"
+    refused 'console.oidc.configUrl must be' -f "$tmp.values"
+  done
+  refused 'console.oidc.configUrl must be' "${on[@]}" --set 'console.oidc.configUrl=https://kc.example.com%2C10.0.0.5/r'
+  render "${kco[@]}" --set console.oidc.allowPrivateIdp=true \
+    --set 'console.oidc.configUrl=https://kc.example.com/realms/my%20realm/.well-known/openid-configuration' \
     && [ "$(yq -r "$svc.environment.RUSTFS_OUTBOUND_ALLOW_ORIGINS" "$tmp")" = "https://kc.example.com" ] \
     || bad "a configUrl with a percent-encoded path was refused or allow-listed wrongly: $(tr '\n' ' ' <"$tmp.err")"
-  refused 'oidc.browserUrl must be scheme://host[:port] only' --set oidc.enabled=true --set oidc.configUrl=$kc \
-    --set console.enabled=true --set oidc.browserUrl=https://c.example.com/console
-  refused 'oidc.browserUrl must be scheme://host[:port] only' --set oidc.enabled=true --set oidc.configUrl=$kc \
-    --set console.enabled=true --set oidc.browserUrl=https://c.example.com//
+  refused 'console.oidc.browserUrl must be scheme://host[:port] only' "${kco[@]}" --set console.oidc.browserUrl=https://c.example.com/console
+  refused 'console.oidc.browserUrl must be scheme://host[:port] only' "${kco[@]}" --set console.oidc.browserUrl=https://c.example.com//
   # A trailing / is accepted: RustFS strips it from the callback base.
-  render --set oidc.enabled=true --set oidc.configUrl=$kc --set console.enabled=true --set oidc.browserUrl=https://c.example.com/ \
+  render "${kco[@]}" --set console.oidc.browserUrl=https://c.example.com/ \
     && [ "$(yq -r "$svc.environment.RUSTFS_BROWSER_REDIRECT_URL" "$tmp")" = "https://c.example.com/" ] \
-    || bad "oidc.browserUrl with a trailing / was refused or not passed on: $(tr '\n' ' ' <"$tmp.err")"
-  refused 'oidc.browserUrl must be scheme://host[:port] only' --set oidc.enabled=true --set oidc.configUrl=$kc \
-    --set console.enabled=true --set 'oidc.browserUrl=https://c.example.com\,evil.example'
-  refused 'oidc.clientSecretSecret: "x;id" is not a Docker secret name' --set oidc.enabled=true --set oidc.configUrl=$kc \
-    --set 'oidc.clientSecretSecret=x;id'
-  refused 'oidc.browserUrl is required' --set oidc.enabled=true --set oidc.configUrl=$kc --set console.enabled=true
-  refused '/oidc/clientSecretSecret' --set oidc.enabled=true --set oidc.configUrl=$kc --set oidc.clientSecretSecret=
+    || bad "console.oidc.browserUrl with a trailing / was refused or not passed on: $(tr '\n' ' ' <"$tmp.err")"
+  refused 'console.oidc.browserUrl must be scheme://host[:port] only' "${kco[@]}" \
+    --set 'console.oidc.browserUrl=https://c.example.com\,evil.example'
+  refused 'console.oidc.clientSecretSecret: "x;id" is not a Docker secret name' "${kco[@]}" \
+    --set 'console.oidc.clientSecretSecret=x;id'
+  refused 'console.oidc.browserUrl is required' "${on[@]}" --set console.oidc.configUrl=$kc
+  refused '/console/oidc/clientSecretSecret' "${kco[@]}" --set console.oidc.clientSecretSecret=
+  # The login button reads "Login with <displayName>"; empty, RustFS would show "default".
+  refused '/console/oidc/displayName' "${kco[@]}" --set console.oidc.displayName=
+  render "${kco[@]}" --set 'console.oidc.displayName=Keycloak SSO' \
+    && [ "$(yq -r "$svc.environment.RUSTFS_IDENTITY_OPENID_DISPLAY_NAME" "$tmp")" = "Keycloak SSO" ] \
+    || bad "console.oidc.displayName was refused or not passed on as RUSTFS_IDENTITY_OPENID_DISPLAY_NAME: $(tr '\n' ' ' <"$tmp.err")"
   for k in RUSTFS_IDENTITY_OPENID_CLIENT_SECRET MINIO_IDENTITY_OPENID_CLIENT_SECRET RUSTFS_IDENTITY_OPENID_CLIENT_SECRET_kc2; do
     refused "extraEnv: $k is a credential" --set "extraEnv.$k=x"
   done
   # OIDC settings in extraEnv are an allow-list: only the unsuffixed tuning keys, only with oidc on.
-  # A redirect_uri would beat the chart's callback; a suffix adds a second provider.
+  # A redirect_uri would beat the chart's callback; a suffix adds a second provider; the label
+  # is console.oidc.displayName.
   for k in RUSTFS_IDENTITY_OPENID_CONFIG_URL RUSTFS_IDENTITY_OPENID_CLIENT_ID RUSTFS_IDENTITY_OPENID_REDIRECT_URI \
            RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC RUSTFS_IDENTITY_OPENID_ISSUER RUSTFS_IDENTITY_OPENID_OTHER_AUDIENCES \
-           RUSTFS_IDENTITY_OPENID_ENABLE RUSTFS_IDENTITY_OPENID_CONFIG_URL_x RUSTFS_IDENTITY_OPENID_SCOPES_x; do
-    refused "extraEnv: $k is not an OIDC setting extraEnv may tune" --set oidc.enabled=true --set oidc.configUrl=$kc --set "extraEnv.$k=x"
+           RUSTFS_IDENTITY_OPENID_ENABLE RUSTFS_IDENTITY_OPENID_DISPLAY_NAME RUSTFS_IDENTITY_OPENID_CONFIG_URL_x \
+           RUSTFS_IDENTITY_OPENID_SCOPES_x; do
+    refused "extraEnv: $k is not an OIDC setting extraEnv may tune" "${kco[@]}" --set "extraEnv.$k=x"
   done
   # RustFS maps only some MINIO_IDENTITY_OPENID_ names (ROLE_POLICY is not one): every one is refused.
   for k in MINIO_IDENTITY_OPENID_SCOPES MINIO_IDENTITY_OPENID_ROLE_POLICY MINIO_IDENTITY_OPENID_CONFIG_URL \
            MINIO_IDENTITY_OPENID_REDIRECT_URI; do
-    refused "extraEnv: $k: use the RUSTFS_IDENTITY_OPENID_ spelling" --set oidc.enabled=true --set oidc.configUrl=$kc --set "extraEnv.$k=x"
+    refused "extraEnv: $k: use the RUSTFS_IDENTITY_OPENID_ spelling" "${kco[@]}" --set "extraEnv.$k=x"
   done
-  tune="SCOPES CLAIM_NAME CLAIM_PREFIX ROLE_POLICY DISPLAY_NAME GROUPS_CLAIM ROLES_CLAIM EMAIL_CLAIM USERNAME_CLAIM HIDE_FROM_UI"
+  tune="SCOPES CLAIM_NAME CLAIM_PREFIX ROLE_POLICY GROUPS_CLAIM ROLES_CLAIM EMAIL_CLAIM USERNAME_CLAIM HIDE_FROM_UI"
   sets=(); for t in $tune; do sets+=(--set "extraEnv.RUSTFS_IDENTITY_OPENID_$t=x"); done
-  if render --set oidc.enabled=true --set oidc.configUrl=$kc "${sets[@]}"; then
+  if render "${kco[@]}" "${sets[@]}"; then
     for k in $(printf 'RUSTFS_IDENTITY_OPENID_%s ' $tune); do
       [ "$(yq -r "$svc.environment.$k" "$tmp")" = "x" ] || bad "extraEnv.$k was not rendered"
     done
@@ -353,29 +360,28 @@ if [ "$case" = "default" ]; then
     refused "extraEnv: $k configures OIDC" --set "extraEnv.$k=x"
   done
   refused 'extraEnv: RUSTFS_BROWSER_REDIRECT_URL is set by the chart' --set extraEnv.RUSTFS_BROWSER_REDIRECT_URL=x
-  refused 'extraEnv: RUSTFS_BROWSER_REDIRECT_URL is set by the chart' --set oidc.enabled=true --set oidc.configUrl=$kc \
-    --set extraEnv.RUSTFS_BROWSER_REDIRECT_URL=x
-  # With the console off there is no callback base, and dynamic redirects stay off, so RustFS
-  # refuses a browser login on the S3 listener rather than build its callback from the
-  # request's Host header. An explicit browserUrl wins over the derived one; an extraEnv
-  # allow-list replaces the chart's, which widens only on oidc.allowPrivateIdp.
+  refused 'extraEnv: RUSTFS_BROWSER_REDIRECT_URL is set by the chart' "${kco[@]}" --set extraEnv.RUSTFS_BROWSER_REDIRECT_URL=x
+  # A console that is not traefik-routed takes its callback base from browserUrl, and dynamic
+  # redirects stay off, so RustFS never builds the callback from the request's Host header. An
+  # explicit browserUrl wins over the derived one; an extraEnv allow-list replaces the chart's,
+  # which widens only on console.oidc.allowPrivateIdp.
   envt() { yq -r "$svc.environment.$1" "$tmp"; }
-  if render --set oidc.enabled=true --set oidc.configUrl=$kc; then
-    [ "$(envt RUSTFS_BROWSER_REDIRECT_URL)" = "null" ] && [ "$(envt RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC)" = "off" ] \
+  if render "${kco[@]}"; then
+    [ "$(envt RUSTFS_BROWSER_REDIRECT_URL)" = "https://c.example.com" ] && [ "$(envt RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC)" = "off" ] \
       && [ "$(envt RUSTFS_OUTBOUND_ALLOW_ORIGINS)" = "null" ] \
-      || bad "oidc with the console off: callback base '$(envt RUSTFS_BROWSER_REDIRECT_URL)', dynamic redirect '$(envt RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC)', allow-list '$(envt RUSTFS_OUTBOUND_ALLOW_ORIGINS)' (allowPrivateIdp is off)"
+      || bad "oidc with an unrouted console: callback base '$(envt RUSTFS_BROWSER_REDIRECT_URL)', dynamic redirect '$(envt RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC)', allow-list '$(envt RUSTFS_OUTBOUND_ALLOW_ORIGINS)' (allowPrivateIdp is off)"
   else
-    bad "oidc with the console off was refused: $(tr '\n' ' ' <"$tmp.err")"
+    bad "oidc with an unrouted console and a browserUrl was refused: $(tr '\n' ' ' <"$tmp.err")"
   fi
-  render --set oidc.enabled=true --set oidc.configUrl=$kc --set oidc.allowPrivateIdp=true \
+  render "${kco[@]}" --set console.oidc.allowPrivateIdp=true \
     && [ "$(envt RUSTFS_OUTBOUND_ALLOW_ORIGINS)" = "https://kc.example.com" ] \
-    || bad "oidc.allowPrivateIdp does not allow-list the origin of configUrl (got '$(envt RUSTFS_OUTBOUND_ALLOW_ORIGINS)')"
-  render --set oidc.enabled=true --set oidc.configUrl=$kc --set console.enabled=true --set console.exposure.mode=traefik \
-    --set console.ingress.host=c.example.com --set oidc.browserUrl=https://sso.example.com --set oidc.allowPrivateIdp=true \
+    || bad "console.oidc.allowPrivateIdp does not allow-list the origin of configUrl (got '$(envt RUSTFS_OUTBOUND_ALLOW_ORIGINS)')"
+  render "${kco[@]}" --set console.exposure.mode=traefik --set console.ingress.host=c.example.com \
+    --set console.oidc.browserUrl=https://sso.example.com --set console.oidc.allowPrivateIdp=true \
     --set extraEnv.RUSTFS_OUTBOUND_ALLOW_ORIGINS=https://kc-backchannel:8443 \
     && [ "$(envt RUSTFS_BROWSER_REDIRECT_URL)" = "https://sso.example.com" ] \
     && [ "$(envt RUSTFS_OUTBOUND_ALLOW_ORIGINS)" = "https://kc-backchannel:8443" ] \
-    || bad "oidc.browserUrl or an extraEnv RUSTFS_OUTBOUND_ALLOW_ORIGINS does not win over the chart's own"
+    || bad "console.oidc.browserUrl or an extraEnv RUSTFS_OUTBOUND_ALLOW_ORIGINS does not win over the chart's own"
   # A disabled console is exposed nowhere, whatever console.exposure says (prometheus-stack's rule).
   for m in traefik published; do
     if render --set console.exposure.mode="$m"; then

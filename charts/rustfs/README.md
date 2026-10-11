@@ -68,7 +68,7 @@ A default install needs:
 ```
 
 Add `traefik-public` to `networks` when the S3 API or the console is traefik-routed,
-`rustfs-oidc-client-secret` to `secrets` with `oidc.enabled`, and the path to
+`rustfs-oidc-client-secret` to `secrets` with `console.oidc.enabled`, and the path to
 `hostPaths` when you set `persistence.volumePath`. Each entry is the name itself, so
 an override in values needs the same change here.
 
@@ -166,11 +166,13 @@ cache:
 
 ## Single sign-on
 
-With `oidc.enabled` the console offers a login through an OpenID Connect provider
-beside the key-pair login, and RustFS's STS (`AssumeRoleWithWebIdentity`) accepts that
-provider's tokens. RustFS maps each value of the ID token's `groups` claim to the
-RustFS policy of the same name (`consoleAdmin`, `readwrite`, `readonly`, or your own)
-and gives the session temporary credentials with those policies.
+With `console.oidc.enabled` the console offers a **Login with SSO** button beside the
+key-pair login, through an OpenID Connect provider; `console.oidc.displayName` sets the
+label. RustFS's STS (`AssumeRoleWithWebIdentity`) accepts that provider's tokens too.
+RustFS maps each value of the ID token's `groups` claim to the RustFS policy of the same
+name (`consoleAdmin`, `readwrite`, `readonly`, or your own) and gives the session
+temporary credentials with those policies. Every value must name an existing policy:
+one that does not refuses the whole login (see the last point below).
 
 With [Keycloak](../keycloak), in your realm:
 
@@ -182,8 +184,8 @@ With [Keycloak](../keycloak), in your realm:
    and **Web origins** to `https://rustfs.example.com`.
 3. Add a **Group Membership** mapper with token claim name `groups`, **Full group
    path off** and **Add to ID token** on, and create groups named after the RustFS
-   policies. With the full path on the claim reads `/readwrite`, which matches no
-   policy and grants nothing.
+   policies. With the full path on the claim reads `/readwrite`, which names no
+   policy, and RustFS refuses the login.
 4. Put the client secret (**Credentials** tab) in a Swarm secret:
    `printf '%s' '<client secret>' | docker secret create rustfs-oidc-client-secret -`
 
@@ -194,26 +196,26 @@ console:
     mode: traefik
   ingress:
     host: rustfs.example.com
-oidc:
-  enabled: true
-  configUrl: https://keycloak.example.com/realms/<realm>/.well-known/openid-configuration
-  clientId: rustfs
+  oidc:
+    enabled: true
+    configUrl: https://keycloak.example.com/realms/<realm>/.well-known/openid-configuration
+    clientId: rustfs
+    displayName: Keycloak        # the button reads "Login with Keycloak"; default SSO
 ```
 
-- **The callback.** RustFS builds it from `oidc.browserUrl`, which the chart derives
-  as `https://<console.ingress.host>` while the console is traefik-routed; set it
-  yourself for a published console (e.g. `http://node1.example.com:9001`). It is
-  passed as `RUSTFS_BROWSER_REDIRECT_URL`, and RustFS's dynamic redirect is off, so a
-  request's `Host` header can never move the callback. With the console off there is
-  no callback base, and RustFS refuses a browser login on the S3 port; STS still
-  accepts the provider's tokens.
+- **The callback.** RustFS builds it from `console.oidc.browserUrl`, which the chart
+  derives as `https://<console.ingress.host>` while the console is traefik-routed; set
+  it yourself otherwise (e.g. `http://node1.example.com:9001` for a published console).
+  It is passed as `RUSTFS_BROWSER_REDIRECT_URL`, and RustFS's dynamic redirect is off,
+  so a request's `Host` header can never move the callback. `default` in its path is
+  RustFS's id for the one provider, not the button's label.
 - **Use the provider's public URL** for `configUrl`: the browser is sent to the
   authorization endpoint the discovery document names, and RustFS checks the
   document's issuer against `configUrl`. For the keycloak chart that is its
   `ingress.host`.
-- **A provider on a private address** needs `oidc.allowPrivateIdp: true`. That is a
-  provider whose name resolves to a private address from inside the task: one on an
-  overlay such as `rustfs-net`, or on a LAN. RustFS refuses to contact it unless its
+- **A provider on a private address** needs `console.oidc.allowPrivateIdp: true`. That
+  is a provider whose name resolves to a private address from inside the task: one on
+  an overlay such as `rustfs-net`, or on a LAN. RustFS refuses to contact it unless its
   origin is in `RUSTFS_OUTBOUND_ALLOW_ORIGINS`, and without that discovery fails at
   start and the console has no single sign-on. The flag adds the origin of `configUrl`
   to that list, which is process-wide: RustFS's event and audit webhooks and Object
@@ -230,11 +232,11 @@ oidc:
   start, by the start-up wrapper; it is never in the manifest or `docker inspect`.
   `extraEnv` refuses it in every spelling.
 - **What `extraEnv` may tune**, as `RUSTFS_IDENTITY_OPENID_<name>` and only with
-  `oidc.enabled`: `SCOPES`, `CLAIM_NAME`, `CLAIM_PREFIX`, `ROLE_POLICY`,
-  `DISPLAY_NAME` (the button's label), `GROUPS_CLAIM`, `ROLES_CLAIM`, `EMAIL_CLAIM`,
-  `USERNAME_CLAIM` and `HIDE_FROM_UI`. Every other OIDC setting is refused, since the
-  provider, client, issuer and callback come from `oidc.*`, and so is a provider
-  suffix: a second provider is not supported. The `MINIO_IDENTITY_OPENID_*` spelling is
+  `console.oidc.enabled`: `SCOPES`, `CLAIM_NAME`, `CLAIM_PREFIX`, `ROLE_POLICY`,
+  `GROUPS_CLAIM`, `ROLES_CLAIM`, `EMAIL_CLAIM`, `USERNAME_CLAIM` and `HIDE_FROM_UI`.
+  Every other OIDC setting is refused, since the provider, client, issuer, callback
+  and label come from `console.oidc.*`, and so is a provider suffix: a second provider
+  is not supported. The `MINIO_IDENTITY_OPENID_*` spelling is
   refused too, because RustFS reads only some of those names and ignores the rest.
 
 ## Security
@@ -305,12 +307,13 @@ collector.
 | `console.exposure.mode` | `none` | Console: `none`, `traefik` or `published` |
 | `console.ingress.host` / `.tls` | `""` / `true` | Console `Host()` rule (required in traefik mode, not `ingress.host`) and HTTPS routers |
 | `console.publish.port` / `.mode` | `9001` / `ingress` | Console published port (published mode) |
-| `oidc.enabled` | `false` | Console single sign-on through an OpenID Connect provider |
-| `oidc.configUrl` | `""` | The provider's discovery document URL (required when enabled) |
-| `oidc.allowPrivateIdp` | `false` | Allow-list the origin of `configUrl` for a provider on a private address (process-wide) |
-| `oidc.clientId` | `rustfs` | Client ID |
-| `oidc.clientSecretSecret` | `rustfs-oidc-client-secret` | External secret holding the client secret |
-| `oidc.browserUrl` | `""` | Console public base URL for the callback; `""` = from `console.ingress` when routed, required otherwise with the console on |
+| `console.oidc.enabled` | `false` | Console single sign-on through an OpenID Connect provider (needs `console.enabled`) |
+| `console.oidc.configUrl` | `""` | The provider's discovery document URL (required when enabled) |
+| `console.oidc.allowPrivateIdp` | `false` | Allow-list the origin of `configUrl` for a provider on a private address (process-wide) |
+| `console.oidc.clientId` | `rustfs` | Client ID |
+| `console.oidc.clientSecretSecret` | `rustfs-oidc-client-secret` | External secret holding the client secret |
+| `console.oidc.browserUrl` | `""` | Console public base URL for the callback; `""` = from `console.ingress` when routed, required otherwise |
+| `console.oidc.displayName` | `SSO` | The login button's label, "Login with &lt;displayName&gt;" |
 | `buckets` | `[]` | Buckets created at start if missing |
 | `persistence.enabled` | `true` | Persist `/data` |
 | `persistence.volumeName` | `rustfs-data` | Named volume |

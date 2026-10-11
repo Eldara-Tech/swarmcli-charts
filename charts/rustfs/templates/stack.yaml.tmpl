@@ -4,7 +4,7 @@
 {{- $s3Routed := eq .Values.exposure.mode "traefik" -}}
 {{- $consoleRouted := and $console (eq .Values.console.exposure.mode "traefik") -}}
 {{- $consolePublished := and $console (eq .Values.console.exposure.mode "published") -}}
-{{- $oidc := .Values.oidc.enabled -}}
+{{- $oidc := .Values.console.oidc.enabled -}}
 {{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) (contains "/" .Values.persistence.volumeName) -}}
 {{-   fail "persistence.volumeName is a Docker named-volume name and cannot contain '/'. To store data under a host directory, set persistence.volumePath instead." -}}
 {{- end -}}
@@ -41,17 +41,20 @@
        The origin admits no ',' (a second list entry), no '%' (an encoded one) and no '\'
        (RustFS reads http:\\host as http://host), and neither URL any whitespace. The client
        secret's name is spliced into the start-up shell, so it must be a Docker secret name. */}}
-{{- if and $oidc (not (regexMatch `^https?://[^/?#@,%\\\s]+(/\S*)?$` .Values.oidc.configUrl)) -}}
-{{-   fail (printf "oidc.configUrl must be the http(s) URL of the provider's discovery document when oidc.enabled (got %q)" .Values.oidc.configUrl) -}}
+{{- if and $oidc (not $console) -}}
+{{-   fail "console.oidc.enabled needs console.enabled: the single sign-on login and its callback are the console's" -}}
 {{- end -}}
-{{- if and $oidc .Values.oidc.browserUrl (not (regexMatch `^https?://[^/?#@,\\\s]+/?$` .Values.oidc.browserUrl)) -}}
-{{-   fail (printf "oidc.browserUrl must be scheme://host[:port] only, without a path (got %q)" .Values.oidc.browserUrl) -}}
+{{- if and $oidc (not (regexMatch `^https?://[^/?#@,%\\\s]+(/\S*)?$` .Values.console.oidc.configUrl)) -}}
+{{-   fail (printf "console.oidc.configUrl must be the http(s) URL of the provider's discovery document when console.oidc.enabled (got %q)" .Values.console.oidc.configUrl) -}}
 {{- end -}}
-{{- if and $oidc (not (regexMatch "^[A-Za-z0-9]([A-Za-z0-9_.-]{0,62}[A-Za-z0-9])?$" .Values.oidc.clientSecretSecret)) -}}
-{{-   fail (printf "oidc.clientSecretSecret: %q is not a Docker secret name (1-64 characters of letters, digits, '_', '.' and '-', starting and ending with a letter or digit)" .Values.oidc.clientSecretSecret) -}}
+{{- if and $oidc .Values.console.oidc.browserUrl (not (regexMatch `^https?://[^/?#@,\\\s]+/?$` .Values.console.oidc.browserUrl)) -}}
+{{-   fail (printf "console.oidc.browserUrl must be scheme://host[:port] only, without a path (got %q)" .Values.console.oidc.browserUrl) -}}
 {{- end -}}
-{{- if and $oidc $console (not $consoleRouted) (not .Values.oidc.browserUrl) -}}
-{{-   fail "oidc.browserUrl is required when oidc.enabled and the console is not traefik-routed: RustFS builds the login callback from it, and refuses the login without one" -}}
+{{- if and $oidc (not (regexMatch "^[A-Za-z0-9]([A-Za-z0-9_.-]{0,62}[A-Za-z0-9])?$" .Values.console.oidc.clientSecretSecret)) -}}
+{{-   fail (printf "console.oidc.clientSecretSecret: %q is not a Docker secret name (1-64 characters of letters, digits, '_', '.' and '-', starting and ending with a letter or digit)" .Values.console.oidc.clientSecretSecret) -}}
+{{- end -}}
+{{- if and $oidc (not $consoleRouted) (not .Values.console.oidc.browserUrl) -}}
+{{-   fail "console.oidc.browserUrl is required when console.oidc.enabled and the console is not traefik-routed: RustFS builds the login callback from it, and refuses the login without one" -}}
 {{- end -}}
 {{- /* extraEnv keys render unquoted, so a key must be a plain variable name before anything
        else is checked: a quoted "RUSTFS_SECRET_KEY" would slip past every pattern below and
@@ -60,10 +63,11 @@
        both spellings of a credential are refused, the *_FILE forms included, and so is the
        OIDC client secret under any provider suffix. The listener settings are wired from
        s3.port / console.*, so they are refused too. OIDC is an allow-list: the provider,
-       client, issuer and callback come from oidc.* (a redirect_uri here would beat the
-       callback the chart sets, a suffixed key would add a second provider), so extraEnv may
-       only tune claims and display, and only with oidc.enabled. RustFS maps only some
-       MINIO_IDENTITY_OPENID_ names and ignores the rest, so that spelling is refused. */}}
+       client, issuer, callback and label come from console.oidc.* (a redirect_uri here would
+       beat the callback the chart sets, a suffixed key would add a second provider), so
+       extraEnv may only tune claims and display, and only with console.oidc.enabled. RustFS
+       maps only some MINIO_IDENTITY_OPENID_ names and ignores the rest, so that spelling is
+       refused. */}}
 {{- range $k, $v := .Values.extraEnv }}
 {{-   if not (regexMatch "^[A-Za-z_][A-Za-z0-9_]*$" $k) }}
 {{-     fail (printf "extraEnv: %q is not an environment variable name (letters, digits and _, not starting with a digit)" $k) }}
@@ -75,19 +79,19 @@
 {{-     fail (printf "extraEnv: %s is set by the chart from s3.port and console.*; use those values instead" $k) }}
 {{-   end }}
 {{-   if regexMatch "^(RUSTFS|MINIO)_IDENTITY_OPENID_CLIENT_SECRET" $k }}
-{{-     fail (printf "extraEnv: %s is a credential; it belongs in the Swarm secret oidc.clientSecretSecret" $k) }}
+{{-     fail (printf "extraEnv: %s is a credential; it belongs in the Swarm secret console.oidc.clientSecretSecret" $k) }}
 {{-   end }}
 {{-   if regexMatch "^(RUSTFS|MINIO)_IDENTITY_OPENID_" $k }}
 {{-     if not $oidc }}
-{{-       fail (printf "extraEnv: %s configures OIDC, which the chart owns; set oidc.enabled and oidc.* instead" $k) }}
+{{-       fail (printf "extraEnv: %s configures OIDC, which the chart owns; set console.oidc.enabled and console.oidc.* instead" $k) }}
 {{-     else if hasPrefix "MINIO_" $k }}
 {{-       fail (printf "extraEnv: %s: use the RUSTFS_IDENTITY_OPENID_ spelling; RustFS reads only some MINIO_IDENTITY_OPENID_ names and silently ignores the rest" $k) }}
-{{-     else if not (has (trimPrefix "RUSTFS_IDENTITY_OPENID_" $k) (list "SCOPES" "CLAIM_NAME" "CLAIM_PREFIX" "ROLE_POLICY" "DISPLAY_NAME" "GROUPS_CLAIM" "ROLES_CLAIM" "EMAIL_CLAIM" "USERNAME_CLAIM" "HIDE_FROM_UI")) }}
-{{-       fail (printf "extraEnv: %s is not an OIDC setting extraEnv may tune (SCOPES, CLAIM_NAME, CLAIM_PREFIX, ROLE_POLICY, DISPLAY_NAME, GROUPS_CLAIM, ROLES_CLAIM, EMAIL_CLAIM, USERNAME_CLAIM, HIDE_FROM_UI, without a provider suffix): the provider, client and callback come from oidc.*, and a second provider is not supported" $k) }}
+{{-     else if not (has (trimPrefix "RUSTFS_IDENTITY_OPENID_" $k) (list "SCOPES" "CLAIM_NAME" "CLAIM_PREFIX" "ROLE_POLICY" "GROUPS_CLAIM" "ROLES_CLAIM" "EMAIL_CLAIM" "USERNAME_CLAIM" "HIDE_FROM_UI")) }}
+{{-       fail (printf "extraEnv: %s is not an OIDC setting extraEnv may tune (SCOPES, CLAIM_NAME, CLAIM_PREFIX, ROLE_POLICY, GROUPS_CLAIM, ROLES_CLAIM, EMAIL_CLAIM, USERNAME_CLAIM, HIDE_FROM_UI, without a provider suffix): the provider, client, callback and label come from console.oidc.*, and a second provider is not supported" $k) }}
 {{-     end }}
 {{-   end }}
 {{-   if eq $k "RUSTFS_BROWSER_REDIRECT_URL" }}
-{{-     fail "extraEnv: RUSTFS_BROWSER_REDIRECT_URL is set by the chart from oidc.browserUrl; use that instead" }}
+{{-     fail "extraEnv: RUSTFS_BROWSER_REDIRECT_URL is set by the chart from console.oidc.browserUrl; use that instead" }}
 {{-   end }}
 {{- end -}}
 version: "3.9"
@@ -98,8 +102,8 @@ version: "3.9"
 {{- $cport := .Values.console.port | int }}
 {{- $access := .Values.s3.accessKeySecret }}
 {{- $secret := .Values.s3.secretKeySecret }}
-{{- $oidcSecret := .Values.oidc.clientSecretSecret }}
-{{- $browserUrl := .Values.oidc.browserUrl }}
+{{- $oidcSecret := .Values.console.oidc.clientSecretSecret }}
+{{- $browserUrl := .Values.console.oidc.browserUrl }}
 {{- if and (not $browserUrl) $consoleRouted }}{{ $browserUrl = printf "%s://%s" (ternary "https" "http" .Values.console.ingress.tls) .Values.console.ingress.host }}{{- end }}
 
 {{- $nets := list .Values.network.name }}
@@ -120,10 +124,10 @@ services:
     #    wrapper refuses that too, after dropping every non-alphanumeric byte so that no
     #    stray whitespace or punctuation slips it past. A key must be one word: whitespace
     #    inside it would make the trimmed key differ from the one the bucket loop signs with.
-    #  * With oidc.enabled it exports the OIDC client secret from its Swarm secret, and
-    #    refuses to start when that is missing or empty. RustFS has no _FILE form for it (it
-    #    would read RUSTFS_IDENTITY_OPENID_CLIENT_SECRET_FILE as a provider named FILE), so
-    #    the value lives only in the server's own environment.
+    #  * With console.oidc.enabled it exports the OIDC client secret from its Swarm secret,
+    #    and refuses to start when that is missing or empty. RustFS has no _FILE form for it
+    #    (it would read RUSTFS_IDENTITY_OPENID_CLIENT_SECRET_FILE as a provider named FILE),
+    #    so the value lives only in the server's own environment.
     #  * Buckets are created by a background loop over the signed S3 API once the server
     #    answers. RustFS answers an existing bucket with 200, as S3 does in us-east-1, or
     #    409; both count as done, so a restart is a no-op, and a failure is logged rather
@@ -176,8 +180,10 @@ services:
 {{- end }}
 {{- if $oidc }}
       # Single sign-on; the wrapper above exports the client secret.
-      RUSTFS_IDENTITY_OPENID_CONFIG_URL: {{ .Values.oidc.configUrl | quote }}
-      RUSTFS_IDENTITY_OPENID_CLIENT_ID: {{ .Values.oidc.clientId | quote }}
+      RUSTFS_IDENTITY_OPENID_CONFIG_URL: {{ .Values.console.oidc.configUrl | quote }}
+      RUSTFS_IDENTITY_OPENID_CLIENT_ID: {{ .Values.console.oidc.clientId | quote }}
+      # The login button's label; without it RustFS shows the provider id, "default".
+      RUSTFS_IDENTITY_OPENID_DISPLAY_NAME: {{ .Values.console.oidc.displayName | quote }}
       # Never build the login callback from the request (X-Forwarded-Proto, Host), which
       # the client controls, on either listener: without a callback base RustFS refuses
       # the browser login instead.
@@ -200,12 +206,12 @@ services:
 {{- if and (or $s3Routed $consoleRouted) (not (hasKey .Values.extraEnv "RUSTFS_HTTP1_HEADER_READ_TIMEOUT")) }}
       RUSTFS_HTTP1_HEADER_READ_TIMEOUT: {{ .Values.traefik.idleTimeoutSeconds | quote }}
 {{- end }}
-{{- if and $oidc .Values.oidc.allowPrivateIdp (not (hasKey .Values.extraEnv "RUSTFS_OUTBOUND_ALLOW_ORIGINS")) }}
-      # oidc.allowPrivateIdp: RustFS contacts a provider on a private address (an overlay,
-      # a LAN) only when its origin is listed here. It is RustFS's one allow-list for every
-      # outbound connection it polices, so webhook and Object Lambda targets may reach
-      # this origin too.
-      RUSTFS_OUTBOUND_ALLOW_ORIGINS: {{ regexFind "^https?://[^/]+" .Values.oidc.configUrl | quote }}
+{{- if and $oidc .Values.console.oidc.allowPrivateIdp (not (hasKey .Values.extraEnv "RUSTFS_OUTBOUND_ALLOW_ORIGINS")) }}
+      # console.oidc.allowPrivateIdp: RustFS contacts a provider on a private address (an
+      # overlay, a LAN) only when its origin is listed here. It is RustFS's one allow-list
+      # for every outbound connection it polices, so webhook and Object Lambda targets may
+      # reach this origin too.
+      RUSTFS_OUTBOUND_ALLOW_ORIGINS: {{ regexFind "^https?://[^/]+" .Values.console.oidc.configUrl | quote }}
 {{- end }}
 {{- range $k, $v := .Values.extraEnv }}
       {{ $k }}: {{ $v | quote }}

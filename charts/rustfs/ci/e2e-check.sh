@@ -18,9 +18,10 @@
 #   * the console listener exists exactly when console.enabled;
 #   * `console-edge`: the console is routed through the traefik chart (its UI, the browser
 #     redirect to it, and the signed S3 API it also serves) while the S3 host is not;
-#   * `oidc`: the stub provider was discovered, the login redirects to its authorization
-#     endpoint with the chart's client id and callback (a spoofed Host cannot move it),
-#     and the client secret reached the server's environment but not `docker inspect`;
+#   * `oidc`: the stub provider was discovered under the chart's default label, the login
+#     redirects to its authorization endpoint with the chart's client id and callback (a
+#     spoofed Host cannot move it), and the client secret reached the server's environment
+#     but not `docker inspect`;
 #   * the raised open-file limit reached the process, and its log reaches `docker service
 #     logs` (both are chart settings a render cannot prove the daemon applied).
 #
@@ -169,7 +170,9 @@ if [ "$case" = "oidc" ]; then
   got="$(c "$api/providers" 2>/dev/null || true)"
   grep -F '"provider_id":"default"' <<<"$got" >/dev/null \
     || die "the stub provider was not loaded (providers: ${got:-<empty>}); was it reachable at start?"
-  echo "  ok: the provider was discovered at start"
+  grep -F '"display_name":"SSO"' <<<"$got" >/dev/null \
+    || die "the provider's label is not the chart's default console.oidc.displayName, SSO (providers: $got)"
+  echo "  ok: the provider was discovered at start, labelled SSO"
   auth='http://rustfs-e2e-idp:8080/realms/e2e/protocol/openid-connect/auth?'
   cb='redirect_uri=https%3A%2F%2Frustfs-console.e2e.test%2Frustfs%2Fadmin%2Fv3%2Foidc%2Fcallback%2Fdefault'
   for host in "${svc}:9001" evil.example; do
