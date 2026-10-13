@@ -4,9 +4,10 @@
 # `swarmcli charts install`, once per fixture:
 #   $1 = release name   $2 = chart directory   $3 = fixture case name
 # It provisions the external prerequisites swarmcli validates but never creates:
-# the two operator-supplied secrets and the per-peer persistence node-label pins.
-# The shared mariadb-galera-net overlay is autoCreate:true, so swarmcli creates it
-# at install — not this hook. ci/e2e-teardown.sh removes everything created here.
+# the operator-supplied secrets and the per-peer persistence node-label pins.
+# The shared mariadb-galera-net and monitoring overlays are autoCreate:true, so
+# swarmcli creates them at install — not this hook. ci/e2e-teardown.sh removes
+# everything created here.
 #
 # CI's swarm is a SINGLE node, but the chart pins peer N to node.labels.
 # mariadb-galera-<N>. Rather than skip the pinned shape (which is the one operators
@@ -27,6 +28,8 @@ docker secret inspect mariadb_galera_root_password >/dev/null 2>&1 \
   || printf 'test' | docker secret create mariadb_galera_root_password - >/dev/null
 docker secret inspect mariadb_galera_password >/dev/null 2>&1 \
   || printf 'test' | docker secret create mariadb_galera_password - >/dev/null
+docker secret inspect mariadb_galera_exporter_password >/dev/null 2>&1 \
+  || printf 'test' | docker secret create mariadb_galera_exporter_password - >/dev/null
 
 node="$(docker node ls --format '{{.ID}} {{.Self}}' 2>/dev/null | awk '$2=="true"{print $1; exit}')"
 [ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | sed -n 1p)"

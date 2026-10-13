@@ -10,7 +10,9 @@
 # its working directory all show up on the FIRST WRITE, not at boot. So every fixture does
 # the round trip that is the whole point of the chart — POST a line to /loki/api/v1/push,
 # then read it back out of /loki/api/v1/query_range — and the shipper fixture additionally
-# waits for a line nobody pushed by hand: one Alloy collected from a real container.
+# waits for a line nobody pushed by hand: one Alloy collected from a real container. The
+# metrics fixtures then scrape /metrics where Prometheus would: on the `monitoring` overlay,
+# at the port the service's discovery label names.
 #
 # How Loki is reached depends on the fixture, which is also what is under test:
 #   published-ish  -> the host, through the routing mesh on 127.0.0.1:3100
@@ -30,7 +32,7 @@ base=""
 extra=()
 
 case "$case" in
-  default|shipper|retention-off)
+  default|shipper|retention-off|metrics)
     # exposure.mode: none — reached exactly as a neighbouring stack reaches it, by service
     # DNS on the shared overlay. That the name resolves at all is a chart property.
     net=monitoring
@@ -89,7 +91,7 @@ fi
 # --- the published fixtures publish a port: ask the daemon what it accepted, since the
 # round trip below deliberately does not travel through it. -----------------------------
 case "$case" in
-  default|shipper|retention-off|edge) ;;
+  default|shipper|retention-off|metrics|edge) ;;
   *)
     if ! docker service inspect "${release}_loki" \
         --format '{{range .Endpoint.Ports}}{{.PublishMode}}:{{.PublishedPort}}->{{.TargetPort}} {{end}}' 2>/dev/null \
@@ -179,3 +181,45 @@ if [ "$case" = "shipper" ]; then
   fi
   echo "  ${release}_alloy: container logs arrived labelled service=${release}_loki"
 fi
+
+# --- metrics fixtures: /metrics answers on the scrape overlay at the port the discovery
+# label names, which is exactly what Prometheus's swarm-tasks job dials. loki_build_info
+# proves it is Loki answering; the distributor's line counter proves the series reflect
+# the push above rather than an idle process. -------------------------------------------
+case "$case" in
+  metrics|metrics-published)
+    svc="${release}_loki"
+    scrape="$(docker service inspect "$svc" --format '{{index .Spec.Labels "prometheus.io/scrape"}}' 2>/dev/null || true)"
+    port="$(docker service inspect "$svc" --format '{{index .Spec.Labels "prometheus.io/port"}}' 2>/dev/null || true)"
+    if [ "$scrape" != "true" ] || [ -z "$port" ]; then
+      echo "  FAIL: $svc does not carry prometheus.io/scrape=true and a prometheus.io/port (got '$scrape' / '$port')"
+      exit 1
+    fi
+    m=""
+    for _ in $(seq 1 10); do
+      m="$(docker run --rm --network monitoring "$CURL_IMAGE" -sSf --max-time 15 "http://${svc}:${port}/metrics" 2>&1 || true)"
+      grep -E '^loki_build_info\{' <<<"$m" >/dev/null && break
+      sleep 3
+    done
+    if ! grep -E '^loki_build_info\{' <<<"$m" >/dev/null; then
+      echo "  FAIL: no loki_build_info at http://${svc}:${port}/metrics on the monitoring overlay:"
+      printf '%s\n' "$m" | sed -n '1,5p' | sed 's/^/    /'
+      diagnose
+      exit 1
+    fi
+    lines="$(awk '/^loki_distributor_lines_received_total[{ ]/ { n += $NF } END { print n + 0 }' <<<"$m")"
+    if [ "$lines" -lt 1 ]; then
+      echo "  FAIL: loki_distributor_lines_received_total is $lines after a push was accepted"
+      exit 1
+    fi
+    echo "  ${svc}: /metrics scraped on monitoring:${port} (loki_build_info, loki_distributor_lines_received_total=${lines})"
+    ;;
+  *)
+    # Metrics are opt-in: a fixture that did not ask for them must not be discoverable.
+    scrape="$(docker service inspect "${release}_loki" --format '{{index .Spec.Labels "prometheus.io/scrape"}}' 2>/dev/null || true)"
+    if [ -n "$scrape" ]; then
+      echo "  FAIL: ${release}_loki carries prometheus.io/scrape=$scrape although the fixture leaves metrics off"
+      exit 1
+    fi
+    ;;
+esac

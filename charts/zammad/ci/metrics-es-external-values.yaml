@@ -1,0 +1,9 @@
+# Metrics with an external Elasticsearch: only the in-stack memcached gets an exporter. The
+# chart cannot vouch for a cluster it does not run (and would need its credentials), so no
+# elasticsearch-exporter may render. External PostgreSQL + Redis as in the default.
+elasticsearch:
+  mode: external
+  host: es.internal
+  port: 9200
+metrics:
+  enabled: true

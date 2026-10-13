@@ -97,6 +97,17 @@
         "monitor": { "type": "string" }
       }
     },
+    "metrics": {
+      "description": "Keycloak's own /metrics on the management interface, labelled for Docker Swarm service discovery.",
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "network": {
+          "description": "External overlay shared with Prometheus.",
+          "type": "string", "minLength": 1
+        }
+      }
+    },
     "placement": {
       "type": "object",
       "properties": {

@@ -18,10 +18,13 @@
 #   2. /dev/shm really is the sized tmpfs — `shm_size` is dropped silently by Swarm, and
 #      this chart's long-syntax mount is the workaround, so it needs proving on a real node;
 #   3. the SMTP password reached GitLab's config but NOT the container's environment;
-#   4. the state that must survive a redeploy is on the persisted volumes.
+#   4. the state that must survive a redeploy is on the persisted volumes;
+#   5. with metrics on, the web metrics server answers on the monitoring overlay — where
+#      Prometheus scrapes it — with GitLab's own Rails series, and serves nothing else.
 set -euo pipefail
 
 release="$1"
+case_name="${3:-}"
 # SMTP_PW must match ci/e2e-setup.sh; HOST must match ci/minimal-values.yaml. The password is
 # deliberately distinctive: the environment assertion below greps for it, and a value like
 # "test" also occurs inside HOST, so it would report a leak that is not there.
@@ -103,6 +106,41 @@ for f in /etc/gitlab/gitlab-secrets.json /etc/gitlab/ssh_host_ed25519_key; do
 done
 if [ "$state_ok" -eq 1 ]; then
   ok "persisted /etc/gitlab holds gitlab-secrets.json and the SSH host keys"
+fi
+
+# 5. Metrics, when the release opted in: scraped exactly as Prometheus would, from the
+#    monitoring overlay at the port the service's own discovery label names. Convergence
+#    says nothing here — the metrics server is a separate process Puma spawns, and GitLab
+#    is healthy with or without it. ruby_process_start_time_seconds is written by the
+#    Rails samplers, so seeing it proves the server reads Puma's metrics, not just its own.
+mport="$(docker service inspect "${release}_gitlab" \
+  --format '{{index .Spec.Labels "prometheus.io/port"}}' 2>/dev/null || true)"
+# The fixture decides whether metrics must be there: a missing label on a metrics fixture
+# fails, it never skips the scrape, and a label on any other fixture fails too.
+case "$case_name" in
+  minimal|metrics)
+    [ -n "$mport" ] || note "fixture $case_name turns metrics on, but ${release}_gitlab carries no prometheus.io/port label" ;;
+  *)
+    [ -z "$mport" ] || note "fixture $case_name has metrics off, but ${release}_gitlab carries prometheus.io/port=$mport" ;;
+esac
+if [ -n "$mport" ]; then
+  m=""
+  for _ in $(seq 1 30); do
+    m="$(docker run --rm --network monitoring curlimages/curl:latest -sSf --max-time 10 \
+      "http://${release}_gitlab:${mport}/metrics" 2>&1 || true)"
+    grep -E '^ruby_process_start_time_seconds' <<<"$m" >/dev/null && break
+    sleep 10
+  done
+  if grep -E '^ruby_process_start_time_seconds' <<<"$m" >/dev/null; then
+    ok "web metrics server scraped on monitoring at :${mport} ($(grep -c '^[a-z]' <<<"$m") samples, ruby_process_start_time_seconds present)"
+  else
+    note "no ruby_process_start_time_seconds from http://${release}_gitlab:${mport}/metrics on the monitoring overlay"
+    sed -n '1,5p' <<<"$m" | sed 's/^/    /'
+  fi
+  other="$(docker run --rm --network monitoring curlimages/curl:latest -s -o /dev/null -w '%{http_code}' \
+    --max-time 10 "http://${release}_gitlab:${mport}/" 2>/dev/null || true)"
+  [ "$other" = "404" ] && ok "the metrics server answers nothing but /metrics (/ is 404)" \
+    || note "GET / on the metrics port returned '$other', expected 404"
 fi
 
 exit "$fail"

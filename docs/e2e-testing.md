@@ -184,6 +184,15 @@ docker run --rm --network traefik-public curlimages/curl:latest \
   -fsS --max-time 10 "http://${release}_whoami:80" >/dev/null
 ```
 
+To assert on a log, capture it to a file and match a literal there —
+`docker logs "$cid" >"$log" 2>&1; grep -qF '<line>' "$log"` — inside a bounded retry
+that prints what it saw on every attempt, never over a pipe (see
+[CONTRIBUTING.md](../CONTRIBUTING.md#ci-and-scripting-semantics-that-have-bitten-this-repo)).
+Read the task's own container
+(`docker ps -q --filter label=com.docker.swarm.service.name=<release>_<svc>`) rather
+than `docker service logs`, which has returned no lines at all for tasks whose
+healthcheck was still `starting`.
+
 Charts without a hook (e.g. `swarm-cronjob`) are verified by convergence alone.
 
 ## Setup / teardown hooks (`ci/e2e-setup.sh`)
@@ -201,6 +210,13 @@ two **optional**, executable per-chart hooks the harness runs around each fixtur
   the release is uninstalled. Best-effort (tolerate already-gone resources); remove
   exactly what setup created, but **leave shared overlays** like `traefik-public`
   (other releases use them).
+
+Create a helper service with `docker service create --detach`, then wait for it in a
+bounded loop that fails loudly (`charts/airbyte/ci/e2e-setup.sh`). Without `--detach`
+the command waits for convergence, so an image that can never be pulled blocks it
+until the CI job's own timeout. The keycloak, openclaw, superset and vaultwarden setup
+hooks, gitlab-runner's `ci/e2e-check.sh` and `scripts/e2e-edge/traefik-edge.sh`
+predate this and still create without it.
 
 The `openclaw` chart is the reference: its setup creates the dummy gateway-token
 secret and the persistence node label for every fixture, and — for the `backend`
@@ -222,18 +238,35 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   bind-mount host dir. Its `ci/e2e-check.sh` connects from a throwaway client container on the
   release's overlay rather than `docker exec`, so the `replica-set` fixture exercises the member
   address clients are handed, not just the one the server resolves.
-- **traefik** — the `traefik-certs` node-label pin + the certs-bind-mount host dir.
-- **mariadb-galera** — the two dummy auth secrets + a node label for EVERY peer
+- **traefik** — the `traefik-certs` node-label pin + the certs-bind-mount host dir, and for
+  `metrics` the dashboard's htpasswd users as a Swarm secret. `ci/e2e-check.sh` then asks
+  the dashboard for 401 without and 200 with those credentials, and scrapes `/metrics` from
+  the `monitoring` overlay for the https entrypoint's request count.
+- **mariadb-galera** — the three dummy auth secrets + a node label for EVERY peer
   (`mariadb-galera-1` … `-5`) on the single CI node, so the pinned default fixture
   schedules all its peers there. `ci/e2e-check.sh` then asserts one cluster of the right
   size, every peer `Synced`, and a write on the first peer read back from the last.
   The `proxy` fixture additionally scales one peer to 0 and keeps querying through the
   client endpoint, asserting the HAProxy routes around it — the one claim a render
-  check cannot stand in for.
+  check cannot stand in for. The `metrics` fixture scrapes every exporter from the
+  `monitoring` overlay and asserts `mysql_up 1`, the full cluster size and no failing
+  collector, which is how a grant the one-shot forgot would show. `default` also stops
+  every peer, one at a time and then all together, and asserts the first re-forms by
+  itself and the second elects a peer and re-forms with every row. The `lifecycle`
+  fixture runs as a job of its own (`e2e (mariadb-galera lifecycle)`):
+  - a peer restart, and a peer rebuilt from an empty volume;
+  - an upgrade rolling every peer one at a time, then every peer stopped together and
+    recovered by an election;
+  - a peer lost for good, the others refusing to elect without it, and recovery with
+    `cluster.forceBootstrap` through the README's `--wsrep-recover` runbook, then
+    clearing it;
+  - a crash of every peer, recovered by an election.
 - **keycloak** — the two operator secrets + the DB/ingress overlays + a throwaway
   co-located backend on `keycloak-db-net` — MariaDB, or PostgreSQL for the `postgres` fixture —
   because Keycloak attaches its DB overlay unconditionally and `/health/ready` only passes once
   it has connected and migrated, so every keycloak fixture needs a reachable database.
+  The `metrics` fixture scrapes `:9000/metrics` from the `monitoring` overlay, as Prometheus
+  would, and asserts JVM and DB-pool series.
 - **vaultwarden** — the four dummy secrets + the data node label for every fixture, plus a
   throwaway PostgreSQL/MariaDB named `vw-postgres`/`vw-mariadb` for the `postgres`/`mysql`
   fixtures — deliberately *not* the plain `postgres`/`mariadb` names the keycloak and superset
@@ -244,7 +277,9 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   the hook, so only the chart's own can make its celery worker healthy.
 - **zammad** — the three operator secrets and nothing else: the `embedded-backing` fixture runs
   its own PostgreSQL, Redis, memcached and Elasticsearch, and one dummy password backs both
-  sides of each pair (the embedded server reads the same secret the app does).
+  sides of each pair (the embedded server reads the same secret the app does). It also turns
+  metrics on: `ci/e2e-check.sh` scrapes both exporters from the `monitoring` overlay and proves the
+  security-off Elasticsearch is not reachable there.
 - **swarmcli-cd** — the admin-token secret + the applications config + the persistence node
   label; per fixture, the external app-set volume (`dir`, left empty on purpose) and a real
   Traefik edge (`edge`). The application is declared `automated: false` because the controller
@@ -254,12 +289,16 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
 - **loki** — the `loki-data` node label + the `monitoring` overlay for every fixture; per
   fixture, the bind-mount host dir, a real Traefik edge (`edge`), and — for `external-config` /
   `external-secret` — a Swarm config/secret holding the chart's own shipped Loki configuration,
-  standing in for the operator's. No auth secret: Loki has none.
+  standing in for the operator's. No auth secret: Loki has none. The `metrics` fixtures scrape
+  `/metrics` from the `monitoring` overlay at the port the discovery label names, and assert
+  `loki_build_info` plus a distributor line count that includes the push.
 - **gitlab** — the two dummy secrets (initial root password, SMTP password) + the `gitlab-data`
   node label + `traefik-public`, which is `autoCreate:false`, so the hook stands in for the
   operator. Both secrets are turned on by the fixture on purpose: GitLab `File.read`s them at
   reconfigure time, so a wrong path or mount raises in Ruby and the task never converges —
-  convergence *is* the assertion that the secret plumbing works.
+  convergence *is* the assertion that the secret plumbing works. The fixture also turns
+  metrics on, and `ci/e2e-check.sh` scrapes the web metrics server from the `monitoring`
+  overlay, which swarmcli creates at install.
 
 - **seaweedfs** — the two S3 credential secrets (the secret key carries a `/` and a `+`) + the
   `seaweedfs-data` node label + the `seaweedfs-net` client overlay for every fixture; per
@@ -276,12 +315,27 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   `ci/e2e-check.sh` creates it after install and removes it again. It is there because
   convergence is a weak signal for this chart — a runner with an empty token, a bogus token or
   an unresolvable url starts, mints a system ID and reports Running — so the check reads the
-  token back out of the mock's log and compares it with the mounted secret. Note that the
+  token back out of the mock's log and compares it with the mounted secret. A fixture with
+  `metrics.enabled` is also scraped from the `monitoring` overlay (swarmcli auto-creates it
+  at install) at the port its discovery label names, and one without it must not have
+  joined that overlay. Note that the
   fixtures outside the CI subset keep their own `gitlab.url`, so a local `make e2e` will have
   those runners poll it with a dummy token until the case is torn down. `bind-mount` is
   `ci/e2e-render-only`: Swarm refuses a task whose bind source does not exist on the node, and
   the hook's `mkdir` only reaches the node where the node *is* the host — not on a VM-backed
   engine, whose `/tmp` is its own.
+- **prometheus-stack** — the two Grafana secrets + the `prometheus-stack-data` node label + the
+  `monitoring` and `traefik-public` overlays for every fixture; per fixture, the three host
+  directories created through the daemon and owned by the images' users (`bind-mount`), a real
+  Traefik edge (`edge`), the Alertmanager webhook's `url_file` secret (`alertmanager-config`),
+  the `grafana.extraSecrets` secret (`extras`), and — for `discovery` — the
+  `prometheus.extraNetworks` overlay plus three throwaway `/metrics` services: a labelled and an
+  unlabelled twin on `monitoring` and a labelled one on the extra overlay. Its
+  `ci/e2e-check.sh` then counts the targets Prometheus discovered before relabelling against
+  the opted-in tasks the daemon lists, which is what proves the unlabelled twin never reached
+  Prometheus at all. The `default` case follows the data end to end: exporters discovered
+  through the socket-proxy, the Watchdog alert in Alertmanager, Grafana's datasources and
+  dashboards, the proxy's allow-list, and `promtool`/`amtool` on the configs the tasks run.
 
 - **airbyte** — the eight operator secrets + `airbyte-db-net`/`traefik-public` + the
   `airbyte-data` node label, and three throwaway backends: PostgreSQL, SeaweedFS for S3
@@ -431,7 +485,7 @@ fail on the released swarmcli a user actually runs. That is not hypothetical:
 `main`, in no release yet), so it renders in CI and fails on *every* release with
 an opaque `parse requirements.yaml: could not find expected ':'`.
 
-**`scripts/floor-check.sh` proves a floor** by building a *real* binary of the
+**`scripts/floor-check.sh` proves a floor** by downloading a *real* binary of the
 declared version and rendering the chart with it — the only thing that settles
 whether the chart runs there. It runs in the `Charts` workflow, and locally:
 
@@ -441,16 +495,17 @@ scripts/floor-check.sh          # render every chart with a real binary of its f
 
 Expect one `rendering with real swarmcli vX.Y.Z → OK` block per chart, then a
 summary. It **fails** (exit 1) if a chart does not run on the version it declares.
+It needs GNU sed and bash 4 (`mapfile`), so on macOS's stock `/bin/bash` 3.2 and
+BSD sed it exits before checking anything; measure the floor by hand there, as below.
 
-- **Raise a floor only to a *released* version.** floor-check builds that version
-  to test it, so a floor naming an unreleased tag cannot be proven: it is
+- **Raise a floor only to a *released* version.** floor-check downloads that
+  version to test it, so a floor naming an unreleased tag cannot be proven: it is
   reported as `NOT verified` (with a `::warning::`) and skipped — visible in the
-  log, never silently passed. `zammad` is in that state today (`>= 1.13.0`, which
-  documents *why* it cannot publish yet) and will verify automatically once that
-  release ships.
+  log, never silently passed.
 - **Find a floor by measuring, not guessing.** Render the chart against
   successively older releases (`SWARMCLI_REF=vX.Y.Z scripts/install-swarmcli.sh
-  ./bin` then `make test`); the oldest that still renders is the floor.
+  .floor-bin`, then `make test CHART=<c> SWARMCLI_BIN=$PWD/.floor-bin/swarmcli`); the
+  oldest that still renders is the floor.
 - **`swarmcli charts lint --for-version X`** is the quick check — but know its
   limit: it tests whether the chart's declared floor *admits* X, i.e. the claim's
   shape, not whether the chart *runs* on X. A swarmcli carries one engine's
@@ -477,6 +532,26 @@ summary. It **fails** (exit 1) if a chart does not run on the version it declare
   See [CONTRIBUTING.md](../CONTRIBUTING.md#external-resources-requirementsyaml).
 - **A release is stuck after a crash** — `swarmcli charts uninstall <release>
   --purge-volumes`, or drop to Docker: `docker stack rm <release>`.
+- **A local result disagrees with CI** — `make test` and `make e2e` build
+  `.swarmcli-bin/swarmcli` from swarmcli `main` once and reuse it forever, while CI
+  builds `main` on every run. It reports its version as `dev`, so judge it by the
+  file's date, and rebuild with `rm -rf .swarmcli-bin && make install-tools`. A
+  build older than Eldara-Tech/swarmcli#673 does not wait for volumes to be released
+  on `uninstall --purge-volumes`, and the harness swallows that error, so
+  `e2e-<chart>-<case>_*` volumes survive and the next run mounts them: a check that
+  reads stored state can pass on old data. Remove them before such a check.
+- **A one-shot is `Rejected` with `invalid pool request: Pool overlaps with other
+  one on this address space`** — uninstalling a release frees its overlay's /24,
+  and the next install is handed it back before the node has finished removing the
+  old network. A service with the default restart policy rides that out with a new
+  task; a `restart_policy: condition: none` one-shot cannot, and stays dead. So a
+  case that passes alone can fail after another: reproduce with the chart's whole
+  case list. A larger `--default-addr-pool` does not help, because the allocator
+  always takes the lowest free index.
+- **A task list looks nothing like a first deploy** — Swarm keeps terminal tasks
+  up to its `--task-history-limit`, so `docker stack ps` on a release deployed
+  several times shows their history too. Deploy twice before trusting a check that
+  reads the task list.
 
 ## Cleanup
 

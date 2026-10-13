@@ -22,7 +22,11 @@
 # still fails CI — which is the form that actually matters.
 #
 # The chart-managed internal overlay (internalNetwork) is created by this stack and is NOT listed
-# here. Every overlay below is autoCreate:false — Zammad consumes them, it does not own them.
+# here. Every overlay below but the last is autoCreate:false — Zammad consumes them, it does not own
+# them. The metrics overlay (metrics.enabled only) is autoCreate:true: it is where the exporters meet
+# Prometheus, and on a fresh swarm nothing else has created it yet. It is last, and the render
+# refuses a metrics.network named like any overlay above: swarmcli uses the FIRST entry with a
+# matching name, so a shared name would silently change that overlay's autoCreate.
 networks:
   - name: "{{ .Values.exposure.network }}"
     driver: overlay
@@ -51,6 +55,11 @@ networks:
     autoCreate: false
     description: "extraNetworks entry — an external overlay the app tier joins to reach a co-located, port-unexposed service (e.g. an in-swarm Ollama). Provisioned by that service's own stack/operator; never created here"
 {{- end }}
+  - name: "{{ .Values.metrics.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: true
+    description: "metrics.enabled ONLY — the overlay the exporters share with Prometheus; the prometheus-stack chart scrapes on it by default"
 secrets:
   - name: "{{ .Values.database.passwordSecretName }}"
     description: "PostgreSQL password for database.username (also mounted into the embedded PostgreSQL). Pre-create: printf 'S3cr3t' | docker secret create zammad_db_password -"

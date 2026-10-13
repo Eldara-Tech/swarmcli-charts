@@ -3,8 +3,9 @@
 # e2e teardown for the traefik chart. scripts/e2e-test.sh runs this AFTER it uninstalls
 # the release, once per fixture:
 #   $1 = release name   $2 = chart directory   $3 = fixture case name
-# It removes the traefik-certs node label and — for the certs-bind-mount fixture — the
-# host cert-store dir. The shared traefik-public overlay is LEFT in place.
+# It removes the traefik-certs node label, for the certs-bind-mount fixture the host
+# cert-store dir, and for `metrics` the users secret. The shared traefik-public and
+# monitoring overlays are LEFT in place.
 # Best-effort: every step tolerates already-gone resources.
 set -uo pipefail
 
@@ -15,6 +16,10 @@ if [ "$case" = "routing" ]; then
   . "$2/../../scripts/e2e-edge/traefik-edge.sh"
   edge_whoami_down whoami-ok
   edge_whoami_down whoami-bad
+fi
+
+if [ "$case" = "metrics" ]; then
+  docker secret rm traefik_dashboard_users >/dev/null 2>&1 || true
 fi
 
 node="$(docker node ls --format '{{.ID}} {{.Self}}' 2>/dev/null | awk '$2=="true"{print $1; exit}')"

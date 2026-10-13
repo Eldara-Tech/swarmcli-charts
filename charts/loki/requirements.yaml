@@ -22,6 +22,13 @@ networks:
     attachable: true
     autoCreate: true
     description: "Overlay Loki shares with its log producers and with Grafana (exposure.network); in traefik mode this is the edge's ingress overlay"
+  # Attached when metrics.enabled and Loki is not on it already (in none mode it
+  # usually is: both default to `monitoring`).
+  - name: "{{ .Values.metrics.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: true
+    description: "Overlay Prometheus scrapes Loki on (metrics.enabled); the prometheus-stack chart scrapes on it by default"
 secrets:
   # Only referenced when config.mode is external-secret — the mode for a config
   # file carrying credentials (S3 keys), which belong in a secret rather than in

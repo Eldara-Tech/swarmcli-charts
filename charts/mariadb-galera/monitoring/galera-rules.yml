@@ -1,0 +1,79 @@
+# Galera and MySQL alerts for the exporters metrics.enabled adds, or any mysqld_exporter
+# target. The chart does not deploy them: hand the file to your Prometheus, e.g. the
+# prometheus-stack chart's prometheus.extraRules (README § Alerts and a dashboard).
+# MySQLDown, MySQLGaleraNotReady, MySQLGaleraOutOfSync and MySQLGaleraDonorFallingBehind
+# are derived from the mysqld-mixin in prometheus/mysqld_exporter (Apache-2.0).
+# OutOfSync leaves out a donor (state 2), which DonorFallingBehind covers and which keeps
+# serving writes during a state transfer. The two cluster-size alerts are this chart's,
+# grouped by the `stack` label prometheus-stack's discovery adds, so each cluster raises
+# one alert.
+#
+# Validate: docker run --rm --entrypoint promtool -v "$PWD/charts/mariadb-galera:/chart:ro" \
+#             prom/prometheus:v3.15.0 test rules /chart/ci/galera-rules-test.yml
+groups:
+  - name: mariadb-galera
+    rules:
+      - alert: MySQLDown
+        expr: mysql_up != 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $labels.job }} cannot reach its MySQL server'
+          description: 'mysqld_exporter {{ $labels.job }} on {{ $labels.instance }} has not reached its server for 5 minutes.'
+      - alert: MySQLGaleraNotReady
+        expr: mysql_global_status_wsrep_ready != 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Galera peer {{ $labels.job }} is not ready'
+          description: 'wsrep_ready has been OFF on {{ $labels.job }} for 5 minutes: the peer is outside the primary component and refuses queries.'
+      - alert: MySQLGaleraOutOfSync
+        expr: |
+          (
+            mysql_global_status_wsrep_local_state != 4
+          and
+            mysql_global_status_wsrep_local_state != 2
+          and
+            mysql_global_variables_wsrep_desync == 0
+          )
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Galera peer {{ $labels.job }} is out of sync'
+          description: 'wsrep_local_state on {{ $labels.job }} has been {{ $value }} for 5 minutes, neither Synced (4) nor Donor (2).'
+      - alert: MySQLGaleraDonorFallingBehind
+        expr: mysql_global_status_wsrep_local_state == 2 and mysql_global_status_wsrep_local_recv_queue > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Galera donor {{ $labels.job }} is falling behind'
+          description: '{{ $labels.job }} is donating a state transfer and its receive queue has stayed above 100 write sets for 5 minutes.'
+      # The next failure loses quorum: two members cannot outvote the loss of one.
+      # Holds until the cluster is repaired, unlike GaleraClusterShrunk.
+      - alert: GaleraQuorumAtRisk
+        expr: max by (stack) (mysql_global_status_wsrep_cluster_size) < 3
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Galera cluster {{ $labels.stack }} has {{ $value }} member(s)'
+          description: 'Cluster {{ $labels.stack }} has been down to {{ $value }} member(s) for 5 minutes: one more failure loses quorum and every peer stops serving.'
+      # A peer left. Its own exporter reports that as MySQLDown, or, when a lost node
+      # strands the exporter Pending, as a down target; the surviving peers report the
+      # smaller cluster either way. It compares against the last day, so it also fires
+      # for up to a day after a deliberate shrink, and stops on its own a day after an
+      # unrepaired one.
+      - alert: GaleraClusterShrunk
+        expr: |
+          max by (stack) (mysql_global_status_wsrep_cluster_size)
+            < max by (stack) (max_over_time(mysql_global_status_wsrep_cluster_size[1d]))
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Galera cluster {{ $labels.stack }} lost a member'
+          description: 'Cluster {{ $labels.stack }} has {{ $value }} member(s), fewer than it had in the last day.'

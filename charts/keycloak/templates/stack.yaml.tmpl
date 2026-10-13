@@ -1,3 +1,14 @@
+{{- /* Once a service opts in to discovery, every one of its deploy labels is readable
+       through Prometheus's targets API, so credential material in .Values.labels (a
+       basic/digest-auth hash, an Authorization header a middleware injects) would be
+       handed to anyone who can query Prometheus. */}}
+{{- if .Values.metrics.enabled }}
+{{-   range $key, $val := .Values.labels }}
+{{-     if regexMatch "(?i)((basic|digest)auth\\.users|customrequestheaders\\.authorization)$" $key }}
+{{-       fail (printf "labels.%s carries credential material, and metrics.enabled would publish it through Prometheus's targets API (every deploy label of a scraped service is readable there). Use the middleware's usersfile with a mounted secret instead, or leave metrics off." $key) }}
+{{-     end }}
+{{-   end }}
+{{- end -}}
 version: "3.9"
 
 {{- /* Exposure mode drives networks, ports, labels and the public scheme. */}}
@@ -6,6 +17,11 @@ version: "3.9"
 {{- $selfTLS := and (eq $mode "published") .Values.publish.tls.enabled }}
 {{- $publicTLS := ternary .Values.publish.tls.enabled .Values.ingress.tls (eq $mode "published") }}
 {{- $scheme := ternary "https" "http" $publicTLS }}
+{{- $nets := list }}
+{{- if $proxied }}{{ $nets = append $nets .Values.exposure.network }}{{- end }}
+{{- $nets = append $nets .Values.database.network }}
+{{- if .Values.metrics.enabled }}{{ $nets = append $nets .Values.metrics.network }}{{- end }}
+{{- $nets = $nets | uniq }}
 
 services:
 
@@ -13,10 +29,9 @@ services:
     image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
 
     networks:
-{{- if $proxied }}
-      - {{ .Values.exposure.network }}
+{{- range $nets }}
+      - {{ . }}
 {{- end }}
-      - {{ .Values.database.network }}
 
 {{- if eq $mode "published" }}
     ports:
@@ -58,6 +73,11 @@ services:
       KC_HOSTNAME: {{ printf "%s://%s" $scheme .Values.ingress.host | quote }}
 {{- end }}
       KC_HEALTH_ENABLED: "true"
+{{- if .Values.metrics.enabled }}
+      # Prometheus metrics on the management interface (:9000/metrics), beside health.
+      # A build-time option: `kc.sh start` without --optimized rebuilds at start.
+      KC_METRICS_ENABLED: "true"
+{{- end }}
 {{- if $proxied }}
       # Behind a reverse proxy that terminates TLS: trust its X-Forwarded-* headers
       # and serve plain HTTP on the backend.
@@ -130,7 +150,7 @@ services:
 {{- end }}
       restart_policy:
         condition: any
-{{- if or (eq $mode "traefik") .Values.labels }}
+{{- if or (eq $mode "traefik") .Values.labels .Values.metrics.enabled }}
       labels:
 {{- if eq $mode "traefik" }}
         - "traefik.enable=true"
@@ -148,6 +168,12 @@ services:
         - "traefik.http.routers.{{ .Release.Name }}-https.tls.certresolver={{ .Values.traefik.certResolver }}"
 {{- end }}
         - "traefik.http.services.{{ .Release.Name }}.loadbalancer.server.port={{ .Values.service.port }}"
+{{- end }}
+{{- if .Values.metrics.enabled }}
+        # Docker Swarm service discovery (the prometheus-stack chart's swarm-tasks job):
+        # scrape the management interface, which is plain HTTP in every mode.
+        - "prometheus.io/scrape=true"
+        - "prometheus.io/port=9000"
 {{- end }}
 {{- range $key, $val := .Values.labels }}
         - "{{ $key }}={{ $val }}"
@@ -167,9 +193,7 @@ secrets:
 {{- end }}
 
 networks:
-{{- if $proxied }}
-  {{ .Values.exposure.network }}:
+{{- range $nets }}
+  {{ . }}:
     external: true
 {{- end }}
-  {{ .Values.database.network }}:
-    external: true

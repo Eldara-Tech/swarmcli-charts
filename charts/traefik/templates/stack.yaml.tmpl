@@ -1,6 +1,29 @@
 {{- if and (not .Values.persistence.volumePath) (contains "/" .Values.persistence.volumeName) -}}
 {{- fail "persistence.volumeName is a Docker named-volume name and cannot contain '/'. To store the ACME certificate store under a host directory, set persistence.volumePath instead." -}}
 {{- end -}}
+{{- $dash := .Values.traefik.dashboard -}}
+{{- if and $dash.basicAuthUsers $dash.basicAuthSecret -}}
+{{- fail "traefik.dashboard.basicAuthUsers and traefik.dashboard.basicAuthSecret are alternatives: set one of them." -}}
+{{- end -}}
+{{- /* Every deploy label of a service Prometheus discovers is readable through its
+       targets API, so metrics and a credential hash in this service's labels never
+       render together. */ -}}
+{{- if .Values.metrics.enabled -}}
+{{- if and $dash.enabled $dash.basicAuthUsers -}}
+{{- fail "metrics.enabled exposes every deploy label of the traefik service through Prometheus's targets API, and traefik.dashboard.basicAuthUsers puts the dashboard's password hash in one. Move the users into an external Swarm secret and set traefik.dashboard.basicAuthSecret instead." -}}
+{{- end -}}
+{{- /* The insecure API answers on every network the task is on, and its /api/rawdata
+       and /api/http/middlewares return each middleware's configuration, basic-auth
+       users and their hashes included, for every routed stack. */ -}}
+{{- if and $dash.enabled $dash.insecure -}}
+{{- fail "metrics.enabled joins the monitoring overlay, and traefik.dashboard.insecure serves the unauthenticated API on :8080 there: its /api/rawdata and /api/http/middlewares return every basic-auth middleware's users and hashes, for every stack Traefik routes. Turn traefik.dashboard.insecure off; the dashboard stays on its authenticated router." -}}
+{{- end -}}
+{{- range $key, $val := .Values.extraLabels -}}
+{{- if regexMatch "(?i)((basic|digest)auth\\.users|customrequestheaders\\.authorization)$" $key -}}
+{{- fail (printf "metrics.enabled exposes every deploy label of the traefik service through Prometheus's targets API, and extraLabels %q carries credentials. Point the middleware's usersfile at a file Traefik reads (one mounted through configs), define it in a file-provider config instead, or leave metrics off." $key) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 version: "3.9"
 
 services:
@@ -65,6 +88,10 @@ services:
 {{- if .Values.traefik.dashboard.basicAuthUsers }}
         # Dashboard basic-auth middleware
         - "traefik.http.middlewares.admin-auth.basicauth.users={{ .Values.traefik.dashboard.basicAuthUsers }}"
+{{- else if .Values.traefik.dashboard.basicAuthSecret }}
+        # Dashboard basic-auth middleware, users read from the mounted secret: no hash
+        # in any label
+        - "traefik.http.middlewares.admin-auth.basicauth.usersfile=/run/secrets/{{ .Values.traefik.dashboard.basicAuthSecret }}"
 {{- end }}
 
         # Dashboard HTTP → HTTPS redirect
@@ -79,7 +106,7 @@ services:
         - "traefik.http.routers.traefik-public-https.tls.certresolver={{ .Values.traefik.certResolver }}"
         - "traefik.http.routers.traefik-public-https.service=api@internal"
 {{- $mw := list }}
-{{- if .Values.traefik.dashboard.basicAuthUsers }}{{ $mw = append $mw "admin-auth" }}{{- end }}
+{{- if or .Values.traefik.dashboard.basicAuthUsers .Values.traefik.dashboard.basicAuthSecret }}{{ $mw = append $mw "admin-auth" }}{{- end }}
 {{- if .Values.traefik.hsts.enabled }}{{ $mw = append $mw "hsts-header" }}{{- end }}
 {{- if $mw }}
         - "traefik.http.routers.traefik-public-https.middlewares={{ join "," $mw }}"
@@ -94,10 +121,22 @@ services:
         - "traefik.http.middlewares.limit.buffering.maxRequestBodyBytes={{ .Values.traefik.bufferingMaxRequestBodyBytes }}"
 {{- end }}
 
+{{- if .Values.metrics.enabled }}
+        # Prometheus service discovery (metrics.enabled)
+        - "prometheus.io/scrape=true"
+        - "prometheus.io/port={{ .Values.metrics.port }}"
+{{- end }}
+
 {{- if .Values.extraLabels }}
 {{- range $key, $val := .Values.extraLabels }}
         - "{{ $key }}={{ $val }}"
 {{- end }}
+{{- end }}
+
+{{- if and .Values.traefik.dashboard.enabled .Values.traefik.dashboard.basicAuthSecret }}
+
+    secrets:
+      - {{ .Values.traefik.dashboard.basicAuthSecret }}
 {{- end }}
 
     volumes:
@@ -126,6 +165,22 @@ services:
 {{- end }}
 {{- range .Values.traefik.extraEntrypoints }}
       - --entrypoints.{{ .name }}.address={{ .address }}
+{{- end }}
+{{- if .Values.metrics.enabled }}
+
+      # Prometheus metrics on an entrypoint of their own: the default (`traefik`)
+      # would share a listener with the API, and this one is never published.
+      - --entrypoints.metrics.address=:{{ .Values.metrics.port }}
+      - --metrics.prometheus=true
+      - --metrics.prometheus.entryPoint=metrics
+      # A router that names no entrypoint is served on every default one, and with
+      # none flagged every entrypoint is a default. Flagging all the others keeps that
+      # set exactly what it is without metrics, so no router lands on the metrics port.
+      - --entrypoints.http.asDefault=true
+      - --entrypoints.https.asDefault=true
+{{- range .Values.traefik.extraEntrypoints }}
+      - --entrypoints.{{ .name }}.asDefault=true
+{{- end }}
 {{- end }}
 
       # Trusted IPs
@@ -159,8 +214,13 @@ services:
 {{- end }}
 {{- end }}
 
+{{- $nets := list .Values.traefik.network }}
+{{- if .Values.metrics.enabled }}{{ $nets = append $nets .Values.metrics.network | uniq }}{{- end }}
+
     networks:
-      - {{ .Values.traefik.network }}
+{{- range $nets }}
+      - {{ . }}
+{{- end }}
 
 {{- if .Values.configs }}
 
@@ -176,6 +236,15 @@ volumes:
   {{ .Values.persistence.volumeName }}: {}
 
 {{- end }}
-networks:
-  {{ .Values.traefik.network }}:
+
+{{- if and .Values.traefik.dashboard.enabled .Values.traefik.dashboard.basicAuthSecret }}
+secrets:
+  {{ .Values.traefik.dashboard.basicAuthSecret }}:
     external: true
+
+{{- end }}
+networks:
+{{- range $nets }}
+  {{ . }}:
+    external: true
+{{- end }}

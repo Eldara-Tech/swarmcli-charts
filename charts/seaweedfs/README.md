@@ -32,8 +32,12 @@ docker node update --label-add seaweedfs-data=true <node>
 
 ## Installing
 
+If `swarmcli charts repo list` does not show `swarmcli-charts`, add it first:
+`swarmcli charts repo add swarmcli-charts https://eldara-tech.github.io/swarmcli-charts`.
+swarmcli v2.2.0-rc2 and later add it on a first run, while there is no repository
+list yet; v2.1.1, and an existing list, are left as they are.
+
 ```bash
-swarmcli charts repo add swarmcli-charts https://eldara-tech.github.io/swarmcli-charts
 swarmcli charts install s3 swarmcli-charts/seaweedfs --set 'buckets={runner-cache}'
 ```
 
@@ -106,6 +110,8 @@ cache:
   gateway's address and accepts identity updates. The chart sets a fresh random
   filer signing key at every start, which makes that port refuse unsigned updates
   — without it, anything on the same overlay could add itself as an admin.
+- **No telemetry.** `weed server` reports anonymous cluster statistics to
+  telemetry.seaweedfs.com by default; the chart passes `-master.telemetry=false`.
 - Everything on `network.name`, and in traefik mode everything on
   `exposure.network`, can reach the S3 port. That is the intent; the key pair is
   what protects the data.

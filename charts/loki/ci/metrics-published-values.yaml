@@ -1,0 +1,7 @@
+# Metrics with the API published (the log-driver plugin's shape): Loki is on no overlay
+# in published mode, so metrics.enabled attaches it to `monitoring` for Prometheus to
+# reach it there. Its API is already unauthenticated on every node's published port.
+exposure:
+  mode: published
+metrics:
+  enabled: true
