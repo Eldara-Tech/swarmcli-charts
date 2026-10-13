@@ -223,3 +223,17 @@ case "$case" in
     fi
     ;;
 esac
+
+# --- the alert rules the chart ships for operators to load (monitoring/), checked here
+# because nothing deploys them: their logic, under the promtool of a pinned Prometheus. ---
+if [ "$case" = "metrics" ]; then
+  chart="$(cd "$dir" && pwd)"
+  promtool_image="${LOKI_E2E_PROMTOOL_IMAGE:-prom/prometheus:v3.15.0}"
+  if ! out="$(docker run --rm --entrypoint promtool -v "$chart:/chart:ro" "$promtool_image" \
+      test rules /chart/ci/loki-rules-test.yml 2>&1)"; then
+    echo "  FAIL: promtool test rules fails on monitoring/loki-rules.yml:"
+    printf '%s\n' "$out" | sed 's/^/    /'
+    exit 1
+  fi
+  echo "  monitoring/loki-rules.yml: promtool test rules OK"
+fi

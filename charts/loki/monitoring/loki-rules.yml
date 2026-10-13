@@ -1,0 +1,71 @@
+# Loki alerts for the /metrics metrics.enabled makes discoverable, or any single-binary
+# Loki target. The chart does not deploy them: hand the file to your Prometheus, e.g. the
+# prometheus-stack chart's prometheus.extraRules (README § Alerts and a dashboard).
+# LokiRequestErrors, LokiRequestPanics, LokiRequestLatency and
+# LokiCompactorHasNotSuccessfullyRunCompaction are derived from the loki-mixin in
+# grafana/loki production/loki-mixin (Apache-2.0), grouped by `stack` instead of
+# cluster/namespace. Latency inlines the mixin's 99th-percentile recording rule over 2m,
+# four scrapes at prometheus-stack's 30s; the mixin's two compaction alerts are one here,
+# since a compactor that never succeeded reports 0. LokiLinesDiscarded is this chart's:
+# Loki answers a line it refuses (rate limit, too old, too long) with a 4xx, never a 5xx,
+# so LokiRequestErrors does not see it.
+#
+# Validate: docker run --rm --entrypoint promtool -v "$PWD/charts/loki:/chart:ro" \
+#             prom/prometheus:v3.15.0 test rules /chart/ci/loki-rules-test.yml
+groups:
+  - name: loki
+    rules:
+      - alert: LokiRequestErrors
+        expr: |
+          100 * sum by (stack, job, route) (rate(loki_request_duration_seconds_count{status_code=~"5.."}[2m]))
+            /
+          sum by (stack, job, route) (rate(loki_request_duration_seconds_count[2m]))
+            > 10
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $labels.job }} {{ $labels.route }} is failing requests'
+          description: '{{ $labels.job }} {{ $labels.route }} has answered {{ printf "%.2f" $value }}% of requests with a 5xx for 15 minutes.'
+      - alert: LokiRequestPanics
+        expr: sum by (stack, job) (increase(loki_panic_total[10m])) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $labels.job }} is panicking'
+          description: '{{ $labels.job }} recovered from {{ printf "%.0f" $value }} panic(s) in the last 10 minutes.'
+      # Tail is a stream that lasts as long as the client watches, and QuerierLoop the
+      # querier's connection to the scheduler: neither has a latency worth alerting on.
+      - alert: LokiRequestLatency
+        expr: |
+          histogram_quantile(0.99,
+            sum by (stack, job, route, le) (
+              rate(loki_request_duration_seconds_bucket{route!~"(?i).*tail.*|/schedulerpb.SchedulerForQuerier/QuerierLoop"}[2m])
+            )
+          ) > 1
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $labels.job }} {{ $labels.route }} is slow'
+          description: '{{ $labels.job }} {{ $labels.route }} has had a 99th percentile latency of {{ printf "%.2f" $value }}s for 15 minutes.'
+      # Loki waits 10 minutes after start before its first compaction, then runs one every
+      # 10 minutes, with or without retention.
+      - alert: LokiCompactorHasNotSuccessfullyRunCompaction
+        expr: |
+          time() - max by (stack, job) (loki_boltdb_shipper_compact_tables_operation_last_successful_run_timestamp_seconds)
+            > 60 * 60 * 3
+        for: 1h
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $labels.job }} is not compacting'
+          description: '{{ $labels.job }} has not completed a compaction in 3 hours, or in the hour since it started. Without compaction, retention deletes nothing.'
+      - alert: LokiLinesDiscarded
+        expr: sum by (stack, job, reason) (rate(loki_discarded_samples_total[5m])) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.job }} is discarding log lines ({{ $labels.reason }})'
+          description: '{{ $labels.job }} has refused {{ printf "%.2f" $value }} lines/s for 15 minutes, reason {{ $labels.reason }}: they are lost unless the sender retries them.'
