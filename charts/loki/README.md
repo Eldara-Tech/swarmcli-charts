@@ -223,14 +223,14 @@ through its own configuration:
 ```bash
 base=https://raw.githubusercontent.com/Eldara-Tech/swarmcli-charts/main/charts/loki/monitoring
 curl -fsSL -O "$base/loki-rules.yml" -O "$base/loki-dashboard.json"
-swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --reuse-values \
+v="$(swarmcli charts status mon | sed -n 's/^CHART: prometheus-stack-//p')"
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --version "${v:?}" --reuse-values \
   --set-file prometheus.extraRules.loki=./loki-rules.yml \
   --set-file grafana.dashboards.loki=./loki-dashboard.json
 ```
 
-`--reuse-values` is safe only while prometheus-stack's chart version stays the same;
-across a version change pass its values with `-f` instead
-([swarmcli#687](https://github.com/Eldara-Tech/swarmcli/issues/687)).
+`--version` keeps prometheus-stack at the version it runs, the only case in which
+`--reuse-values` is safe (Eldara-Tech/swarmcli#687).
 prometheus-stack's README, *Keeping your setup in git*, has the values-file form.
 
 - **Alerts** (`loki-rules.yml`): `LokiRequestErrors`, `LokiRequestPanics`,
@@ -240,14 +240,16 @@ prometheus-stack's README, *Keeping your setup in git*, has the values-file form
   `LokiLinesDiscarded`, this chart's: Loki answers a line it refuses (over the
   ingestion rate limit, too old, too long) with a 4xx, which the error-rate alert does
   not count. A Loki that stops answering is prometheus-stack's `TargetDown`.
-- **Dashboard** (`loki-dashboard.json`, uid `loki`): lines received and discarded,
-  streams in memory, time since the last compaction; push and query rates and
-  latency, 5xx by route; ingested bytes, discards by reason, compaction and retention
-  runs, and memory. Pick a release by its `stack`. It shows Loki's own health, not the
-  logs in it: prometheus-stack's *Loki* section adds Loki as a data source for those.
+- **Dashboard** (`loki-dashboard.json`, uid `loki`), trimmed from the
+  [loki-mixin](https://github.com/grafana/loki/tree/main/production/loki-mixin)
+  (Apache-2.0): lines received and discarded, streams in memory, time since the last
+  compaction; push and query rates and latency, 5xx by route; ingested bytes, discards
+  by reason, compaction and retention runs, and memory. It shows Loki's own health, not
+  the logs in it: prometheus-stack's *Loki* section adds Loki as a data source for
+  those. Pick a release by its `stack`.
 
-Both group by the `stack` label prometheus-stack's discovery puts on every target.
-Another Prometheus needs the same relabelling of
+The dashboard picks a release by the `stack` label prometheus-stack's discovery puts on
+every target, and the alerts carry it. Another Prometheus needs the same relabelling of
 `__meta_dockerswarm_service_label_com_docker_stack_namespace` to `stack`.
 
 ## Retention

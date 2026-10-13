@@ -9,24 +9,28 @@
 # since a compactor that never succeeded reports 0. LokiLinesDiscarded is this chart's:
 # Loki answers a line it refuses (rate limit, too old, too long) with a 4xx, never a 5xx,
 # so LokiRequestErrors does not see it.
+# Critical only for failing requests; latency and the compactor are warnings here, not the
+# mixin's critical, since neither loses a log line now.
 #
-# Validate: docker run --rm --entrypoint promtool -v "$PWD/charts/loki:/chart:ro" \
-#             prom/prometheus:v3.15.0 test rules /chart/ci/loki-rules-test.yml
+# Validate (from the repo root):
+#   docker run --rm --entrypoint promtool -v "$PWD/charts/loki:/chart:ro" \
+#     "prom/prometheus:$(sed -n 's/^appVersion: *"\(.*\)"$/\1/p' charts/prometheus-stack/Chart.yaml)" \
+#     test rules /chart/ci/loki-rules-test.yml
 groups:
   - name: loki
     rules:
       - alert: LokiRequestErrors
         expr: |
-          100 * sum by (stack, job, route) (rate(loki_request_duration_seconds_count{status_code=~"5.."}[2m]))
+          sum by (stack, job, route) (rate(loki_request_duration_seconds_count{status_code=~"5.."}[2m]))
             /
           sum by (stack, job, route) (rate(loki_request_duration_seconds_count[2m]))
-            > 10
+            > 0.1
         for: 15m
         labels:
           severity: critical
         annotations:
           summary: '{{ $labels.job }} {{ $labels.route }} is failing requests'
-          description: '{{ $labels.job }} {{ $labels.route }} has answered {{ printf "%.2f" $value }}% of requests with a 5xx for 15 minutes.'
+          description: '{{ $labels.job }} {{ $labels.route }} has answered {{ $value | humanizePercentage }} of requests with a 5xx for 15 minutes.'
       - alert: LokiRequestPanics
         expr: sum by (stack, job) (increase(loki_panic_total[10m])) > 0
         labels:
@@ -45,7 +49,7 @@ groups:
           ) > 1
         for: 15m
         labels:
-          severity: critical
+          severity: warning
         annotations:
           summary: '{{ $labels.job }} {{ $labels.route }} is slow'
           description: '{{ $labels.job }} {{ $labels.route }} has had a 99th percentile latency of {{ printf "%.2f" $value }}s for 15 minutes.'
@@ -57,7 +61,7 @@ groups:
             > 60 * 60 * 3
         for: 1h
         labels:
-          severity: critical
+          severity: warning
         annotations:
           summary: '{{ $labels.job }} is not compacting'
           description: '{{ $labels.job }} has not completed a compaction in 3 hours, or in the hour since it started. Without compaction, retention deletes nothing.'

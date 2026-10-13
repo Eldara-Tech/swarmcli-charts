@@ -1,6 +1,6 @@
 # promtool unit tests for monitoring/loki-rules.yml, which the chart ships for operators
 # to load into their Prometheus but does not deploy itself. ci/e2e-check.sh runs them
-# with a pinned prom/prometheus image's promtool in the metrics cases.
+# with a pinned prom/prometheus image's promtool in the `metrics` case.
 #
 # Release `logs` is broken in every way an alert has to notice, next to a route that is
 # merely not perfect. Release `stale` compacted once, then stopped. Release `ok` is
@@ -39,10 +39,14 @@ tests:
         values: '0+10x30'
       - series: 'loki_request_duration_seconds_bucket{job="logs_loki",instance="10.0.1.5:3100",stack="logs",method="GET",route="loki_api_v1_tail",status_code="200",ws="true",le="1"}'
         values: '0x30'
+      - series: 'loki_request_duration_seconds_bucket{job="logs_loki",instance="10.0.1.5:3100",stack="logs",method="GET",route="loki_api_v1_tail",status_code="200",ws="true",le="2"}'
+        values: '0+1x30'
       - series: 'loki_request_duration_seconds_bucket{job="logs_loki",instance="10.0.1.5:3100",stack="logs",method="GET",route="loki_api_v1_tail",status_code="200",ws="true",le="+Inf"}'
         values: '0+1x30'
       - series: 'loki_request_duration_seconds_bucket{job="logs_loki",instance="10.0.1.5:3100",stack="logs",method="gRPC",route="/schedulerpb.SchedulerForQuerier/QuerierLoop",status_code="success",ws="false",le="1"}'
         values: '0x30'
+      - series: 'loki_request_duration_seconds_bucket{job="logs_loki",instance="10.0.1.5:3100",stack="logs",method="gRPC",route="/schedulerpb.SchedulerForQuerier/QuerierLoop",status_code="success",ws="false",le="2"}'
+        values: '0+1x30'
       - series: 'loki_request_duration_seconds_bucket{job="logs_loki",instance="10.0.1.5:3100",stack="logs",method="gRPC",route="/schedulerpb.SchedulerForQuerier/QuerierLoop",status_code="success",ws="false",le="+Inf"}'
         values: '0+1x30'
       - series: 'loki_request_duration_seconds_bucket{job="ok_loki",instance="10.0.2.5:3100",stack="ok",method="POST",route="loki_api_v1_push",status_code="204",ws="false",le="0.5"}'
@@ -60,15 +64,6 @@ tests:
         values: '0+60x30'
       - series: 'loki_discarded_samples_total{job="logs_loki",instance="10.0.1.5:3100",stack="logs",format="loki",policy="",reason="greater_than_max_sample_age",retention_hours="744",tenant="fake"}'
         values: '0 0 50x28'
-      # promtool's clock starts at the epoch, so `logs`, which never compacts, looks 3h
-      # behind only from 3h on and fires an hour later. `stale` compacted at 10m. `ok`
-      # has just compacted at every sample.
-      - series: 'loki_boltdb_shipper_compact_tables_operation_last_successful_run_timestamp_seconds{job="logs_loki",instance="10.0.1.5:3100",stack="logs"}'
-        values: '0x270'
-      - series: 'loki_boltdb_shipper_compact_tables_operation_last_successful_run_timestamp_seconds{job="stale_loki",instance="10.0.3.5:3100",stack="stale"}'
-        values: '0x9 600x261'
-      - series: 'loki_boltdb_shipper_compact_tables_operation_last_successful_run_timestamp_seconds{job="ok_loki",instance="10.0.2.5:3100",stack="ok"}'
-        values: '0+60x270'
 
     alert_rule_test:
       # Ten minutes in, nothing has lasted the 15m `for` yet, and the panic is still ahead.
@@ -112,7 +107,7 @@ tests:
         alertname: LokiRequestLatency
         exp_alerts:
           - exp_labels:
-              severity: critical
+              severity: warning
               job: logs_loki
               stack: logs
               route: loki_api_v1_query_range
@@ -132,28 +127,46 @@ tests:
               summary: 'logs_loki is discarding log lines (rate_limited)'
               description: 'logs_loki has refused 1.00 lines/s for 15 minutes, reason rate_limited: they are lost unless the sender retries them.'
 
-      - eval_time: 245m
+  # A real clock, so time() is far from 0 as in production. `logs` never compacts and
+  # fires an hour after start; `stale` compacted at 10m, then stopped; `ok` has just
+  # compacted at every sample.
+  - interval: 1m
+    start_timestamp: 1760000000
+    input_series:
+      - series: 'loki_boltdb_shipper_compact_tables_operation_last_successful_run_timestamp_seconds{job="logs_loki",instance="10.0.1.5:3100",stack="logs"}'
+        values: '0x270'
+      - series: 'loki_boltdb_shipper_compact_tables_operation_last_successful_run_timestamp_seconds{job="stale_loki",instance="10.0.3.5:3100",stack="stale"}'
+        values: '0x9 1760000600x261'
+      - series: 'loki_boltdb_shipper_compact_tables_operation_last_successful_run_timestamp_seconds{job="ok_loki",instance="10.0.2.5:3100",stack="ok"}'
+        values: '1760000000+60x270'
+
+    alert_rule_test:
+      - eval_time: 59m
+        alertname: LokiCompactorHasNotSuccessfullyRunCompaction
+        exp_alerts: []
+      - eval_time: 61m
         alertname: LokiCompactorHasNotSuccessfullyRunCompaction
         exp_alerts:
           - exp_labels:
-              severity: critical
+              severity: warning
               job: logs_loki
               stack: logs
             exp_annotations:
               summary: 'logs_loki is not compacting'
               description: 'logs_loki has not completed a compaction in 3 hours, or in the hour since it started. Without compaction, retention deletes nothing.'
+      # `stale` is 3h behind from 190m on and fires an hour later.
       - eval_time: 260m
         alertname: LokiCompactorHasNotSuccessfullyRunCompaction
         exp_alerts:
           - exp_labels:
-              severity: critical
+              severity: warning
               job: logs_loki
               stack: logs
             exp_annotations:
               summary: 'logs_loki is not compacting'
               description: 'logs_loki has not completed a compaction in 3 hours, or in the hour since it started. Without compaction, retention deletes nothing.'
           - exp_labels:
-              severity: critical
+              severity: warning
               job: stale_loki
               stack: stale
             exp_annotations:
