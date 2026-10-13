@@ -250,6 +250,43 @@ does not widen `monitoring_whitelist`, and GitLab's bundled Prometheus stays off
   GitLab is one service. Background-job and Git metrics are a follow-up.
 - **swarmcli-cd** needs `monitoring` in `allow.networks`.
 
+### Alerts and a dashboard
+
+The chart ships both under [`monitoring/`](monitoring) for your Prometheus and Grafana,
+and deploys neither: scraping is automatic, but which rules and dashboards a monitoring
+stack loads is its operator's choice. With the prometheus-stack chart they go in
+through its own configuration:
+
+```bash
+base=https://raw.githubusercontent.com/Eldara-Tech/swarmcli-charts/main/charts/gitlab/monitoring
+curl -fsSL -O "$base/gitlab-rules.yml" -O "$base/gitlab-dashboard.json"
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --reuse-values \
+  --set-file prometheus.extraRules.gitlab=./gitlab-rules.yml \
+  --set-file grafana.dashboards.gitlab=./gitlab-dashboard.json
+```
+
+`--reuse-values` is safe here only while prometheus-stack's chart version stays the same
+(swarmcli#687, as above); prometheus-stack's README, *Keeping your setup in git*, has the
+values-file form.
+
+- **Alerts** (`gitlab-rules.yml`): `GitLabHigh5xxResponses` while more than 10% of Rails
+  requests answer 5xx, and `GitLabHighRunnerAuthFailure` while more than 10% of runner
+  authentications fail, usually a runner whose token was deleted or reset in GitLab.
+  Both are derived from the
+  [gitlab-mixin](https://github.com/grafana/jsonnet-libs/tree/master/gitlab-mixin)
+  (Apache-2.0) and corrected where it misses on GitLab 19. Its 4xx alert is left out,
+  since most 4xx are routine (Git over HTTP gets a 401 before it sends credentials), and
+  so is its job-registration alert, which counts every poll of an empty job queue.
+- **Dashboard** (`gitlab-dashboard.json`, uid `gitlab`): requests, server-error share,
+  Puma thread use and version; requests by status, latency, top feature categories,
+  sign-ins and runner authentication; Puma threads, the database connection pool, and
+  memory and CPU per Puma process. Pick a release by its `stack`.
+
+Both cover web metrics only, as above: nothing here sees Sidekiq, Gitaly or Workhorse.
+They group by the `stack` label prometheus-stack's discovery puts on every target.
+Another Prometheus needs the same relabelling of
+`__meta_dockerswarm_service_label_com_docker_stack_namespace` to `stack`.
+
 ## Values
 
 | Key | Default | Description |

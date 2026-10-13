@@ -1,0 +1,41 @@
+# GitLab alerts for the web metrics server metrics.enabled turns on, or any target serving
+# GitLab's Rails metrics. The chart does not deploy them: hand the file to your Prometheus,
+# e.g. the prometheus-stack chart's prometheus.extraRules (README § Alerts and a dashboard).
+# Both are derived from the gitlab-mixin in grafana/jsonnet-libs (Apache-2.0), and both
+# differ from it where it misses on GitLab 19: http_requests_total's status label is a
+# class ("5xx"), not a code, so upstream's 5xx ratio never matches; and upstream's runner
+# ratio needs a success series, which does not exist until some runner has authenticated.
+# Grouped by the `stack` label prometheus-stack's discovery adds: one alert per release.
+#
+# Validate: docker run --rm --entrypoint promtool -v "$PWD/charts/gitlab:/chart:ro" \
+#             prom/prometheus:v3.15.0 test rules /chart/ci/gitlab-rules-test.yml
+groups:
+  - name: gitlab
+    rules:
+      # Health checks are counted elsewhere (http_health_requests_total), so they neither
+      # dilute the ratio nor keep it defined on an idle instance.
+      - alert: GitLabHigh5xxResponses
+        expr: |
+          sum by (stack, job) (rate(http_requests_total{status="5xx"}[5m]))
+            / sum by (stack, job) (rate(http_requests_total[5m]))
+          > 0.1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'GitLab {{ $labels.stack }} is answering with server errors'
+          description: '{{ $value | humanizePercentage }} of the requests to {{ $labels.job }} have returned a 5xx status for 5 minutes.'
+      # A runner keeps presenting a token GitLab does not know: the runner was deleted or
+      # its token reset in GitLab. The denominator sums both counters by name, because the
+      # success counter is absent until a runner authenticates.
+      - alert: GitLabHighRunnerAuthFailure
+        expr: |
+          sum by (stack, job) (rate(gitlab_ci_runner_authentication_failure_total[5m]))
+            / sum by (stack, job) (rate({__name__=~"gitlab_ci_runner_authentication_(success|failure)_total"}[5m]))
+          > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'GitLab {{ $labels.stack }} is refusing runner tokens'
+          description: '{{ $value | humanizePercentage }} of the runner authentication attempts on {{ $labels.job }} have failed for 5 minutes: a runner presents a token GitLab does not know.'

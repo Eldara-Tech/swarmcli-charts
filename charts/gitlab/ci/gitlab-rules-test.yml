@@ -1,0 +1,67 @@
+# promtool unit tests for monitoring/gitlab-rules.yml, which the chart ships for operators
+# to load into their Prometheus but does not deploy itself. ci/e2e-check.sh runs them
+# with a pinned prom/prometheus image's promtool in the metrics fixtures.
+#
+# Release `git` starts failing half its requests two minutes in, and its only runner has
+# a token GitLab refuses, so no success series ever appears. Release `ok` has some of
+# both failures, below the threshold, and release `idle` serves nothing: neither may
+# raise anything.
+rule_files:
+  - ../monitoring/gitlab-rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      # git: 1 req/s of 2xx split across two series; 1 req/s of 5xx from 2m.
+      - series: 'http_requests_total{job="git_gitlab",instance="10.0.1.5:8083",stack="git",method="get",status="2xx",feature_category="source_code_management"}'
+        values: '0+30x12'
+      - series: 'http_requests_total{job="git_gitlab",instance="10.0.1.5:8083",stack="git",method="post",status="2xx",feature_category="continuous_integration"}'
+        values: '0+30x12'
+      - series: 'http_requests_total{job="git_gitlab",instance="10.0.1.5:8083",stack="git",method="get",status="5xx",feature_category="source_code_management"}'
+        values: '0 0 0+60x10'
+      - series: 'gitlab_ci_runner_authentication_failure_total{job="git_gitlab",instance="10.0.1.5:8083",stack="git"}'
+        values: '0+20x12'
+      # ok: 5% of requests are 5xx and 5% of runner authentications fail.
+      - series: 'http_requests_total{job="ok_gitlab",instance="10.0.2.5:8083",stack="ok",method="get",status="2xx",feature_category="source_code_management"}'
+        values: '0+570x12'
+      - series: 'http_requests_total{job="ok_gitlab",instance="10.0.2.5:8083",stack="ok",method="get",status="5xx",feature_category="source_code_management"}'
+        values: '0+30x12'
+      - series: 'gitlab_ci_runner_authentication_success_total{job="ok_gitlab",instance="10.0.2.5:8083",stack="ok",runner_type="instance_type"}'
+        values: '0+57x12'
+      - series: 'gitlab_ci_runner_authentication_failure_total{job="ok_gitlab",instance="10.0.2.5:8083",stack="ok"}'
+        values: '0+3x12'
+      # idle: the counters GitLab initialises at boot, never incremented.
+      - series: 'http_requests_total{job="idle_gitlab",instance="10.0.3.5:8083",stack="idle",method="get",status="2xx",feature_category="source_code_management"}'
+        values: '0x12'
+      - series: 'http_requests_total{job="idle_gitlab",instance="10.0.3.5:8083",stack="idle",method="get",status="5xx",feature_category="source_code_management"}'
+        values: '0x12'
+
+    alert_rule_test:
+      # Two minutes into the errors, nothing has lasted the 5m `for` yet.
+      - eval_time: 4m
+        alertname: GitLabHigh5xxResponses
+        exp_alerts: []
+
+      # One alert per release, carrying stack and job only.
+      - eval_time: 10m
+        alertname: GitLabHigh5xxResponses
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              stack: git
+              job: git_gitlab
+            exp_annotations:
+              summary: 'GitLab git is answering with server errors'
+              description: '50% of the requests to git_gitlab have returned a 5xx status for 5 minutes.'
+      - eval_time: 10m
+        alertname: GitLabHighRunnerAuthFailure
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              stack: git
+              job: git_gitlab
+            exp_annotations:
+              summary: 'GitLab git is refusing runner tokens'
+              description: '100% of the runner authentication attempts on git_gitlab have failed for 5 minutes: a runner presents a token GitLab does not know.'

@@ -21,6 +21,7 @@
 #   4. the state that must survive a redeploy is on the persisted volumes;
 #   5. with metrics on, the web metrics server answers on the monitoring overlay — where
 #      Prometheus scrapes it — with GitLab's own Rails series, and serves nothing else.
+#   6. with metrics on, the alert rules the chart ships under monitoring/ pass their tests.
 set -euo pipefail
 
 release="$1"
@@ -141,6 +142,17 @@ if [ -n "$mport" ]; then
     --max-time 10 "http://${release}_gitlab:${mport}/" 2>/dev/null || true)"
   [ "$other" = "404" ] && ok "the metrics server answers nothing but /metrics (/ is 404)" \
     || note "GET / on the metrics port returned '$other', expected 404"
+  # 6. The alert rules the chart ships for operators to load (monitoring/), checked here
+  #    because nothing deploys them: their logic, under the promtool of a pinned Prometheus.
+  chart="$(cd "$2" && pwd)"
+  promtool_image="${GITLAB_E2E_PROMTOOL_IMAGE:-prom/prometheus:v3.15.0}"
+  if out="$(docker run --rm --entrypoint promtool -v "$chart:/chart:ro" "$promtool_image" \
+      test rules /chart/ci/gitlab-rules-test.yml 2>&1)"; then
+    ok "alert rules pass promtool test rules ($promtool_image)"
+  else
+    note "promtool test rules fails on monitoring/gitlab-rules.yml:"
+    printf '%s\n' "$out" | sed 's/^/    /'
+  fi
 fi
 
 exit "$fail"
