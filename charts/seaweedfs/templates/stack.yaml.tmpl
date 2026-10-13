@@ -18,30 +18,30 @@
        A group is matched by SeaweedFS's role mapping as a case-insensitive wildcard and by
        the trust and grant conditions as an exact string with ${...} variables expanded, so
        `*`, `?` and `$` would make the three disagree. */}}
-{{- if .Values.oidc.enabled -}}
-{{-   if not (regexMatch "^https?://" .Values.oidc.issuer) -}}
-{{-     fail "oidc.issuer must be the identity provider's issuer URL (http:// or https://), exactly as the token's iss claim carries it" -}}
+{{- if .Values.s3.oidc.enabled -}}
+{{-   if not (regexMatch "^https?://" .Values.s3.oidc.issuer) -}}
+{{-     fail "s3.oidc.issuer must be the identity provider's issuer URL (http:// or https://), exactly as the token's iss claim carries it" -}}
 {{-   end -}}
-{{-   if not .Values.oidc.clientId -}}
-{{-     fail "oidc.clientId is required: a token is accepted only when its aud or azp claim equals it" -}}
+{{-   if not .Values.s3.oidc.clientId -}}
+{{-     fail "s3.oidc.clientId is required: a token is accepted only when its aud or azp claim equals it" -}}
 {{-   end -}}
-{{-   if not .Values.oidc.grants -}}
-{{-     fail "oidc.grants needs at least one grant: access comes only from grants, so with none OIDC would admit nobody" -}}
+{{-   if not .Values.s3.oidc.grants -}}
+{{-     fail "s3.oidc.grants needs at least one grant: access comes only from grants, so with none OIDC would admit nobody" -}}
 {{-   end -}}
-{{-   range .Values.oidc.grants -}}
+{{-   range .Values.s3.oidc.grants -}}
 {{-     if or (not .group) (regexMatch "[*?$]" .group) -}}
-{{-       fail (printf "oidc.grants: group %q must be a non-empty groups-claim value without '*', '?' or '$'" (.group | default "")) -}}
+{{-       fail (printf "s3.oidc.grants: group %q must be a non-empty groups-claim value without '*', '?' or '$'" (.group | default "")) -}}
 {{-     end -}}
 {{-     if not (has .access (list "readonly" "readwrite")) -}}
-{{-       fail (printf "oidc.grants: group %q has access %q; it must be readonly or readwrite" .group (.access | default "")) -}}
+{{-       fail (printf "s3.oidc.grants: group %q has access %q; it must be readonly or readwrite" .group (.access | default "")) -}}
 {{-     end -}}
 {{- /* A forgotten buckets key must not quietly mean every bucket: [] has to be said. */}}
 {{-     if not (kindIs "slice" .buckets) -}}
-{{-       fail (printf "oidc.grants: group %q has no buckets list; name its buckets, or [] for every bucket" .group) -}}
+{{-       fail (printf "s3.oidc.grants: group %q has no buckets list; name its buckets, or [] for every bucket" .group) -}}
 {{-     end -}}
 {{-     range .buckets -}}
 {{-       if not (regexMatch "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" .) -}}
-{{-         fail (printf "oidc.grants: %q is not a valid S3 bucket name" .) -}}
+{{-         fail (printf "s3.oidc.grants: %q is not a valid S3 bucket name" .) -}}
 {{-       end -}}
 {{-     end -}}
 {{-   end -}}
@@ -153,11 +153,11 @@ version: "3.9"
        signing key (it falls back to the per-start filer key below). */}}
 {{- $iamFile := "/tmp/seaweedfs-iam.json" }}
 {{- $iam := dict }}
-{{- if .Values.oidc.enabled }}
+{{- if .Values.s3.oidc.enabled }}
 {{-   $roleArn := "arn:aws:iam::role/oidc" }}
 {{-   $groups := list }}
 {{-   $statements := list }}
-{{-   range .Values.oidc.grants }}
+{{-   range .Values.s3.oidc.grants }}
 {{-     $groups = append $groups .group }}
 {{-     $actions := list "s3:GetObject" "s3:ListBucket" "s3:GetBucketLocation" }}
 {{-     if eq .access "readwrite" }}{{ $actions = concat $actions (list "s3:PutObject" "s3:DeleteObject") }}{{ end }}
@@ -171,8 +171,8 @@ version: "3.9"
 {{-   end }}
 {{-   $rules := list }}
 {{-   range $groups }}{{ $rules = append $rules (dict "claim" "groups" "value" . "role" $roleArn) }}{{ end }}
-{{-   $provider := dict "issuer" .Values.oidc.issuer "clientId" .Values.oidc.clientId "jwksUri" .Values.oidc.jwksUri "roleMapping" (dict "rules" $rules) }}
-{{-   $trustCondition := dict "StringEquals" (dict "oidc:iss" .Values.oidc.issuer) "ForAnyValue:StringEquals" (dict "oidc:groups" $groups) }}
+{{-   $provider := dict "issuer" .Values.s3.oidc.issuer "clientId" .Values.s3.oidc.clientId "jwksUri" .Values.s3.oidc.jwksUri "roleMapping" (dict "rules" $rules) }}
+{{-   $trustCondition := dict "StringEquals" (dict "oidc:iss" .Values.s3.oidc.issuer) "ForAnyValue:StringEquals" (dict "oidc:groups" $groups) }}
 {{-   $trust := dict "Effect" "Allow" "Principal" (dict "Federated" "*") "Action" (list "sts:AssumeRoleWithWebIdentity") "Condition" $trustCondition }}
 {{-   $role := dict "roleName" "oidc" "roleArn" $roleArn "attachedPolicies" (list "oidc") "trustPolicy" (dict "Version" "2012-10-17" "Statement" (list $trust)) }}
 {{-   $policy := dict "name" "oidc" "document" (dict "Version" "2012-10-17" "Statement" $statements) }}
@@ -198,7 +198,7 @@ services:
     #    accepts identity updates; without a signing key it accepts them from anyone on
     #    the overlay, so a neighbour could add itself as an admin. Everything that needs
     #    the key lives in this one process, so it never has to be shared or persisted.
-{{- if .Values.oidc.enabled }}
+{{- if .Values.s3.oidc.enabled }}
     #    With OIDC on it also signs STS credentials, which therefore end at a restart.
     #  * SEAWEEDFS_IAM_CONFIG is written to the file -s3.iam.config names, on every start.
 {{- end }}
@@ -231,7 +231,7 @@ services:
         export AWS_ACCESS_KEY_ID="$$(cat /run/secrets/{{ $access }})";
         export AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/{{ $secret }})";
         export WEED_JWT_FILER_SIGNING_KEY="$$(head -c 32 /dev/urandom | base64)";
-{{- if .Values.oidc.enabled }}
+{{- if .Values.s3.oidc.enabled }}
         printf '%s' "$$SEAWEEDFS_IAM_CONFIG" > {{ $iamFile }};
 {{- end }}
 {{- if $admin.enabled }}
@@ -281,7 +281,7 @@ services:
       start_period: {{ .Values.healthcheck.startPeriod }}
 {{- end }}
     stop_grace_period: {{ .Values.stopGracePeriod }}
-{{- if .Values.oidc.enabled }}
+{{- if .Values.s3.oidc.enabled }}
 
     environment:
       # The OIDC IAM file, as JSON. It holds no secret (issuer, client id, groups, buckets),

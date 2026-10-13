@@ -366,9 +366,9 @@ else
   # The provider: one, with the issuer and client from the fixture and a role mapping that
   # sends every granted group, and nothing else, to the one role.
   [ "$(j '.providers | length')" = "1" ] && [ "$(j '.providers[0].type')" = "oidc" ] || bad "case $case: not exactly one oidc provider"
-  [ "$(j '.providers[0].config.issuer')" = "$iss" ] || bad "case $case: the provider issuer is not oidc.issuer"
-  [ "$(j '.providers[0].config.clientId')" = "seaweedfs-s3" ] || bad "case $case: the provider clientId is not oidc.clientId"
-  [ "$(j '.providers[0].config.jwksUri')" = "" ] || bad "case $case: the provider jwksUri is not oidc.jwksUri (\"\": discovery)"
+  [ "$(j '.providers[0].config.issuer')" = "$iss" ] || bad "case $case: the provider issuer is not s3.oidc.issuer"
+  [ "$(j '.providers[0].config.clientId')" = "seaweedfs-s3" ] || bad "case $case: the provider clientId is not s3.oidc.clientId"
+  [ "$(j '.providers[0].config.jwksUri')" = "" ] || bad "case $case: the provider jwksUri is not s3.oidc.jwksUri (\"\": discovery)"
   [ "$(j '[.providers[0].config.roleMapping.rules[] | .claim + " " + .role] | unique | join(",")')" = "groups $role" ] \
     || bad "case $case: a role-mapping rule does not map the groups claim to $role (without roleMapping SeaweedFS maps hard-coded group names)"
   [ "$(j '[.providers[0].config.roleMapping.rules[].value] | join(" ")')" = "$groups" ] \
@@ -384,7 +384,7 @@ else
   [ "$(j "$tp.Condition | keys | join(\",\")")" = "ForAnyValue:StringEquals,StringEquals" ] \
     || bad "case $case: the trust condition is not exactly the issuer and the groups"
   [ "$(j "$tp.Condition.StringEquals | to_entries | map(.key + \"=\" + .value) | join(\",\")")" = "oidc:iss=$iss" ] \
-    || bad "case $case: the trust policy does not pin oidc:iss to oidc.issuer"
+    || bad "case $case: the trust policy does not pin oidc:iss to s3.oidc.issuer"
   [ "$(j "$tp.Condition.\"ForAnyValue:StringEquals\".\"oidc:groups\" | join(\" \")")" = "$groups" ] \
     || bad "case $case: the trust policy does not require one of the granted groups — any token of the realm could assume the role"
   # The grants: one statement each, conditioned on exactly its group, with explicit actions.
@@ -421,39 +421,39 @@ else
   for dir in "$chart" "$tmp/noschema"; do
     render "$dir" >/dev/null 2>"$tmp/err" || bad "the oidc fixture itself does not render ($dir): $(tail -1 "$tmp/err")"
   done
-  refused "$chart" "at '/oidc/issuer'" --set oidc.issuer=sso.example.com/realms/infra
-  refused "$chart" "at '/oidc/issuer'" --set oidc.issuer=
-  refused "$chart" "at '/oidc/clientId'" --set oidc.clientId=
-  refused "$chart" "at '/oidc/grants'" --set 'oidc.grants={}'
-  refused "$chart" "at '/oidc/grants/0/group'" --set 'oidc.grants[0].group=ci*'
-  refused "$chart" "at '/oidc/grants/0/group'" --set 'oidc.grants[0].group=ci?'
-  refused "$chart" "at '/oidc/grants/0/group'" --set 'oidc.grants[0].group=${ci}'
-  refused "$chart" "at '/oidc/grants/0/access'" --set 'oidc.grants[0].access=admin'
-  refused "$chart" "at '/oidc/grants/0/buckets/0'" --set 'oidc.grants[0].buckets[0]=Runner_Cache'
-  refused "$chart" "additional properties 'bucket' not allowed" --set 'oidc.grants[0].bucket[0]=runner-cache'
-  refused "$chart" "at '/oidc/jwksUri'" --set oidc.jwksUri=sso.example.com/certs
-  printf 'oidc:\n  grants:\n    - { group: ci-cache, access: readwrite }\n' >"$tmp/nobuckets.yaml"
+  refused "$chart" "at '/s3/oidc/issuer'" --set s3.oidc.issuer=sso.example.com/realms/infra
+  refused "$chart" "at '/s3/oidc/issuer'" --set s3.oidc.issuer=
+  refused "$chart" "at '/s3/oidc/clientId'" --set s3.oidc.clientId=
+  refused "$chart" "at '/s3/oidc/grants'" --set 's3.oidc.grants={}'
+  refused "$chart" "at '/s3/oidc/grants/0/group'" --set 's3.oidc.grants[0].group=ci*'
+  refused "$chart" "at '/s3/oidc/grants/0/group'" --set 's3.oidc.grants[0].group=ci?'
+  refused "$chart" "at '/s3/oidc/grants/0/group'" --set 's3.oidc.grants[0].group=${ci}'
+  refused "$chart" "at '/s3/oidc/grants/0/access'" --set 's3.oidc.grants[0].access=admin'
+  refused "$chart" "at '/s3/oidc/grants/0/buckets/0'" --set 's3.oidc.grants[0].buckets[0]=Runner_Cache'
+  refused "$chart" "additional properties 'bucket' not allowed" --set 's3.oidc.grants[0].bucket[0]=runner-cache'
+  refused "$chart" "at '/s3/oidc/jwksUri'" --set s3.oidc.jwksUri=sso.example.com/certs
+  printf 's3:\n  oidc:\n    grants:\n      - { group: ci-cache, access: readwrite }\n' >"$tmp/nobuckets.yaml"
   refused "$chart" "missing property 'buckets'" -f "$tmp/nobuckets.yaml"
   ns="$tmp/noschema"
-  refused "$ns" "oidc.issuer must be the identity provider's issuer URL" --set oidc.issuer=sso.example.com/realms/infra
-  refused "$ns" "oidc.issuer must be the identity provider's issuer URL" --set oidc.issuer=
-  refused "$ns" "oidc.clientId is required" --set oidc.clientId=
-  refused "$ns" "oidc.grants needs at least one grant" --set 'oidc.grants={}'
-  refused "$ns" "group \"ci*\" must be a non-empty groups-claim value" --set 'oidc.grants[0].group=ci*'
-  refused "$ns" "group \"ci?\" must be a non-empty groups-claim value" --set 'oidc.grants[0].group=ci?'
-  refused "$ns" "group \"\${ci}\" must be a non-empty groups-claim value" --set 'oidc.grants[0].group=${ci}'
-  refused "$ns" "group \"\" must be a non-empty groups-claim value" --set 'oidc.grants[0].group='
-  refused "$ns" "has access \"admin\"; it must be readonly or readwrite" --set 'oidc.grants[0].access=admin'
-  refused "$ns" "\"Runner_Cache\" is not a valid S3 bucket name" --set 'oidc.grants[0].buckets[0]=Runner_Cache'
+  refused "$ns" "s3.oidc.issuer must be the identity provider's issuer URL" --set s3.oidc.issuer=sso.example.com/realms/infra
+  refused "$ns" "s3.oidc.issuer must be the identity provider's issuer URL" --set s3.oidc.issuer=
+  refused "$ns" "s3.oidc.clientId is required" --set s3.oidc.clientId=
+  refused "$ns" "s3.oidc.grants needs at least one grant" --set 's3.oidc.grants={}'
+  refused "$ns" "group \"ci*\" must be a non-empty groups-claim value" --set 's3.oidc.grants[0].group=ci*'
+  refused "$ns" "group \"ci?\" must be a non-empty groups-claim value" --set 's3.oidc.grants[0].group=ci?'
+  refused "$ns" "group \"\${ci}\" must be a non-empty groups-claim value" --set 's3.oidc.grants[0].group=${ci}'
+  refused "$ns" "group \"\" must be a non-empty groups-claim value" --set 's3.oidc.grants[0].group='
+  refused "$ns" "has access \"admin\"; it must be readonly or readwrite" --set 's3.oidc.grants[0].access=admin'
+  refused "$ns" "\"Runner_Cache\" is not a valid S3 bucket name" --set 's3.oidc.grants[0].buckets[0]=Runner_Cache'
   refused "$ns" "group \"ci-cache\" has no buckets list" -f "$tmp/nobuckets.yaml"
   # The fixture discovers its keys; an explicit jwksUri must reach the provider as given.
-  render "$chart" --set oidc.jwksUri=https://sso.example.com/certs >"$tmp/jwks.yaml" 2>"$tmp/err" \
+  render "$chart" --set s3.oidc.jwksUri=https://sso.example.com/certs >"$tmp/jwks.yaml" 2>"$tmp/err" \
     && [ "$(yq -r "$svc.environment.SEAWEEDFS_IAM_CONFIG" "$tmp/jwks.yaml" | yq -p json -r '.providers[0].config.jwksUri')" = "https://sso.example.com/certs" ] \
-    || bad "an explicit oidc.jwksUri does not reach the provider config"
+    || bad "an explicit s3.oidc.jwksUri does not reach the provider config"
   # A `$` in a value must reach the container as `$`, not be interpolated by Docker.
-  render "$chart" --set 'oidc.clientId=seaweedfs$s3' >"$tmp/dollar.yaml" 2>"$tmp/err" \
+  render "$chart" --set 's3.oidc.clientId=seaweedfs$s3' >"$tmp/dollar.yaml" 2>"$tmp/err" \
     && grep -F 'seaweedfs$$s3' "$tmp/dollar.yaml" >/dev/null \
-    || bad "a \$ in oidc.clientId is not escaped as \$\$ in SEAWEEDFS_IAM_CONFIG — Docker would interpolate it"
+    || bad "a \$ in s3.oidc.clientId is not escaped as \$\$ in SEAWEEDFS_IAM_CONFIG — Docker would interpolate it"
 fi
 
 exit "$fail"

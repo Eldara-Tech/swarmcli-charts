@@ -8,16 +8,17 @@ buckets:
   - idp
   - runner-cache
   - reports
-oidc:
-  enabled: true
-  issuer: http://127.0.0.1:8888/buckets/idp
-  clientId: seaweedfs-s3
-  jwksUri: ""
-  grants:
-    - group: ci-cache
-      access: readwrite
-      buckets:
-        - runner-cache
-    - group: auditors
-      access: readonly
-      buckets: []
+s3:
+  oidc:
+    enabled: true
+    issuer: http://127.0.0.1:8888/buckets/idp
+    clientId: seaweedfs-s3
+    jwksUri: ""
+    grants:
+      - group: ci-cache
+        access: readwrite
+        buckets:
+          - runner-cache
+      - group: auditors
+        access: readonly
+        buckets: []

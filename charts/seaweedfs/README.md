@@ -17,8 +17,8 @@ What the chart adds on top of the image:
   password-protected `weed admin`, opt-in (see [Web UI](#web-ui)).
 - **Buckets are created for you** (`buckets`), once the server is up, on every
   start; a bucket that already exists is left alone.
-- **Optional OIDC sign-in** (`oidc`): tokens from your identity provider, scoped by
-  group to buckets and read or read/write access.
+- **Optional OIDC sign-in to the S3 API** (`s3.oidc`): tokens from your identity
+  provider, scoped by group to buckets and read or read/write access.
 
 ## Prerequisites
 
@@ -180,7 +180,7 @@ S3 secret key.
   to trusted networks.
 - **`/metrics` needs no login**, so the router excludes it
   (``!PathPrefix(`/metrics`)``); it still answers on the overlays.
-- **OIDC login for the UI is SeaweedFS Enterprise only.** [`oidc`](#oidc) covers
+- **OIDC login for the UI is SeaweedFS Enterprise only.** [`s3.oidc`](#oidc-for-the-s3-api) covers
   the S3 API alone. For SSO use the forward-auth middleware above.
 - **The overlays bypass the router.** Anything on `network.name` — and on
   `exposure.network` whenever either API is traefik-routed, even with the UI's
@@ -225,9 +225,9 @@ exists) counts as done, so restarts and upgrades are harmless; a bucket that
 cannot be created after five minutes is logged (`docker service logs`) and the
 server keeps running. Removing a name from `buckets` does not delete the bucket.
 
-## OIDC
+## OIDC for the S3 API
 
-`oidc.enabled` lets people and jobs use their identity provider's token instead of the
+`s3.oidc.enabled` lets people and jobs use their identity provider's token instead of the
 key pair, which keeps working unchanged. A client sends the token as a Bearer header, or
 exchanges it for temporary S3 keys with STS on the same port:
 
@@ -237,20 +237,21 @@ aws sts assume-role-with-web-identity --endpoint-url https://s3-cache.example.co
   --role-arn arn:aws:iam::role/oidc --role-session-name "$USER" --web-identity-token "$TOKEN"
 ```
 
-Access comes only from `oidc.grants`:
+Access comes only from `s3.oidc.grants`:
 
 ```yaml
-oidc:
-  enabled: true
-  issuer: https://sso.example.com/realms/infra
-  clientId: seaweedfs-s3
-  grants:
-    - { group: ci-cache, access: readwrite, buckets: [runner-cache] }
-    - { group: auditors, access: readonly, buckets: [] }   # [] = every bucket
+s3:
+  oidc:
+    enabled: true
+    issuer: https://sso.example.com/realms/infra
+    clientId: seaweedfs-s3
+    grants:
+      - { group: ci-cache, access: readwrite, buckets: [runner-cache] }
+      - { group: auditors, access: readonly, buckets: [] }   # [] = every bucket
 ```
 
-A token is accepted when its `iss` equals `oidc.issuer`, its `aud` or `azp` equals
-`oidc.clientId`, and its `groups` claim names a granted group. It then gets every grant of
+A token is accepted when its `iss` equals `s3.oidc.issuer`, its `aud` or `azp` equals
+`s3.oidc.clientId`, and its `groups` claim names a granted group. It then gets every grant of
 every granted group it is in. A token in no granted group is refused, and so is anything no
 grant covers. Every grant must list its `buckets`; only an explicit `[]` means every bucket.
 `readonly` is GetObject, ListBucket and GetBucketLocation; `readwrite` adds PutObject
@@ -259,7 +260,7 @@ change its policy, ACL or settings: that stays with the key pair. SeaweedFS auth
 bucket's logging, website and replication settings as ListBucket, so `readonly` can read them.
 
 Group names are compared in **exact case**, and may not contain `*`, `?` or `$`. SeaweedFS
-fetches the signing keys itself, so the issuer (or `oidc.jwksUri`, when set) must be
+fetches the signing keys itself, so the issuer (or `s3.oidc.jwksUri`, when set) must be
 reachable from the container, over a certificate the image trusts. With `jwksUri: ""` they
 are discovered from `<issuer>/.well-known/openid-configuration`.
 
@@ -267,7 +268,7 @@ are discovered from `<issuer>/.well-known/openid-configuration`.
 
 1. The issuer is the realm URL, `https://<keycloak-host>/realms/<realm>`, exactly as tokens
    carry it (older Keycloak versions put `/auth` before `/realms`).
-2. Create an OpenID Connect client, e.g. `seaweedfs-s3`, and set `oidc.clientId` to it.
+2. Create an OpenID Connect client, e.g. `seaweedfs-s3`, and set `s3.oidc.clientId` to it.
    Keycloak's access tokens name it in `azp`, which is accepted. The chart needs no client
    secret.
 3. In the client's dedicated scope, add a **Group Membership** mapper: token claim name
@@ -298,8 +299,8 @@ are discovered from `<issuer>/.well-known/openid-configuration`.
   for a wrong `iss` or `aud`, a missing group, an unreachable provider or a trust-policy
   denial. Only a provider configuration it cannot use is logged, once at start, as `Failed
   to create provider`; OIDC is then off while the key pair still works. To find out why a
-  token is refused, decode it and compare `iss` with `oidc.issuer`, `aud`/`azp` with
-  `oidc.clientId` and `groups` with the grants (exact case), then check that the container
+  token is refused, decode it and compare `iss` with `s3.oidc.issuer`, `aud`/`azp` with
+  `s3.oidc.clientId` and `groups` with the grants (exact case), then check that the container
   reaches the issuer.
 - The generated IAM configuration is in the manifest and `docker inspect` as
   `SEAWEEDFS_IAM_CONFIG`. It holds no secret.
@@ -324,11 +325,11 @@ processes must never share `/data`.
 | `s3.accessKeySecret` | `seaweedfs-s3-access-key` | External secret holding the access key id |
 | `s3.secretKeySecret` | `seaweedfs-s3-secret-key` | External secret holding the secret key |
 | `buckets` | `[]` | Buckets created at start if missing |
-| `oidc.enabled` | `false` | OIDC sign-in to the S3 API (Bearer tokens and STS) |
-| `oidc.issuer` | `""` | Issuer URL, exactly as the token's `iss` claim |
-| `oidc.clientId` | `""` | Client the tokens are for: their `aud` or `azp` |
-| `oidc.jwksUri` | `""` | Signing keys URL; `""` = discovered from the issuer |
-| `oidc.grants` | `[]` | `{group, access: readonly\|readwrite, buckets}`, all three required; `buckets: []` = every bucket |
+| `s3.oidc.enabled` | `false` | OIDC sign-in to the S3 API (Bearer tokens and STS) |
+| `s3.oidc.issuer` | `""` | Issuer URL, exactly as the token's `iss` claim |
+| `s3.oidc.clientId` | `""` | Client the tokens are for: their `aud` or `azp` |
+| `s3.oidc.jwksUri` | `""` | Signing keys URL; `""` = discovered from the issuer |
+| `s3.oidc.grants` | `[]` | `{group, access: readonly\|readwrite, buckets}`, all three required; `buckets: []` = every bucket |
 | `persistence.enabled` | `true` | Persist `/data` |
 | `persistence.volumeName` | `seaweedfs-data` | Named volume |
 | `persistence.volumePath` | `""` | Host path bind-mounted at `/data` instead (precedence over `volumeName`) |
