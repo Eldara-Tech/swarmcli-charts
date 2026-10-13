@@ -6,7 +6,9 @@
 # watches each collector's success gauge: a failing collector never sets the
 # pg_exporter_last_scrape_error the mixin reads. The connection alerts sum per target, by
 # job, instance and the `stack` label prometheus-stack's discovery adds. Severity: critical
-# only while the server is unreachable or refuses connections, warning otherwise.
+# only while the server is unreachable or refuses connections, warning otherwise, which
+# re-rates the mixin's PostgreSQLDown and PostgreSQLMaxConnectionsReached (warning) to
+# critical and its PostgresHasExporterErrors (critical) to warning.
 #
 # Validate (from the repo root):
 #   docker run --rm --entrypoint promtool -v "$PWD/charts/postgres:/chart:ro" \
