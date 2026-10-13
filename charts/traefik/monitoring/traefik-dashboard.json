@@ -3,8 +3,7 @@
   "uid": "traefik",
   "description": "Requests, errors, response times and certificate expiry from Traefik's own metrics, one release per stack. Ships with the traefik chart.",
   "tags": [
-    "traefik",
-    "ingress"
+    "traefik"
   ],
   "editable": false,
   "graphTooltip": 1,

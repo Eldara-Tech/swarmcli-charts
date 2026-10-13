@@ -58,6 +58,7 @@ tests:
           - exp_labels:
               severity: critical
               stack: edge
+              job: edge_traefik
               sans: app.example.com
             exp_annotations:
               summary: 'TLS certificate for app.example.com expires in under 7 days'
@@ -68,6 +69,7 @@ tests:
           - exp_labels:
               severity: warning
               stack: edge
+              job: edge_traefik
               sans: example.com,www.example.com
             exp_annotations:
               summary: 'TLS certificate for example.com,www.example.com expires in under 14 days'
@@ -79,6 +81,7 @@ tests:
           - exp_labels:
               severity: warning
               stack: edge
+              job: edge_traefik
               service: api@swarm
             exp_annotations:
               summary: 'Traefik service api@swarm is failing requests'
