@@ -137,6 +137,43 @@ dashboards and alert rules written for postgres_exporter apply as they are.
   them yourself: `docker service rm <release>_postgres-exporter <release>_postgres-exporter-user`.
 - **With swarmcli-cd**, add the secret to `allow.secrets` and `monitoring` to `allow.networks`.
 
+### Alerts and a dashboard
+
+The chart ships both under [`monitoring/`](monitoring) for your Prometheus and Grafana,
+and deploys neither: scraping is automatic, but which rules and dashboards a monitoring
+stack loads is its operator's choice. With the prometheus-stack chart they go in
+through its own configuration:
+
+```bash
+base=https://raw.githubusercontent.com/Eldara-Tech/swarmcli-charts/main/charts/postgres/monitoring
+curl -fsSL -O "$base/postgres-rules.yml" -O "$base/postgres-dashboard.json"
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --reuse-values \
+  --set-file prometheus.extraRules.postgres=./postgres-rules.yml \
+  --set-file grafana.dashboards.postgres=./postgres-dashboard.json
+```
+
+`--reuse-values` is safe there only while prometheus-stack's chart version stays the same
+([swarmcli#687](https://github.com/Eldara-Tech/swarmcli/issues/687)); prometheus-stack's
+README, *Keeping your setup in git*, has the values-file form.
+
+- **Alerts** (`postgres-rules.yml`): `PostgreSQLDown` while the exporter cannot reach the
+  server, `PostgreSQLMaxConnectionsReached` once clients take every slot left to roles that
+  are not superusers, `PostgreSQLHighConnections` above 80% of those slots,
+  `PostgresHasHighDeadLocks` above 5 deadlocks a minute, and `PostgresHasExporterErrors`
+  while a collector fails. All five are derived from the
+  [postgres_mixin](https://github.com/prometheus-community/postgres_exporter/tree/master/postgres_mixin)
+  (Apache-2.0). The rest of it is left out: replication (this is one server), workload
+  thresholds that fire on healthy databases, and rules whose metrics or arithmetic do not
+  hold for the pinned exporter.
+- **Dashboard** (`postgres-dashboard.json`, uid `postgres`): server up, connections used,
+  transactions and database size, then connections by state, commits and rollbacks, rows,
+  cache hits, the oldest open transaction, locks, deadlocks, temporary files, and database and
+  WAL size. Pick a release by its `stack`.
+
+The dashboard selects by the `stack` label prometheus-stack's discovery puts on every
+target, and the alerts carry it. Another Prometheus needs the same relabelling of
+`__meta_dockerswarm_service_label_com_docker_stack_namespace` to `stack`.
+
 ## Values
 
 | Key | Default | Description |

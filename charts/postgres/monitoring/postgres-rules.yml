@@ -1,0 +1,65 @@
+# PostgreSQL alerts for the postgres_exporter metrics.enabled adds, or any postgres_exporter
+# target. The chart does not deploy them: hand the file to your Prometheus, e.g. the
+# prometheus-stack chart's prometheus.extraRules (README § Alerts and a dashboard).
+# All five are derived from the postgres_mixin in prometheus-community/postgres_exporter
+# (Apache-2.0), keeping those that hold for a single server. PostgresHasExporterErrors
+# watches each collector's success gauge: a failing collector never sets the
+# pg_exporter_last_scrape_error the mixin reads. The connection alerts sum per target, by
+# job, instance and the `stack` label prometheus-stack's discovery adds.
+#
+# Validate: docker run --rm --entrypoint promtool -v "$PWD/charts/postgres:/chart:ro" \
+#             prom/prometheus:v3.15.0 test rules /chart/ci/postgres-rules-test.yml
+groups:
+  - name: postgres
+    rules:
+      - alert: PostgreSQLDown
+        expr: pg_up != 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $labels.job }} cannot reach its PostgreSQL server'
+          description: 'postgres_exporter {{ $labels.job }} on {{ $labels.instance }} has not reached its server for 5 minutes.'
+      # The slots ordinary roles may use; the superuser_reserved_connections stay for a superuser.
+      - alert: PostgreSQLMaxConnectionsReached
+        expr: |
+          sum by (stack, job, instance) (pg_stat_activity_count)
+            >=
+          sum by (stack, job, instance) (pg_settings_max_connections)
+            - sum by (stack, job, instance) (pg_settings_superuser_reserved_connections)
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'PostgreSQL behind {{ $labels.job }} is refusing new connections'
+          description: '{{ $value }} connections fill every slot max_connections leaves to roles that are not superusers, so new clients are refused.'
+      - alert: PostgreSQLHighConnections
+        expr: |
+          sum by (stack, job, instance) (pg_stat_activity_count)
+            >
+          (
+            sum by (stack, job, instance) (pg_settings_max_connections)
+              - sum by (stack, job, instance) (pg_settings_superuser_reserved_connections)
+          ) * 0.8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'PostgreSQL behind {{ $labels.job }} is above 80% of its connection limit'
+          description: '{{ $value }} connections have been open for 10 minutes, more than 80% of max_connections minus superuser_reserved_connections.'
+      - alert: PostgresHasHighDeadLocks
+        expr: rate(pg_stat_database_deadlocks{datname!~"template.*"}[5m]) * 60 > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Deadlocks in database {{ $labels.datname }} behind {{ $labels.job }}'
+          description: 'Database {{ $labels.datname }} has had more than 5 deadlocks a minute for 5 minutes, {{ $value | humanize }} now. Each one aborts a transaction.'
+      - alert: PostgresHasExporterErrors
+        expr: pg_scrape_collector_success == 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.job }} collector {{ $labels.collector }} is failing'
+          description: 'postgres_exporter {{ $labels.job }} has failed its {{ $labels.collector }} collector for 30 minutes, usually for a privilege its role lacks. Alerts and panels built on those metrics see nothing.'
