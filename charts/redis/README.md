@@ -145,6 +145,8 @@ swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --version "${v:?}" 
 `--version` keeps prometheus-stack at the version it runs, the only case in which `--reuse-values`
 is safe (Eldara-Tech/swarmcli#687).
 
+prometheus-stack's README, *Keeping your setup in git*, has the values-file form.
+
 - **Alerts** (`redis-rules.yml`): `RedisDown` and `RedisTooManyConnections` (above 90%
   of `maxclients`), derived from the
   [redis-mixin](https://github.com/oliver006/redis_exporter/tree/master/contrib/redis-mixin)
