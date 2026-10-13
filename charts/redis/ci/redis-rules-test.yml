@@ -1,0 +1,143 @@
+# promtool unit tests for monitoring/redis-rules.yml, which the chart ships for operators
+# to load into their Prometheus but does not deploy itself. ci/e2e-check.sh runs them
+# with a pinned prom/prometheus image's promtool in the metrics case.
+#
+# One release per failure; `full` raises both memory alerts. Release `lru` sits at its
+# limit under an evicting policy, and release `ok` is the chart's default (no maxmemory,
+# noeviction) with OOM errors from long ago: neither may raise anything.
+rule_files:
+  - ../monitoring/redis-rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      # Release `down` loses its server at 2m.
+      - series: 'redis_up{job="down_redis-exporter",instance="10.0.1.5:9121",stack="down"}'
+        values: '1 1 0x10'
+      - series: 'redis_up{job="ok_redis-exporter",instance="10.0.9.5:9121",stack="ok"}'
+        values: '1x12'
+      # Release `full` is at 95% of a 100 MB maxmemory under noeviction and rejects
+      # writes. Release `lru` is at 99% under allkeys-lru, which evicts instead.
+      - series: 'redis_memory_used_bytes{job="full_redis-exporter",instance="10.0.2.5:9121",stack="full"}'
+        values: '95000000x12'
+      - series: 'redis_memory_max_bytes{job="full_redis-exporter",instance="10.0.2.5:9121",stack="full"}'
+        values: '100000000x12'
+      - series: 'redis_instance_info{job="full_redis-exporter",instance="10.0.2.5:9121",stack="full",maxmemory_policy="noeviction",redis_version="8.10.1"}'
+        values: '1x12'
+      - series: 'redis_errors_total{job="full_redis-exporter",instance="10.0.2.5:9121",stack="full",err="OOM"}'
+        values: '0+10x12'
+      - series: 'redis_memory_used_bytes{job="lru_redis-exporter",instance="10.0.3.5:9121",stack="lru"}'
+        values: '99000000x12'
+      - series: 'redis_memory_max_bytes{job="lru_redis-exporter",instance="10.0.3.5:9121",stack="lru"}'
+        values: '100000000x12'
+      - series: 'redis_instance_info{job="lru_redis-exporter",instance="10.0.3.5:9121",stack="lru",maxmemory_policy="allkeys-lru",redis_version="8.10.1"}'
+        values: '1x12'
+      - series: 'redis_memory_used_bytes{job="ok_redis-exporter",instance="10.0.9.5:9121",stack="ok"}'
+        values: '2000000000x12'
+      - series: 'redis_memory_max_bytes{job="ok_redis-exporter",instance="10.0.9.5:9121",stack="ok"}'
+        values: '0x12'
+      - series: 'redis_instance_info{job="ok_redis-exporter",instance="10.0.9.5:9121",stack="ok",maxmemory_policy="noeviction",redis_version="8.10.1"}'
+        values: '1x12'
+      - series: 'redis_errors_total{job="ok_redis-exporter",instance="10.0.9.5:9121",stack="ok",err="OOM"}'
+        values: '5x12'
+      # Release `busy` holds 9500 of 10000 clients.
+      - series: 'redis_connected_clients{job="busy_redis-exporter",instance="10.0.4.5:9121",stack="busy"}'
+        values: '9500x12'
+      - series: 'redis_max_clients{job="busy_redis-exporter",instance="10.0.4.5:9121",stack="busy"}'
+        values: '10000x12'
+      - series: 'redis_connected_clients{job="ok_redis-exporter",instance="10.0.9.5:9121",stack="ok"}'
+        values: '20x12'
+      - series: 'redis_max_clients{job="ok_redis-exporter",instance="10.0.9.5:9121",stack="ok"}'
+        values: '10000x12'
+      # Release `rdb` fails a background save at 2m, release `aof` an AOF write.
+      - series: 'redis_rdb_last_bgsave_status{job="rdb_redis-exporter",instance="10.0.5.5:9121",stack="rdb"}'
+        values: '1 1 0x10'
+      - series: 'redis_aof_last_write_status{job="rdb_redis-exporter",instance="10.0.5.5:9121",stack="rdb"}'
+        values: '1x12'
+      - series: 'redis_rdb_last_bgsave_status{job="aof_redis-exporter",instance="10.0.6.5:9121",stack="aof"}'
+        values: '1x12'
+      - series: 'redis_aof_last_write_status{job="aof_redis-exporter",instance="10.0.6.5:9121",stack="aof"}'
+        values: '1 1 0x10'
+      - series: 'redis_rdb_last_bgsave_status{job="ok_redis-exporter",instance="10.0.9.5:9121",stack="ok"}'
+        values: '1x12'
+      - series: 'redis_aof_last_write_status{job="ok_redis-exporter",instance="10.0.9.5:9121",stack="ok"}'
+        values: '1x12'
+
+    alert_rule_test:
+      # Two minutes after the failures, nothing has lasted the 5m `for` yet.
+      - eval_time: 4m
+        alertname: RedisDown
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: RedisPersistenceFailed
+        exp_alerts: []
+
+      - eval_time: 10m
+        alertname: RedisDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: down_redis-exporter
+              instance: 10.0.1.5:9121
+              stack: down
+            exp_annotations:
+              summary: 'down_redis-exporter cannot reach its Redis server'
+              description: 'redis_exporter down_redis-exporter on 10.0.1.5:9121 has not reached its server for 5 minutes.'
+      # Only the errors that keep coming: release ok's old ones do not count.
+      - eval_time: 10m
+        alertname: RedisOutOfMemory
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: full_redis-exporter
+              instance: 10.0.2.5:9121
+              stack: full
+              err: OOM
+            exp_annotations:
+              summary: 'full_redis-exporter reports Redis rejecting writes'
+              description: 'The Redis behind full_redis-exporter has kept answering commands with OOM for 5 minutes: it is at maxmemory and its policy frees nothing.'
+      # Not lru (evicting), not ok (no maxmemory).
+      - eval_time: 10m
+        alertname: RedisMemoryNearLimit
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: full_redis-exporter
+              instance: 10.0.2.5:9121
+              stack: full
+            exp_annotations:
+              summary: 'full_redis-exporter reports Redis near maxmemory'
+              description: 'The Redis behind full_redis-exporter has used 95% of maxmemory for 5 minutes. Under noeviction it rejects writes at the limit.'
+      - eval_time: 10m
+        alertname: RedisTooManyConnections
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: busy_redis-exporter
+              instance: 10.0.4.5:9121
+              stack: busy
+            exp_annotations:
+              summary: 'busy_redis-exporter reports Redis near maxclients'
+              description: 'The Redis behind busy_redis-exporter has held 95% of maxclients for 5 minutes. At the limit it refuses new connections.'
+      # Either half of the expression, one alert per release.
+      - eval_time: 10m
+        alertname: RedisPersistenceFailed
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: rdb_redis-exporter
+              instance: 10.0.5.5:9121
+              stack: rdb
+            exp_annotations:
+              summary: 'rdb_redis-exporter reports a failed Redis save'
+              description: 'The last RDB save or AOF write of the Redis behind rdb_redis-exporter failed, and none has succeeded for 5 minutes. By default Redis refuses writes until one does; its log says why.'
+          - exp_labels:
+              severity: critical
+              job: aof_redis-exporter
+              instance: 10.0.6.5:9121
+              stack: aof
+            exp_annotations:
+              summary: 'aof_redis-exporter reports a failed Redis save'
+              description: 'The last RDB save or AOF write of the Redis behind aof_redis-exporter failed, and none has succeeded for 5 minutes. By default Redis refuses writes until one does; its log says why.'

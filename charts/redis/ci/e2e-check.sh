@@ -103,6 +103,18 @@ if [ "$want_exporter" = yes ]; then
       grep -F 'NOPERM' <<<"$out" >/dev/null || { echo "  exporter user was not refused '$cmd': $out"; exit 1; }
     done
     metrics_ok="$metrics_ok + 0 denied scrape commands + ACL user refused GET/CONFIG GET/KEYS/FLUSHALL"
+
+    # The alert rules the chart ships for operators to load (monitoring/), checked here
+    # because nothing deploys them: their logic, under the promtool of a pinned Prometheus.
+    chart="$(cd "$2" && pwd)"
+    promtool_image="${REDIS_E2E_PROMTOOL_IMAGE:-prom/prometheus:v3.15.0}"
+    if ! out="$(docker run --rm --entrypoint promtool -v "$chart:/chart:ro" "$promtool_image" \
+        test rules /chart/ci/redis-rules-test.yml 2>&1)"; then
+      echo "  promtool test rules fails on monitoring/redis-rules.yml:"
+      echo "$out" | sed 's/^/    /'
+      exit 1
+    fi
+    metrics_ok="$metrics_ok + alert rules pass promtool"
   fi
 fi
 
