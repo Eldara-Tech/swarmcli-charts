@@ -219,9 +219,10 @@ swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --version "${v:?}" 
   --set-file grafana.dashboards.galera=./galera-dashboard.json
 ```
 
-`--version` keeps prometheus-stack at the version it runs, the only case in which
-`--reuse-values` is safe (Eldara-Tech/swarmcli#687). prometheus-stack's README, *Keeping
-your setup in git*, has the values-file form.
+`--version` keeps prometheus-stack at the version it runs, the only case in which `--reuse-values`
+is safe (Eldara-Tech/swarmcli#687).
+
+prometheus-stack's README, *Keeping your setup in git*, has the values-file form.
 
 - **Alerts** (`galera-rules.yml`): `MySQLDown`, `MySQLGaleraNotReady`,
   `MySQLGaleraOutOfSync` and `MySQLGaleraDonorFallingBehind`, derived from the
