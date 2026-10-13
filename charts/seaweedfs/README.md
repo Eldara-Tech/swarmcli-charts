@@ -14,7 +14,8 @@ What the chart adds on top of the image:
   SeaweedFS serves every request anonymously when it knows no identity.
 - **Only S3 leaves the container.** The master, volume and filer APIs have no
   authentication, so they listen on 127.0.0.1 only. The web UI is the
-  password-protected `weed admin`, opt-in (see [Web UI](#web-ui)).
+  password-protected `weed admin`, opt-in (see [Web UI](#web-ui)), with OIDC login
+  on the SeaweedFS Enterprise image.
 - **Buckets are created for you** (`buckets`), once the server is up, on every
   start; a bucket that already exists is left alone.
 - **Optional OIDC sign-in to the S3 API** (`s3.oidc`): tokens from your identity
@@ -180,8 +181,9 @@ S3 secret key.
   to trusted networks.
 - **`/metrics` needs no login**, so the router excludes it
   (``!PathPrefix(`/metrics`)``); it still answers on the overlays.
-- **OIDC login for the UI is SeaweedFS Enterprise only.** [`s3.oidc`](#oidc-for-the-s3-api) covers
-  the S3 API alone. For SSO use the forward-auth middleware above.
+- **OIDC login for the UI needs the SeaweedFS Enterprise image**: see
+  [Single sign-on](#single-sign-on-seaweedfs-enterprise). [`s3.oidc`](#oidc-for-the-s3-api)
+  covers the S3 API alone.
 - **The overlays bypass the router.** Anything on `network.name` — and on
   `exposure.network` whenever either API is traefik-routed, even with the UI's
   own mode `none` — reaches the UI directly on `admin.port`: past the routers'
@@ -195,6 +197,78 @@ To change the password, create a new secret under a new name, point
 so every session ends with the redeploy, those opened with the old password
 included; `docker service update --force <release>_seaweedfs` does the same. A
 crash of the UI alone keeps its sessions.
+
+### Single sign-on (SeaweedFS Enterprise)
+
+`admin.oidc` adds a **Sign in with OIDC** button to the login page; the password login
+keeps working beside it. OIDC login to `weed admin` is a SeaweedFS Enterprise feature: the
+free image has no such option, and the chart refuses `admin.oidc` on it. Set
+`image.repository` to `chrislusf/seaweedfs-enterprise`, or a mirror whose name ends in
+`seaweedfs-enterprise`. Its terms are SeaweedFS's: [seaweedfs.com](https://seaweedfs.com/)
+lists it as free for development and testing under 25 TB and priced per TB otherwise. The
+4.48 image needs no key file: it starts with a built-in 25 TB licence, which its log dates
+to expire 31 days after the start. The chart manages no licence. `image.tag` defaults to
+the free image's `appVersion`; pin it if Enterprise has not published that tag yet.
+
+With [Keycloak](../keycloak), in your realm:
+
+1. Create an OpenID Connect client, e.g. `seaweedfs-admin`, with **Client authentication**
+   on and **Standard flow** on; turn the other flows off. Leave **PKCE Method** empty:
+   SeaweedFS sends no PKCE challenge.
+2. Set **Valid redirect URIs** to the UI's public URL followed by `/login/oidc/callback`,
+   e.g. `https://seaweedfs-admin.example.com/login/oidc/callback`.
+3. In the client's dedicated scope, add a **Group Membership** mapper: token claim name
+   `groups`, **Full group path** off (so the claim carries the bare names the lists use),
+   **Add to ID token** on.
+4. Create the groups `admin.oidc.adminGroups` and `admin.oidc.readonlyGroups` name, and
+   add users to them.
+5. Put the client secret (**Credentials** tab) in a Swarm secret:
+   `printf '%s' '<client secret>' | docker secret create seaweedfs-admin-oidc-client-secret -`
+
+```yaml
+image:
+  repository: chrislusf/seaweedfs-enterprise
+admin:
+  enabled: true
+  exposure:
+    mode: traefik
+  ingress:
+    host: seaweedfs-admin.example.com
+  oidc:
+    enabled: true
+    issuer: https://keycloak.example.com/realms/<realm>
+    clientId: seaweedfs-admin
+    adminGroups: [storage-admins]        # full control, as with the password
+    readonlyGroups: [storage-auditors]   # can look, cannot change anything
+```
+
+- **Who gets in.** A member of an `adminGroups` group gets the same full control as the
+  password; a member of a `readonlyGroups` group can look but not change anything. Anyone
+  in neither is refused (`OIDC login failed`), whatever else the realm grants them: the
+  chart sets no default role. SeaweedFS compares group names **ignoring case**, so a realm
+  group `Storage-Admins` counts as `storage-admins`: leave creating groups to realm admins.
+  It treats `*` as a wildcard, so the chart refuses it, and `?` and `,` with it.
+- **A session ends when its ID token expires**, five minutes after login with Keycloak's
+  defaults. To stay logged in longer, raise **Access Token Lifespan** (the realm's
+  **Tokens** settings, or the client's **Advanced** tab); the ID token follows it.
+- **Everything is https.** SeaweedFS refuses a plain-http issuer or callback (except on
+  localhost), and the chart refuses to render one. `admin.oidc.browserUrl`, the base of the
+  callback, defaults to `https://<admin.ingress.host>` while the UI is traefik-routed with
+  `admin.ingress.tls`; set it to the UI's https URL otherwise, e.g. behind a proxy that
+  terminates TLS. Use the provider's public URL as `issuer`: the browser is sent to the
+  login page its discovery document names.
+- **The provider must be up when weed admin starts.** It reads the discovery document
+  once, from inside the container. If the provider is unreachable then, the login page has
+  no OIDC button and the log says `disabling admin OIDC authentication`; the password login
+  keeps working, and `docker service update --force <release>_seaweedfs` tries again.
+- **The client secret** goes from the Swarm secret into weed admin's environment alone,
+  like the password. The other `WEED_ADMIN_OIDC_*` settings are plain environment, in the
+  manifest and `docker inspect`.
+- **The Enterprise image listens differently.** Its `weed admin` binds the unauthenticated
+  worker gRPC port (`admin.port + 10000`) wherever it binds the UI; the free one keeps that
+  port on 127.0.0.1. So on the Enterprise image, with or without `admin.oidc`, the chart
+  runs the UI on 127.0.0.1, on `admin.port + 1`, and busybox `nc` forwards `admin.port` to
+  it. Neither port is reachable from the overlays.
 
 ## Security
 
@@ -319,7 +393,7 @@ processes must never share `/data`.
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `image.repository` | `chrislusf/seaweedfs` | Container image |
+| `image.repository` | `chrislusf/seaweedfs` | Container image; `chrislusf/seaweedfs-enterprise` for `admin.oidc` |
 | `image.tag` | `""` | Image tag — defaults to `appVersion` in Chart.yaml |
 | `s3.port` | `8333` | S3 listen port (max 55535: the gRPC port is this + 10000) |
 | `s3.accessKeySecret` | `seaweedfs-s3-access-key` | External secret holding the access key id |
@@ -354,6 +428,13 @@ processes must never share `/data`.
 | `admin.ingress.host` | `""` | UI Traefik `Host()` rule; required in traefik mode, ≠ `ingress.host` |
 | `admin.ingress.tls` | `true` | UI HTTPS router + redirect (traefik mode) |
 | `admin.publish.port` / `admin.publish.mode` | `23646` / `ingress` | UI published port (published mode), ≠ `publish.port` |
+| `admin.oidc.enabled` | `false` | OIDC login to the UI (Enterprise image only) |
+| `admin.oidc.issuer` | `""` | The provider's https issuer URL |
+| `admin.oidc.clientId` | `seaweedfs-admin` | Client ID |
+| `admin.oidc.clientSecretSecret` | `seaweedfs-admin-oidc-client-secret` | External secret holding the client secret |
+| `admin.oidc.browserUrl` | `""` | The UI's https base URL for the callback; `""` = from `admin.ingress` when routed with TLS |
+| `admin.oidc.adminGroups` | `[]` | `groups` claim values that get full control |
+| `admin.oidc.readonlyGroups` | `[]` | `groups` claim values that get read-only access; one of the two lists is required |
 | `extraArgs` | `[]` | Extra `weed server` flags |
 | `healthcheck.*` | enabled, 15s/5s/4, start 30s, monitor 2m | `curl` of `/healthz` on the S3 port |
 | `stopGracePeriod` | `30s` | SIGTERM → SIGKILL window |

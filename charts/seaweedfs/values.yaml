@@ -15,6 +15,7 @@
 #      and are bound to 127.0.0.1; see the chart README.
 
 image:
+  # chrislusf/seaweedfs-enterprise for admin.oidc.
   repository: chrislusf/seaweedfs
   tag: ""  # defaults to appVersion from Chart.yaml
 
@@ -173,6 +174,31 @@ admin:
   publish:
     port: 23646
     mode: ingress
+  # OpenID Connect login to the UI, beside the password login (off by default). An
+  # Enterprise feature: it needs image.repository chrislusf/seaweedfs-enterprise, under
+  # SeaweedFS's licence terms (README). On that image the UI listens on 127.0.0.1, on
+  # admin.port + 1, behind a forwarder on admin.port.
+  oidc:
+    enabled: false
+    # The provider's issuer URL, e.g. https://sso.example.com/realms/infra. https only
+    # (SeaweedFS refuses plain http except on localhost), and reachable from the container
+    # when weed admin starts: it reads the discovery document once.
+    issuer: ""
+    clientId: seaweedfs-admin
+    # EXTERNAL Swarm secret holding the client secret. Pre-create it:
+    #   printf '%s' '<client secret>' | docker secret create seaweedfs-admin-oidc-client-secret -
+    clientSecretSecret: seaweedfs-admin-oidc-client-secret
+    # The UI's public base URL (https://host[:port], no path); the provider sends the
+    # browser back to <browserUrl>/login/oidc/callback, which SeaweedFS requires to be https.
+    # "" => https://<admin.ingress.host> while the UI is traefik-routed with admin.ingress.tls;
+    # required otherwise.
+    browserUrl: ""
+    # Values of the ID token's `groups` claim, which SeaweedFS compares ignoring case;
+    # `*`, `?` and `,` are refused. A member of an adminGroups entry gets full control, of
+    # a readonlyGroups entry read-only access; anyone else is refused. At least one is
+    # required.
+    adminGroups: []
+    readonlyGroups: []
 
 # Extra `weed server` flags, appended verbatim after the chart's own, e.g.
 # ["-master.volumeSizeLimitMB=512"]. Run `docker run --rm chrislusf/seaweedfs weed

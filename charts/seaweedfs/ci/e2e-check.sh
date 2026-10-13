@@ -23,6 +23,8 @@
 # password is refused, the right one lists the bucket, and a stopped UI comes back while
 # S3 keeps serving from the same task. `oidc` stands up a stub identity provider and proves
 # both grants work, through Bearer tokens and STS, and that what they do not grant is refused.
+# `admin-oidc` runs the Enterprise image: the same login checks through the chart's
+# forwarder, then the UI's OIDC button against a stub provider.
 set -euo pipefail
 
 release="$1"
@@ -34,6 +36,7 @@ GRPCURL_IMAGE="${SEAWEEDFS_E2E_GRPCURL_IMAGE:-fullstorydev/grpcurl:v1.9.3}"
 KEY="${SEAWEEDFS_E2E_ACCESS_KEY:-e2e-access-key}"
 SECRET="${SEAWEEDFS_E2E_SECRET_KEY:-e2e/secret+key0123456789abcdef}"
 ADMIN_PASSWORD="${SEAWEEDFS_E2E_ADMIN_PASSWORD:-e2e/admin+password0123}"
+OIDC_CLIENT_SECRET="${SEAWEEDFS_E2E_OIDC_CLIENT_SECRET:-e2e/oidc+client-secret0123}"
 SIG='aws:amz:us-east-1:s3'
 
 svc="${release}_seaweedfs"
@@ -46,6 +49,7 @@ case "$case" in
   traefik) buckets="runner-cache" ;;
   ephemeral) buckets="scratch" ;;
   oidc) buckets="idp runner-cache reports" ;;
+  admin-oidc) buckets="idp" ;;
   edge)
     buckets="runner-cache"
     . "$dir/../../scripts/e2e-edge/traefik-edge.sh"
@@ -119,12 +123,14 @@ echo "  ok: signed PUT/GET round trip (path-style $base/$bucket/…), anonymous 
 # ── nothing but S3 (and the admin UI) is reachable from the overlay ──────────────────
 # On the client overlay: the edge fixture's network is traefik-public, where the service
 # is reachable too, but one network proves the bind address. admin-edge checks both, and
-# the admin's worker gRPC port (23646 + 10000) as well.
+# the admin's worker gRPC port (23646 + 10000) as well; on the Enterprise image also the
+# UI's own port (23646 + 1), which only the forwarder may reach.
 if [ "$case" != "edge" ]; then
   overlays=seaweedfs-net
   ports="9333 8888 8080"
   case "$case" in
     admin-edge) overlays="seaweedfs-net traefik-public"; ports="$ports 33646" ;;
+    admin-oidc) ports="$ports 33646 23647" ;;
     admin-*) ports="$ports 33646" ;;
   esac
   # curl exits 7 only when the connection is refused: a listening gRPC port gives no HTTP
@@ -275,6 +281,41 @@ case "$case" in
     grep -F -- '-dataDir=/data/admin -adminUser=admin' <<<"$argv" >/dev/null || die "ps in the task does not show weed admin's whole argv"
     if grep -F -- "$ADMIN_PASSWORD" <<<"$argv" >/dev/null; then die "the admin password is on an argv"; fi
     echo "  ok: the admin password is in weed admin's environment only — not weed server's, not on any argv"
+
+    # admin.oidc: the store serves the provider's discovery document, as in the `oidc` case.
+    # weed admin reads it once, at start, so it is restarted once the document is in place;
+    # then the login page offers OIDC, and its button sends the browser to the provider with
+    # the fixture's client and callback.
+    if [ "$case" = "admin-oidc" ]; then
+      iss='http://127.0.0.1:8888/buckets/idp'
+      if grep -F 'href="/login/oidc"' <<<"$(a "$abase/login")" >/dev/null; then
+        die "the login page offers OIDC before the provider's discovery document exists, so the check below would prove nothing"
+      fi
+      got="$(printf '{"issuer":"%s","authorization_endpoint":"%s/authorize","token_endpoint":"%s/token","jwks_uri":"%s/jwks","response_types_supported":["code"],"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"]}' \
+        "$iss" "$iss" "$iss" "$iss" | signed_code -X PUT --data-binary @- "$base/idp/.well-known/openid-configuration")"
+      [ "$got" = "200" ] || die "uploading the stub discovery document returned '$got'"
+      docker exec "$cid" kill "$now"
+      new=""
+      for _ in $(seq 1 20); do
+        sleep 3
+        new="$(docker exec "$cid" pgrep -f '^weed -logtostderr=true admin ' || true)"
+        [ -n "$new" ] && [ "$new" != "$now" ] && grep -F 'href="/login/oidc"' <<<"$(a "$abase/login")" >/dev/null && break
+        new=""
+      done
+      [ -n "$new" ] || die "with the discovery document in place, a restarted weed admin still offers no OIDC login"
+      got="$(a -o /dev/null "$abase/login/oidc")"
+      loc="$(header Location <<<"$got")"
+      [ "$(status <<<"$got")" = "303" ] && [ "${loc%%\?*}" = "$iss/authorize" ] \
+        && grep -F 'client_id=seaweedfs-admin&' <<<"$loc&" >/dev/null \
+        && grep -F 'redirect_uri=https%3A%2F%2Fseaweedfs-admin.example.com%2Flogin%2Foidc%2Fcallback&' <<<"$loc&" >/dev/null \
+        || die "the OIDC button does not send the browser to the provider with the client and callback (HTTP $(status <<<"$got"), Location '$loc')"
+      echo "  ok: the login page offers OIDC once the provider is up; the button sends the browser to $iss/authorize with the client and the browserUrl callback"
+      grep -Fx "WEED_ADMIN_OIDC_CLIENT_SECRET=$OIDC_CLIENT_SECRET" <<<"$(env_of "$new")" >/dev/null \
+        || die "weed admin's environment does not hold the OIDC client secret from the secret"
+      if grep -F WEED_ADMIN_OIDC_CLIENT_SECRET <<<"$(env_of 1)" >/dev/null; then die "weed server (PID 1) holds WEED_ADMIN_OIDC_CLIENT_SECRET"; fi
+      if grep -F -- "$OIDC_CLIENT_SECRET" <<<"$(docker exec "$cid" ps -o args)" >/dev/null; then die "the OIDC client secret is on an argv"; fi
+      echo "  ok: the OIDC client secret is in weed admin's environment only — not weed server's, not on any argv"
+    fi
 
     # A new task deletes the session key, so a redeploy — a password change included — logs
     # everyone out: the old cookie no longer decodes and the dashboard sends it to /login.

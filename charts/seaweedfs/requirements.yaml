@@ -24,4 +24,7 @@ secrets:
   # Mounted only while admin.enabled.
   - name: "{{ .Values.admin.passwordSecret }}"
     description: "admin.enabled only - the web UI's admin password. Pre-create: printf '%s' '<password>' | docker secret create seaweedfs-admin-password -"
+  # Mounted only while admin.enabled and admin.oidc.enabled.
+  - name: "{{ .Values.admin.oidc.clientSecretSecret }}"
+    description: "admin.oidc.enabled only - the web UI's OIDC client secret. Pre-create: printf '%s' '<client secret>' | docker secret create seaweedfs-admin-oidc-client-secret -"
 configs: []

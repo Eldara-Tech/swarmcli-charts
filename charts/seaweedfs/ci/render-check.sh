@@ -20,6 +20,9 @@
 #   * The admin UI (admin.enabled) is one password away from every object. That password
 #     must reach weed admin alone, never weed server or an argv, and the UI must stay off
 #     the S3 API's routers, ports and health. The guards are rendered below with $SWARMCLI.
+#   * On the Enterprise image weed admin binds its unauthenticated worker gRPC port with
+#     the UI, so both must stay on 127.0.0.1 behind the forwarder; admin.oidc's client
+#     secret must reach weed admin alone, like the password.
 #
 # No check pipes into `grep -q` (scripts/lint.sh enforces it): match with `grep … >/dev/null`
 # or a here-string.
@@ -223,6 +226,9 @@ case "$case" in
       && grep -F 'rm -f /data/admin/.session_key;' <<<"${script%%"while :; do"*}" >/dev/null \
       || bad "case $case: the admin session key is not deleted exactly once per container start, before the restart loop — a password change would not log anyone out"
     want="( export WEED_ADMIN_PASSWORD=\"\$\$(cat /run/secrets/$pw)\" GODEBUG=fips140=on; exec su-exec seaweed weed -logtostderr=true admin -master=127.0.0.1:9333 -port=23646 -dataDir=/data/admin -adminUser=admin ) || rc=\$\$?;"
+    # The Enterprise image: the UI and its worker gRPC port on 127.0.0.1, the UI one port up.
+    [ "$case" = "admin-oidc" ] \
+      && want="( export WEED_ADMIN_PASSWORD=\"\$\$(cat /run/secrets/$pw)\" WEED_ADMIN_OIDC_CLIENT_SECRET=\"\$\$(cat /run/secrets/seaweedfs-admin-oidc-client-secret)\" GODEBUG=fips140=on; exec su-exec seaweed weed -logtostderr=true admin -ip=127.0.0.1 -master=127.0.0.1:9333 -port=23647 -port.grpc=33646 -dataDir=/data/admin -adminUser=admin ) || rc=\$\$?;"
     grep -F -- "$want" <<<"$script" >/dev/null || bad "case $case: weed admin is not started as: $want"
     [ "$(grep -o WEED_ADMIN_PASSWORD <<<"$script" | wc -l | tr -d ' ')" = "1" ] \
       || bad "case $case: WEED_ADMIN_PASSWORD is set outside the admin's own subshell — weed server would hold the admin password"
@@ -236,12 +242,36 @@ case "$case" in
     ;;
 esac
 
+# ── the Enterprise image and admin.oidc ───────────────────────────────────────────────
+cs=seaweedfs-admin-oidc-client-secret
+fwd='( while :; do rc=0; su-exec seaweed nc -lk -p 23646 -e nc 127.0.0.1 23647 || rc=$$?; echo "admin forwarder exited (status $$rc) - restarting in 5s" >&2; sleep 5; done ) & '
+oidcenv="$(q "$svc.environment | to_entries | map(select(.key | test(\"^WEED_ADMIN_OIDC_\"))) | .[] | .key + \"=\" + .value")"
+if [ "$case" = "admin-oidc" ]; then
+  grep -F -- "$fwd" <<<"$script" >/dev/null \
+    || bad "case $case: no restarting forwarder from admin.port 23646 to the UI on 127.0.0.1:23647 — the UI would be unreachable"
+  [ "$oidcenv" = "$(printf '%s\n' WEED_ADMIN_OIDC_ADMIN_GROUPS=storage-admins WEED_ADMIN_OIDC_CLIENT_ID=seaweedfs-admin \
+      WEED_ADMIN_OIDC_ENABLED=true WEED_ADMIN_OIDC_ISSUER=http://127.0.0.1:8888/buckets/idp WEED_ADMIN_OIDC_READONLY_GROUPS=storage-auditors \
+      WEED_ADMIN_OIDC_REDIRECT_URL=https://seaweedfs-admin.example.com/login/oidc/callback)" ] \
+    || bad "case $case: the WEED_ADMIN_OIDC_* environment is not exactly the fixture's (no client secret, no default role): $(tr '\n' ' ' <<<"$oidcenv")"
+  grep -Fx "$cs" <<<"$mounted" >/dev/null && [ "$(q ".secrets.\"$cs\".external")" = "true" ] \
+    || bad "case $case: the OIDC client secret is not mounted from an external secret"
+  grep -F "test -s \"/run/secrets/$cs\" || { echo \"secret $cs is missing or empty - refusing to start the admin UI's OIDC login without its client secret\" >&2; exit 1; };" <<<"$script" >/dev/null \
+    || bad "case $case: the wrapper does not refuse a missing or empty OIDC client secret"
+  [ "$(grep -o WEED_ADMIN_OIDC_CLIENT_SECRET <<<"$script" | wc -l | tr -d ' ')" = "1" ] \
+    || bad "case $case: WEED_ADMIN_OIDC_CLIENT_SECRET is set outside the admin's own subshell"
+else
+  if grep -F -e 'nc -lk' -e ' admin -ip=' -e WEED_ADMIN_OIDC <<<"$script" >/dev/null || [ -n "$oidcenv" ] || grep -Fx "$cs" <<<"$mounted" >/dev/null; then
+    bad "case $case: the Enterprise forwarder or admin.oidc is rendered on the free image"
+  fi
+fi
+
 # ── buckets ───────────────────────────────────────────────────────────────────────────
 case "$case" in
   buckets) want='runner-cache e2e.second-bucket' ;;
   traefik|edge) want='runner-cache' ;;
   ephemeral) want='scratch' ;;
   oidc) want='idp runner-cache reports' ;;
+  admin-oidc) want='idp' ;;
   *) want='' ;;
 esac
 if [ -n "$want" ]; then
@@ -261,7 +291,7 @@ fi
 mounts="$(q "$svc.volumes[]")"
 constraints="$(q "$svc.deploy.placement.constraints[]")"
 case "$case" in
-  ephemeral)
+  ephemeral|admin-oidc)
     [ "$(q "$svc.volumes")" = "null" ] || bad "case $case: /data is mounted although persistence is off"
     [ "$(q ".volumes")" = "null" ] || bad "case $case: a top-level volume is declared although persistence is off"
     [ "$(q "$svc.deploy.placement")" = "null" ] || bad "case $case: a placement block is rendered although persistence is off"
@@ -454,6 +484,80 @@ else
   render "$chart" --set 's3.oidc.clientId=seaweedfs$s3' >"$tmp/dollar.yaml" 2>"$tmp/err" \
     && grep -F 'seaweedfs$$s3' "$tmp/dollar.yaml" >/dev/null \
     || bad "a \$ in s3.oidc.clientId is not escaped as \$\$ in SEAWEEDFS_IAM_CONFIG — Docker would interpolate it"
+fi
+
+# ── the admin.oidc and Enterprise guards, rendered once with SWARMCLI ─────────────────
+# Each refusal names what SeaweedFS would otherwise turn into a log warning and a login
+# page without OIDC, or a UI that never starts.
+if [ "$case" = "admin-oidc" ]; then
+  chart="$(cd "$(dirname "$0")/.." && pwd)"
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  cp -R "$chart" "$tmp/noschema"
+  rm "$tmp/noschema/values.schema.json"
+  render() { local dir="$1"; shift; "${SWARMCLI:?render-check needs SWARMCLI to test the refusals}" charts template ci "$dir" -f "$chart/ci/admin-oidc-values.yaml" "$@"; }
+  refused() {
+    local dir="$1" want="$2"; shift 2
+    if render "$dir" "$@" >/dev/null 2>"$tmp/err"; then
+      bad "rendered with $* ($dir) — it must be refused"
+    elif ! grep -F -- "$want" "$tmp/err" >/dev/null; then
+      bad "$* ($dir) failed, but not with \"$want\": $(tail -1 "$tmp/err")"
+    fi
+  }
+  envof() { yq -r ".services.seaweedfs.environment.$1" "$tmp/out.yaml"; }
+  refused "$chart" "at '/admin/oidc/issuer'" --set admin.oidc.issuer=http://sso.example.com/realms/infra
+  refused "$chart" "at '/admin/oidc/browserUrl'" --set admin.oidc.browserUrl=http://seaweedfs-admin.example.com
+  refused "$chart" "at '/admin/oidc/browserUrl'" --set admin.oidc.browserUrl=https://seaweedfs-admin.example.com/ui
+  # --set splits on commas, so the comma group comes from a file.
+  printf 'admin:\n  oidc:\n    adminGroups: ["a,b"]\n' >"$tmp/comma.yaml"
+  refused "$chart" "at '/admin/oidc/adminGroups/0'" -f "$tmp/comma.yaml"
+  # SeaweedFS matches the groups as wildcards: `*` would make every user of the realm admin.
+  refused "$chart" "at '/admin/oidc/adminGroups/0'" --set 'admin.oidc.adminGroups[0]=*'
+  refused "$chart" "at '/admin/oidc/readonlyGroups/0'" --set 'admin.oidc.readonlyGroups[0]=audit?'
+  ns="$tmp/noschema"
+  refused "$ns" "admin.oidc needs the SeaweedFS Enterprise image" --set image.repository=chrislusf/seaweedfs
+  refused "$ns" "admin.oidc.issuer must be the provider's https:// issuer URL" --set admin.oidc.issuer=http://sso.example.com/realms/infra
+  refused "$ns" "admin.oidc.issuer must be the provider's https:// issuer URL" --set admin.oidc.issuer=
+  refused "$ns" "admin.oidc.clientId is required" --set admin.oidc.clientId=
+  refused "$ns" "admin.oidc.clientSecretSecret must name a secret of its own" --set admin.oidc.clientSecretSecret=
+  refused "$ns" "admin.oidc.clientSecretSecret must name a secret of its own" --set admin.oidc.clientSecretSecret=seaweedfs-admin-password
+  refused "$ns" "admin.oidc.clientSecretSecret must name a secret of its own" --set admin.oidc.clientSecretSecret=seaweedfs-s3-secret-key
+  refused "$ns" "admin.oidc needs adminGroups or readonlyGroups" --set 'admin.oidc.adminGroups={}' --set 'admin.oidc.readonlyGroups={}'
+  refused "$ns" "group \"a,b\" must be a non-empty groups-claim value without ',', '*' or '?'" -f "$tmp/comma.yaml"
+  refused "$ns" "group \"*\" must be a non-empty groups-claim value" --set 'admin.oidc.adminGroups[0]=*'
+  refused "$ns" "group \"audit?\" must be a non-empty groups-claim value" --set 'admin.oidc.readonlyGroups[0]=audit?'
+  refused "$ns" "admin.oidc.browserUrl must be the UI's public base URL" --set admin.oidc.browserUrl=https://seaweedfs-admin.example.com/ui
+  refused "$ns" "admin.oidc.browserUrl is required unless admin.exposure.mode=traefik" --set admin.oidc.browserUrl=
+  refused "$ns" "admin.oidc needs an https callback, and http://seaweedfs-admin.example.com is not" --set admin.oidc.browserUrl=http://seaweedfs-admin.example.com
+  refused "$ns" "admin.oidc needs an https callback, and http://adm.example.com is not" --set admin.oidc.browserUrl= \
+    --set admin.exposure.mode=traefik --set admin.ingress.host=adm.example.com --set admin.ingress.tls=false
+  # One port up from admin.port 8332 is the S3 port, taken only on the Enterprise image.
+  refused "$ns" "on the Enterprise image weed admin listens on 127.0.0.1:8333" --set admin.port=8332
+  render "$ns" --set admin.port=8332 --set image.repository=chrislusf/seaweedfs --set admin.oidc.enabled=false >/dev/null 2>"$tmp/err" \
+    || bad "admin.port 8332 is refused on the free image, where the UI binds it alone: $(tail -1 "$tmp/err")"
+  # Routed with TLS, the callback comes from admin.ingress.host; a trailing slash is dropped.
+  render "$chart" --set admin.oidc.browserUrl= --set admin.exposure.mode=traefik --set admin.ingress.host=adm.example.com >"$tmp/out.yaml" 2>"$tmp/err" \
+    && [ "$(envof WEED_ADMIN_OIDC_REDIRECT_URL)" = "https://adm.example.com/login/oidc/callback" ] \
+    || bad "routed with TLS and no browserUrl, the callback is not https://<admin.ingress.host>/login/oidc/callback"
+  render "$chart" --set admin.oidc.browserUrl=https://adm.example.com:8443/ >"$tmp/out.yaml" 2>"$tmp/err" \
+    && [ "$(envof WEED_ADMIN_OIDC_REDIRECT_URL)" = "https://adm.example.com:8443/login/oidc/callback" ] \
+    || bad "a browserUrl with a port and a trailing slash does not give <browserUrl>/login/oidc/callback"
+  # A mirror of the Enterprise image counts as Enterprise.
+  render "$chart" --set image.repository=registry.example.com/mirror/seaweedfs-enterprise >"$tmp/out.yaml" 2>"$tmp/err" \
+    && grep -F 'nc -lk -p 23646' "$tmp/out.yaml" >/dev/null \
+    || bad "a mirrored seaweedfs-enterprise repository is not treated as the Enterprise image"
+  # The Enterprise image without admin.oidc still gets the forwarder, and no OIDC.
+  render "$chart" --set admin.oidc.enabled=false >"$tmp/out.yaml" 2>"$tmp/err" \
+    && grep -F 'nc -lk -p 23646' "$tmp/out.yaml" >/dev/null && ! grep -F -e WEED_ADMIN_OIDC -e "$cs" "$tmp/out.yaml" >/dev/null \
+    || bad "the Enterprise image with admin.oidc off does not render the forwarder alone"
+  # With the UI off, admin.oidc is neither checked nor rendered.
+  render "$ns" --set admin.enabled=false --set admin.oidc.issuer= >"$tmp/out.yaml" 2>"$tmp/err" \
+    && ! grep -F -e WEED_ADMIN -e "$cs" -e 'nc -lk' "$tmp/out.yaml" >/dev/null \
+    || bad "admin.oidc is checked or rendered although admin.enabled is false"
+  # A `$` in a value must reach the container as `$`, not be interpolated by Docker.
+  render "$chart" --set 'admin.oidc.clientId=seaweedfs$admin' >"$tmp/out.yaml" 2>"$tmp/err" \
+    && grep -F 'seaweedfs$$admin' "$tmp/out.yaml" >/dev/null \
+    || bad "a \$ in admin.oidc.clientId is not escaped as \$\$ — Docker would interpolate it"
 fi
 
 exit "$fail"

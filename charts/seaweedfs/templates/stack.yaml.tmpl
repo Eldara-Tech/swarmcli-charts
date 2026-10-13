@@ -51,7 +51,10 @@
 {{- end -}}
 {{- /* The web UI. Its login name is spliced into the start-up shell like the bucket names,
        so it is validated rather than trusted; its ports must not take one weed server
-       binds, or one of the two would fail to start. */}}
+       binds, or one of the two would fail to start. The Enterprise image's weed admin binds
+       its unauthenticated worker gRPC port wherever it binds the UI, so there it stays on
+       127.0.0.1, on admin.port + 1, behind a forwarder on admin.port. */}}
+{{- $ent := regexMatch "(^|/)seaweedfs-enterprise$" .Values.image.repository -}}
 {{- if .Values.admin.enabled -}}
 {{-   if not .Values.admin.passwordSecret -}}
 {{-     fail "admin.passwordSecret is required when admin.enabled: the web UI gives full control of the store and never runs without a password" -}}
@@ -67,6 +70,50 @@
 {{-   $taken := list $s3p (add $s3p 10000 | int) 9333 19333 8080 18080 8888 18888 -}}
 {{-   if or (has $ap $taken) (has (add $ap 10000 | int) $taken) -}}
 {{-     fail (printf "admin.port %d collides with weed server: the UI binds %d and its worker gRPC %d, and weed server already binds %s (S3, master, volume server, filer and their gRPC ports)" $ap $ap (add $ap 10000) (join ", " $taken)) -}}
+{{-   end -}}
+{{-   if and $ent (has (add $ap 1 | int) $taken) -}}
+{{-     fail (printf "admin.port %d collides with weed server: on the Enterprise image weed admin listens on 127.0.0.1:%d behind the forwarder on %d, and weed server already binds %s" $ap (add $ap 1) $ap (join ", " $taken)) -}}
+{{-   end -}}
+{{- /* OIDC login to the UI (an Enterprise feature). The groups become comma-separated
+       environment lists that SeaweedFS matches ignoring case and with `*` as a wildcard, so
+       a `*` (or a `?`) would admit groups nobody listed; and SeaweedFS refuses a plain-http
+       issuer or
+       callback except on localhost. All of it is checked here rather than left to a
+       warning in the log. */}}
+{{-   $oidc := .Values.admin.oidc -}}
+{{-   if $oidc.enabled -}}
+{{-     if not $ent -}}
+{{-       fail "admin.oidc needs the SeaweedFS Enterprise image: set image.repository to chrislusf/seaweedfs-enterprise (the free weed admin has no OIDC login)" -}}
+{{-     end -}}
+{{-     if not (or (regexMatch `^https://[^/?#]` $oidc.issuer) (regexMatch `^http://(localhost|127\.0\.0\.1)([:/]|$)` $oidc.issuer)) -}}
+{{-       fail "admin.oidc.issuer must be the provider's https:// issuer URL: SeaweedFS refuses plain http except on localhost" -}}
+{{-     end -}}
+{{-     if not $oidc.clientId -}}
+{{-       fail "admin.oidc.clientId is required" -}}
+{{-     end -}}
+{{-     if or (not $oidc.clientSecretSecret) (has $oidc.clientSecretSecret (list .Values.s3.accessKeySecret .Values.s3.secretKeySecret .Values.admin.passwordSecret)) -}}
+{{-       fail "admin.oidc.clientSecretSecret must name a secret of its own, not the S3 key pair's or admin.passwordSecret" -}}
+{{-     end -}}
+{{-     $groups := concat ($oidc.adminGroups | default list) ($oidc.readonlyGroups | default list) -}}
+{{-     if not $groups -}}
+{{-       fail "admin.oidc needs adminGroups or readonlyGroups: a login is accepted only from a member of one of them" -}}
+{{-     end -}}
+{{-     range $groups -}}
+{{-       if or (not .) (regexMatch "[,*?]" .) -}}
+{{-         fail (printf "admin.oidc: group %q must be a non-empty groups-claim value without ',', '*' or '?'" (. | default "")) -}}
+{{-       end -}}
+{{-     end -}}
+{{-     if $oidc.browserUrl -}}
+{{-       if not (regexMatch `^https?://[^/?#]+/?$` $oidc.browserUrl) -}}
+{{-         fail "admin.oidc.browserUrl must be the UI's public base URL, scheme://host[:port] with no path" -}}
+{{-       end -}}
+{{-     else if ne .Values.admin.exposure.mode "traefik" -}}
+{{-       fail "admin.oidc.browserUrl is required unless admin.exposure.mode=traefik: it is the public URL the provider sends the browser back to" -}}
+{{-     end -}}
+{{-     $bu := $oidc.browserUrl | default (printf "%s://%s" (ternary "https" "http" .Values.admin.ingress.tls) .Values.admin.ingress.host) -}}
+{{-     if not (regexMatch `^(https://|http://(localhost|127\.0\.0\.1)([:/]|$))` $bu) -}}
+{{-       fail (printf "admin.oidc needs an https callback, and %s is not: SeaweedFS refuses a plain-http redirect URL except on localhost. Keep admin.ingress.tls on, or set an https admin.oidc.browserUrl" $bu) -}}
+{{-     end -}}
 {{-   end -}}
 {{-   if eq .Values.admin.exposure.mode "traefik" -}}
 {{-     if not .Values.admin.ingress.host -}}
@@ -114,6 +161,11 @@ version: "3.9"
 {{- $admin := .Values.admin }}
 {{- $adminPort := $admin.port | int }}
 {{- $pw := $admin.passwordSecret }}
+{{- $adminInt := ternary (add $adminPort 1 | int) $adminPort $ent }}
+{{- $adminOidc := and $admin.enabled $admin.oidc.enabled }}
+{{- $cs := $admin.oidc.clientSecretSecret }}
+{{- $browser := trimSuffix "/" $admin.oidc.browserUrl }}
+{{- if and $adminOidc (not $browser) }}{{ $browser = printf "%s://%s" (ternary "https" "http" $admin.ingress.tls) $admin.ingress.host }}{{- end }}
 {{- $adminMode := "none" }}
 {{- if $admin.enabled }}{{ $adminMode = $admin.exposure.mode }}{{- end }}
 {{- $routed := or (eq $mode "traefik") (eq $adminMode "traefik") }}
@@ -214,6 +266,15 @@ services:
     #    -logtostderr and GODEBUG=fips140=on, as the image's entrypoint gives weed server
     #    (no log files in /tmp). Its session key is deleted once per container start, not per
     #    restart of the UI, so a redeploy (a password change included) logs everyone out.
+{{- if $ent }}
+    #    The Enterprise weed admin binds its worker gRPC port wherever the UI binds, so
+    #    both stay on 127.0.0.1 (the UI on admin.port + 1) and busybox nc forwards
+    #    admin.port to the UI, one child per connection, restarted if it exits.
+{{- end }}
+{{- if $adminOidc }}
+    #    admin.oidc: the client secret is exported in the admin's subshell only, like the
+    #    password; the rest of the OIDC settings are plain environment below.
+{{- end }}
     #  * `exec` hands PID 1 to the image's entrypoint, which fixes /data ownership and
     #    drops to the seaweed user, so SIGTERM reaches weed itself.
     entrypoint:
@@ -228,6 +289,9 @@ services:
 {{- if $admin.enabled }}
         test -s "/run/secrets/{{ $pw }}" || { echo "secret {{ $pw }} is missing or empty - refusing to start the admin UI without a password" >&2; exit 1; };
 {{- end }}
+{{- if $adminOidc }}
+        test -s "/run/secrets/{{ $cs }}" || { echo "secret {{ $cs }} is missing or empty - refusing to start the admin UI's OIDC login without its client secret" >&2; exit 1; };
+{{- end }}
         export AWS_ACCESS_KEY_ID="$$(cat /run/secrets/{{ $access }})";
         export AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/{{ $secret }})";
         export WEED_JWT_FILER_SIGNING_KEY="$$(head -c 32 /dev/urandom | base64)";
@@ -236,11 +300,21 @@ services:
 {{- end }}
 {{- if $admin.enabled }}
         rm -f /data/admin/.session_key;
+{{- if $ent }}
+        (
+        while :; do
+        rc=0;
+        su-exec seaweed nc -lk -p {{ $adminPort }} -e nc 127.0.0.1 {{ $adminInt }} || rc=$$?;
+        echo "admin forwarder exited (status $$rc) - restarting in 5s" >&2;
+        sleep 5;
+        done
+        ) &
+{{- end }}
         (
         until curl -fs -o /dev/null --max-time 5 http://127.0.0.1:9333/cluster/status; do sleep 2; done;
         while :; do
         rc=0;
-        ( export WEED_ADMIN_PASSWORD="$$(cat /run/secrets/{{ $pw }})" GODEBUG=fips140=on; exec su-exec seaweed weed -logtostderr=true admin -master=127.0.0.1:9333 -port={{ $adminPort }} -dataDir=/data/admin -adminUser={{ $admin.user }} ) || rc=$$?;
+        ( export WEED_ADMIN_PASSWORD="$$(cat /run/secrets/{{ $pw }})"{{ if $adminOidc }} WEED_ADMIN_OIDC_CLIENT_SECRET="$$(cat /run/secrets/{{ $cs }})"{{ end }} GODEBUG=fips140=on; exec su-exec seaweed weed -logtostderr=true admin{{ if $ent }} -ip=127.0.0.1{{ end }} -master=127.0.0.1:9333 -port={{ $adminInt }}{{ if $ent }} -port.grpc={{ add $adminPort 10000 }}{{ end }} -dataDir=/data/admin -adminUser={{ $admin.user }} ) || rc=$$?;
         echo "weed admin exited (status $$rc) - restarting in 5s" >&2;
         sleep 5;
         done
@@ -281,13 +355,29 @@ services:
       start_period: {{ .Values.healthcheck.startPeriod }}
 {{- end }}
     stop_grace_period: {{ .Values.stopGracePeriod }}
-{{- if .Values.s3.oidc.enabled }}
+{{- if or .Values.s3.oidc.enabled $adminOidc }}
 
     environment:
+{{- if .Values.s3.oidc.enabled }}
       # The OIDC IAM file, as JSON. It holds no secret (issuer, client id, groups, buckets),
       # so being visible in the manifest and `docker inspect` is fine. `$$` keeps Docker
       # from interpolating a `$` in a value.
       SEAWEEDFS_IAM_CONFIG: {{ $iam | toJson | replace "$" "$$" | quote }}
+{{- end }}
+{{- if $adminOidc }}
+      # The web UI's OIDC login, read by weed admin alone. None of it is secret; `$$` as
+      # above. Only a member of a listed group gets in: no default role is set.
+      WEED_ADMIN_OIDC_ENABLED: "true"
+      WEED_ADMIN_OIDC_ISSUER: {{ $admin.oidc.issuer | replace "$" "$$" | quote }}
+      WEED_ADMIN_OIDC_CLIENT_ID: {{ $admin.oidc.clientId | replace "$" "$$" | quote }}
+      WEED_ADMIN_OIDC_REDIRECT_URL: {{ printf "%s/login/oidc/callback" $browser | replace "$" "$$" | quote }}
+{{- with $admin.oidc.adminGroups }}
+      WEED_ADMIN_OIDC_ADMIN_GROUPS: {{ join "," . | replace "$" "$$" | quote }}
+{{- end }}
+{{- with $admin.oidc.readonlyGroups }}
+      WEED_ADMIN_OIDC_READONLY_GROUPS: {{ join "," . | replace "$" "$$" | quote }}
+{{- end }}
+{{- end }}
 {{- end }}
 
     secrets:
@@ -295,6 +385,9 @@ services:
       - {{ $secret }}
 {{- if $admin.enabled }}
       - {{ $pw }}
+{{- end }}
+{{- if $adminOidc }}
+      - {{ $cs }}
 {{- end }}
 
     networks:
@@ -397,6 +490,10 @@ secrets:
     external: true
 {{- if $admin.enabled }}
   {{ $pw }}:
+    external: true
+{{- end }}
+{{- if $adminOidc }}
+  {{ $cs }}:
     external: true
 {{- end }}
 

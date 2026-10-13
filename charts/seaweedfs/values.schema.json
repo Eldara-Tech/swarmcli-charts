@@ -142,6 +142,26 @@
             "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
             "mode": { "type": "string", "enum": ["ingress", "host"] }
           }
+        },
+        "oidc": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "issuer": { "type": "string", "pattern": "^$|^https://[^/?#]|^http://(localhost|127\\.0\\.0\\.1)([:/]|$)" },
+            "clientId": { "type": "string" },
+            "clientSecretSecret": { "type": "string" },
+            "browserUrl": { "type": "string", "pattern": "^$|^https://[^/?#]+/?$|^http://(localhost|127\\.0\\.0\\.1)(:[0-9]+)?/?$" },
+            "adminGroups": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1, "pattern": "^[^,*?]+$" },
+              "uniqueItems": true
+            },
+            "readonlyGroups": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1, "pattern": "^[^,*?]+$" },
+              "uniqueItems": true
+            }
+          }
         }
       }
     },
