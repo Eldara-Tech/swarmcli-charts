@@ -116,6 +116,31 @@ publish:
 service:
   port: 3100
 
+# Prometheus metrics. Loki always serves /metrics on its HTTP port; this makes it
+# discoverable: the service gets the deploy labels prometheus.io/scrape=true and
+# prometheus.io/port=<service.port>, which the prometheus-stack chart scrapes with no
+# config, and joins `network` if it is not on it already.
+#
+#   none      - Loki is already on exposure.network. With the default (both
+#               `monitoring`) nothing new is attached: only the labels change.
+#   published - Loki joins `network`. Its HTTP API is already unauthenticated on
+#               every node's published port; joining also exposes gRPC (9095),
+#               which is not published, to that overlay.
+#   traefik   - refused at render time. Loki's labels there carry the basic-auth
+#               hash, which Prometheus's targets API would show to anyone who can
+#               query it, and an unauthenticated overlay would bypass the router's
+#               auth. Scrape through the routed host instead (chart README, Metrics).
+#
+# Whatever shares `network` reaches Loki's whole API (3100) and gRPC port (9095),
+# which authenticate nobody. Alloy (shipper.enabled) is NOT labelled: its HTTP
+# server also serves component state carrying the labels of every container on
+# its node, a support bundle and pprof.
+metrics:
+  enabled: false
+  # External overlay Prometheus scrapes on (the prometheus-stack chart's default).
+  # requirements.yaml declares it autoCreate:true.
+  network: monitoring
+
 # Log retention. Loki deletes nothing at all unless the compactor is told to
 # apply retention, so `enabled: false` means "keep every line forever" and the
 # data volume grows without bound. period accepts a Go duration (744h = 31 days);

@@ -1,0 +1,14 @@
+# Metrics: /metrics on the dedicated, unpublished entrypoint, the discovery labels and
+# the monitoring overlay. The dashboard's users come from a Swarm secret
+# (basicAuthSecret), which is what lets metrics and an authenticated dashboard render
+# together: no hash is left in a label for Prometheus's targets API to expose.
+# ci/e2e-setup.sh creates the secret; ci/e2e-check.sh scrapes over monitoring and
+# asks the dashboard for 401 without and 200 with the credentials.
+traefik:
+  acme:
+    email: admin@example.com
+  dashboard:
+    host: traefik.e2e.test
+    basicAuthSecret: traefik_dashboard_users
+metrics:
+  enabled: true

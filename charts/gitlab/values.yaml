@@ -153,6 +153,24 @@ config:
   # docker interpolates before deploying. See the README's "Extra configuration".
   extraRb: ""
 
+# Prometheus metrics, found by Docker Swarm service discovery. enabled turns on GitLab's
+# dedicated web metrics server (puma['exporter_*']: a separate process serving the same
+# Rails metrics as /-/metrics) on metrics.port, gives the gitlab service the deploy labels
+# prometheus.io/scrape=true and prometheus.io/port=<port>, and attaches it to
+# metrics.network, the prometheus-stack chart's default scrape overlay — so that chart
+# picks GitLab up with no config. GitLab's own bundled Prometheus stays off.
+#
+# Off by default. Turning it on changes GITLAB_OMNIBUS_CONFIG, so GitLab restarts and
+# reconfigures once. Everything on metrics.network can reach every port of the service —
+# GitLab itself over plain HTTP on service.port, and sshd — and every deploy label of the
+# service becomes readable through Prometheus. The chart never publishes the port.
+metrics:
+  enabled: false
+  # Container port of the web metrics server. 8083 is GitLab's own default for it.
+  port: 8083
+  # External overlay shared with Prometheus. requirements.yaml declares it autoCreate:true.
+  network: monitoring
+
 # Extra environment variables for the container (NOT omnibus settings — use
 # config.extraRb for those).
 extraEnv: {}

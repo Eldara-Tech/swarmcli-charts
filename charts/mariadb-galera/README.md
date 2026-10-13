@@ -120,6 +120,10 @@ it adds no package and no sidecar, and it listens only inside the peer on
 `proxy.replicas: 2` by default, because a single proxy in front of an HA cluster is
 a single point of failure.
 
+The proxy reaches each peer at its task address (`tasks.<release>_<peer>`, see
+below), and looks it up through Docker's DNS while it runs rather than once at
+start. So it starts before any peer is up, and follows a peer Swarm reschedules.
+
 Connections are spread across all `Synced` peers. Galera is multi-primary so that is
 correct, but writing the same rows from several peers at once raises certification
 conflicts; an application with heavy write contention on the same keys may prefer to
@@ -159,8 +163,13 @@ the same way.
 
 ```bash
 openssl rand -base64 32 | docker secret create mariadb_galera_exporter_password -
-swarmcli charts upgrade db swarmcli-charts/mariadb-galera --reuse-values --set metrics.enabled=true
+swarmcli charts upgrade db swarmcli-charts/mariadb-galera -f db-values.yaml --set metrics.enabled=true
 ```
+
+Pass the values you installed with (`-f`, or the same `--set`s), not `--reuse-values`.
+That flag merges over the previous release's stored values *instead of* this chart
+version's defaults, so every `metrics.*` key would render empty
+([swarmcli#687](https://github.com/Eldara-Tech/swarmcli/issues/687)).
 
 Turning it on adds services and changes no peer, so it is safe on a running cluster:
 nothing restarts. The exporters log in as a database user of their own, `exporter`,
@@ -445,7 +454,7 @@ patch release, the next upgrade of any value changes every peer. Upgrade with
 image is unchanged, and resolves a fresh one when you change it on purpose.
 
 ```bash
-swarmcli charts upgrade db swarmcli-charts/mariadb-galera --reuse-values --resolve-image changed …
+swarmcli charts upgrade db swarmcli-charts/mariadb-galera -f db-values.yaml --resolve-image changed …
 ```
 
 Note also that a MariaDB tag change is a **series** change, not a patch: check the

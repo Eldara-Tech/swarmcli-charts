@@ -127,6 +127,18 @@
         "extraRb": { "type": "string" }
       }
     },
+    "metrics": {
+      "description": "GitLab's web metrics server, labelled for Docker Swarm service discovery.",
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "network": {
+          "description": "External overlay GitLab shares with Prometheus.",
+          "type": "string", "minLength": 1
+        }
+      }
+    },
     "extraEnv": { "type": "object" },
     "placement": {
       "type": "object",

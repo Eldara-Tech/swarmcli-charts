@@ -1,10 +1,21 @@
 # External resources this chart needs. Authoritative: every external
 # network/secret/config the rendered stack references must be listed here.
+# Entries are declared unconditionally; one a given configuration never references
+# is inert (the pre-flight is manifest-driven).
 networks:
   - name: traefik-public
     driver: overlay
     attachable: true
     autoCreate: true
     description: "Shared ingress overlay Traefik publishes routes on; other stacks attach to it"
-secrets: []
+  - name: "{{ .Values.metrics.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: true
+    description: "Overlay Traefik shares with Prometheus (when metrics.enabled); the prometheus-stack chart scrapes on it by default"
+secrets:
+  # The default name only stands in while traefik.dashboard.basicAuthSecret is unset,
+  # when nothing references it.
+  - name: '{{ .Values.traefik.dashboard.basicAuthSecret | default "traefik_dashboard_users" }}'
+    description: "htpasswd lines protecting the dashboard (when traefik.dashboard.basicAuthSecret is set). Pre-create: printf 'admin:%s\\n' \"$(openssl passwd -apr1 <password>)\" | docker secret create traefik_dashboard_users -"
 configs: []

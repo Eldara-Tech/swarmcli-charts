@@ -149,9 +149,15 @@ if [ -n "$proxy_svc" ]; then
   # The Synced responder's port, not the election's (4566), which listens too.
   port="$(yq -r '.services.*.command[0]' "$f" | { grep -oE 'TCP-LISTEN:[0-9]+,fork,reuseaddr EXEC:/usr/local/bin/galera-synced-check' || true; } | sed -n 1p | sed 's/^TCP-LISTEN:\([0-9]*\),.*/\1/')"
   [ -n "$port" ] || err "no peer runs the Synced responder"
+  # Peers are looked up while the proxy runs, at their task address. Looked up once at
+  # start, a replica keeps what it got for life, and in CI one routed nothing (#229).
+  grep -Eq '^ *nameserver [^ ]+ 127\.0\.0\.11:53$' <<<"$cfg" \
+    || err "proxy has no resolver on Docker's DNS (127.0.0.11:53)"
+  grep -E '^ *default-server ' <<<"$cfg" | grep -E ' resolvers docker( |$)' >/dev/null \
+    || err "proxy servers are not re-resolved at runtime (default-server lacks 'resolvers docker')"
   for s in $svcs; do
-    grep -Eq "server $s $s:[0-9]+ check port $port" <<<"$cfg" \
-      || err "peer $s is not a proxy backend checked on the responder port $port"
+    grep -Eq "server $s tasks\.[^ ]+_$s:[0-9]+ check port $port" <<<"$cfg" \
+      || err "peer $s is not a proxy backend at its task address, checked on the responder port $port"
     grep -Fq 'galera-synced-check' <<<"$(yq -r ".services.\"$s\".command[0]" "$f")" \
       || err "peer $s does not run the Synced responder the proxy checks"
   done

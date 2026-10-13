@@ -238,6 +238,10 @@ the three rules that keep it working:
 - Never echo the appVersion into prose — not a `values.yaml` comment, not the
   README values table. Renovate edits `Chart.yaml` and touches neither, so the
   number drifts on the first bump. Say "defaults to `appVersion` in Chart.yaml".
+  Lint also fails when the README or `values.yaml` still names a version this
+  chart's `appVersion` used to be, so a bump alone can fail it. A deliberate
+  historical mention takes `appversion-ok` on that line (`<!-- appversion-ok -->` in
+  Markdown, `# appversion-ok` in YAML).
 
 `make new-chart` scaffolds all of this correctly. A chart whose `image.repository`
 you change must have its renovate comment changed to match, or lint fails.
@@ -249,10 +253,92 @@ command/entrypoint wrapper (`$$` compose-escapes the `$`) so the plaintext never
 lands in the compose file or `docker inspect`. Document the
 `docker secret create` pre-step in the chart README.
 
+**Metrics** — a chart whose software can serve Prometheus metrics offers
+`metrics.enabled` (off by default, and nothing renders while it is off), found by
+Docker Swarm service discovery rather than by a scrape config: the service that
+serves `/metrics` carries the deploy labels `prometheus.io/scrape=true` and
+`prometheus.io/port` (plus `prometheus.io/path` when it is not `/metrics`) and joins
+`metrics.network`, default `monitoring`, the overlay the prometheus-stack chart
+scrapes on. Declare that network `autoCreate: true` in `requirements.yaml`.
+`charts/mariadb-galera` and `charts/mariadb` are the references.
+
+- **Once a service opts in, every one of its deploy labels is readable through
+  Prometheus's targets API.** Never opt in a service whose labels carry credential
+  material — a Traefik basic-auth hash is the common case — and make the render
+  `fail` rather than document it.
+- **Everything on `monitoring` can reach every port of a service on it**, not just
+  the metrics port. When the software serves metrics itself, say in the README what
+  else becomes reachable. A database never joins: add an exporter as a service of
+  its own, on the database's overlay and `metrics.network`, carrying only the two
+  discovery labels and `fail` the render when the two networks are the same.
+- **Turning metrics on must not restart the thing it measures** where avoidable:
+  an exporter is an added service, so the database's spec stays byte-identical.
+- An exporter logs in as a **least-privilege user of its own**, created by a
+  one-shot (`restart_policy: on-failure`) that holds the admin credential and stays
+  off `metrics.network`; its password is an external secret like any other.
+- Pin the exporter image as a concrete `metrics.image.tag` in `values.yaml`, where
+  Renovate's helm-values manager maintains it.
+- Ship a `ci/metrics-values.yaml` fixture, assert the above in `ci/render-check.sh`,
+  and scrape the endpoint from the `monitoring` overlay in `ci/e2e-check.sh`.
+- Show turning it on with the release's own values (`-f`), not `--reuse-values`
+  across a chart-version change: that flag replaces the new chart version's
+  defaults with the old release's values, so every `metrics.*` key renders as
+  `<no value>`, and `--dry-run` still exits 0 (Eldara-Tech/swarmcli#687).
+- Alert rules and dashboards are not deployed by the chart; see *Monitoring files*
+  below.
+
 The bot maintaining the image pins is our own, run from the
 [`renovate`](charts/renovate) chart — see
 [docs/renovate-self-hosting.md](docs/renovate-self-hosting.md) for how it is
 configured and which updates it holds back.
+
+**Monitoring files** — the prometheus-stack chart ships no application's alert
+rules or dashboards. A chart that has them keeps them under
+`charts/<name>/monitoring/` and deploys neither (`charts/mariadb-galera` is the
+reference):
+
+- Not under `files/`, which is for what the chart deploys and, by
+  [Declare the floor](#declare-the-floor), raises its floor to `>= 1.13.0`.
+- The README shows loading them through prometheus-stack's own values:
+  `--set-file prometheus.extraRules.<key>=…` and
+  `--set-file grafana.dashboards.<key>=…`.
+- `ci/e2e-check.sh` runs `promtool test rules` on them with a pinned
+  `prom/prometheus` image. Nothing deploys them, so nothing else would notice they
+  broke.
+- `--reuse-values` is safe for that upgrade only while prometheus-stack's chart
+  version stays the same. Across a chart-version change it replaces the new
+  version's defaults with the old release's values, so every key the new version
+  adds renders `<no value>`, and `--dry-run` still exits 0
+  (Eldara-Tech/swarmcli#687).
+
+**Generated config files** — a chart that renders an upstream program's config
+file must check each key's upstream *type*, not only its name. A nullable field
+(`*bool`, `*int` in Go) has three states, and absent usually means "the program
+decides", which `false` does not. GitLab Runner types `PathStyle` as `*bool`: an
+always-emitted `PathStyle = false` makes its endpoint detection unreachable, so a
+MinIO cache fails at job time (`no such host`) while the chart renders, validates
+and deploys green.
+
+- Decide per key whether to emit it at all, and model "leave it to upstream" as a
+  real value enforced by a `values.schema.json` enum — gitlab-runner's
+  `cache.s3.addressing: auto|path|virtual` — not as a nullable boolean.
+- Assert the *absence* in `ci/render-check.sh`, and mutation-test it: an
+  unconditional emit must fail the check.
+
+**Portability** — contributors run the checks on macOS too:
+
+- Scripts in `scripts/` and `charts/*/ci/` must run on `/bin/bash` 3.2 and BSD
+  sed: no `mapfile`/`readarray`, no `\?` or `\+` in a basic regex, no `.*?`. A
+  check that only runs in CI rots, and `scripts/floor-check.sh` still breaks this
+  rule (see [Verifying the swarmcli floor](docs/e2e-testing.md#verifying-the-swarmcli-floor)).
+- `docker stack config -c <rendered>` applies the docker CLI's stack schema and
+  rejects keys `docker compose config` accepts. Neither validates Swarm semantics:
+  `endpoint_mode: dnsrr` beside an ingress-mode port passes both, and only the
+  daemon refuses it.
+- No trailing `# comment` on `Chart.yaml`'s `version:` or `appVersion:` line.
+  `make package` and `scripts/local-repo.sh` read them with `sed`, which keeps the
+  comment, so it lands in the `.tgz` name and the local `index.yaml`; `make test`
+  does not package, so it does not catch this. Put a note on a line of its own.
 
 ## External resources (`requirements.yaml`)
 

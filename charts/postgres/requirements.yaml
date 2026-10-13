@@ -10,7 +10,14 @@ networks:
     attachable: true
     autoCreate: true
     description: "Shared overlay app stacks attach to in order to reach postgres by service name"
+  - name: "{{ .Values.metrics.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: true
+    description: "Overlay the exporter shares with Prometheus (when metrics.enabled); the prometheus-stack chart scrapes on it by default"
 secrets:
   - name: "{{ .Values.auth.secretName }}"
     description: "PostgreSQL superuser password. Pre-create: printf 'S3cr3t' | docker secret create postgres_password -"
+  - name: "{{ .Values.metrics.secretName }}"
+    description: "Password of the exporter's database role (when metrics.enabled). Pre-create: openssl rand -base64 32 | docker secret create postgres_exporter_password -"
 configs: []
