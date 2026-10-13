@@ -1,0 +1,171 @@
+# promtool unit tests for monitoring/zammad-rules.yml, which the chart ships for operators to
+# load into their Prometheus but does not deploy itself. ci/e2e-check.sh runs them with a
+# pinned prom/prometheus image's promtool in the embedded-backing case.
+#
+# Release `down` loses memcached and Elasticsearch two minutes in; its Elasticsearch exporter
+# then reports no health or node series at all, as the real one does. Release `busy` stays
+# reachable but saturated. Release `ok` is healthy with Elasticsearch yellow, which is normal on
+# a single node, and must raise nothing.
+rule_files:
+  - ../monitoring/zammad-rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'memcached_up{job="down_memcached-exporter",instance="10.0.1.5:9150",stack="down"}'
+        values: '1 1 0x20'
+      - series: 'memcached_up{job="busy_memcached-exporter",instance="10.0.2.5:9150",stack="busy"}'
+        values: '1x22'
+      - series: 'memcached_up{job="ok_memcached-exporter",instance="10.0.3.5:9150",stack="ok"}'
+        values: '1x22'
+      - series: 'memcached_current_connections{job="busy_memcached-exporter",instance="10.0.2.5:9150",stack="busy"}'
+        values: '900x22'
+      - series: 'memcached_max_connections{job="busy_memcached-exporter",instance="10.0.2.5:9150",stack="busy"}'
+        values: '1024x22'
+      - series: 'memcached_current_connections{job="ok_memcached-exporter",instance="10.0.3.5:9150",stack="ok"}'
+        values: '10x22'
+      - series: 'memcached_max_connections{job="ok_memcached-exporter",instance="10.0.3.5:9150",stack="ok"}'
+        values: '1024x22'
+      # busy fails one store a minute in two slab classes; ok never does.
+      - series: 'memcached_slab_items_outofmemory_total{job="busy_memcached-exporter",instance="10.0.2.5:9150",stack="busy",slab="1"}'
+        values: '0+1x22'
+      - series: 'memcached_slab_items_outofmemory_total{job="busy_memcached-exporter",instance="10.0.2.5:9150",stack="busy",slab="5"}'
+        values: '0+1x22'
+      - series: 'memcached_slab_items_outofmemory_total{job="ok_memcached-exporter",instance="10.0.3.5:9150",stack="ok",slab="1"}'
+        values: '0x22'
+
+      - series: 'elasticsearch_scrape_success{collector="cluster-info",job="down_elasticsearch-exporter",instance="10.0.1.6:9114",stack="down"}'
+        values: '1 1 0x20'
+      - series: 'elasticsearch_scrape_success{collector="cluster-info",job="busy_elasticsearch-exporter",instance="10.0.2.6:9114",stack="busy"}'
+        values: '1x22'
+      - series: 'elasticsearch_scrape_success{collector="cluster-info",job="ok_elasticsearch-exporter",instance="10.0.3.6:9114",stack="ok"}'
+        values: '1x22'
+      - series: 'elasticsearch_cluster_health_status{color="red",cluster="docker-cluster",job="busy_elasticsearch-exporter",instance="10.0.2.6:9114",stack="busy"}'
+        values: '0 0 1x20'
+      - series: 'elasticsearch_cluster_health_status{color="red",cluster="docker-cluster",job="ok_elasticsearch-exporter",instance="10.0.3.6:9114",stack="ok"}'
+        values: '0x22'
+      - series: 'elasticsearch_cluster_health_status{color="yellow",cluster="docker-cluster",job="ok_elasticsearch-exporter",instance="10.0.3.6:9114",stack="ok"}'
+        values: '1x22'
+      - series: 'elasticsearch_jvm_memory_used_bytes{area="heap",cluster="docker-cluster",name="es-busy",job="busy_elasticsearch-exporter",instance="10.0.2.6:9114",stack="busy"}'
+        values: '950x22'
+      - series: 'elasticsearch_jvm_memory_max_bytes{area="heap",cluster="docker-cluster",name="es-busy",job="busy_elasticsearch-exporter",instance="10.0.2.6:9114",stack="busy"}'
+        values: '1000x22'
+      - series: 'elasticsearch_jvm_memory_used_bytes{area="heap",cluster="docker-cluster",name="es-ok",job="ok_elasticsearch-exporter",instance="10.0.3.6:9114",stack="ok"}'
+        values: '700x22'
+      - series: 'elasticsearch_jvm_memory_max_bytes{area="heap",cluster="docker-cluster",name="es-ok",job="ok_elasticsearch-exporter",instance="10.0.3.6:9114",stack="ok"}'
+        values: '1000x22'
+      - series: 'elasticsearch_filesystem_data_available_bytes{cluster="docker-cluster",name="es-busy",job="busy_elasticsearch-exporter",instance="10.0.2.6:9114",stack="busy"}'
+        values: '10x22'
+      - series: 'elasticsearch_filesystem_data_size_bytes{cluster="docker-cluster",name="es-busy",job="busy_elasticsearch-exporter",instance="10.0.2.6:9114",stack="busy"}'
+        values: '100x22'
+      - series: 'elasticsearch_filesystem_data_available_bytes{cluster="docker-cluster",name="es-ok",job="ok_elasticsearch-exporter",instance="10.0.3.6:9114",stack="ok"}'
+        values: '50x22'
+      - series: 'elasticsearch_filesystem_data_size_bytes{cluster="docker-cluster",name="es-ok",job="ok_elasticsearch-exporter",instance="10.0.3.6:9114",stack="ok"}'
+        values: '100x22'
+
+    alert_rule_test:
+      # Three minutes in, nothing has lasted its `for` yet.
+      - eval_time: 4m
+        alertname: ElasticsearchUnreachable
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: ElasticsearchClusterRed
+        exp_alerts: []
+
+      # Ten minutes in, the 5m alerts fire and the 15m ones do not yet.
+      - eval_time: 10m
+        alertname: ElasticsearchUnreachable
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              collector: cluster-info
+              job: down_elasticsearch-exporter
+              instance: 10.0.1.6:9114
+              stack: down
+            exp_annotations:
+              summary: 'down_elasticsearch-exporter cannot reach its Elasticsearch'
+              description: 'elasticsearch_exporter down_elasticsearch-exporter on 10.0.1.6:9114 has not reached Elasticsearch for 5 minutes. Zammad''s full-text search and indexing depend on it.'
+      # Only busy: ok is yellow, as a single node always is.
+      - eval_time: 10m
+        alertname: ElasticsearchClusterRed
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              color: red
+              cluster: docker-cluster
+              job: busy_elasticsearch-exporter
+              instance: 10.0.2.6:9114
+              stack: busy
+            exp_annotations:
+              summary: 'Elasticsearch behind busy_elasticsearch-exporter is red'
+              description: 'Elasticsearch docker-cluster behind busy_elasticsearch-exporter has had an unassigned primary shard for 5 minutes: searches over that index fail or come back partial.'
+      - eval_time: 10m
+        alertname: MemcachedDown
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: ElasticsearchHeapTooHigh
+        exp_alerts: []
+
+      - eval_time: 20m
+        alertname: MemcachedDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: down_memcached-exporter
+              instance: 10.0.1.5:9150
+              stack: down
+            exp_annotations:
+              summary: 'down_memcached-exporter cannot reach its memcached'
+              description: 'memcached_exporter down_memcached-exporter on 10.0.1.5:9150 has not reached memcached for 15 minutes. Zammad serves without its cache, more slowly.'
+      - eval_time: 20m
+        alertname: MemcachedConnectionLimitApproaching
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: busy_memcached-exporter
+              instance: 10.0.2.5:9150
+              stack: busy
+            exp_annotations:
+              summary: 'memcached behind busy_memcached-exporter is near its connection limit'
+              description: 'memcached behind busy_memcached-exporter has used 88% of its connections for 15 minutes; at the limit it refuses new ones.'
+      # One alert per memcached, not one per slab class.
+      - eval_time: 20m
+        alertname: MemcachedOutOfMemoryErrors
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: busy_memcached-exporter
+              instance: 10.0.2.5:9150
+              stack: busy
+            exp_annotations:
+              summary: 'memcached behind busy_memcached-exporter refuses stores'
+              description: 'memcached behind busy_memcached-exporter has failed to store items for lack of memory for 15 minutes, 0.03 per second.'
+      - eval_time: 20m
+        alertname: ElasticsearchHeapTooHigh
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              area: heap
+              cluster: docker-cluster
+              name: es-busy
+              job: busy_elasticsearch-exporter
+              instance: 10.0.2.6:9114
+              stack: busy
+            exp_annotations:
+              summary: 'Elasticsearch node es-busy heap is over 90%'
+              description: 'Elasticsearch node es-busy behind busy_elasticsearch-exporter has used over 90% of its heap for 15 minutes. Raise elasticsearch.javaOpts and elasticsearchResources together.'
+      - eval_time: 20m
+        alertname: ElasticsearchDiskSpaceLow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              cluster: docker-cluster
+              name: es-busy
+              job: busy_elasticsearch-exporter
+              instance: 10.0.2.6:9114
+              stack: busy
+            exp_annotations:
+              summary: 'Elasticsearch node es-busy data disk is 90% full'
+              description: 'The data disk of Elasticsearch node es-busy behind busy_elasticsearch-exporter has been over 85% full for 15 minutes. At 90% it allocates no new shard, at 95% it blocks writes.'

@@ -16,7 +16,8 @@
 # With metrics on (the `embedded-backing` fixture), it then scrapes each exporter from the
 # `monitoring` overlay, where Prometheus would, and asserts a series only a working connection to
 # the backing service produces (memcached_up 1; Elasticsearch's node count). It also proves the
-# embedded Elasticsearch itself is NOT reachable there: it runs with security off.
+# embedded Elasticsearch itself is NOT reachable there: it runs with security off. Last, it runs
+# the promtool unit tests of the alert rules under monitoring/.
 #
 # It probes nginx ON THE STACK'S INTERNAL OVERLAY (a throwaway curl container joins it), NOT the host
 # published port. The published port exercises Swarm's ingress routing mesh, which is Docker infra —
@@ -27,6 +28,7 @@
 set -euo pipefail
 
 release="$1"
+chart="$2"
 case="${3:-}"
 target="http://nginx:8080/api/v1/getting_started"
 
@@ -35,7 +37,7 @@ target="http://nginx:8080/api/v1/getting_started"
 # in and scrape; in every other fixture no service of the release may opt in at all. Neither
 # direction is ever a skip. Each pair is <service>:<port>:<regex a healthy scrape must match>.
 check_metrics() {
-  local want="" s short scrape pair svc rest port want_re m code
+  local want="" s short scrape pair svc rest port want_re m code promtool_image out
   case "$case" in
     embedded-backing) want="memcached-exporter elasticsearch-exporter" ;;
     metrics-es-external) want="memcached-exporter" ;;
@@ -76,6 +78,16 @@ check_metrics() {
     return 1
   fi
   echo "   ok: the embedded Elasticsearch is not reachable from the monitoring overlay"
+  # The alert rules the chart ships for operators to load (monitoring/), checked here because
+  # nothing deploys them: their logic, under the promtool of a pinned Prometheus.
+  promtool_image="${ZAMMAD_E2E_PROMTOOL_IMAGE:-prom/prometheus:v3.15.0}"
+  if ! out="$(docker run --rm --entrypoint promtool -v "$(cd "$chart" && pwd):/chart:ro" "$promtool_image" \
+      test rules /chart/ci/zammad-rules-test.yml 2>&1)"; then
+    echo "   FAIL: promtool test rules fails on monitoring/zammad-rules.yml:"
+    printf '%s\n' "$out" | sed 's/^/      /'
+    return 1
+  fi
+  echo "   ok: monitoring/zammad-rules.yml passes promtool test rules"
 }
 
 # The chart-managed internal overlay is attachable; find its Swarm-qualified name (<release>_<net>).
