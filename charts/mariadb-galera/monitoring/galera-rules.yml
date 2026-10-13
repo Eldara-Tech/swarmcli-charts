@@ -8,8 +8,10 @@
 # grouped by the `stack` label prometheus-stack's discovery adds, so each cluster raises
 # one alert.
 #
-# Validate: docker run --rm --entrypoint promtool -v "$PWD/charts/mariadb-galera:/chart:ro" \
-#             prom/prometheus:v3.15.0 test rules /chart/ci/galera-rules-test.yml
+# Validate (from the repo root):
+#   docker run --rm --entrypoint promtool -v "$PWD/charts/mariadb-galera:/chart:ro" \
+#     "prom/prometheus:$(sed -n 's/^appVersion: *"\(.*\)"$/\1/p' charts/prometheus-stack/Chart.yaml)" \
+#     test rules /chart/ci/galera-rules-test.yml
 groups:
   - name: mariadb-galera
     rules:

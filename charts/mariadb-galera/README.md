@@ -213,10 +213,14 @@ through its own configuration:
 ```bash
 base=https://raw.githubusercontent.com/Eldara-Tech/swarmcli-charts/main/charts/mariadb-galera/monitoring
 curl -fsSL -O "$base/galera-rules.yml" -O "$base/galera-dashboard.json"
-swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --reuse-values \
+v="$(swarmcli charts status mon | sed -n 's/^CHART: prometheus-stack-//p')"
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --version "${v:?}" --reuse-values \
   --set-file prometheus.extraRules.galera=./galera-rules.yml \
   --set-file grafana.dashboards.galera=./galera-dashboard.json
 ```
+
+`--version` keeps prometheus-stack at the version it runs, the only case in which `--reuse-values`
+is safe (Eldara-Tech/swarmcli#687).
 
 prometheus-stack's README, *Keeping your setup in git*, has the values-file form.
 
@@ -232,8 +236,8 @@ prometheus-stack's README, *Keeping your setup in git*, has the values-file form
   certification conflicts, plus connections, queries and buffer-pool hits. Pick a
   cluster by its `stack`.
 
-Both group by the `stack` label prometheus-stack's discovery puts on every target.
-Another Prometheus needs the same relabelling of
+The dashboard picks a release by the `stack` label prometheus-stack's discovery puts on
+every target, and the alerts carry it. Another Prometheus needs the same relabelling of
 `__meta_dockerswarm_service_label_com_docker_stack_namespace` to `stack`.
 
 ## Values
