@@ -2,13 +2,16 @@
 # chart does not deploy them: hand the file to your Prometheus, e.g. the prometheus-stack
 # chart's prometheus.extraRules (README § Alerts and a dashboard).
 # MySQLDown is the mysqld-mixin's in prometheus/mysqld_exporter (Apache-2.0), as
-# mariadb-galera ships it. The two connection alerts are this chart's. MariaDB counts a
-# client it refuses at max_connections in Aborted_connects, not in
-# Connection_errors_max_connections, and refuses the exporter too, which then reads as
+# mariadb-galera ships it, and stays critical: clients lose the database. The two
+# connection alerts are this chart's, and warnings, since the server still serves. MariaDB
+# counts a client it refuses at max_connections in Aborted_connects, not in
+# Connection_errors_max_connections, and refuses the exporter too, which then raises
 # MySQLDown.
 #
-# Validate: docker run --rm --entrypoint promtool -v "$PWD/charts/mariadb:/chart:ro" \
-#             prom/prometheus:v3.15.0 test rules /chart/ci/mariadb-rules-test.yml
+# Validate (from the repo root):
+#   docker run --rm --entrypoint promtool -v "$PWD/charts/mariadb:/chart:ro" \
+#     "prom/prometheus:$(sed -n 's/^appVersion: *"\(.*\)"$/\1/p' charts/prometheus-stack/Chart.yaml)" \
+#     test rules /chart/ci/mariadb-rules-test.yml
 groups:
   - name: mariadb
     rules:

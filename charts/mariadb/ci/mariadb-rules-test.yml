@@ -27,11 +27,12 @@ tests:
         values: '10x12'
       - series: 'mysql_global_variables_max_connections{job="ok_mariadb-exporter",instance="10.0.2.5:9104",stack="ok"}'
         values: '151x12'
-      # Ten failed attempts a minute from 2m; release ok fails one every other minute.
+      # Ten failed attempts a minute from 2m. Release ok fails one every other minute on a
+      # counter already past the threshold, so only the increase can tell them apart.
       - series: 'mysql_global_status_aborted_connects{job="failing_mariadb-exporter",instance="10.0.4.5:9104",stack="failing"}'
         values: '0 0 10+10x10'
       - series: 'mysql_global_status_aborted_connects{job="ok_mariadb-exporter",instance="10.0.2.5:9104",stack="ok"}'
-        values: '0 0 1 1 2 2 3 3 4 4 5 5 6'
+        values: '100 100 101 101 102 102 103 103 104 104 105 105 106'
 
     alert_rule_test:
       # Two minutes after the faults, nothing has lasted the 5m `for` yet.
