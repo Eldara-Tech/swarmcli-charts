@@ -135,6 +135,8 @@ swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --version "${v:?}" 
 `--version` keeps prometheus-stack at the version it runs, the only case in which `--reuse-values`
 is safe (Eldara-Tech/swarmcli#687).
 
+prometheus-stack's README, *Keeping your setup in git*, has the values-file form.
+
 - **Alerts** (`mariadb-rules.yml`): `MySQLDown` from the
   [mysqld-mixin](https://github.com/prometheus/mysqld_exporter/tree/main/mysqld-mixin)
   (Apache-2.0), as mariadb-galera ships it; `MySQLConnectionsNearLimit` while more
@@ -152,6 +154,9 @@ mariadb-galera's peers run the same exporter, so the dashboard's picker lists Ga
 clusters too and these alerts fire on Galera peers as well. With both charts' rules
 loaded, Prometheus evaluates `MySQLDown` twice: Alertmanager merges the identical
 alerts, while the Prometheus Alerts page lists it twice.
+With mariadb-galera's proxy on, leave `MySQLAbortedConnections` out for its peers: the
+proxy's healthcheck opens a bare TCP connection through to a peer every 10 seconds, and
+MariaDB counts each one as an aborted connection, so it fires without cause.
 
 The dashboard picks a release by the `stack` label prometheus-stack's discovery puts on
 every target, and the alerts carry it. Another Prometheus needs the same relabelling of
