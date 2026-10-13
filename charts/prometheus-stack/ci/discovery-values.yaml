@@ -1,0 +1,7 @@
+# Discovery across two overlays: ci/e2e-setup.sh deploys a labelled and an
+# unlabelled twin on `monitoring`, and a third labelled service on the overlay
+# listed here. Both labelled services must become targets, and the unlabelled twin
+# must never reach Prometheus at all.
+prometheus:
+  extraNetworks:
+    - prometheus-stack-e2e-extra

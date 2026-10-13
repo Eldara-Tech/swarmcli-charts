@@ -1,0 +1,13 @@
+# The Alertmanager datasource, mounted only when alertmanager.enabled.
+apiVersion: 1
+
+datasources:
+  - name: Alertmanager
+    type: alertmanager
+    uid: alertmanager
+    access: proxy
+    url: $PROMSTACK_ALERTMANAGER_URL
+    editable: false
+    jsonData:
+      implementation: prometheus
+      handleGrafanaManagedAlerts: false

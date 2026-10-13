@@ -13,6 +13,11 @@
 #                                       and nginx's rails upstream wiring (ZAMMAD_RAILSSERVER_HOST)
 #                                       is correct.
 #
+# With metrics on (the `embedded-backing` fixture), it then scrapes each exporter from the
+# `monitoring` overlay, where Prometheus would, and asserts a series only a working connection to
+# the backing service produces (memcached_up 1; Elasticsearch's node count). It also proves the
+# embedded Elasticsearch itself is NOT reachable there: it runs with security off.
+#
 # It probes nginx ON THE STACK'S INTERNAL OVERLAY (a throwaway curl container joins it), NOT the host
 # published port. The published port exercises Swarm's ingress routing mesh, which is Docker infra —
 # not something this chart controls — and it is unreliable on CI runners: the mesh accepts the TCP
@@ -22,7 +27,56 @@
 set -euo pipefail
 
 release="$1"
+case="${3:-}"
 target="http://nginx:8080/api/v1/getting_started"
+
+# Metrics are on in `embedded-backing` (both exporters; the fixture CI runs) and in the render-only
+# `metrics-es-external` (memcached's only). There every exporter the fixture implies must exist, opt
+# in and scrape; in every other fixture no service of the release may opt in at all. Neither
+# direction is ever a skip. Each pair is <service>:<port>:<regex a healthy scrape must match>.
+check_metrics() {
+  local want="" s short scrape pair svc rest port want_re m code
+  case "$case" in
+    embedded-backing) want="memcached-exporter elasticsearch-exporter" ;;
+    metrics-es-external) want="memcached-exporter" ;;
+  esac
+  for s in $(docker service ls --filter "label=com.docker.stack.namespace=${release}" --format '{{.Name}}'); do
+    short="${s#"${release}"_}"
+    scrape="$(docker service inspect "$s" --format '{{index .Spec.Labels "prometheus.io/scrape"}}')"
+    case " $want " in
+      *" $short "*) [ "$scrape" = "true" ] || { echo "   FAIL: $s does not carry prometheus.io/scrape=true"; return 1; } ;;
+      *) [ -z "$scrape" ] || { echo "   FAIL: $s opts in to scraping, but only the exporters of a metrics fixture may"; return 1; } ;;
+    esac
+  done
+  [ -n "$want" ] || return 0
+  for pair in 'memcached-exporter:9150:^memcached_up 1$' \
+              'elasticsearch-exporter:9114:^elasticsearch_cluster_health_number_of_nodes\{[^}]*\} 1$'; do
+    svc="${pair%%:*}"; rest="${pair#*:}"; port="${rest%%:*}"; want_re="${rest#*:}"
+    case " $want " in *" $svc "*) ;; *) continue ;; esac
+    docker service inspect "${release}_${svc}" >/dev/null 2>&1 \
+      || { echo "   FAIL: ${release}_${svc} does not exist; metrics are on in $case"; return 1; }
+    m=""
+    for _ in $(seq 1 20); do
+      m="$(docker run --rm --network monitoring curlimages/curl:8.11.1 -sS -m 10 "http://${release}_${svc}:${port}/metrics" 2>&1 || true)"
+      grep -E "$want_re" <<<"$m" >/dev/null && break
+      sleep 3
+    done
+    if ! grep -E "$want_re" <<<"$m" >/dev/null; then
+      echo "   FAIL: ${release}_${svc} on the monitoring overlay did not report /${want_re}/. Scrape head and exporter log:"
+      sed -n '1,5p' <<<"$m" | sed 's/^/      /'
+      docker service logs --tail 10 "${release}_${svc}" 2>&1 | sed 's/^/      /'
+      return 1
+    fi
+    echo "   ok: ${release}_${svc} scraped on monitoring: $(grep -E "$want_re" <<<"$m")"
+  done
+  [ "$case" = "embedded-backing" ] || return 0
+  code="$(docker run --rm --network monitoring curlimages/curl:8.11.1 -s -o /dev/null -m 5 -w '%{http_code}' "http://${release}_elasticsearch:9200/" 2>/dev/null || true)"
+  if [ "$code" != "000" ]; then
+    echo "   FAIL: the embedded Elasticsearch answered HTTP $code on the monitoring overlay; it has security off and must not be there"
+    return 1
+  fi
+  echo "   ok: the embedded Elasticsearch is not reachable from the monitoring overlay"
+}
 
 # The chart-managed internal overlay is attachable; find its Swarm-qualified name (<release>_<net>).
 net="$(docker network ls --filter "name=${release}" --format '{{.Name}}' 2>/dev/null | grep -m1 internal || true)"
@@ -49,7 +103,8 @@ if docker run --rm --network "$net" --entrypoint sh -e TARGET="$target" curlimag
   done
   echo "   (last status: ${code:-000})"; exit 1
 '; then
-  exit 0
+  check_metrics
+  exit $?
 fi
 
 # --- failure diagnostics -------------------------------------------------------------------------

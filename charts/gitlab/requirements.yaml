@@ -10,6 +10,11 @@ networks:
     attachable: true
     autoCreate: false
     description: "Ingress overlay for the traefik/none exposure modes and for the SSH TCP router; provided by the edge proxy stack/operator"
+  - name: "{{ .Values.metrics.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: true
+    description: "Overlay GitLab shares with Prometheus (when metrics.enabled); the prometheus-stack chart scrapes on it by default"
 secrets:
   - name: "{{ .Values.auth.rootPassword.secretName }}"
     description: "auth.rootPassword.enabled=true only - initial root password, applied when the database is first seeded"

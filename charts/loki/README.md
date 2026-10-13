@@ -141,6 +141,78 @@ The `traefik.*` defaults match the [traefik](../traefik) chart in this repositor
 `traefik-public`); adjust them if you run your own Traefik, and set
 `exposure.network` to the overlay it discovers services on.
 
+## Metrics
+
+Loki always serves Prometheus metrics at `/metrics` on its HTTP port.
+`metrics.enabled` makes the service discoverable: it carries the deploy labels
+`prometheus.io/scrape=true` and `prometheus.io/port=<service.port>`, which the
+prometheus-stack chart's Swarm service discovery scrapes on the `monitoring`
+overlay with no scrape config of its own. Any Prometheus using
+Docker Swarm service discovery on those labels works the same way.
+
+```bash
+swarmcli charts upgrade loki swarmcli-charts/loki -f loki-values.yaml --set metrics.enabled=true
+```
+
+Pass the values you installed with (`-f`, or the same `--set`s), not `--reuse-values`.
+That flag merges over the previous release's stored values *instead of* this chart
+version's defaults, so every `metrics.*` key would render empty
+([swarmcli#687](https://github.com/Eldara-Tech/swarmcli/issues/687)).
+
+What it attaches depends on `exposure.mode`:
+
+- **`none`** (default): Loki is already on `exposure.network`. With the defaults,
+  both that and `metrics.network` are `monitoring`, so only the labels change and
+  nothing new can reach Loki. A different `metrics.network` is joined as well; then
+  share only one of the two with Prometheus, or it scrapes Loki once per network.
+- **`published`**: Loki joins `metrics.network`. Its HTTP API is already open,
+  unauthenticated, on every node's published port; joining also makes its gRPC port
+  (9095), which is not published, reachable from that overlay.
+- **`traefik`**: refused at render time. Loki's labels carry the basic-auth hash,
+  and every deploy label of a discovered service is readable through Prometheus's
+  targets API; joining an unauthenticated overlay would also bypass the router's
+  auth. Scrape through the routed host instead, with a user of its own in
+  `traefik.basicAuthUsers` so it can be revoked alone:
+
+  ```yaml
+  # loki-scrape.yml — holds a password
+  scrape_configs:
+    - job_name: loki
+      scheme: https
+      basic_auth:
+        username: prometheus
+        password: <that user's password>
+      static_configs:
+        - targets: ['loki.example.com']   # ingress.host
+  ```
+
+  ```bash
+  swarmcli charts upgrade mon swarmcli-charts/prometheus-stack -f mon-values.yaml \
+    --set-file prometheus.extraScrapeConfigs.loki=./loki-scrape.yml
+  ```
+
+  This relies on the prometheus-stack chart, not yet merged
+  ([#221](https://github.com/Eldara-Tech/swarmcli-charts/pull/221)). It deploys each
+  `extraScrapeConfigs` entry as a Swarm config, which anyone with Docker access to
+  the swarm reads in cleartext with `docker config inspect`, so the password is as
+  exposed there as in the file: keep the file out of git and give this user nothing
+  but read access to Loki.
+
+Everything on the scrape overlay can reach Loki's whole API on 3100 and its gRPC
+port 9095, neither of which authenticates anyone; in the default shape that is the
+same `monitoring` overlay Grafana and your log producers already use.
+
+With [swarmcli-cd](https://github.com/Eldara-Tech/swarmcli-cd), an application's
+`allow.networks` must name every overlay the release joins: when metrics add
+`metrics.network` (in `published` mode, or when it differs from
+`exposure.network`), list `monitoring` there too. See
+[`allow`](https://github.com/Eldara-Tech/swarmcli-cd/blob/main/docs/configuration.md#allow-optional).
+
+The Alloy shipper (`shipper.enabled`) is not labelled. Its HTTP server, besides
+`/metrics`, serves the state of every component, which includes the labels of every
+container on its node, plus a support bundle and pprof. Scraping it safely needs
+Alloy's HTTP auth configured, which is a follow-up.
+
 ## Retention
 
 Loki deletes nothing unless its compactor is told to apply retention, so the
@@ -222,6 +294,8 @@ release.
 | `publish.port` | `3100` | Host port in `published` mode |
 | `publish.mode` | `ingress` | `ingress` (routing mesh) or `host` (pinned node) |
 | `service.port` | `3100` | Container HTTP port (LB / publish / dial target) |
+| `metrics.enabled` | `false` | Prometheus discovery labels on the Loki service; refused in `traefik` mode. See *Metrics*. |
+| `metrics.network` | `monitoring` | Overlay Prometheus scrapes on; joined unless Loki is already on it |
 | `retention.enabled` | `true` | Apply retention in the compactor |
 | `retention.period` | `744h` | How long log lines are kept (Go duration) |
 | `analytics.enabled` | `false` | Send anonymous usage statistics to Grafana Labs |

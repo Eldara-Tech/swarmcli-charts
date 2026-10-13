@@ -1,6 +1,12 @@
 # One-command evaluation: the chart runs its OWN PostgreSQL (persistent), Redis (ephemeral),
 # memcached and Elasticsearch — nothing external to pre-create except the two secrets. Published
 # directly (no proxy). This is the fixture the e2e job converges solo.
+#
+# Metrics are on here rather than in a fixture of their own: this is the one fixture CI can
+# converge (every other one needs an external PostgreSQL and Redis), and a second whole Zammad
+# stack would double the slowest e2e job. The exporters are added services only: no Zammad role or
+# backing service changes (ci/render-check.sh asserts none of them joins the metrics overlay or
+# carries a discovery label), and the `default` fixture keeps the metrics-off render covered.
 database:
   mode: embedded
 redis:
@@ -14,3 +20,5 @@ exposure:
   mode: published
 publish:
   port: 8080
+metrics:
+  enabled: true

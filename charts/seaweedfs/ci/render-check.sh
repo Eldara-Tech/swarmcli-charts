@@ -80,6 +80,8 @@ grep -Fx -- '-s3.ip.bind=0.0.0.0' <<<"$args" >/dev/null \
   || bad "the S3 gateway is not bound to 0.0.0.0 — it would follow -ip.bind onto loopback and nothing outside could reach it"
 grep -Fx -- '-s3.port.iceberg=0' <<<"$args" >/dev/null && grep -Fx -- '-s3.port.lance=0' <<<"$args" >/dev/null \
   || bad "the Iceberg/Lance catalog listeners are not disabled"
+grep -Fx -- '-master.telemetry=false' <<<"$args" >/dev/null \
+  || bad "telemetry is not switched off: weed would report cluster statistics to telemetry.seaweedfs.com"
 grep -F 'export WEED_JWT_FILER_SIGNING_KEY="$$(head -c 32 /dev/urandom | base64)"' <<<"$script" >/dev/null \
   || bad "no per-start filer signing key: the S3 gRPC port would accept identity updates from anyone on the overlay"
 

@@ -1,0 +1,8 @@
+# Metrics: a mysqld_exporter on the monitoring overlay, labelled for Swarm service
+# discovery, plus the one-shot that creates the exporter's database user. The
+# mariadb service must render exactly as it does without it. `labels` is set to
+# prove it stays off the exporter: its deploy labels are readable through Prometheus.
+metrics:
+  enabled: true
+labels:
+  team: db

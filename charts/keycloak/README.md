@@ -119,7 +119,8 @@ references, whatever its name. A default install needs:
 ```
 
 Terminating TLS in Keycloak (`exposure.mode: published` with `publish.tls.enabled`) adds
-`keycloak_tls_cert` and `keycloak_tls_key`. Each entry is the name itself, so an override in
+`keycloak_tls_cert` and `keycloak_tls_key`, and `metrics.enabled` adds the `monitoring`
+network (`metrics.network`). Each entry is the name itself, so an override in
 values needs the same change here. See
 [`allow`](https://github.com/Eldara-Tech/swarmcli-cd/blob/main/docs/configuration.md#allow-optional) in the swarmcli-cd docs.
 
@@ -146,6 +147,62 @@ values needs the same change here. See
 - **`none`** — no published port and no Traefik labels. Keycloak sits on
   `exposure.network` (so your own proxy joined to that overlay can reach
   `keycloak:8080`) and trusts `X-Forwarded-*`, like the traefik case.
+
+## Metrics
+
+Keycloak serves Prometheus metrics itself, on its management interface beside the
+health endpoints: `http://<release>_keycloak:9000/metrics`. `metrics.enabled` turns
+that on (`KC_METRICS_ENABLED`), labels the service with `prometheus.io/scrape=true`
+and `prometheus.io/port=9000`, and attaches it to the `monitoring` overlay
+(`metrics.network`), which is where the prometheus-stack chart scrapes by default — so Prometheus finds it by itself, with no scrape config. Any
+Prometheus using Docker Swarm service discovery on those labels works the same way.
+
+```bash
+swarmcli charts upgrade keycloak swarmcli-charts/keycloak -f keycloak-values.yaml --set metrics.enabled=true
+```
+
+Pass the values you installed with (`-f`, or the same `--set`s), not `--reuse-values`.
+That flag merges over the previous release's stored values *instead of* this chart
+version's defaults, so every `metrics.*` key would render empty
+([swarmcli#687](https://github.com/Eldara-Tech/swarmcli/issues/687)).
+
+You get Keycloak's default set: JVM memory, GC and threads, the database pool
+(`agroal_*`), HTTP server request counts and latencies (`http_server_requests_seconds_*`),
+and Infinispan cache statistics. The management interface stays plain HTTP in every
+exposure mode, including `published` with Keycloak-terminated TLS
+(`KC_HTTP_MANAGEMENT_SCHEME=http`), because the discovery job has no scheme label.
+
+Turning it on or off **restarts Keycloak**: the setting is part of its spec, and
+metrics are a build-time option Keycloak rebuilds itself for at start (it runs
+`kc.sh start` without `--optimized`). Turning it off removes the labels and the overlay
+again.
+
+What changes for `monitoring`, so read this before turning it on:
+
+- **Every Keycloak port becomes reachable from it**, not just `:9000`. That includes
+  `:8080`, all of Keycloak over plain HTTP, the admin console and admin REST API with
+  it (they still demand a token). Swarm attaches a service to a network as a whole; it
+  cannot expose one port there and not another.
+- **Forwarded headers can be spoofed from it.** In `traefik` and `none` modes Keycloak
+  trusts `X-Forwarded-*` (`KC_PROXY_HEADERS=xforwarded`) from any peer, so anything that
+  can reach `:8080` directly can choose the client address and scheme Keycloak records
+  in its events. That is already true for everything on `exposure.network`; joining
+  `monitoring` adds its members.
+- **Keycloak can reach everything on it, too.** An internet-facing Keycloak joined to
+  `monitoring` sits next to whatever else is there: in the loki chart's default `none`
+  mode that is Loki's unauthenticated `3100`/`9095`, which read every log line and
+  accept pushes. A compromised Keycloak would no longer be confined to the edge and
+  its database.
+- **Every deploy label of the service is readable through Prometheus's targets API.**
+  The chart's own labels carry no secrets, and the render fails if one of yours carries
+  credential material (`*.basicauth.users`, `*.digestauth.users`,
+  `*.customrequestheaders.authorization`): use the middleware's `usersfile` with a
+  mounted secret for that, or leave metrics off.
+
+Attach only services you trust to `monitoring`. Event metrics
+(`event-metrics-user-enabled`) and latency histograms are not exposed as values: both
+are opt-in in Keycloak for their cardinality and cost, and the default set covers
+health, load and the database.
 
 ## Values
 
@@ -183,6 +240,8 @@ values needs the same change here. See
 | `healthcheck.monitor` | `3m` | Rollout watch window. Must cover `startPeriod + interval x retries` (165s) — see below |
 | `placement.constraints` | `[]` | Optional scheduling constraints (unpinned by default) |
 | `resources.limits.memory` | `""` | Swarm deploy memory limit |
+| `metrics.enabled` | `false` | Serve `/metrics` on `:9000` and label the service for Prometheus service discovery. See *Metrics* |
+| `metrics.network` | `monitoring` | External overlay shared with Prometheus (auto-created) |
 | `labels` | `{}` | Extra deploy labels |
 
 > **Note — external resource *names* are pinned by `requirements.yaml`.** swarmcli's

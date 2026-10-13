@@ -1,0 +1,12 @@
+# Default Alertmanager configuration of the prometheus-stack chart: every alert is
+# accepted and routed to a receiver with no integrations, so nothing is sent
+# anywhere. Replace it with your own:
+#   --set-file alertmanager.config=./alertmanager.yml
+# and put credentials in Swarm secrets (alertmanager.secrets), referenced through
+# the receivers' *_file / url_file fields.
+route:
+  receiver: "null"
+  group_by: [alertname]
+
+receivers:
+  - name: "null"

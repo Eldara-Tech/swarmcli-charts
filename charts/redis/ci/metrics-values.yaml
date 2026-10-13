@@ -1,0 +1,8 @@
+# Metrics with auth on (the default): a redis_exporter on the monitoring overlay,
+# logging in as a least-privilege ACL user defined on the redis-server command line.
+# `labels` is set to prove it stays off the exporter: its deploy labels are readable
+# through Prometheus.
+metrics:
+  enabled: true
+labels:
+  team: cache

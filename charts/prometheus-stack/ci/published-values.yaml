@@ -1,0 +1,10 @@
+# Grafana published on the routing mesh instead of routed: plain HTTP on port 3000
+# of every node, and nothing on the ingress overlay.
+grafana:
+  exposure:
+    mode: published
+  publish:
+    port: 3000
+    mode: ingress
+  ingress:
+    host: grafana.e2e.test

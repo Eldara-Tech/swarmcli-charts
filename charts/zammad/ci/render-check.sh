@@ -95,6 +95,11 @@ case "$case" in
     [ "$(yq -r '.secrets | has("zammad_elasticsearch_password")' "$out")" = "true" ] \
       || note "es-external + auth did not declare the ES password secret"
     ;;
+  metrics-es-external)
+    [ "$es_enabled" = "true" ] || note "metrics-es-external did not enable Elasticsearch"
+    has_svc elasticsearch && note "metrics-es-external rendered an in-stack elasticsearch service"
+    net_external elasticsearch-net || note "metrics-es-external must consume an EXTERNAL elasticsearch overlay"
+    ;;
   *)  # embedded everywhere else
     [ "$es_enabled" = "true" ] || note "embedded ES not enabled"
     has_svc elasticsearch || note "embedded ES rendered no elasticsearch service"
@@ -218,6 +223,81 @@ if [ "$case" = "extra-networks" ]; then
     grep -qx "$n" <<<"$rails_nets" \
       || note "extra-networks: railsserver did not join $n (cannot reach that backend)"
   done
+fi
+
+# 7. metrics: an exporter per backing service the chart runs, and nothing else changes. Every
+#    deploy label of an opted-in service is readable through Prometheus's targets API, so only the
+#    exporters opt in and they carry exactly the two discovery labels; and only the exporters join
+#    the metrics overlay — the embedded Elasticsearch has security off, so anything on that overlay
+#    could otherwise read and write every ticket.
+case "$case" in
+  embedded-backing) want_exporters="elasticsearch-exporter memcached-exporter" ;;
+  metrics-es-external) want_exporters="memcached-exporter" ;;
+  *) want_exporters="" ;;
+esac
+exporters="$(yq -r '.services | keys | .[] | select(test("-exporter$"))' "$out" | sort | tr '\n' ' ' | sed 's/ $//')"
+[ "$exporters" = "$want_exporters" ] \
+  || note "metrics: rendered exporters are '$exporters', expected '$want_exporters'"
+for svc in $(yq -r '.services | keys | .[] | select(test("-exporter$") | not)' "$out"); do
+  yq -r ".services.\"$svc\".networks // [] | .[]" "$out" | grep -Fx monitoring >/dev/null \
+    && note "metrics: $svc joined the metrics overlay (only the exporters may)"
+  yq -r ".services.\"$svc\".deploy.labels // [] | .[]" "$out" | grep -F 'prometheus.io/' >/dev/null \
+    && note "metrics: $svc carries a discovery label (only the exporters opt in)"
+done
+if [ -z "$want_exporters" ]; then
+  [ "$(yq -r '.networks | has("monitoring")' "$out")" = "false" ] \
+    || note "metrics: the metrics overlay is declared although metrics are off"
+else
+  net_external monitoring || note "metrics: the metrics overlay is not declared external"
+  for e in $want_exporters; do
+    backing="${e%-exporter}"
+    [ "$(yq -r ".services.\"$e\".deploy.labels // [] | sort | join(\",\")" "$out")" = "prometheus.io/port=$( [ "$backing" = memcached ] && echo 9150 || echo 9114 ),prometheus.io/scrape=true" ] \
+      || note "metrics: $e deploy labels are '$(yq -r ".services.\"$e\".deploy.labels // [] | join(\",\")" "$out")', expected exactly the two discovery labels"
+    [ "$(yq -r ".services.\"$e\".networks // [] | sort | join(\" \")" "$out")" = "monitoring zammad-internal" ] \
+      || note "metrics: $e networks are '$(yq -r ".services.\"$e\".networks // [] | join(\" \")" "$out")', expected the internal overlay and the metrics overlay"
+    [ "$(yq -r ".services.\"$e\".ports // [] | length" "$out")" = "0" ] \
+      || note "metrics: $e publishes a port; /metrics has no authentication"
+    [ "$(yq -o=json -I=0 ".services.\"$e\".deploy.placement" "$out")" = "$(yq -o=json -I=0 ".services.\"$backing\".deploy.placement" "$out")" ] \
+      || note "metrics: $e placement differs from $backing's; the exporter belongs beside what it watches"
+  done
+  case " $want_exporters " in
+    *" memcached-exporter "*)
+      [ "$(yq -r '.services.memcached-exporter.command | join(" ")' "$out")" = "--memcached.address=tasks.ci_memcached:11211" ] \
+        || note "metrics: memcached-exporter does not scrape this release's memcached at tasks.ci_memcached:11211"
+      ;;
+  esac
+  case " $want_exporters " in
+    *" elasticsearch-exporter "*)
+      [ "$(yq -r '.services.elasticsearch-exporter.command | join(" ")' "$out")" = "--es.uri=http://tasks.ci_elasticsearch:9200" ] \
+        || note "metrics: elasticsearch-exporter does not scrape this release's Elasticsearch at tasks.ci_elasticsearch:9200"
+      ;;
+  esac
+fi
+
+# 8. The metrics refusals, rendered from this chart with SWARMCLI (test-charts.sh sets it) on top
+#    of the fixture that turns metrics on. A guard that stopped firing would otherwise go unnoticed:
+#    nothing else renders the values it exists to refuse.
+if [ "$case" = "embedded-backing" ]; then
+  chart="$(cd "$(dirname "$0")/.." && pwd)"
+  errf="$(mktemp)"
+  refused() {
+    local want="$1"; shift
+    if "${SWARMCLI:?render-check needs SWARMCLI to test the refusals}" charts template ci "$chart" \
+        -f "$chart/ci/embedded-backing-values.yaml" "$@" >/dev/null 2>"$errf"; then
+      note "metrics: rendered with $* — it must be refused"
+    elif ! grep -F "$want" "$errf" >/dev/null; then
+      note "metrics: $* failed, but not with \"$want\": $(tr '\n' ' ' <"$errf" | cut -c1-300)"
+    fi
+  }
+  refused 'metrics.enabled has nothing to export' \
+    --set memcache.servers=mc.internal:11211 --set elasticsearch.mode=disabled
+  refused 'metrics.enabled has nothing to export' \
+    --set memcache.servers=mc.internal:11211 --set elasticsearch.mode=external --set elasticsearch.host=es.internal
+  refused 'collides with an EXTERNAL overlay' --set metrics.network=zammad-internal
+  refused 'metrics.network ("traefik-public") is also one of' --set metrics.network=traefik-public
+  refused 'metrics.network ("postgres-net") is also one of' --set metrics.network=postgres-net
+  refused 'metrics.network ("elasticsearch-net") is also one of' --set metrics.network=elasticsearch-net
+  rm -f "$errf"
 fi
 
 exit "$fail"

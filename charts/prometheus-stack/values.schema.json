@@ -1,0 +1,323 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string" }
+      },
+      "required": ["repository"]
+    },
+    "network": { "type": "string", "minLength": 1 },
+    "persistence": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "nodeLabel": { "type": "string" }
+      }
+    },
+    "traefik": {
+      "type": "object",
+      "properties": {
+        "network": { "type": "string", "minLength": 1 },
+        "constraintLabel": { "type": "string" },
+        "entrypoints": {
+          "type": "object",
+          "properties": {
+            "http": { "type": "string" },
+            "https": { "type": "string" }
+          }
+        },
+        "certResolver": { "type": "string" },
+        "redirectMiddleware": { "type": "string" },
+        "routerName": { "type": "string" }
+      }
+    },
+    "labels": { "type": "object" },
+    "prometheus": {
+      "type": "object",
+      "properties": {
+        "retention": { "type": "string", "pattern": "^([0-9]+(ms|s|m|h|d|w|y))+$" },
+        "scrapeInterval": { "type": "string", "pattern": "^([0-9]+(ms|s|m|h|d|w|y))+$" },
+        "volumeName": { "type": "string", "pattern": "^[^/]+$" },
+        "volumePath": { "type": "string", "pattern": "^(/.*)?$" },
+        "extraNetworks": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "extraScrapeConfigs": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[a-z0-9][a-z0-9-]*$" },
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        },
+        "extraRules": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[a-z0-9][a-z0-9-]*$" },
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        },
+        "extraArgs": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "resources": {
+          "type": "object",
+          "properties": {
+            "limits": {
+              "type": "object",
+              "properties": {
+                "memory": { "type": "string" }
+              }
+            },
+            "reservations": {
+              "type": "object",
+              "properties": {
+                "memory": { "type": "string" }
+              }
+            }
+          }
+        },
+        "exposure": {
+          "type": "object",
+          "properties": {
+            "mode": { "type": "string", "enum": ["none", "traefik"] }
+          }
+        },
+        "ingress": {
+          "type": "object",
+          "properties": {
+            "host": { "type": "string" },
+            "tls": { "type": "boolean" }
+          }
+        },
+        "basicAuthUsers": { "type": "string" }
+      }
+    },
+    "alertmanager": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string", "minLength": 1 }
+          },
+          "required": ["repository", "tag"]
+        },
+        "config": { "type": "string" },
+        "secrets": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "volumeName": { "type": "string", "pattern": "^[^/]+$" },
+        "volumePath": { "type": "string", "pattern": "^(/.*)?$" },
+        "resources": {
+          "type": "object",
+          "properties": {
+            "limits": {
+              "type": "object",
+              "properties": {
+                "memory": { "type": "string" }
+              }
+            },
+            "reservations": {
+              "type": "object",
+              "properties": {
+                "memory": { "type": "string" }
+              }
+            }
+          }
+        },
+        "exposure": {
+          "type": "object",
+          "properties": {
+            "mode": { "type": "string", "enum": ["none", "traefik"] }
+          }
+        },
+        "ingress": {
+          "type": "object",
+          "properties": {
+            "host": { "type": "string" },
+            "tls": { "type": "boolean" }
+          }
+        },
+        "basicAuthUsers": { "type": "string" }
+      }
+    },
+    "grafana": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string", "minLength": 1 }
+          },
+          "required": ["repository", "tag"]
+        },
+        "adminUser": { "type": "string", "minLength": 1 },
+        "adminPasswordSecret": { "type": "string", "minLength": 1 },
+        "secretKeySecret": { "type": "string", "minLength": 1 },
+        "exposure": {
+          "type": "object",
+          "properties": {
+            "mode": { "type": "string", "enum": ["traefik", "published", "none"] }
+          }
+        },
+        "publish": {
+          "type": "object",
+          "properties": {
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+            "mode": { "type": "string", "enum": ["ingress", "host"] }
+          }
+        },
+        "ingress": {
+          "type": "object",
+          "properties": {
+            "host": { "type": "string" },
+            "tls": { "type": "boolean" }
+          }
+        },
+        "volumeName": { "type": "string", "pattern": "^[^/]+$" },
+        "volumePath": { "type": "string", "pattern": "^(/.*)?$" },
+        "datasources": {
+          "type": "object",
+          "properties": {
+            "loki": {
+              "type": "object",
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "url": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        },
+        "extraEnv": { "type": "object" },
+        "extraSecrets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "env": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" }
+            },
+            "required": ["name", "env"]
+          }
+        },
+        "dashboards": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[a-z0-9][a-z0-9-]*$" },
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        },
+        "resources": {
+          "type": "object",
+          "properties": {
+            "limits": {
+              "type": "object",
+              "properties": {
+                "memory": { "type": "string" }
+              }
+            },
+            "reservations": {
+              "type": "object",
+              "properties": {
+                "memory": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "nodeExporter": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string", "minLength": 1 }
+          },
+          "required": ["repository", "tag"]
+        },
+        "extraArgs": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "resources": {
+          "type": "object",
+          "properties": {
+            "limits": {
+              "type": "object",
+              "properties": {
+                "memory": { "type": "string" }
+              }
+            },
+            "reservations": {
+              "type": "object",
+              "properties": {
+                "memory": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "cadvisor": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string", "minLength": 1 }
+          },
+          "required": ["repository", "tag"]
+        },
+        "housekeepingInterval": { "type": "string", "pattern": "^([0-9]+(ms|s|m|h))+$" },
+        "containerdSocket": { "type": "string", "pattern": "^/" },
+        "dockerRoot": { "type": "string", "pattern": "^/" },
+        "extraArgs": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "resources": {
+          "type": "object",
+          "properties": {
+            "limits": {
+              "type": "object",
+              "properties": {
+                "memory": { "type": "string" }
+              }
+            },
+            "reservations": {
+              "type": "object",
+              "properties": {
+                "memory": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "discovery": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string", "minLength": 1 }
+          },
+          "required": ["repository", "tag"]
+        },
+        "dockerSocket": { "type": "string", "pattern": "^/" }
+      }
+    }
+  }
+}
