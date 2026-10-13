@@ -1,0 +1,67 @@
+# GitLab Runner alerts for the runner's own metrics, which metrics.enabled exposes. The chart
+# does not deploy them: hand the file to your Prometheus, e.g. the prometheus-stack chart's
+# prometheus.extraRules (README § Alerts and a dashboard).
+# There is no upstream mixin. These are this chart's, built on the metrics GitLab documents in
+# "Monitor GitLab Runner usage" and the fleet-scaling guide's "Monitoring runners" (CC BY-SA
+# 4.0), and checked against the gitlab-runner v19.4.0 source (MIT).
+# GitLabRunnerDisabled reads gitlab_runner_worker_feed_failures_total, which the docs do not
+# list: a runner that GitLab refuses 3 times stops asking for jobs for an hour, so the API
+# counter goes quiet while this one counts every poll it skips.
+# Each alert is per runner task (`instance`), under the `stack` and `job` labels
+# prometheus-stack's discovery adds.
+#
+# Validate: docker run --rm --entrypoint promtool -v "$PWD/charts/gitlab-runner:/chart:ro" \
+#             prom/prometheus:v3.15.0 test rules /chart/ci/gitlab-runner-rules-test.yml
+groups:
+  - name: gitlab-runner
+    rules:
+      # Mostly 403 on job requests: a revoked token, a runner deleted in GitLab. The runner
+      # stays up and scrapes fine, so TargetDown never fires.
+      - alert: GitLabRunnerDisabled
+        expr: sum by (stack, job, instance) (rate(gitlab_runner_worker_feed_failures_total[5m])) > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $labels.job }} has stopped asking GitLab for jobs'
+          description: 'Runner task {{ $labels.instance }} of {{ $labels.job }} has skipped its job polls for 10 minutes: after 3 job requests failed outright, usually a 403 for its token, it disables itself for an hour at a time. Check the runner in GitLab and the token secret.'
+      # Unreachable GitLab, 5xx, 429. The runner keeps polling through these, unlike a 403.
+      - alert: GitLabRunnerJobRequestsFailing
+        expr: |
+          sum by (stack, job, instance) (rate(gitlab_runner_api_request_statuses_total{endpoint="request_job",status!~"201|204"}[5m]))
+            /
+          sum by (stack, job, instance) (rate(gitlab_runner_api_request_statuses_total{endpoint="request_job"}[5m]))
+            > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.job }} cannot fetch jobs from GitLab'
+          description: '{{ $value | humanizePercentage }} of the job requests runner task {{ $labels.instance }} of {{ $labels.job }} sent in the last 5 minutes failed, and it has been over half for 10 minutes.'
+      # The cap is `limit` where set and lower, otherwise `concurrent`; this chart writes one
+      # [[runners]] entry per process. New jobs wait in GitLab's queue meanwhile.
+      - alert: GitLabRunnerSaturated
+        expr: |
+          sum by (stack, job, instance) (gitlab_runner_jobs)
+            >= on (stack, job, instance)
+          min by (stack, job, instance) (gitlab_runner_limit > 0 or gitlab_runner_concurrent)
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.job }} has been running at capacity for 30 minutes'
+          description: 'Runner task {{ $labels.instance }} of {{ $labels.job }} has run {{ $value }} jobs, its capacity, for 30 minutes: further jobs wait in the queue. Raise concurrent or runner.limit, or add replicas.'
+      # runner_system_failure is the runner's own fault (executor, Docker engine, node), not
+      # the job script's: script failures and timeouts carry other reasons.
+      - alert: GitLabRunnerSystemFailures
+        expr: |
+          sum by (stack, job, instance) (increase(gitlab_runner_failed_jobs_total{failure_reason="runner_system_failure"}[30m]))
+            /
+          sum by (stack, job, instance) (increase(gitlab_runner_jobs_total[30m]))
+            > 0.1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.job }} is failing jobs with system failures'
+          description: '{{ $value | humanizePercentage }} of the jobs runner task {{ $labels.instance }} of {{ $labels.job }} took in the last 30 minutes failed with runner_system_failure. The job logs say why.'

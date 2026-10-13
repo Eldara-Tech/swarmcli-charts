@@ -188,6 +188,45 @@ docker exec "$(docker ps -q -f label=com.docker.swarm.service.name=runner_gitlab
   curl -s http://127.0.0.1:9252/metrics
 ```
 
+### Alerts and a dashboard
+
+The chart ships both under [`monitoring/`](monitoring) for your Prometheus and Grafana,
+and deploys neither: scraping is automatic, but which rules and dashboards a monitoring
+stack loads is its operator's choice. With the prometheus-stack chart they go in
+through its own configuration:
+
+```bash
+base=https://raw.githubusercontent.com/Eldara-Tech/swarmcli-charts/main/charts/gitlab-runner/monitoring
+curl -fsSL -O "$base/gitlab-runner-rules.yml" -O "$base/gitlab-runner-dashboard.json"
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --reuse-values \
+  --set-file prometheus.extraRules.gitlab-runner=./gitlab-runner-rules.yml \
+  --set-file grafana.dashboards.gitlab-runner=./gitlab-runner-dashboard.json
+```
+
+`--reuse-values` is safe there only while prometheus-stack's chart version stays the
+same ([swarmcli#687](https://github.com/Eldara-Tech/swarmcli/issues/687)).
+prometheus-stack's README, *Keeping your setup in git*, has the values-file form.
+
+- **Alerts** (`gitlab-runner-rules.yml`), each per runner task: `GitLabRunnerDisabled`
+  while it skips its job polls, which it does for an hour at a time once GitLab has
+  refused it three times (usually a revoked token); `GitLabRunnerJobRequestsFailing`
+  while over half its job requests fail (GitLab unreachable, 5xx);
+  `GitLabRunnerSaturated` after 30 minutes at its job capacity (`concurrent`, or
+  `runner.limit` where lower); and `GitLabRunnerSystemFailures` while over 10% of its
+  jobs fail with `runner_system_failure`, the runner's fault rather than the script's.
+  There is no upstream mixin: they are built on the metrics in GitLab's
+  [runner monitoring docs](https://docs.gitlab.com/runner/monitoring/) (CC BY-SA 4.0)
+  and checked against the runner's v19.4.0 source (MIT).
+- **Dashboard** (`gitlab-runner-dashboard.json`, uid `gitlab-runner`): jobs against
+  capacity, jobs by stage, job duration and time in GitLab's queue, jobs started and
+  failed by reason, job requests and other API calls by status, skipped polls and
+  logged errors. Pick a release by its `stack`. The duration, queue and failure panels
+  stay empty until the runner has run jobs: those series do not exist before.
+
+Both group by the `stack` label prometheus-stack's discovery puts on every target.
+Another Prometheus needs the same relabelling of
+`__meta_dockerswarm_service_label_com_docker_stack_namespace` to `stack`.
+
 ## Values
 
 | Key | Default | Description |
