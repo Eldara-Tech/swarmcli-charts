@@ -1,0 +1,60 @@
+# Keycloak alerts for the metrics metrics.enabled turns on (the management interface's
+# default set, no histograms or event metrics). The chart does not deploy them: hand the
+# file to your Prometheus, e.g. the prometheus-stack chart's prometheus.extraRules
+# (README § Alerts and a dashboard). Keycloak publishes dashboards but no alert rules, so
+# these are this chart's. KeycloakServerErrors uses the error SLI of Keycloak's
+# documentation and of the troubleshooting dashboard in keycloak/keycloak-grafana-dashboard
+# (Apache-2.0): server errors among login and protocol requests. A down target is
+# prometheus-stack's TargetDown, not repeated here.
+#
+# Validate: docker run --rm --entrypoint promtool -v "$PWD/charts/keycloak:/chart:ro" \
+#             prom/prometheus:v3.15.0 test rules /chart/ci/keycloak-rules-test.yml
+groups:
+  - name: keycloak
+    rules:
+      - alert: KeycloakServerErrors
+        expr: |
+          (
+            sum without (method, outcome, status, uri) (rate(http_server_requests_seconds_count{outcome="SERVER_ERROR", uri=~"/realms/{realm}/protocol/{protocol}.*|/realms/{realm}/login-actions.*"}[5m]))
+          /
+            sum without (method, outcome, status, uri) (rate(http_server_requests_seconds_count{uri=~"/realms/{realm}/protocol/{protocol}.*|/realms/{realm}/login-actions.*"}[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $labels.job }} fails {{ $value | humanizePercentage }} of logins with a server error'
+          description: 'More than 5% of login and token requests to {{ $labels.job }} on {{ $labels.instance }} have ended in a 5xx for 5 minutes. Check its log and its database.'
+      # Wrong passwords for existing users: Keycloak does not count an unknown username.
+      # Both conditions: a large realm has typos, a small one bursts of them.
+      - alert: KeycloakPasswordFailures
+        expr: |
+          (
+            sum without (algorithm, hashing_strength, outcome) (rate(keycloak_credentials_password_hashing_validations_total{outcome="invalid"}[5m]))
+          /
+            sum without (algorithm, hashing_strength, outcome) (rate(keycloak_credentials_password_hashing_validations_total[5m]))
+          ) > 0.5
+          and
+          sum without (algorithm, hashing_strength, outcome) (rate(keycloak_credentials_password_hashing_validations_total{outcome="invalid"}[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Most password checks in realm {{ $labels.realm }} fail'
+          description: 'More than half the password checks in realm {{ $labels.realm }} on {{ $labels.job }} have failed for 5 minutes, at more than 6 a minute: password guessing, or a client with a stale password.'
+      - alert: KeycloakHeapPressure
+        expr: jvm_memory_usage_after_gc{area="heap", pool="long-lived"} > 0.9
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.job }} heap is {{ $value | humanizePercentage }} full after GC'
+          description: 'The old generation of {{ $labels.job }} on {{ $labels.instance }} has stayed more than 90% full after garbage collection for 15 minutes: an OutOfMemoryError, which stops Keycloak, is near. The heap is 70% of resources.limits.memory, or of the node memory without one.'
+      - alert: KeycloakDatabasePoolExhausted
+        expr: agroal_awaiting_count > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.job }} is waiting for database connections'
+          description: 'Requests on {{ $labels.job }} on {{ $labels.instance }} have been queueing for a connection from pool {{ $labels.datasource }} for 5 minutes: the pool is used up or the database is slow to answer.'

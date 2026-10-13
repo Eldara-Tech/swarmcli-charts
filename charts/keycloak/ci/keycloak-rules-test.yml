@@ -1,0 +1,119 @@
+# promtool unit tests for monitoring/keycloak-rules.yml, which the chart ships for operators
+# to load into their Prometheus but does not deploy itself. ci/e2e-check.sh runs them
+# with a pinned prom/prometheus image's promtool in the metrics case.
+#
+# Release `kc` is in every kind of trouble an alert covers. Release `ok` has what must not
+# raise one — failing health probes, client errors, a busy realm's typos, a short heap
+# spike, a one-off wait for a connection — and must raise nothing.
+rule_files:
+  - ../monitoring/keycloak-rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      # kc: 10 of 100 login and token requests a minute fail with a 5xx.
+      - series: 'http_server_requests_seconds_count{job="kc_keycloak",instance="10.0.1.5:9000",stack="kc",method="POST",outcome="SUCCESS",status="200",uri="/realms/{realm}/protocol/{protocol}/token"}'
+        values: '0+60x20'
+      - series: 'http_server_requests_seconds_count{job="kc_keycloak",instance="10.0.1.5:9000",stack="kc",method="POST",outcome="SUCCESS",status="302",uri="/realms/{realm}/login-actions/authenticate"}'
+        values: '0+30x20'
+      - series: 'http_server_requests_seconds_count{job="kc_keycloak",instance="10.0.1.5:9000",stack="kc",method="POST",outcome="SERVER_ERROR",status="500",uri="/realms/{realm}/protocol/{protocol}/token"}'
+        values: '0+10x20'
+      # ok: the 503s are health probes and the 400s wrong passwords; neither is a failed login.
+      - series: 'http_server_requests_seconds_count{job="ok_keycloak",instance="10.0.2.5:9000",stack="ok",method="POST",outcome="SUCCESS",status="200",uri="/realms/{realm}/protocol/{protocol}/token"}'
+        values: '0+60x20'
+      - series: 'http_server_requests_seconds_count{job="ok_keycloak",instance="10.0.2.5:9000",stack="ok",method="POST",outcome="CLIENT_ERROR",status="400",uri="/realms/{realm}/protocol/{protocol}/token"}'
+        values: '0+30x20'
+      - series: 'http_server_requests_seconds_count{job="ok_keycloak",instance="10.0.2.5:9000",stack="ok",method="GET",outcome="SERVER_ERROR",status="503",uri="/health/ready"}'
+        values: '0+20x20'
+      # kc realm acme: 30 of 40 checks a minute fail, split over two hash strengths.
+      - series: 'keycloak_credentials_password_hashing_validations_total{job="kc_keycloak",instance="10.0.1.5:9000",stack="kc",realm="acme",algorithm="argon2",hashing_strength="Argon2id-1.3[m=7168,t=5,p=1]",outcome="invalid"}'
+        values: '0+20x20'
+      - series: 'keycloak_credentials_password_hashing_validations_total{job="kc_keycloak",instance="10.0.1.5:9000",stack="kc",realm="acme",algorithm="pbkdf2-sha512",hashing_strength="pbkdf2-sha512-210000",outcome="invalid"}'
+        values: '0+10x20'
+      - series: 'keycloak_credentials_password_hashing_validations_total{job="kc_keycloak",instance="10.0.1.5:9000",stack="kc",realm="acme",algorithm="argon2",hashing_strength="Argon2id-1.3[m=7168,t=5,p=1]",outcome="valid"}'
+        values: '0+10x20'
+      # kc realm master: every check fails, but only 3 a minute.
+      - series: 'keycloak_credentials_password_hashing_validations_total{job="kc_keycloak",instance="10.0.1.5:9000",stack="kc",realm="master",algorithm="argon2",hashing_strength="Argon2id-1.3[m=7168,t=5,p=1]",outcome="invalid"}'
+        values: '0+3x20'
+      # ok realm big: 30 failures a minute, among 330 checks.
+      - series: 'keycloak_credentials_password_hashing_validations_total{job="ok_keycloak",instance="10.0.2.5:9000",stack="ok",realm="big",algorithm="argon2",hashing_strength="Argon2id-1.3[m=7168,t=5,p=1]",outcome="invalid"}'
+        values: '0+30x20'
+      - series: 'keycloak_credentials_password_hashing_validations_total{job="ok_keycloak",instance="10.0.2.5:9000",stack="ok",realm="big",algorithm="argon2",hashing_strength="Argon2id-1.3[m=7168,t=5,p=1]",outcome="valid"}'
+        values: '0+300x20'
+      # kc's old generation fills at 2m and stays full; ok's spikes for 3 minutes.
+      - series: 'jvm_memory_usage_after_gc{job="kc_keycloak",instance="10.0.1.5:9000",stack="kc",area="heap",pool="long-lived"}'
+        values: '0.5 0.5 0.95x18'
+      - series: 'jvm_memory_usage_after_gc{job="ok_keycloak",instance="10.0.2.5:9000",stack="ok",area="heap",pool="long-lived"}'
+        values: '0.95x2 0.4x18'
+      # kc's requests queue for a connection from 2m on; ok's for one scrape.
+      - series: 'agroal_awaiting_count{job="kc_keycloak",instance="10.0.1.5:9000",stack="kc",datasource="default"}'
+        values: '0 0 3x18'
+      - series: 'agroal_awaiting_count{job="ok_keycloak",instance="10.0.2.5:9000",stack="ok",datasource="default"}'
+        values: '0 4 0x18'
+
+    alert_rule_test:
+      # Three minutes in, nothing has lasted its `for` yet.
+      - eval_time: 4m
+        alertname: KeycloakServerErrors
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: KeycloakPasswordFailures
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: KeycloakHeapPressure
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: KeycloakDatabasePoolExhausted
+        exp_alerts: []
+
+      - eval_time: 20m
+        alertname: KeycloakServerErrors
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: kc_keycloak
+              instance: 10.0.1.5:9000
+              stack: kc
+            exp_annotations:
+              summary: 'kc_keycloak fails 10% of logins with a server error'
+              description: 'More than 5% of login and token requests to kc_keycloak on 10.0.1.5:9000 have ended in a 5xx for 5 minutes. Check its log and its database.'
+      # One alert for acme across its hash strengths; none for master (too few) or big (mostly valid).
+      - eval_time: 20m
+        alertname: KeycloakPasswordFailures
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: kc_keycloak
+              instance: 10.0.1.5:9000
+              stack: kc
+              realm: acme
+            exp_annotations:
+              summary: 'Most password checks in realm acme fail'
+              description: 'More than half the password checks in realm acme on kc_keycloak have failed for 5 minutes, at more than 6 a minute: password guessing, or a client with a stale password.'
+      - eval_time: 20m
+        alertname: KeycloakHeapPressure
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: kc_keycloak
+              instance: 10.0.1.5:9000
+              stack: kc
+              area: heap
+              pool: long-lived
+            exp_annotations:
+              summary: 'kc_keycloak heap is 95% full after GC'
+              description: 'The old generation of kc_keycloak on 10.0.1.5:9000 has stayed more than 90% full after garbage collection for 15 minutes: an OutOfMemoryError, which stops Keycloak, is near. The heap is 70% of resources.limits.memory, or of the node memory without one.'
+      - eval_time: 20m
+        alertname: KeycloakDatabasePoolExhausted
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: kc_keycloak
+              instance: 10.0.1.5:9000
+              stack: kc
+              datasource: default
+            exp_annotations:
+              summary: 'kc_keycloak is waiting for database connections'
+              description: 'Requests on kc_keycloak on 10.0.1.5:9000 have been queueing for a connection from pool default for 5 minutes: the pool is used up or the database is slow to answer.'
