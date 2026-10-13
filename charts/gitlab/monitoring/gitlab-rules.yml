@@ -31,11 +31,21 @@ groups:
       # A runner presents a token GitLab does not know: the runner was deleted or its token
       # reset in GitLab. gitlab-runner stops asking after three refusals and tries again an
       # hour later, so refusals arrive in hourly bursts; the 65m window outlasts the back-off
-      # and keeps the alert firing between them. When they are GitLab's first refusals since
-      # it started, the counter appears with them and increase() sees only the next burst,
-      # up to an hour later.
+      # and keeps the alert firing between them. GitLab creates the counter with its first
+      # refusal, which increase() cannot see, so the second term fires on a counter that is
+      # new within the window, provided the job was already scraped 65m ago: a Prometheus
+      # data gap does not then pass for a new counter. It matches on job, not instance,
+      # because a restarted task, which recreates the counter, is scraped at a new address.
+      # A release younger than 65m alerts from its second burst.
       - alert: GitLabHighRunnerAuthFailure
-        expr: sum by (stack, job) (increase(gitlab_ci_runner_authentication_failure_total[65m])) > 0
+        expr: |
+          sum by (stack, job) (increase(gitlab_ci_runner_authentication_failure_total[65m])) > 0
+          or
+          sum by (stack, job) (
+              (gitlab_ci_runner_authentication_failure_total unless gitlab_ci_runner_authentication_failure_total offset 65m)
+            and on (job)
+              (up offset 65m)
+          )
         labels:
           severity: warning
         annotations:

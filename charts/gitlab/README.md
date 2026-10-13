@@ -272,9 +272,9 @@ is safe (Eldara-Tech/swarmcli#687).
 - **Alerts** (`gitlab-rules.yml`): `GitLabHigh5xxResponses` while more than 10% of Rails
   requests answer 5xx, and `GitLabHighRunnerAuthFailure` while GitLab has refused a runner
   token in the last 65 minutes, usually a runner whose token was deleted or reset in
-  GitLab. Such a runner backs off for an hour after three refusals; when those are GitLab's
-  first refusals since it started, the alert waits for the next burst. Both are derived
-  from the
+  GitLab. Such a runner backs off for an hour after three refusals, and the alert holds
+  between bursts; only a release younger than 65 minutes waits for the second burst. Both
+  are derived from the
   [gitlab-mixin](https://github.com/grafana/jsonnet-libs/tree/master/gitlab-mixin)
   (Apache-2.0) and corrected where it misses on GitLab 19. Its 4xx alert is left out,
   since most 4xx are routine (Git over HTTP gets a 401 before it sends credentials), and
