@@ -1,0 +1,43 @@
+# MySQL alerts for the exporter metrics.enabled adds, or any mysqld_exporter target. The
+# chart does not deploy them: hand the file to your Prometheus, e.g. the prometheus-stack
+# chart's prometheus.extraRules (README § Alerts and a dashboard).
+# MySQLDown is the mysqld-mixin's in prometheus/mysqld_exporter (Apache-2.0), as
+# mariadb-galera ships it. The two connection alerts are this chart's. MariaDB counts a
+# client it refuses at max_connections in Aborted_connects, not in
+# Connection_errors_max_connections, and refuses the exporter too, which then reads as
+# MySQLDown.
+#
+# Validate: docker run --rm --entrypoint promtool -v "$PWD/charts/mariadb:/chart:ro" \
+#             prom/prometheus:v3.15.0 test rules /chart/ci/mariadb-rules-test.yml
+groups:
+  - name: mariadb
+    rules:
+      - alert: MySQLDown
+        expr: mysql_up != 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $labels.job }} cannot reach its MySQL server'
+          description: 'mysqld_exporter {{ $labels.job }} on {{ $labels.instance }} has not reached its server for 5 minutes.'
+      # Warns before the server starts refusing clients. At the limit it refuses the
+      # exporter as well, so this goes quiet and MySQLDown takes over.
+      - alert: MySQLConnectionsNearLimit
+        expr: mysql_global_status_threads_connected / mysql_global_variables_max_connections > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.job }} is near max_connections'
+          description: '{{ $labels.job }} has had over 80% of max_connections in use for 5 minutes, now {{ $value | humanizePercentage }}: at the limit the server refuses new clients.'
+      # Failed connection attempts: bad credentials, clients refused at max_connections,
+      # or a handshake that timed out. Neither the healthcheck nor the exporter adds to
+      # them, so a stray mistyped password stays under the threshold; a retry loop does not.
+      - alert: MySQLAbortedConnections
+        expr: increase(mysql_global_status_aborted_connects[5m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Connections to {{ $labels.job }} keep failing'
+          description: '{{ $labels.job }} has seen more than 5 failed connection attempts per 5 minutes for 5 minutes: bad credentials, max_connections reached, or clients timing out.'

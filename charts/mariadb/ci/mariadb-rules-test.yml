@@ -1,0 +1,80 @@
+# promtool unit tests for monitoring/mariadb-rules.yml, which the chart ships for operators
+# to load into their Prometheus but does not deploy itself. ci/e2e-check.sh runs them
+# with a pinned prom/prometheus image's promtool in the metrics case.
+#
+# One release per failure, each with its single exporter, going wrong two minutes in:
+# `down` loses its server, `busy` nears max_connections, `failing` turns clients away.
+# Release `ok` stays healthy apart from a failed login every other minute, which is
+# under the threshold, and must raise nothing.
+rule_files:
+  - ../monitoring/mariadb-rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'mysql_up{job="down_mariadb-exporter",instance="10.0.1.5:9104",stack="down"}'
+        values: '1 1 0x10'
+      - series: 'mysql_up{job="ok_mariadb-exporter",instance="10.0.2.5:9104",stack="ok"}'
+        values: '1x12'
+      # 180 of 200 from 2m: 90%. Release ok holds 10 of the default 151.
+      - series: 'mysql_global_status_threads_connected{job="busy_mariadb-exporter",instance="10.0.3.5:9104",stack="busy"}'
+        values: '20 20 180x10'
+      - series: 'mysql_global_variables_max_connections{job="busy_mariadb-exporter",instance="10.0.3.5:9104",stack="busy"}'
+        values: '200x12'
+      - series: 'mysql_global_status_threads_connected{job="ok_mariadb-exporter",instance="10.0.2.5:9104",stack="ok"}'
+        values: '10x12'
+      - series: 'mysql_global_variables_max_connections{job="ok_mariadb-exporter",instance="10.0.2.5:9104",stack="ok"}'
+        values: '151x12'
+      # Ten failed attempts a minute from 2m; release ok fails one every other minute.
+      - series: 'mysql_global_status_aborted_connects{job="failing_mariadb-exporter",instance="10.0.4.5:9104",stack="failing"}'
+        values: '0 0 10+10x10'
+      - series: 'mysql_global_status_aborted_connects{job="ok_mariadb-exporter",instance="10.0.2.5:9104",stack="ok"}'
+        values: '0 0 1 1 2 2 3 3 4 4 5 5 6'
+
+    alert_rule_test:
+      # Two minutes after the faults, nothing has lasted the 5m `for` yet.
+      - eval_time: 4m
+        alertname: MySQLDown
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: MySQLConnectionsNearLimit
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: MySQLAbortedConnections
+        exp_alerts: []
+
+      - eval_time: 10m
+        alertname: MySQLDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: down_mariadb-exporter
+              instance: 10.0.1.5:9104
+              stack: down
+            exp_annotations:
+              summary: 'down_mariadb-exporter cannot reach its MySQL server'
+              description: 'mysqld_exporter down_mariadb-exporter on 10.0.1.5:9104 has not reached its server for 5 minutes.'
+      - eval_time: 10m
+        alertname: MySQLConnectionsNearLimit
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: busy_mariadb-exporter
+              instance: 10.0.3.5:9104
+              stack: busy
+            exp_annotations:
+              summary: 'busy_mariadb-exporter is near max_connections'
+              description: 'busy_mariadb-exporter has had over 80% of max_connections in use for 5 minutes, now 90%: at the limit the server refuses new clients.'
+      - eval_time: 10m
+        alertname: MySQLAbortedConnections
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: failing_mariadb-exporter
+              instance: 10.0.4.5:9104
+              stack: failing
+            exp_annotations:
+              summary: 'Connections to failing_mariadb-exporter keep failing'
+              description: 'failing_mariadb-exporter has seen more than 5 failed connection attempts per 5 minutes for 5 minutes: bad credentials, max_connections reached, or clients timing out.'

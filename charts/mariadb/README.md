@@ -116,6 +116,42 @@ database's node.
 - **swarmcli-cd** additionally needs `mariadb_exporter_password` in `allow.secrets`
   and `monitoring` in `allow.networks`.
 
+### Alerts and a dashboard
+
+The chart ships both under [`monitoring/`](monitoring) for your Prometheus and Grafana,
+and deploys neither: scraping is automatic, but which rules and dashboards a monitoring
+stack loads is its operator's choice. With the prometheus-stack chart they go in
+through its own configuration:
+
+```bash
+base=https://raw.githubusercontent.com/Eldara-Tech/swarmcli-charts/main/charts/mariadb/monitoring
+curl -fsSL -O "$base/mariadb-rules.yml" -O "$base/mariadb-dashboard.json"
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --reuse-values \
+  --set-file prometheus.extraRules.mariadb=./mariadb-rules.yml \
+  --set-file grafana.dashboards.mariadb=./mariadb-dashboard.json
+```
+
+`--reuse-values` is safe here only while prometheus-stack's chart version stays the
+same ([swarmcli#687](https://github.com/Eldara-Tech/swarmcli/issues/687)); otherwise
+use the values-file form in prometheus-stack's README, *Keeping your setup in git*.
+
+- **Alerts** (`mariadb-rules.yml`): `MySQLDown` from the
+  [mysqld-mixin](https://github.com/prometheus/mysqld_exporter/tree/main/mysqld-mixin)
+  (Apache-2.0), as mariadb-galera ships it; `MySQLConnectionsNearLimit` while more
+  than 80% of `max_connections` is in use; and `MySQLAbortedConnections` while
+  connection attempts keep failing. MariaDB counts a client refused at
+  `max_connections` as an aborted connection, and refuses the exporter too, which
+  then reads as `MySQLDown`.
+- **Dashboard** (`mariadb-dashboard.json`, uid `mariadb`): server up, uptime,
+  connections used and queries per second, then connections, threads running,
+  queries, slow queries, buffer-pool hits, aborted connections, network traffic and
+  the busiest commands.
+
+The dashboard picks a release by the `stack` label prometheus-stack's discovery puts
+on every target. Another Prometheus needs the same relabelling of
+`__meta_dockerswarm_service_label_com_docker_stack_namespace` to `stack`; the alerts
+need no such label.
+
 ## Values
 
 | Key | Default | Description |
