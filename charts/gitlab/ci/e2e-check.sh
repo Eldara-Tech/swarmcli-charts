@@ -143,12 +143,14 @@ if [ -n "$mport" ]; then
   [ "$other" = "404" ] && ok "the metrics server answers nothing but /metrics (/ is 404)" \
     || note "GET / on the metrics port returned '$other', expected 404"
   # 6. The alert rules the chart ships for operators to load (monitoring/), checked here
-  #    because nothing deploys them: their logic, under the promtool of a pinned Prometheus.
+  #    because nothing deploys them: their logic, under the promtool of the Prometheus
+  #    prometheus-stack pins (Renovate keeps its appVersion current).
   chart="$(cd "$2" && pwd)"
-  promtool_image="${GITLAB_E2E_PROMTOOL_IMAGE:-prom/prometheus:v3.15.0}"
+  prom_tag="$(sed -n 's/^appVersion: *"\(.*\)"$/\1/p' "$chart/../prometheus-stack/Chart.yaml")"
+  promtool_image="${GITLAB_E2E_PROMTOOL_IMAGE:-prom/prometheus:${prom_tag:?no appVersion in charts/prometheus-stack/Chart.yaml}}"
   if out="$(docker run --rm --entrypoint promtool -v "$chart:/chart:ro" "$promtool_image" \
       test rules /chart/ci/gitlab-rules-test.yml 2>&1)"; then
-    ok "alert rules pass promtool test rules ($promtool_image)"
+    ok "alert rules pass promtool ($promtool_image)"
   else
     note "promtool test rules fails on monitoring/gitlab-rules.yml:"
     printf '%s\n' "$out" | sed 's/^/    /'

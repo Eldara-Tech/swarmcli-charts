@@ -548,7 +548,7 @@
       "id": 10,
       "type": "timeseries",
       "title": "Runner authentication",
-      "description": "Runner requests per second whose token GitLab accepted, by runner type, and those it refused. GitLabHighRunnerAuthFailure fires when more than 10% are refused.",
+      "description": "Runner requests per second whose token GitLab accepted, by runner type, and those it refused. GitLabHighRunnerAuthFailure fires while GitLab has refused a token in the last 65 minutes.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

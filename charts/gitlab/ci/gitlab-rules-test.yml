@@ -1,11 +1,12 @@
 # promtool unit tests for monitoring/gitlab-rules.yml, which the chart ships for operators
 # to load into their Prometheus but does not deploy itself. ci/e2e-check.sh runs them
-# with a pinned prom/prometheus image's promtool in the metrics fixtures.
+# with promtool from prometheus-stack's Prometheus image in the metrics fixtures.
 #
-# Release `git` starts failing half its requests two minutes in, and its only runner has
-# a token GitLab refuses, so no success series ever appears. Release `ok` has some of
-# both failures, below the threshold, and release `idle` serves nothing: neither may
-# raise anything.
+# Requests: release `git` starts failing half its requests two minutes in; `ok` fails 5%,
+# below the threshold, and `idle` serves nothing. Runners: a dead token is refused in
+# bursts of three an hour apart, because gitlab-runner backs off for an hour after three
+# refusals. In `git` those are GitLab's first refusals since boot, in `ci` an older one came
+# first; `ok` has only a healthy runner and one refusal from long ago.
 rule_files:
   - ../monitoring/gitlab-rules.yml
 
@@ -21,17 +22,11 @@ tests:
         values: '0+30x12'
       - series: 'http_requests_total{job="git_gitlab",instance="10.0.1.5:8083",stack="git",method="get",status="5xx",feature_category="source_code_management"}'
         values: '0 0 0+60x10'
-      - series: 'gitlab_ci_runner_authentication_failure_total{job="git_gitlab",instance="10.0.1.5:8083",stack="git"}'
-        values: '0+20x12'
-      # ok: 5% of requests are 5xx and 5% of runner authentications fail.
+      # ok: 5% of requests are 5xx.
       - series: 'http_requests_total{job="ok_gitlab",instance="10.0.2.5:8083",stack="ok",method="get",status="2xx",feature_category="source_code_management"}'
         values: '0+570x12'
       - series: 'http_requests_total{job="ok_gitlab",instance="10.0.2.5:8083",stack="ok",method="get",status="5xx",feature_category="source_code_management"}'
         values: '0+30x12'
-      - series: 'gitlab_ci_runner_authentication_success_total{job="ok_gitlab",instance="10.0.2.5:8083",stack="ok",runner_type="instance_type"}'
-        values: '0+57x12'
-      - series: 'gitlab_ci_runner_authentication_failure_total{job="ok_gitlab",instance="10.0.2.5:8083",stack="ok"}'
-        values: '0+3x12'
       # idle: the counters GitLab initialises at boot, never incremented.
       - series: 'http_requests_total{job="idle_gitlab",instance="10.0.3.5:8083",stack="idle",method="get",status="2xx",feature_category="source_code_management"}'
         values: '0x12'
@@ -55,7 +50,39 @@ tests:
             exp_annotations:
               summary: 'GitLab git is answering with server errors'
               description: '50% of the requests to git_gitlab have returned a 5xx status for 5 minutes.'
-      - eval_time: 10m
+
+  - interval: 1m
+    input_series:
+      # git: the counter appears with the first burst (10m), then +3 at 70m and 130m. A
+      # healthy runner authenticates 20 times a minute throughout.
+      - series: 'gitlab_ci_runner_authentication_failure_total{job="git_gitlab",instance="10.0.1.5:8083",stack="git"}'
+        values: '_x10 3x59 6x59 9x59'
+      - series: 'gitlab_ci_runner_authentication_success_total{job="git_gitlab",instance="10.0.1.5:8083",stack="git",runner_type="instance_type"}'
+        values: '0+20x189'
+      # ci: one refusal since boot, then a dead token's burst at 21m.
+      - series: 'gitlab_ci_runner_authentication_failure_total{job="ci_gitlab",instance="10.0.4.5:8083",stack="ci"}'
+        values: '1x20 4x169'
+      # ok: a healthy runner, and a refusal that happened before the window.
+      - series: 'gitlab_ci_runner_authentication_success_total{job="ok_gitlab",instance="10.0.2.5:8083",stack="ok",runner_type="instance_type"}'
+        values: '0+20x189'
+      - series: 'gitlab_ci_runner_authentication_failure_total{job="ok_gitlab",instance="10.0.2.5:8083",stack="ok"}'
+        values: '1x189'
+
+    alert_rule_test:
+      # git's first burst is invisible to increase(): only ci, whose counter already existed.
+      - eval_time: 23m
+        alertname: GitLabHighRunnerAuthFailure
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              stack: ci
+              job: ci_gitlab
+            exp_annotations:
+              summary: 'GitLab ci is refusing a runner token'
+              description: 'ci_gitlab has refused a runner authentication in the last 65 minutes: a runner presents a token GitLab does not know.'
+      # git fires with its second burst and stays firing across the next hour's back-off;
+      # ci's single burst has left the window.
+      - eval_time: 72m
         alertname: GitLabHighRunnerAuthFailure
         exp_alerts:
           - exp_labels:
@@ -63,5 +90,32 @@ tests:
               stack: git
               job: git_gitlab
             exp_annotations:
-              summary: 'GitLab git is refusing runner tokens'
-              description: '100% of the runner authentication attempts on git_gitlab have failed for 5 minutes: a runner presents a token GitLab does not know.'
+              summary: 'GitLab git is refusing a runner token'
+              description: 'git_gitlab has refused a runner authentication in the last 65 minutes: a runner presents a token GitLab does not know.'
+          - exp_labels:
+              severity: warning
+              stack: ci
+              job: ci_gitlab
+            exp_annotations:
+              summary: 'GitLab ci is refusing a runner token'
+              description: 'ci_gitlab has refused a runner authentication in the last 65 minutes: a runner presents a token GitLab does not know.'
+      - eval_time: 128m
+        alertname: GitLabHighRunnerAuthFailure
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              stack: git
+              job: git_gitlab
+            exp_annotations:
+              summary: 'GitLab git is refusing a runner token'
+              description: 'git_gitlab has refused a runner authentication in the last 65 minutes: a runner presents a token GitLab does not know.'
+      - eval_time: 180m
+        alertname: GitLabHighRunnerAuthFailure
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              stack: git
+              job: git_gitlab
+            exp_annotations:
+              summary: 'GitLab git is refusing a runner token'
+              description: 'git_gitlab has refused a runner authentication in the last 65 minutes: a runner presents a token GitLab does not know.'
