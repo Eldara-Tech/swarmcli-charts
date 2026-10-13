@@ -5,10 +5,13 @@
 # these are this chart's. KeycloakServerErrors uses the error SLI of Keycloak's
 # documentation and of the troubleshooting dashboard in keycloak/keycloak-grafana-dashboard
 # (Apache-2.0): server errors among login and protocol requests. A down target is
-# prometheus-stack's TargetDown, not repeated here.
+# prometheus-stack's TargetDown, not repeated here. Only KeycloakServerErrors is critical,
+# because logins fail now; the rest are warnings.
 #
-# Validate: docker run --rm --entrypoint promtool -v "$PWD/charts/keycloak:/chart:ro" \
-#             prom/prometheus:v3.15.0 test rules /chart/ci/keycloak-rules-test.yml
+# Validate (from the repo root):
+#   docker run --rm --entrypoint promtool -v "$PWD/charts/keycloak:/chart:ro" \
+#     "prom/prometheus:$(sed -n 's/^appVersion: *"\(.*\)"$/\1/p' charts/prometheus-stack/Chart.yaml)" \
+#     test rules /chart/ci/keycloak-rules-test.yml
 groups:
   - name: keycloak
     rules:

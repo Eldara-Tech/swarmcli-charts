@@ -3,8 +3,7 @@
   "uid": "keycloak",
   "description": "Keycloak logins, password checks, JVM and database pool from its management interface, one release per stack. Ships with the keycloak chart.",
   "tags": [
-    "keycloak",
-    "sso"
+    "keycloak"
   ],
   "editable": false,
   "graphTooltip": 1,

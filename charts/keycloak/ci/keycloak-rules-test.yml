@@ -54,7 +54,7 @@ tests:
         values: '0 4 0x18'
 
     alert_rule_test:
-      # Three minutes in, nothing has lasted its `for` yet.
+      # Four minutes in, nothing has lasted its `for` yet.
       - eval_time: 4m
         alertname: KeycloakServerErrors
         exp_alerts: []

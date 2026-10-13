@@ -214,15 +214,14 @@ through its own configuration:
 ```bash
 base=https://raw.githubusercontent.com/Eldara-Tech/swarmcli-charts/main/charts/keycloak/monitoring
 curl -fsSL -O "$base/keycloak-rules.yml" -O "$base/keycloak-dashboard.json"
-swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --reuse-values \
+v="$(swarmcli charts status mon | sed -n 's/^CHART: prometheus-stack-//p')"
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --version "${v:?}" --reuse-values \
   --set-file prometheus.extraRules.keycloak=./keycloak-rules.yml \
   --set-file grafana.dashboards.keycloak=./keycloak-dashboard.json
 ```
 
-`--reuse-values` is safe there only while prometheus-stack's chart version stays the
-same ([swarmcli#687](https://github.com/Eldara-Tech/swarmcli/issues/687)); across a
-version change use the values-file form in prometheus-stack's README, *Keeping your
-setup in git*.
+`--version` keeps prometheus-stack at the version it runs, the only case in which `--reuse-values`
+is safe (Eldara-Tech/swarmcli#687).
 
 - **Alerts** (`keycloak-rules.yml`): Keycloak publishes no alert rules, so these are
   the chart's own, from the metrics above. `KeycloakServerErrors` when more than 5% of
@@ -235,15 +234,14 @@ setup in git*.
 - **Dashboard** (`keycloak-dashboard.json`, uid `keycloak`): login server errors,
   failed password checks, heap after GC and DB-pool waits, then requests by outcome,
   server errors and mean response time by endpoint, password checks by realm, heap, GC
-  overhead, database connections and CPU. Trimmed from the troubleshooting and
+  overhead, database connections and CPU, trimmed from the troubleshooting and
   capacity-planning dashboards in
   [keycloak/keycloak-grafana-dashboard](https://github.com/keycloak/keycloak-grafana-dashboard)
-  (Apache-2.0) to what this chart's metric set emits.
+  (Apache-2.0) to what this chart's metric set emits. Pick a release by its `stack`.
 
 The dashboard picks a release by the `stack` label prometheus-stack's discovery puts
-on every target. Another Prometheus needs the same relabelling of
-`__meta_dockerswarm_service_label_com_docker_stack_namespace` to `stack`; the alerts
-need no such label.
+on every target, and the alerts carry it. Another Prometheus needs the same relabelling of
+`__meta_dockerswarm_service_label_com_docker_stack_namespace` to `stack`.
 
 ## Values
 
