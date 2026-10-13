@@ -66,8 +66,8 @@ groups:
         annotations:
           summary: '{{ $labels.job }} is not compacting'
           description: '{{ $labels.job }} has not completed a compaction in 3 hours, or in the hour since it started. Without compaction, retention deletes nothing.'
-      # Warning although refused lines are lost: Loki keeps accepting every other line, these
-      # are per-line limits one sender hit (too old, too long), and senders retry rate-limited lines.
+      # Warning although refused lines are lost: Loki keeps accepting all other lines, these
+      # are per-line limits a sender hit (too old, too long), and senders retry rate-limited lines.
       - alert: LokiLinesDiscarded
         expr: sum by (stack, job, reason) (rate(loki_discarded_samples_total[5m])) > 0
         for: 15m

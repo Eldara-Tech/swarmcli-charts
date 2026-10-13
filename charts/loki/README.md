@@ -231,6 +231,7 @@ swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --version "${v:?}" 
 
 `--version` keeps prometheus-stack at the version it runs, the only case in which
 `--reuse-values` is safe (Eldara-Tech/swarmcli#687).
+
 prometheus-stack's README, *Keeping your setup in git*, has the values-file form.
 
 - **Alerts** (`loki-rules.yml`): `LokiRequestErrors`, `LokiRequestPanics`,
