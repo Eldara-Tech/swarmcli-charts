@@ -5,10 +5,13 @@
 # (Apache-2.0), keeping those that hold for a single server. PostgresHasExporterErrors
 # watches each collector's success gauge: a failing collector never sets the
 # pg_exporter_last_scrape_error the mixin reads. The connection alerts sum per target, by
-# job, instance and the `stack` label prometheus-stack's discovery adds.
+# job, instance and the `stack` label prometheus-stack's discovery adds. Severity: critical
+# only while the server is unreachable or refuses connections, warning otherwise.
 #
-# Validate: docker run --rm --entrypoint promtool -v "$PWD/charts/postgres:/chart:ro" \
-#             prom/prometheus:v3.15.0 test rules /chart/ci/postgres-rules-test.yml
+# Validate (from the repo root):
+#   docker run --rm --entrypoint promtool -v "$PWD/charts/postgres:/chart:ro" \
+#     "prom/prometheus:$(sed -n 's/^appVersion: *"\(.*\)"$/\1/p' charts/prometheus-stack/Chart.yaml)" \
+#     test rules /chart/ci/postgres-rules-test.yml
 groups:
   - name: postgres
     rules:
@@ -20,19 +23,25 @@ groups:
         annotations:
           summary: '{{ $labels.job }} cannot reach its PostgreSQL server'
           description: 'postgres_exporter {{ $labels.job }} on {{ $labels.instance }} has not reached its server for 5 minutes.'
-      # The slots ordinary roles may use; the superuser_reserved_connections stay for a superuser.
+      # Roles that are not superusers get max_connections minus superuser_reserved_connections.
+      # This chart's exporter is one: it opens a connection per scrape for its collectors, which
+      # is refused once those slots are full, so the count never reaches the limit. Every
+      # collector metric vanishes instead while pg_up stays 1, which the second operand
+      # catches. The first still serves an exporter that logs in as a superuser.
       - alert: PostgreSQLMaxConnectionsReached
         expr: |
           sum by (stack, job, instance) (pg_stat_activity_count)
             >=
           sum by (stack, job, instance) (pg_settings_max_connections)
             - sum by (stack, job, instance) (pg_settings_superuser_reserved_connections)
+          or
+          max by (stack, job, instance) (pg_up == 1 unless on (stack, job, instance) pg_scrape_collector_success)
         for: 1m
         labels:
           severity: critical
         annotations:
-          summary: 'PostgreSQL behind {{ $labels.job }} is refusing new connections'
-          description: '{{ $value }} connections fill every slot max_connections leaves to roles that are not superusers, so new clients are refused.'
+          summary: 'PostgreSQL behind {{ $labels.job }} has no connection slot left for roles that are not superusers'
+          description: 'For a minute, every slot outside superuser_reserved_connections has been taken, so roles that are not superusers cannot connect; superusers still can. An exporter that is not a superuser, like this chart''s, then reports pg_up 1 with no collector metrics.'
       - alert: PostgreSQLHighConnections
         expr: |
           sum by (stack, job, instance) (pg_stat_activity_count)

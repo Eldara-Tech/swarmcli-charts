@@ -136,7 +136,7 @@
       "id": 2,
       "type": "stat",
       "title": "Connections used",
-      "description": "Open client connections as a share of max_connections minus superuser_reserved_connections, the slots roles that are not superusers can take. At 100% new clients are refused.",
+      "description": "Client connections as a share of the slots roles that are not superusers can take (max_connections minus superuser_reserved_connections). The exporter is such a role: once the slots are full it cannot collect, and the panel shows 100% from that.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -194,7 +194,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(pg_stat_activity_count{stack=\"$stack\"}) / (max(pg_settings_max_connections{stack=\"$stack\"}) - max(pg_settings_superuser_reserved_connections{stack=\"$stack\"}))",
+          "expr": "(sum(pg_stat_activity_count{stack=\"$stack\"}) / (max(pg_settings_max_connections{stack=\"$stack\"}) - max(pg_settings_superuser_reserved_connections{stack=\"$stack\"}))) or max(pg_up{stack=\"$stack\"} == 1 unless on (stack, job, instance) pg_scrape_collector_success{stack=\"$stack\"})",
           "refId": "A",
           "instant": true,
           "range": false
