@@ -72,11 +72,18 @@ tests:
       - series: 'gitlab_runner_worker_feed_failures_total{job="ci_gitlab-runner",instance="10.0.1.5:9252",stack="ci",runner="t1",runner_name="ci",system_id="r_1"}'
         values: '0x10 20+20x49'
 
-      # Task 2 cannot reach GitLab on 4 requests out of 5 (status -1 is a network error).
+      # Task 2 fails 3 job requests in 5: network errors (status -1), 5xx and 429 in equal
+      # parts, so leaving any one of them out of the rule would keep it under half.
       - series: 'gitlab_runner_api_request_statuses_total{job="ci_gitlab-runner",instance="10.0.1.6:9252",stack="ci",runner="t1",system_id="r_2",endpoint="request_job",status="204",method="post"}'
-        values: '0+5x60'
+        values: '0+8x60'
       - series: 'gitlab_runner_api_request_statuses_total{job="ci_gitlab-runner",instance="10.0.1.6:9252",stack="ci",runner="t1",system_id="r_2",endpoint="request_job",status="-1",method="post"}'
-        values: '_ 1+20x59'
+        values: '_ 1+4x59'
+      - series: 'gitlab_runner_api_request_statuses_total{job="ci_gitlab-runner",instance="10.0.1.6:9252",stack="ci",runner="t1",system_id="r_2",endpoint="request_job",status="500",method="post"}'
+        values: '_ 1+2x59'
+      - series: 'gitlab_runner_api_request_statuses_total{job="ci_gitlab-runner",instance="10.0.1.6:9252",stack="ci",runner="t1",system_id="r_2",endpoint="request_job",status="502",method="post"}'
+        values: '_ 1+2x59'
+      - series: 'gitlab_runner_api_request_statuses_total{job="ci_gitlab-runner",instance="10.0.1.6:9252",stack="ci",runner="t1",system_id="r_2",endpoint="request_job",status="429",method="post"}'
+        values: '_ 1+4x59'
 
       # Tasks 3 and 4 run at their cap: 4 jobs against concurrent, 2 against the limit.
       - series: 'gitlab_runner_jobs{job="ci_gitlab-runner",instance="10.0.1.7:9252",stack="ci",runner="t1",runner_name="ci",system_id="r_3",state="running",stage="step_script",executor_stage="docker_run"}'
@@ -153,7 +160,7 @@ tests:
               stack: ci
             exp_annotations:
               summary: 'ci_gitlab-runner cannot fetch jobs from GitLab'
-              description: '80% of the job requests runner task 10.0.1.6:9252 of ci_gitlab-runner sent in the last 5 minutes failed, and it has been over half for 10 minutes.'
+              description: '60% of the job requests runner task 10.0.1.6:9252 of ci_gitlab-runner sent in the last 5 minutes failed, and it has been over half for 10 minutes.'
       - eval_time: 50m
         alertname: GitLabRunnerSaturated
         exp_alerts:

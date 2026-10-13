@@ -125,7 +125,8 @@ fi
 # depend on the release, so the metrics case alone runs them.
 if [ "$case" = "metrics" ]; then
   chart="$(cd "$dir" && pwd)"
-  promtool_image="${GITLAB_RUNNER_E2E_PROMTOOL_IMAGE:-prom/prometheus:v3.15.0}"
+  prom_tag="$(sed -n 's/^appVersion: *"\(.*\)"$/\1/p' "$chart/../prometheus-stack/Chart.yaml")"
+  promtool_image="${GITLAB_RUNNER_E2E_PROMTOOL_IMAGE:-prom/prometheus:${prom_tag:?no appVersion in charts/prometheus-stack/Chart.yaml}}"
   if out="$(docker run --rm --entrypoint promtool -v "$chart:/chart:ro" "$promtool_image" \
       test rules /chart/ci/gitlab-runner-rules-test.yml 2>&1)"; then
     note "metrics: alert rules pass promtool"

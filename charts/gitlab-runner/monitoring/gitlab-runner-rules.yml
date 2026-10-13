@@ -2,16 +2,21 @@
 # does not deploy them: hand the file to your Prometheus, e.g. the prometheus-stack chart's
 # prometheus.extraRules (README § Alerts and a dashboard).
 # There is no upstream mixin. These are this chart's, built on the metrics GitLab documents in
-# "Monitor GitLab Runner usage" and the fleet-scaling guide's "Monitoring runners" (CC BY-SA
-# 4.0), and checked against the gitlab-runner v19.4.0 source (MIT).
+# https://docs.gitlab.com/runner/monitoring/ and
+# https://docs.gitlab.com/runner/fleet_scaling/#monitoring-runners, and checked against the
+# gitlab-runner v19.4.0 source.
 # GitLabRunnerDisabled reads gitlab_runner_worker_feed_failures_total, which the docs do not
 # list: a runner that GitLab refuses 3 times stops asking for jobs for an hour, so the API
 # counter goes quiet while this one counts every poll it skips.
+# Only GitLabRunnerDisabled is critical: the task runs no jobs. JobRequestsFailing stays a
+# warning, since it fires from half the requests failing and a GitLab outage alerts on its own.
 # Each alert is per runner task (`instance`), under the `stack` and `job` labels
 # prometheus-stack's discovery adds.
 #
-# Validate: docker run --rm --entrypoint promtool -v "$PWD/charts/gitlab-runner:/chart:ro" \
-#             prom/prometheus:v3.15.0 test rules /chart/ci/gitlab-runner-rules-test.yml
+# Validate (from the repo root):
+#   docker run --rm --entrypoint promtool -v "$PWD/charts/gitlab-runner:/chart:ro" \
+#     "prom/prometheus:$(sed -n 's/^appVersion: *"\(.*\)"$/\1/p' charts/prometheus-stack/Chart.yaml)" \
+#     test rules /chart/ci/gitlab-runner-rules-test.yml
 groups:
   - name: gitlab-runner
     rules:

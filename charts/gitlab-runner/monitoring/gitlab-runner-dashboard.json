@@ -4,8 +4,7 @@
   "description": "Jobs, capacity, failures and GitLab API health from GitLab Runner's own metrics, one release per stack. Ships with the gitlab-runner chart.",
   "tags": [
     "gitlab",
-    "gitlab-runner",
-    "ci-cd"
+    "gitlab-runner"
   ],
   "editable": false,
   "graphTooltip": 1,
