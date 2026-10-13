@@ -604,7 +604,7 @@
       "id": 10,
       "type": "timeseries",
       "title": "Aborted connections",
-      "description": "Failed connection attempts per second: bad credentials, clients refused at max_connections, or timeouts.",
+      "description": "Failed connection attempts per second: bad credentials and clients refused at max_connections, plus handshake timeouts and bare TCP probes, which MySQLAbortedConnections leaves out.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"

@@ -6,7 +6,8 @@
 # connection alerts are this chart's, and warnings, since the server still serves. MariaDB
 # counts a client it refuses at max_connections in Aborted_connects, not in
 # Connection_errors_max_connections, and refuses the exporter too, which then raises
-# MySQLDown.
+# MySQLDown. MySQLAbortedConnections also reads Aborted_connects_preauth: on a server
+# that does not report it, it finds no series and stays silent.
 #
 # Validate (from the repo root):
 #   docker run --rm --entrypoint promtool -v "$PWD/charts/mariadb:/chart:ro" \
@@ -33,14 +34,17 @@ groups:
         annotations:
           summary: '{{ $labels.job }} is near max_connections'
           description: '{{ $labels.job }} has had over 80% of max_connections in use for 5 minutes, now {{ $value | humanizePercentage }}: at the limit the server refuses new clients.'
-      # Failed connection attempts: bad credentials, clients refused at max_connections,
-      # or a handshake that timed out. Neither the healthcheck nor the exporter adds to
-      # them, so a stray mistyped password stays under the threshold; a retry loop does not.
+      # Failed connection attempts: bad credentials, or clients refused at max_connections.
+      # MariaDB also counts a connection closed before the handshake, such as a bare TCP
+      # probe (mariadb-galera's proxy healthcheck sends one every 10s) or a port scan, and
+      # counts those alone again in Aborted_connects_preauth, so they are subtracted.
+      # Neither the healthcheck nor the exporter adds to either, so a stray mistyped
+      # password stays under the threshold; a retry loop does not.
       - alert: MySQLAbortedConnections
-        expr: increase(mysql_global_status_aborted_connects[5m]) > 5
+        expr: increase(mysql_global_status_aborted_connects[5m]) - increase(mysql_global_status_aborted_connects_preauth[5m]) > 5
         for: 5m
         labels:
           severity: warning
         annotations:
           summary: 'Connections to {{ $labels.job }} keep failing'
-          description: '{{ $labels.job }} has seen more than 5 failed connection attempts per 5 minutes for 5 minutes: bad credentials, max_connections reached, or clients timing out.'
+          description: '{{ $labels.job }} has seen more than 5 failed connection attempts per 5 minutes for 5 minutes: bad credentials or max_connections reached.'

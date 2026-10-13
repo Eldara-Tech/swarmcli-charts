@@ -5,7 +5,8 @@
 # One release per failure, each with its single exporter, going wrong two minutes in:
 # `down` loses its server, `busy` nears max_connections, `failing` turns clients away.
 # Release `ok` stays healthy apart from a failed login every other minute, which is
-# under the threshold, and must raise nothing.
+# under the threshold, and a bare TCP probe every 10 seconds, which does not count; it
+# must raise nothing.
 rule_files:
   - ../monitoring/mariadb-rules.yml
 
@@ -27,12 +28,17 @@ tests:
         values: '10x12'
       - series: 'mysql_global_variables_max_connections{job="ok_mariadb-exporter",instance="10.0.2.5:9104",stack="ok"}'
         values: '151x12'
-      # Ten failed attempts a minute from 2m. Release ok fails one every other minute on a
-      # counter already past the threshold, so only the increase can tell them apart.
+      # Ten failed logins a minute from 2m. Release ok fails one every other minute, with
+      # 100 past failed logins on its counter, so only the increase can tell them apart,
+      # and takes six probes a minute, which both counters count.
       - series: 'mysql_global_status_aborted_connects{job="failing_mariadb-exporter",instance="10.0.4.5:9104",stack="failing"}'
         values: '0 0 10+10x10'
+      - series: 'mysql_global_status_aborted_connects_preauth{job="failing_mariadb-exporter",instance="10.0.4.5:9104",stack="failing"}'
+        values: '0x12'
       - series: 'mysql_global_status_aborted_connects{job="ok_mariadb-exporter",instance="10.0.2.5:9104",stack="ok"}'
-        values: '100 100 101 101 102 102 103 103 104 104 105 105 106'
+        values: '200 206 213 219 226 232 239 245 252 258 265 271 278'
+      - series: 'mysql_global_status_aborted_connects_preauth{job="ok_mariadb-exporter",instance="10.0.2.5:9104",stack="ok"}'
+        values: '100+6x12'
 
     alert_rule_test:
       # Two minutes after the faults, nothing has lasted the 5m `for` yet.
@@ -78,4 +84,4 @@ tests:
               stack: failing
             exp_annotations:
               summary: 'Connections to failing_mariadb-exporter keep failing'
-              description: 'failing_mariadb-exporter has seen more than 5 failed connection attempts per 5 minutes for 5 minutes: bad credentials, max_connections reached, or clients timing out.'
+              description: 'failing_mariadb-exporter has seen more than 5 failed connection attempts per 5 minutes for 5 minutes: bad credentials or max_connections reached.'

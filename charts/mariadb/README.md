@@ -151,12 +151,11 @@ prometheus-stack's README, *Keeping your setup in git*, has the values-file form
   connections, network traffic and the busiest commands. Pick a release by its `stack`.
 
 mariadb-galera's peers run the same exporter, so the dashboard's picker lists Galera
-clusters too and these alerts fire on Galera peers as well. With both charts' rules
-loaded, Prometheus evaluates `MySQLDown` twice: Alertmanager merges the identical
-alerts, while the Prometheus Alerts page lists it twice.
-With mariadb-galera's proxy on, leave `MySQLAbortedConnections` out for its peers: the
-proxy's healthcheck opens a bare TCP connection through to a peer every 10 seconds, and
-MariaDB counts each one as an aborted connection, so it fires without cause.
+clusters too and these alerts fire on Galera peers as well. `MySQLAbortedConnections`
+leaves out bare TCP probes, such as the one mariadb-galera's proxy healthcheck sends a
+peer every 10 seconds, which MariaDB also counts as aborted connections. With both
+charts' rules loaded, Prometheus evaluates `MySQLDown` twice: Alertmanager merges the
+identical alerts, while the Prometheus Alerts page lists it twice.
 
 The dashboard picks a release by the `stack` label prometheus-stack's discovery puts on
 every target, and the alerts carry it. Another Prometheus needs the same relabelling of
