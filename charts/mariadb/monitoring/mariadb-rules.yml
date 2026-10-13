@@ -4,10 +4,11 @@
 # MySQLDown is the mysqld-mixin's in prometheus/mysqld_exporter (Apache-2.0), as
 # mariadb-galera ships it, and stays critical: clients lose the database. The two
 # connection alerts are this chart's, and warnings, since the server still serves. MariaDB
-# counts a client it refuses at max_connections in Aborted_connects, not in
-# Connection_errors_max_connections, and refuses the exporter too, which then raises
-# MySQLDown. MySQLAbortedConnections also reads Aborted_connects_preauth: on a server
-# that does not report it, it finds no series and stays silent.
+# counts every client it refuses at max_connections in Aborted_connects, but in
+# Connection_errors_max_connections only those refused before the handshake; it refuses
+# the exporter too, which then raises MySQLDown. MySQLAbortedConnections also reads
+# Aborted_connects_preauth: on a server that does not report it, it finds no series and
+# stays silent.
 #
 # Validate (from the repo root):
 #   docker run --rm --entrypoint promtool -v "$PWD/charts/mariadb:/chart:ro" \
