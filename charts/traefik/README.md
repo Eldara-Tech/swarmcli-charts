@@ -174,6 +174,43 @@ on `monitoring`.
 
 With swarmcli-cd, allow the `monitoring` network and the users secret.
 
+### Alerts and a dashboard
+
+The chart ships both under [`monitoring/`](monitoring) for your Prometheus and Grafana,
+and deploys neither: scraping is automatic, but which rules and dashboards a monitoring
+stack loads is its operator's choice. With the prometheus-stack chart they go in
+through its own configuration:
+
+```bash
+base=https://raw.githubusercontent.com/Eldara-Tech/swarmcli-charts/main/charts/traefik/monitoring
+curl -fsSL -O "$base/traefik-rules.yml" -O "$base/traefik-dashboard.json"
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --reuse-values \
+  --set-file prometheus.extraRules.traefik=./traefik-rules.yml \
+  --set-file grafana.dashboards.traefik=./traefik-dashboard.json
+```
+
+prometheus-stack's README, *Keeping your setup in git*, has the values-file form.
+
+- **Alerts** (`traefik-rules.yml`): `TraefikTLSCertificatesExpiring` under 7 days and
+  `TraefikTLSCertificatesExpiringSoon` under 14, derived from the
+  [traefik-mixin](https://github.com/grafana/jsonnet-libs/tree/master/traefik-mixin)
+  (Apache-2.0) and counting only the newest certificate per SAN list, since Traefik
+  keeps reporting a renewed one's predecessor. Then `TraefikServiceHighErrorRate`
+  while more than 5% of a service's responses are 5xx, which covers routed charts
+  with no metrics of their own. It cannot see a service with no running, healthy
+  task: Traefik drops that service, and its requests become 404s.
+- **Dashboard** (`traefik-dashboard.json`, uid `traefik`): requests, server errors,
+  open connections and the next certificate expiry; requests and connections per
+  entrypoint, responses by status class and days left per certificate; then
+  requests, 5xx share, mean response time and traffic per service. Its layout
+  borrows from Traefik's own
+  [`contrib/grafana`](https://github.com/traefik/traefik/tree/master/contrib/grafana)
+  dashboard (MIT) and the mixin's. Pick a release by its `stack`.
+
+Both group by the `stack` label prometheus-stack's discovery puts on every target.
+Another Prometheus needs the same relabelling of
+`__meta_dockerswarm_service_label_com_docker_stack_namespace` to `stack`.
+
 ## Logging
 
 The Traefik service logs via Docker's logging driver. It defaults to `json-file`
