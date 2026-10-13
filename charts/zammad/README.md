@@ -130,6 +130,56 @@ mode, the `Host()` router rule. `ingress.tls` selects whether the public endpoin
 - **`disabled`** — Zammad runs with **database-based search** (no full-text on article bodies). The
   lightest deployment; upstream-supported for small teams.
 
+## Metrics
+
+Zammad serves no Prometheus metrics of its own: its `/api/v1/monitoring/*` endpoints return JSON
+behind a monitoring token, on the app listener. `metrics.enabled` covers the backing services the
+chart runs instead, with one exporter each:
+
+| Exporter | Runs while | Port | Watches |
+|----------|------------|------|---------|
+| `memcached-exporter` ([memcached_exporter](https://github.com/prometheus/memcached_exporter)) | `memcache.servers` is empty (the in-stack memcached) | 9150 | `memcached_up`, hits and misses, evictions, memory |
+| `elasticsearch-exporter` ([elasticsearch_exporter](https://github.com/prometheus-community/elasticsearch_exporter)) | `elasticsearch.mode: embedded` | 9114 | cluster health, node and JVM stats |
+
+Each carries the deploy labels `prometheus.io/scrape=true` and `prometheus.io/port` and joins the
+`monitoring` overlay, which is where the prometheus-stack chart scrapes by default — so Prometheus
+finds both by itself, with no scrape config.
+
+```bash
+swarmcli charts upgrade zammad swarmcli-charts/zammad -f zammad-values.yaml --set metrics.enabled=true
+```
+
+Pass the values you installed with (`-f`, or the same `--set`s), not `--reuse-values`. That flag
+merges over the previous release's stored values *instead of* this chart version's defaults, so
+every `metrics.*` key would render empty
+([swarmcli#687](https://github.com/Eldara-Tech/swarmcli/issues/687)).
+
+No secret is needed, and turning it on adds services only: no Zammad role or backing service
+restarts. With an external memcached and an external or disabled Elasticsearch there is nothing to
+export, and the render fails rather than doing nothing.
+
+- **Only the exporters join `monitoring`.** memcached and Elasticsearch stay on the internal
+  overlay. That matters for Elasticsearch: the embedded node runs with security off, so anything
+  that reached it could read and write every ticket.
+- **What the exporters serve to `monitoring`**, unauthenticated: `/metrics`, and a scrape of any
+  target the caller names (`/scrape?target=` on memcached-exporter, `/probe?target=` on
+  elasticsearch-exporter), with no credentials to hand over. elasticsearch-exporter also serves Go's
+  `/debug/pprof/` (it links `net/http/pprof` into its default handler): profiles, goroutine dumps,
+  and CPU-costly traces on demand. memcached-exporter does not.
+- **PostgreSQL and Redis** get no exporter here. The embedded ones are for evaluation, and the
+  embedded PostgreSQL's only credential is its superuser, which no exporter should hold. In
+  production run them as the [postgres](../postgres) and [redis](../redis) charts and monitor
+  them there.
+- **An external Elasticsearch** is monitored where it runs; the chart neither runs it nor holds
+  credentials to read its stats.
+- `metrics.network` must be an overlay of its own: the render fails when it shares a name with
+  `exposure.network`, `database.network`, `redis.network`, `elasticsearch.network`,
+  `extraNetworks` or `internalNetwork`.
+- **Turning it off** leaves the exporter services running, because swarmcli deploys without
+  `--prune`. Remove them yourself:
+  `docker service rm <release>_memcached-exporter <release>_elasticsearch-exporter`.
+- **swarmcli-cd** additionally needs `monitoring` in `allow.networks`.
+
 ## Backing services (external vs embedded)
 
 `database.mode` and `redis.mode` are each `external` (default) or `embedded`:
@@ -310,6 +360,9 @@ new secret and point the relevant `*SecretName` value at it.
 | `elasticsearch.javaOpts` | `-Xms1g -Xmx1g` | Embedded node heap |
 | `elasticsearch.network` | `elasticsearch-net` | External overlay (external mode) |
 | `elasticsearch.persistence.*` | see `values.yaml` | Embedded index volume (host path option) |
+| `metrics.enabled` | `false` | Exporters for the in-stack memcached and embedded Elasticsearch, labelled for Prometheus service discovery. See *Metrics* |
+| `metrics.network` | `monitoring` | Overlay the exporters share with Prometheus (auto-created) |
+| `metrics.memcached.image.*` / `metrics.elasticsearch.image.*` | pinned in `values.yaml` | Exporter images (concrete pins; Renovate maintains them) |
 | `backup.enabled` | `false` | Render the scheduled backup service |
 | `backup.time` / `.holdDays` / `.onStart` / `.tz` | `03:00` / `10` / `true` / `Europe/Berlin` | Backup schedule/retention |
 | `backup.volumeName` / `.volumePath` | `zammad-backup` / `""` | Backup target volume (host path option) |

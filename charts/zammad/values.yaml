@@ -271,6 +271,33 @@ elasticsearch:
     volumeName: zammad-elasticsearch-data
     volumePath: ""
 
+# Prometheus metrics (off by default; nothing below renders while it is off). Zammad itself serves
+# no Prometheus metrics — its /api/v1/monitoring endpoints are token-gated JSON on the app listener
+# — so this covers the backing services the chart runs, with one exporter each, found by Docker
+# Swarm service discovery: an exporter carries the deploy labels prometheus.io/scrape=true and
+# prometheus.io/port, and joins `network`, the prometheus-stack chart's default scrape overlay.
+#   memcached      prom/memcached-exporter, while the chart runs memcached (memcache.servers "")
+#   elasticsearch  elasticsearch-exporter, while elasticsearch.mode is embedded
+# The render fails when metrics are on and the chart runs neither. memcached and Elasticsearch
+# themselves never join `network`: the embedded Elasticsearch has security off, so anything that
+# reached it could read and write every ticket. Embedded PostgreSQL and Redis get no exporter here;
+# production runs them as the postgres / redis charts, which have metrics of their own. Turning it
+# on adds services only, so nothing that is running restarts. No secret is needed.
+metrics:
+  enabled: false
+  # External overlay the exporters share with Prometheus. requirements.yaml declares it
+  # autoCreate:true.
+  network: monitoring
+  # Concrete tags, not appVersion: Renovate's helm-values manager maintains pins written here.
+  memcached:
+    image:
+      repository: prom/memcached-exporter
+      tag: "v0.17.0"
+  elasticsearch:
+    image:
+      repository: prometheuscommunity/elasticsearch-exporter
+      tag: "v1.11.0"
+
 # Scheduled backup (opt-in). The image's `zammad-backup` role dumps the database + storage to a
 # backup volume on a daily schedule and prunes old dumps. Off by default — most operators back up
 # PostgreSQL + the storage volume out of band.
