@@ -112,8 +112,13 @@ labels:
 ```
 
 ```bash
-swarmcli charts upgrade app swarmcli-charts/<chart> --reuse-values -f app-values.yaml
+v="$(swarmcli charts status app | sed -n 's/^CHART: <chart>-//p')"
+swarmcli charts upgrade app swarmcli-charts/<chart> --version "${v:?}" --reuse-values \
+  -f app-values.yaml
 ```
+
+Every `--reuse-values` upgrade in this README keeps the release at the chart version it
+runs, the only case in which that flag is safe (Eldara-Tech/swarmcli#687).
 
 Prometheus can only reach a service it shares an overlay with. Put the service on
 `monitoring` (the loki chart already is), or list its overlay in
@@ -131,7 +136,8 @@ Custom targets that do not fit it go in a file of your own, one entry per file
 under a name you choose:
 
 ```bash
-swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --reuse-values \
+v="$(swarmcli charts status mon | sed -n 's/^CHART: prometheus-stack-//p')"
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --version "${v:?}" --reuse-values \
   --set-file prometheus.extraScrapeConfigs.app=./scrape.yml   # a top-level `scrape_configs:` list
 ```
 
@@ -148,7 +154,8 @@ Nothing is published by default.
 
 ```bash
 # htpasswd -nbB ops '<password>', then DOUBLE every $ (Compose eats single ones)
-swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --reuse-values \
+v="$(swarmcli charts status mon | sed -n 's/^CHART: prometheus-stack-//p')"
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --version "${v:?}" --reuse-values \
   --set prometheus.exposure.mode=traefik \
   --set prometheus.ingress.host=prometheus.example.com \
   --set 'prometheus.basicAuthUsers=ops:$$2y$$05$$…'
@@ -165,7 +172,8 @@ Give it yours, with credentials in Swarm secrets rather than in the file:
 
 ```bash
 printf '%s' 'https://hooks.slack.com/services/…' | docker secret create slack_webhook -
-swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --reuse-values \
+v="$(swarmcli charts status mon | sed -n 's/^CHART: prometheus-stack-//p')"
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --version "${v:?}" --reuse-values \
   --set-file alertmanager.config=./alertmanager.yml \
   --set 'alertmanager.secrets={slack_webhook}'
 ```
@@ -273,7 +281,8 @@ Git server, a self-hosted GitLab included.
 With the [loki chart](../loki) on the same swarm:
 
 ```bash
-swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --reuse-values \
+v="$(swarmcli charts status mon | sed -n 's/^CHART: prometheus-stack-//p')"
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --version "${v:?}" --reuse-values \
   --set grafana.datasources.loki.enabled=true \
   --set grafana.datasources.loki.url=http://<loki-release>_loki:3100
 ```
