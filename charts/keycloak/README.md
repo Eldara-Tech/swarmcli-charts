@@ -223,6 +223,8 @@ swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --version "${v:?}" 
 `--version` keeps prometheus-stack at the version it runs, the only case in which `--reuse-values`
 is safe (Eldara-Tech/swarmcli#687).
 
+prometheus-stack's README, *Keeping your setup in git*, has the values-file form.
+
 - **Alerts** (`keycloak-rules.yml`): Keycloak publishes no alert rules, so these are
   the chart's own, from the metrics above. `KeycloakServerErrors` when more than 5% of
   login and token requests end in a 5xx (Keycloak's documented error SLI),
