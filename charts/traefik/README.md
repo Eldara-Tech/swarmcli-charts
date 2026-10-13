@@ -199,7 +199,7 @@ prometheus-stack's README, *Keeping your setup in git*, has the values-file form
   `TraefikTLSCertificatesExpiringSoon` under 14, derived from the
   [traefik-mixin](https://github.com/grafana/jsonnet-libs/tree/master/traefik-mixin)
   (Apache-2.0) and counting only the newest certificate per SAN list, since Traefik
-  keeps reporting a renewed one's predecessor. Traefik keeps renewing every
+  keeps reporting a renewed one's predecessor. Traefik keeps trying to renew every
   certificate in `acme.json` and never resets the expiry gauge, so a certificate for
   a domain no longer pointed here eventually trips the critical alert (and goes
   negative after expiry) until it is removed from `acme.json` and Traefik restarted.
@@ -210,10 +210,12 @@ prometheus-stack's README, *Keeping your setup in git*, has the values-file form
 - **Dashboard** (`traefik-dashboard.json`, uid `traefik`): requests, server errors,
   open connections and the next certificate expiry; requests and connections per
   entrypoint, responses by status class and days left per certificate; then
-  requests, 5xx share, mean response time and traffic per service. Trimmed from
-  Traefik's own
+  requests, 5xx share, mean response time and traffic per service. Its layout
+  borrows from Traefik's own
   [`contrib/grafana`](https://github.com/traefik/traefik/tree/master/contrib/grafana)
-  dashboard (MIT) and the mixin's (Apache-2.0). Pick a release by its `stack`.
+  dashboard and the
+  [traefik-mixin](https://github.com/grafana/jsonnet-libs/tree/master/traefik-mixin)'s.
+  Pick a release by its `stack`.
 
 The dashboard picks a release by the `stack` label prometheus-stack's discovery puts on
 every target, and the alerts carry it. Another Prometheus needs the same relabelling of
