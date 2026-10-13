@@ -9,8 +9,9 @@
 # since a compactor that never succeeded reports 0. LokiLinesDiscarded is this chart's:
 # Loki answers a line it refuses (rate limit, too old, too long) with a 4xx, never a 5xx,
 # so LokiRequestErrors does not see it.
-# Critical only for failing requests; latency and the compactor are warnings here, not the
-# mixin's critical, since neither loses a log line now.
+# Critical only when Loki itself fails requests (errors, panics). Latency and the compactor
+# are warnings here, not the mixin's critical, since neither loses a log line now;
+# LokiLinesDiscarded is a warning for the reason beside it.
 #
 # Validate (from the repo root):
 #   docker run --rm --entrypoint promtool -v "$PWD/charts/loki:/chart:ro" \
@@ -65,6 +66,8 @@ groups:
         annotations:
           summary: '{{ $labels.job }} is not compacting'
           description: '{{ $labels.job }} has not completed a compaction in 3 hours, or in the hour since it started. Without compaction, retention deletes nothing.'
+      # Warning although refused lines are lost: Loki keeps accepting every other line, these
+      # are per-line limits one sender hit (too old, too long), and senders retry rate-limited lines.
       - alert: LokiLinesDiscarded
         expr: sum by (stack, job, reason) (rate(loki_discarded_samples_total[5m])) > 0
         for: 15m
