@@ -62,8 +62,8 @@ fi
 
 # --- metrics fixture: the dashboard's basic auth works from the users SECRET (401
 # without credentials, 200 with them), and Prometheus — standing in a container on the
-# monitoring overlay — scrapes /metrics from the dedicated entrypoint and sees the
-# requests just made counted on the https entrypoint. The metrics port must not be
+# monitoring overlay — scrapes /metrics from the dedicated entrypoint and sees a request
+# no router matched counted on the https entrypoint. The metrics port must not be
 # published. ----------------------------------------------------------------------------
 if [ "$case" = "metrics" ]; then
   CURL_IMAGE="${TRAEFIK_E2E_CURL_IMAGE:-curlimages/curl:latest}"
@@ -81,6 +81,14 @@ if [ "$case" = "metrics" ]; then
   [ "$anon" = 401 ] || { echo "  dashboard without credentials returned '$anon', expected 401"; exit 1; }
   [ "$authed" = 200 ] || { echo "  dashboard with the secret's credentials returned '$authed', expected 200"; exit 1; }
   echo "  dashboard: 401 without credentials, 200 with the users from the secret"
+
+  # The dashboard is api@internal, which Traefik leaves out of its metrics unless
+  # --metrics.addInternals is set, so the requests above count nowhere. A request no
+  # router matches is answered by the entrypoint's own 404 handler, which is metered.
+  miss="$(docker run --rm --network traefik-public "$CURL_IMAGE" -sk -o /dev/null -w '%{http_code}' \
+    --max-time 10 --connect-to "unrouted.e2e.test:443:${service}:443" \
+    https://unrouted.e2e.test/ 2>/dev/null || true)"
+  [ "$miss" = 404 ] || { echo "  an unrouted host returned '$miss', expected Traefik's 404"; exit 1; }
 
   m=""
   for _ in $(seq 1 15); do
