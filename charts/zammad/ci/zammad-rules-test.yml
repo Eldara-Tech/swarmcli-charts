@@ -105,7 +105,16 @@ tests:
         alertname: MemcachedDown
         exp_alerts: []
       - eval_time: 10m
+        alertname: MemcachedConnectionLimitApproaching
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: MemcachedOutOfMemoryErrors
+        exp_alerts: []
+      - eval_time: 10m
         alertname: ElasticsearchHeapTooHigh
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: ElasticsearchDiskSpaceLow
         exp_alerts: []
 
       - eval_time: 20m
@@ -129,7 +138,7 @@ tests:
               stack: busy
             exp_annotations:
               summary: 'memcached behind busy_memcached-exporter is near its connection limit'
-              description: 'memcached behind busy_memcached-exporter has used 88% of its connections for 15 minutes; at the limit it refuses new ones.'
+              description: 'memcached behind busy_memcached-exporter has used 87.89% of its connections for 15 minutes; at the limit it refuses new ones.'
       # One alert per memcached, not one per slab class.
       - eval_time: 20m
         alertname: MemcachedOutOfMemoryErrors
@@ -146,7 +155,7 @@ tests:
         alertname: ElasticsearchHeapTooHigh
         exp_alerts:
           - exp_labels:
-              severity: critical
+              severity: warning
               area: heap
               cluster: docker-cluster
               name: es-busy
