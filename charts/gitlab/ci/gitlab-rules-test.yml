@@ -76,6 +76,12 @@ tests:
         values: '1x40 _x60 1x89'
       - series: 'gitlab_ci_runner_authentication_failure_total{job="gap_gitlab",instance="10.0.6.5:8083",stack="gap"}'
         values: '2x40 _x60 2x89'
+      # scrapefail: one failed scrape at 41m (up 0, counter stale) beside an old refusal's
+      # counter; 65m later the counter is missing at the offset but up is not.
+      - series: 'up{job="scrapefail_gitlab",instance="10.0.8.5:8083",stack="scrapefail"}'
+        values: '1x40 0 1x147'
+      - series: 'gitlab_ci_runner_authentication_failure_total{job="scrapefail_gitlab",instance="10.0.8.5:8083",stack="scrapefail"}'
+        values: '2x40 stale 2x147'
       # new: a release first scraped at 100m, refused at 110m and 170m.
       - series: 'up{job="new_gitlab",instance="10.0.7.5:8083",stack="new"}'
         values: '_x100 1x89'
@@ -135,6 +141,24 @@ tests:
             exp_annotations:
               summary: 'GitLab git is refusing a runner token'
               description: 'git_gitlab has refused a runner authentication in the last 65 minutes: a runner presents a token GitLab does not know.'
+      # scrapefail stays silent: up was 0 at the offset, so nothing new is claimed.
+      - eval_time: 106m
+        alertname: GitLabHighRunnerAuthFailure
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              stack: git
+              job: git_gitlab
+            exp_annotations:
+              summary: 'GitLab git is refusing a runner token'
+              description: 'git_gitlab has refused a runner authentication in the last 65 minutes: a runner presents a token GitLab does not know.'
+          - exp_labels:
+              severity: warning
+              stack: restart
+              job: restart_gitlab
+            exp_annotations:
+              summary: 'GitLab restart is refusing a runner token'
+              description: 'restart_gitlab has refused a runner authentication in the last 65 minutes: a runner presents a token GitLab does not know.'
       # restart fires: its counter is new under a new address, and the job was scraped
       # 65m ago at the old one.
       - eval_time: 107m

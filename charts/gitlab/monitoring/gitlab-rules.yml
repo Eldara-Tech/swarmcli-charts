@@ -33,10 +33,13 @@ groups:
       # hour later, so refusals arrive in hourly bursts; the 65m window outlasts the back-off
       # and keeps the alert firing between them. GitLab creates the counter with its first
       # refusal, which increase() cannot see, so the second term fires on a counter that is
-      # new within the window, provided the job was already scraped 65m ago: a Prometheus
-      # data gap does not then pass for a new counter. It matches on job, not instance,
-      # because a restarted task, which recreates the counter, is scraped at a new address.
-      # A release younger than 65m alerts from its second burst.
+      # new within the window, provided the job was scraped successfully 65m ago (`== 1`:
+      # `and` alone ignores up's value). A Prometheus data gap or a failed scrape, which
+      # leaves the counter missing for a moment, does not then pass for a new counter. It
+      # matches on job, not instance, because a restarted task, which recreates the counter,
+      # is scraped at a new address. A release younger than 65m alerts from its second
+      # burst, and a relabel that changes a target's labels without a restart makes its
+      # counter look new for 65m.
       - alert: GitLabHighRunnerAuthFailure
         expr: |
           sum by (stack, job) (increase(gitlab_ci_runner_authentication_failure_total[65m])) > 0
@@ -44,7 +47,7 @@ groups:
           sum by (stack, job) (
               (gitlab_ci_runner_authentication_failure_total unless gitlab_ci_runner_authentication_failure_total offset 65m)
             and on (job)
-              (up offset 65m)
+              (up offset 65m == 1)
           )
         labels:
           severity: warning

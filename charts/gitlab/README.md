@@ -268,6 +268,7 @@ swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --version "${v:?}" 
 
 `--version` keeps prometheus-stack at the version it runs, the only case in which `--reuse-values`
 is safe (Eldara-Tech/swarmcli#687).
+prometheus-stack's README, *Keeping your setup in git*, has the values-file form.
 
 - **Alerts** (`gitlab-rules.yml`): `GitLabHigh5xxResponses` while more than 10% of Rails
   requests answer 5xx, and `GitLabHighRunnerAuthFailure` while GitLab has refused a runner
