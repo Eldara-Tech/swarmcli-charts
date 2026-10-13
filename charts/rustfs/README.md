@@ -169,12 +169,13 @@ cache:
 With `console.oidc.enabled` the console offers a login through an OpenID Connect
 provider beside the key-pair login. Its button reads **Login with SSO**, and
 `console.oidc.displayName` sets the label. RustFS's STS (`AssumeRoleWithWebIdentity`)
-accepts that provider's tokens too. RustFS maps each value of the ID token's `groups`
-claim to the RustFS policy of the same name (`consoleAdmin`, `readwrite`, `readonly`, or
-your own) and gives the session temporary credentials with those policies. Each value
-must name an existing policy, or RustFS refuses the whole login (see the last point
-below). Policies attached inside RustFS to a group named like a claim value take the
-claim's place, and so does a `ROLE_POLICY` in `extraEnv`.
+accepts that provider's tokens too. RustFS maps each value of one ID token claim to the
+RustFS policy of the same name (`consoleAdmin`, `readwrite`, `readonly`, or your own)
+and gives the session temporary credentials with those policies. The claim is `groups`
+unless `extraEnv` names another; the Keycloak steps below give RustFS one of its own,
+`rustfs_policies`. Each value must name an existing policy, or RustFS refuses the whole
+login (see the last point below). Policies attached inside RustFS to a group named like
+a claim value take the claim's place, and so does a `ROLE_POLICY` in `extraEnv`.
 
 With [Keycloak](../keycloak), in your realm:
 
@@ -184,12 +185,35 @@ With [Keycloak](../keycloak), in your realm:
 2. Set **Valid redirect URIs** to exactly the console's public URL followed by the
    callback path, `https://rustfs.example.com/rustfs/admin/v3/oidc/callback/default`,
    and **Web origins** to `https://rustfs.example.com`.
-3. Add a **Group Membership** mapper with token claim name `groups`, **Full group
-   path off** and **Add to ID token** on, and create groups named after the RustFS
-   policies. With the full path on the claim reads `/readwrite`, which names no
-   policy, and RustFS refuses the login.
-4. Put the client secret (**Credentials** tab) in a Swarm secret:
+3. Put the client secret (**Credentials** tab) in a Swarm secret:
    `printf '%s' '<client secret>' | docker secret create rustfs-oidc-client-secret -`
+4. Choose the RustFS policies to grant: log into the console with the root key pair,
+   open **Policies** and copy each name exactly. Names are case-sensitive.
+5. For each policy, create a client role named exactly like it: **Clients → rustfs →
+   Roles → Create role**.
+6. Add a mapper: **Clients → rustfs → Client scopes → rustfs-dedicated → Mappers →
+   Configure a new mapper → User Client Role** (on older Keycloak, **Mappers** sits
+   directly on the client), set as follows, and save:
+
+   | Setting | Value |
+   |---|---|
+   | Name | `rustfs-policy-mapper` |
+   | Client ID | `rustfs`; left empty, Keycloak adds every client's roles, `account`'s included |
+   | Client Role prefix | empty |
+   | Token Claim Name | `rustfs_policies` |
+   | Claim JSON Type | `String` |
+   | Multivalued | on |
+   | Add to ID token | on — the login reads the ID token |
+   | Add to access token | on |
+   | Add to userinfo | on |
+
+7. Assign the roles: **Users → the user → Role mapping → Assign role**, filter by
+   client roles and pick the `rustfs` ones. Assigned to a Keycloak group instead
+   (**Groups → the group → Role mapping**), they reach every member. Do not make them
+   default roles unless every user of the realm should get that storage access.
+8. Check the token: **Clients → rustfs → Client scopes → Evaluate**, pick the user,
+   then **Generated ID token**. A user granted `readwrite` shows
+   `"rustfs_policies": ["readwrite"]`.
 
 ```yaml
 console:
@@ -203,7 +227,21 @@ console:
     configUrl: https://keycloak.example.com/realms/<realm>/.well-known/openid-configuration
     clientId: rustfs
     displayName: Keycloak        # the button reads "Login with Keycloak"; default SSO
+extraEnv:
+  # The claim of step 6. Set both: with GROUPS_CLAIM alone, RustFS still reads `groups`
+  # through CLAIM_NAME's default and refuses the login.
+  RUSTFS_IDENTITY_OPENID_GROUPS_CLAIM: rustfs_policies
+  RUSTFS_IDENTITY_OPENID_CLAIM_NAME: rustfs_policies
 ```
+
+A role change in Keycloak takes effect at the user's next login: sign out of the
+console and log in again. RustFS needs no restart.
+
+**Groups instead of client roles.** Where every Keycloak group a user is in is named
+exactly like a RustFS policy, a **Group Membership** mapper can carry the policies
+instead of steps 5–7: token claim name `groups`, **Full group path** off, **Add to ID
+token** on, and no `extraEnv`. With the full path on, the claim reads `/readwrite`,
+which names no policy, and a user in any group that is not a policy is refused.
 
 - **The callback.** RustFS builds it from `console.oidc.browserUrl`, which the chart
   derives as `https://<console.ingress.host>` while the console is traefik-routed
@@ -242,26 +280,12 @@ console:
   is not supported. The `MINIO_IDENTITY_OPENID_*` spelling is refused too, because
   RustFS reads only some of those names and ignores the rest.
 - **`OIDC policy mapping did not resolve to current policies`** at the callback means
-  the token's `groups` claim is missing or holds a value that names no RustFS policy:
-  RustFS checks every value, and one miss refuses the whole login. With Keycloak that is
-  a missing groups mapper (or one not added to the ID token), **Full group path** on, a
-  group named differently from its policy (names are case-sensitive), or a user who is
-  also in a group that is not a RustFS policy. Keycloak shows the claim under
-  **Clients → rustfs → Client scopes → Evaluate**: pick a user, then **Generated ID
-  token**. Where users belong to other groups too, give RustFS a claim of its own: a
-  **User Client Role** mapper on the `rustfs` client with **Client ID** `rustfs` (unset,
-  Keycloak adds every client's roles, `account`'s included), token claim name
-  `rustfs_policies`, **Multivalued** and **Add to ID token** on; client roles named
-  after the policies, assigned to the users or their Keycloak groups; and
-
-  ```yaml
-  extraEnv:
-    RUSTFS_IDENTITY_OPENID_GROUPS_CLAIM: rustfs_policies
-    RUSTFS_IDENTITY_OPENID_CLAIM_NAME: rustfs_policies
-  ```
-
-  Set both: with `GROUPS_CLAIM` alone, RustFS still reads `groups` through
-  `CLAIM_NAME`'s default and refuses the login the same way.
+  the token's policy claim is missing or holds a value that names no RustFS policy:
+  RustFS checks every value, and one miss refuses the whole login. Look at the ID token
+  as in step 8. The usual causes: a mapper not added to the ID token, a client-role
+  mapper with no **Client ID**, a role or group named differently from its policy, only
+  one of the two `extraEnv` keys set, or, with the groups mapper, **Full group path** on
+  or a user who is also in a group that is not a policy.
 
 ## Security
 
