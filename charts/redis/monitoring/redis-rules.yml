@@ -6,10 +6,13 @@
 # Redis's own maxclients instead of the mixin's fixed 100. The mixin's RedisOutOfMemory
 # needs --include-system-metrics, which the chart does not pass, and its cluster alerts
 # need cluster mode, which it does not run. The memory and persistence alerts are this
-# chart's.
+# chart's. Critical only while clients lose Redis or their writes (RedisDown,
+# RedisRejectingWrites, RedisPersistenceFailed); the two near-limit alerts warn.
 #
-# Validate: docker run --rm --entrypoint promtool -v "$PWD/charts/redis:/chart:ro" \
-#             prom/prometheus:v3.15.0 test rules /chart/ci/redis-rules-test.yml
+# Validate (from the repo root):
+#   docker run --rm --entrypoint promtool -v "$PWD/charts/redis:/chart:ro" \
+#     "prom/prometheus:$(sed -n 's/^appVersion: *"\(.*\)"$/\1/p' charts/prometheus-stack/Chart.yaml)" \
+#     test rules /chart/ci/redis-rules-test.yml
 groups:
   - name: redis
     rules:
@@ -24,7 +27,7 @@ groups:
       # Writes are failing: Redis is at maxmemory and its policy frees nothing. It never
       # answers OOM while maxmemory is 0, the chart's default; the host's memory is
       # prometheus-stack's NodeMemoryHighUtilization then.
-      - alert: RedisOutOfMemory
+      - alert: RedisRejectingWrites
         expr: increase(redis_errors_total{err="OOM"}[5m]) > 0
         for: 5m
         labels:

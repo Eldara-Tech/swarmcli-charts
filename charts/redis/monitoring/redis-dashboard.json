@@ -188,7 +188,7 @@
       "id": 3,
       "type": "stat",
       "title": "Hit ratio",
-      "description": "Share of key lookups that found their key. For a cache, a low ratio means it is too small or its keys expire too soon.",
+      "description": "Share of key lookups that found their key, \"No lookups\" when the window had none. For a cache, a low ratio means it is too small or its keys expire too soon.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -206,7 +206,19 @@
           "color": {
             "mode": "fixed",
             "fixedColor": "blue"
-          }
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "-1": {
+                  "text": "No lookups",
+                  "color": "blue",
+                  "index": 0
+                }
+              }
+            }
+          ]
         },
         "overrides": []
       },
@@ -230,7 +242,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(redis_keyspace_hits_total{stack=\"$stack\"}[$__rate_interval]) / (rate(redis_keyspace_hits_total{stack=\"$stack\"}[$__rate_interval]) + rate(redis_keyspace_misses_total{stack=\"$stack\"}[$__rate_interval]))",
+          "expr": "rate(redis_keyspace_hits_total{stack=\"$stack\"}[$__rate_interval]) / ((rate(redis_keyspace_hits_total{stack=\"$stack\"}[$__rate_interval]) + rate(redis_keyspace_misses_total{stack=\"$stack\"}[$__rate_interval])) > 0) or ((rate(redis_keyspace_hits_total{stack=\"$stack\"}[$__rate_interval]) + rate(redis_keyspace_misses_total{stack=\"$stack\"}[$__rate_interval])) == 0) - 1",
           "refId": "A",
           "instant": true,
           "range": false
@@ -241,7 +253,7 @@
       "id": 4,
       "type": "stat",
       "title": "Memory of maxmemory",
-      "description": "used_memory as a share of maxmemory. Empty while maxmemory is 0, the chart's default: Redis then grows until the host or resources.limits.memory stops it.",
+      "description": "used_memory as a share of maxmemory, \"No limit\" while maxmemory is 0, the chart's default: Redis then grows until the host or resources.limits.memory stops it.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -256,7 +268,6 @@
         "defaults": {
           "unit": "percentunit",
           "decimals": 1,
-          "noValue": "No limit",
           "color": {
             "mode": "thresholds"
           },
@@ -276,7 +287,19 @@
                 "value": 0.9
               }
             ]
-          }
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "-1": {
+                  "text": "No limit",
+                  "color": "blue",
+                  "index": 0
+                }
+              }
+            }
+          ]
         },
         "overrides": []
       },
@@ -300,7 +323,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "redis_memory_used_bytes{stack=\"$stack\"} / (redis_memory_max_bytes{stack=\"$stack\"} > 0)",
+          "expr": "redis_memory_used_bytes{stack=\"$stack\"} / (redis_memory_max_bytes{stack=\"$stack\"} > 0) or (redis_memory_max_bytes{stack=\"$stack\"} == 0) - 1",
           "refId": "A",
           "instant": true,
           "range": false

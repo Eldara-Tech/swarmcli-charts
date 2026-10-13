@@ -136,30 +136,32 @@ through its own configuration:
 ```bash
 base=https://raw.githubusercontent.com/Eldara-Tech/swarmcli-charts/main/charts/redis/monitoring
 curl -fsSL -O "$base/redis-rules.yml" -O "$base/redis-dashboard.json"
-swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --reuse-values \
+v="$(swarmcli charts status mon | sed -n 's/^CHART: prometheus-stack-//p')"
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --version "${v:?}" --reuse-values \
   --set-file prometheus.extraRules.redis=./redis-rules.yml \
   --set-file grafana.dashboards.redis=./redis-dashboard.json
 ```
 
-`--reuse-values` is safe here only while prometheus-stack's chart version stays the
-same; prometheus-stack's README, *Keeping your setup in git*, has the values-file form.
+`--version` keeps prometheus-stack at the version it runs, the only case in which `--reuse-values`
+is safe (Eldara-Tech/swarmcli#687).
 
 - **Alerts** (`redis-rules.yml`): `RedisDown` and `RedisTooManyConnections` (above 90%
   of `maxclients`), derived from the
   [redis-mixin](https://github.com/oliver006/redis_exporter/tree/master/contrib/redis-mixin)
-  (MIT). Then the chart's own: `RedisOutOfMemory` while Redis keeps answering OOM,
+  (MIT). Then the chart's own: `RedisRejectingWrites` while Redis keeps answering OOM,
   `RedisMemoryNearLimit` above 90% of `maxmemory`, and `RedisPersistenceFailed` while
   the last RDB save or AOF write has failed, which by default makes Redis refuse writes.
   `RedisMemoryNearLimit` needs `maxmemory` set and `maxmemoryPolicy: noeviction`: with
   the default `maxmemory` there is no limit to approach, and an evicting policy sits at
   it by design.
-- **Dashboard** (`redis-dashboard.json`, uid `redis`): status, uptime, hit ratio,
-  memory against `maxmemory` and clients against `maxclients`; commands, p99 latency,
-  errors by type and clients; memory, evicted and expired keys, keys per database and
-  persistence status. Pick a release by its `stack`.
+- **Dashboard** (`redis-dashboard.json`, uid `redis`), trimmed from the
+  [redis-mixin dashboard](https://github.com/oliver006/redis_exporter/tree/master/contrib/redis-mixin/dashboards)
+  (MIT): status, uptime, hit ratio, memory against `maxmemory` and clients against
+  `maxclients`; commands, p99 latency, errors by type and clients; memory, evicted and
+  expired keys, keys per database and persistence status. Pick a release by its `stack`.
 
-The dashboard selects by the `stack` label prometheus-stack's discovery puts on every
-target. Another Prometheus needs the same relabelling of
+The dashboard picks a release by the `stack` label prometheus-stack's discovery puts on
+every target, and the alerts carry it. Another Prometheus needs the same relabelling of
 `__meta_dockerswarm_service_label_com_docker_stack_namespace` to `stack`.
 
 ## Values

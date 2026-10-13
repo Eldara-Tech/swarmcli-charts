@@ -87,7 +87,7 @@ tests:
               description: 'redis_exporter down_redis-exporter on 10.0.1.5:9121 has not reached its server for 5 minutes.'
       # Only the errors that keep coming: release ok's old ones do not count.
       - eval_time: 10m
-        alertname: RedisOutOfMemory
+        alertname: RedisRejectingWrites
         exp_alerts:
           - exp_labels:
               severity: critical
