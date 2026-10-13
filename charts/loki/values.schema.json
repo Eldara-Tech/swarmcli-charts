@@ -142,6 +142,17 @@
         }
       }
     },
+    "metrics": {
+      "description": "Prometheus discovery labels on the Loki service (/metrics on service.port).",
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "network": {
+          "description": "External overlay Prometheus scrapes on.",
+          "type": "string", "minLength": 1
+        }
+      }
+    },
     "labels": { "type": "object" }
   }
 }

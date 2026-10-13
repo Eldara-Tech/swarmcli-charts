@@ -17,6 +17,9 @@
 #     router would serve the whole API unauthenticated over HTTPS.
 #   * Alloy holds the Docker socket and must NOT be on the ingress overlay, and must reach
 #     Loki over the stack-internal one.
+#   * metrics stay opt-in, and when on, the discovery labels sit on Loki alone with exactly
+#     the overlays the mode calls for. Every deploy label of an opted-in service is readable
+#     through Prometheus's targets API, and every overlay Loki joins can read all its logs.
 set -euo pipefail
 
 out="$1"
@@ -114,7 +117,7 @@ labels="$(yq -r '.services.loki.deploy.labels // [] | join("\n")' "$out")"
 ports="$(yq -r '.services.loki.ports // [] | length' "$out")"
 
 case "$case" in
-  published|ephemeral|bind-mount|external-config|external-secret)
+  published|ephemeral|bind-mount|external-config|external-secret|metrics-published)
     [ "$ports" = "1" ] \
       || { echo "  FAIL($case): published mode did not publish exactly one port"; fail=1; }
     [ "$(yq -r '.services.loki.ports[0].target' "$out")" = "3100" ] \
@@ -145,7 +148,45 @@ case "$case" in
     [ "$labels" = "" ] \
       || { echo "  FAIL($case): exposure is none but Traefik labels were rendered"; fail=1; }
     ;;
+  metrics)
+    [ "$ports" = "0" ] \
+      || { echo "  FAIL($case): exposure is none but a port was published"; fail=1; }
+    if printf '%s\n' "$labels" | grep -F 'traefik.' >/dev/null; then
+      echo "  FAIL($case): exposure is none but Traefik labels were rendered"; fail=1
+    fi
+    ;;
 esac
+
+# --------------------------------------------------------------------- metrics
+# The discovery labels, sorted and joined, and Loki's overlays the same way.
+prom="$(yq -r '[.services.loki.deploy.labels // [] | .[] | select(test("^prometheus\\.io/"))] | sort | join(",")' "$out")"
+lnets="$(yq -r '.services.loki.networks // [] | sort | join(",")' "$out")"
+case "$case" in
+  metrics|metrics-published)
+    [ "$prom" = "prometheus.io/port=3100,prometheus.io/scrape=true" ] \
+      || { echo "  FAIL($case): Loki's discovery labels are '$prom', expected scrape=true and port=3100"; fail=1; }
+    # none mode: Loki is on `monitoring` already, so metrics must add NO overlay. published
+    # mode: Loki is on none, so metrics must add exactly `monitoring`.
+    [ "$lnets" = "monitoring" ] \
+      || { echo "  FAIL($case): Loki's overlays are '$lnets', expected exactly monitoring"; fail=1; }
+    [ "$(yq -r '.networks.monitoring.external' "$out")" = "true" ] \
+      || { echo "  FAIL($case): the monitoring overlay is not declared external"; fail=1; }
+    ;;
+  *)
+    [ -z "$prom" ] \
+      || { echo "  FAIL($case): metrics are off but Loki carries discovery labels: $prom"; fail=1; }
+    case "$case" in
+      published|ephemeral|bind-mount|external-config|external-secret)
+        [ -z "$lnets" ] \
+          || { echo "  FAIL($case): published mode with metrics off attached overlays: $lnets"; fail=1; }
+        ;;
+    esac
+    ;;
+esac
+# Alloy is never opted in: its HTTP server also serves component state that carries every
+# container label it discovers.
+[ -z "$(yq -r '.services.alloy.deploy.labels // [] | .[] | select(test("^prometheus\\.io/"))' "$out")" ] \
+  || { echo "  FAIL($case): the Alloy shipper carries Prometheus discovery labels"; fail=1; }
 
 # --------------------------------------------------------------------- shipper
 if [ "$case" = "shipper" ]; then
@@ -169,6 +210,61 @@ if [ "$case" = "shipper" ]; then
 else
   [ "$(yq -r '.services.alloy // "none"' "$out")" = "none" ] \
     || { echo "  FAIL($case): the shipper is off but an alloy service was rendered"; fail=1; }
+fi
+
+# ------------------------------------------------------------------- refusals
+# What the chart must REFUSE to render, checked once (in the `metrics` fixture) by rendering
+# the chart again with SWARMCLI, which test-charts.sh sets. A refusal nobody tests reads
+# exactly like one that works.
+if [ "$case" = "metrics" ]; then
+  chart="$(cd "$(dirname "$0")/.." && pwd)"
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  render() { "${SWARMCLI:?render-check needs SWARMCLI to test the refusals}" charts template r "$chart" -f "$chart/ci/metrics-values.yaml" "$@"; }
+  refused() {
+    local want="$1"; shift
+    if render "$@" >/dev/null 2>"$tmp/err"; then
+      echo "  FAIL($case): rendered with $* — it must be refused"; fail=1
+    elif ! grep -F "$want" "$tmp/err" >/dev/null; then
+      echo "  FAIL($case): $* failed, but not with \"$want\": $(cat "$tmp/err")"; fail=1
+    fi
+  }
+  cat >"$tmp/traefik.yaml" <<'YAML'
+exposure:
+  mode: traefik
+  network: traefik-public
+traefik:
+  basicAuthUsers: "ops:$$apr1$$x$$y"
+YAML
+  cat >"$tmp/basic.yaml" <<'YAML'
+labels:
+  traefik.http.middlewares.ops.BasicAuth.Users: "ops:$$apr1$$x$$y"
+YAML
+  cat >"$tmp/digest.yaml" <<'YAML'
+exposure:
+  mode: published
+labels:
+  traefik.http.middlewares.ops.digestauth.users: "ops:realm:abc"
+YAML
+  cat >"$tmp/header.yaml" <<'YAML'
+labels:
+  traefik.http.middlewares.ops.headers.customRequestHeaders.Authorization: "Basic b3BzOnNlY3JldA=="
+YAML
+  cat >"$tmp/usersfile.yaml" <<'YAML'
+labels:
+  traefik.http.middlewares.ops.basicauth.usersfile: /run/secrets/ops-users
+YAML
+  refused 'cannot be combined with exposure.mode=traefik' -f "$tmp/traefik.yaml"
+  refused 'carries credential material' -f "$tmp/basic.yaml"
+  refused 'carries credential material' -f "$tmp/digest.yaml"
+  refused 'carries credential material' -f "$tmp/header.yaml"
+  refused 'cannot be "internal" while shipper.enabled' --set shipper.enabled=true --set metrics.network=internal
+  # The alternative the message recommends must keep working, and so must the same labels
+  # with metrics off.
+  render -f "$tmp/usersfile.yaml" >/dev/null 2>"$tmp/err" \
+    || { echo "  FAIL($case): a basicauth.usersfile label was refused; it carries no credential: $(cat "$tmp/err")"; fail=1; }
+  render -f "$tmp/basic.yaml" --set metrics.enabled=false >/dev/null 2>"$tmp/err" \
+    || { echo "  FAIL($case): a basic-auth label without metrics was refused; it must keep working: $(cat "$tmp/err")"; fail=1; }
 fi
 
 [ "$fail" -eq 0 ] || exit 1
