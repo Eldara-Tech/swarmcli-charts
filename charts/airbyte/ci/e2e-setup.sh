@@ -5,10 +5,12 @@
 #   $1 = release name   $2 = chart directory   $3 = fixture case name
 # The mock, noauth and login fixtures deploy (the rest are ci/e2e-render-only). They need everything
 # the chart treats as external, so this hook provides, with dummy values:
-#   * the eight operator secrets and the airbyte-db-net / traefik-public overlays;
+#   * the eight operator secrets and the airbyte-db-net / airbyte-e2e-s3-net / traefik-public
+#     overlays;
 #   * the airbyte-data node label the session Redis and Temporal are pinned to;
 #   * PostgreSQL (airbyte-e2e-postgres) on airbyte-db-net;
-#   * SeaweedFS (airbyte-e2e-s3) as the S3 endpoint. Airbyte creates its bucket itself;
+#   * SeaweedFS (airbyte-e2e-s3) as the S3 endpoint, alone on airbyte-e2e-s3-net, so only
+#     storage.network reaches it. Airbyte creates its bucket itself;
 #   * an OIDC discovery mock (airbyte-e2e-oidc, ci/mock-oidc.js) on traefik-public, without
 #     which oauth2-proxy exits at startup;
 #   * for noauth and login, the in-repo traefik chart as a real edge (scripts/e2e-edge);
@@ -44,6 +46,7 @@ docker secret inspect airbyte_oauth_cookie_secret >/dev/null 2>&1 \
   || dd if=/dev/urandom bs=32 count=1 2>/dev/null | docker secret create airbyte_oauth_cookie_secret - >/dev/null
 
 docker network create --driver overlay --attachable airbyte-db-net >/dev/null 2>&1 || true
+docker network create --driver overlay --attachable airbyte-e2e-s3-net >/dev/null 2>&1 || true
 docker network create --driver overlay --attachable traefik-public >/dev/null 2>&1 || true
 
 node="$(docker node ls --format '{{.ID}} {{.Self}}' 2>/dev/null | awk '$2=="true"{print $1; exit}')"
@@ -60,7 +63,7 @@ docker config create airbyte-e2e-mock-oidc "$chart_dir/ci/mock-oidc.js" >/dev/nu
 docker service create --detach --name airbyte-e2e-postgres --network airbyte-db-net \
   --env POSTGRES_DB=airbyte --env POSTGRES_USER="$DB_USER" --env POSTGRES_PASSWORD="$DB_PW" \
   postgres:17-alpine >/dev/null
-docker service create --detach --name airbyte-e2e-s3 --network airbyte-db-net \
+docker service create --detach --name airbyte-e2e-s3 --network airbyte-e2e-s3-net \
   --env AWS_ACCESS_KEY_ID="$S3_KEY" --env AWS_SECRET_ACCESS_KEY="$S3_SECRET" \
   chrislusf/seaweedfs:4.47 server -s3 >/dev/null
 docker service create --detach --name airbyte-e2e-oidc --network traefik-public \
