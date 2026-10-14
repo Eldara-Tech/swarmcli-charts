@@ -173,7 +173,7 @@ include:
   # a task restart logs every session out) and bind-mount are covered by charts.yml and run
   # in a full local `make e2e`.
   - { chart: seaweedfs,     cases: "default buckets ephemeral published edge admin-edge oidc admin-oidc",            timeout: 6m  }
-  # rustfs: seaweedfs's five plus two, for the same reason: RustFS converges just as well on
+  # rustfs: seaweedfs's first five plus two, for the same reason: RustFS converges just as well on
   # its public default rustfsadmin pair, so ci/e2e-check.sh proves from a client on the overlay
   # that anonymous, wrong-key and default-pair requests get 403, a signed PUT/GET round-trips and
   # the listed buckets were created. `buckets` forces a restart and proves the object survives
