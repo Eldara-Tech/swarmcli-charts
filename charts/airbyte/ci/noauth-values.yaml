@@ -11,6 +11,7 @@ database:
   host: airbyte-e2e-postgres
 storage:
   endpoint: http://airbyte-e2e-s3:8333
+  network: airbyte-e2e-s3-net
 exposure:
   host: airbyte.e2e.test
   tls: false

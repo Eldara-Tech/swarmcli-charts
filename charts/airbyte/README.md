@@ -22,8 +22,8 @@ workloadLauncher:
 ```
 
 The chart validates every listed overlay before deployment and attaches each
-connector workload to it through Docker. `database.network` is already included;
-do not repeat it in this list.
+connector workload to it through Docker. `database.network` and `storage.network`
+are already included; do not repeat them in this list.
 
 ## Prerequisites
 
@@ -98,6 +98,24 @@ oauth2:
 ```bash
 swarmcli charts install airbyte swarmcli-charts/airbyte -f airbyte-values.yaml
 ```
+
+## Object storage
+
+The server, worker and workload launcher read and write `storage.endpoint`, and so do the
+replication orchestrator and connector sidecar the launcher starts. When the store runs in
+another stack, name its attachable overlay in `storage.network` and all of them join it.
+For the [rustfs chart](../rustfs) installed as release `s3`:
+
+```yaml
+storage:
+  endpoint: http://s3-rustfs:9000
+  network: rustfs-net
+```
+
+Airbyte's S3 client parses the endpoint with `java.net.URI`, which rejects a host name
+containing `_`. A stack's service name, `<stack>_<service>`, always has one, so the
+chart refuses to render it. Use the `<release>-rustfs` alias the rustfs chart adds on its
+network (`<release>-seaweedfs` for the seaweedfs chart), or a DNS name.
 
 ## Exposure
 
@@ -210,6 +228,7 @@ after 30 minutes, and a pod whose image is still missing then fails. Kubernetes
 | `database.network` | `airbyte-db-net` | External overlay PostgreSQL is reachable on |
 | `storage.endpoint` / `.bucket` | `https://minio.example.com` / `airbyte-storage` | S3-compatible endpoint and bucket |
 | `storage.accessKeySecretName` / `.secretKeySecretName` | `airbyte_s3_access_key` / `airbyte_s3_secret_key` | External S3 credential secrets |
+| `storage.network` | `""` | External overlay the S3 endpoint is reachable on (see [Object storage](#object-storage)) |
 | `connectorRegistry.enterpriseSourceStubsUrl` | see `values.yaml` | Connector-registry Enterprise source stubs URL |
 | `flyway.configsMinimumMigrationVersion` / `.jobsMinimumMigrationVersion` | `0.35.15.001` / `0.29.15.001` | Minimum required Flyway migration for the configs and jobs databases |
 | `auth.mode` | `oauth2` | `oauth2` (oauth2-proxy in front), `airbyte` (see [Airbyte's own login](#airbytes-own-login)) or `none` (see [Without OAuth](#without-oauth)) |
