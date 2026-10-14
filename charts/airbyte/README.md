@@ -103,13 +103,22 @@ swarmcli charts install airbyte swarmcli-charts/airbyte -f airbyte-values.yaml
 
 The server, worker and workload launcher read and write `storage.endpoint`, and so do the
 replication orchestrator and connector sidecar the launcher starts. When the store runs in
-another stack, name its attachable overlay in `storage.network` and all of them join it.
-For the [rustfs chart](../rustfs) installed as release `s3`:
+another stack, name its attachable overlay in `storage.network`: those three services and
+every container the launcher starts, connector images included, join it.
+
+Everything else on that overlay can then reach them, including the server's API, which
+checks no credentials of its own with `auth.mode: oauth2` or `none`. So give the store an
+overlay only Airbyte joins rather than one every S3 client shares; the chart refuses
+`exposure.network`. With the [rustfs chart](../rustfs):
+
+```bash
+swarmcli charts install s3 swarmcli-charts/rustfs --set network.name=airbyte-s3
+```
 
 ```yaml
 storage:
   endpoint: http://s3-rustfs:9000
-  network: rustfs-net
+  network: airbyte-s3
 ```
 
 Airbyte's S3 client parses the endpoint with `java.net.URI`, which rejects a host name

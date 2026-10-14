@@ -95,9 +95,11 @@ storage:
   accessKeySecretName: airbyte_s3_access_key
   secretKeySecretName: airbyte_s3_secret_key
   bucket: airbyte-storage
-  # External attachable overlay the endpoint is reachable on, e.g. the rustfs chart's
-  # rustfs-net. The server, worker, workload launcher and the workloads it starts join
-  # it. Empty: none, for an endpoint reached through routing or on database.network.
+  # External attachable overlay the endpoint is reachable on. The server, worker,
+  # workload launcher and every container it starts join it, so everything else on it
+  # reaches them: use an overlay only Airbyte and the store join, never
+  # exposure.network (refused). Empty: none, for an endpoint reached through routing
+  # or on database.network.
   network: ""
 
 # Airbyte's connector registry loads Enterprise source stubs from this URL.

@@ -102,6 +102,8 @@ if [ "$case" = "default" ]; then
     --set 'traefik.basicAuthUsers=u:$$apr1$$x$$y'
   # java.net.URI drops a host with '_' (a <stack>_<service> name), and S3 calls fail at run time.
   refused "rejects a host name containing '_'" --set storage.endpoint=http://s3_rustfs:9000
+  # The edge overlay would put the server's API, unauthenticated in oauth2 mode, next to everything routed.
+  refused 'is exposure.network' --set storage.network=traefik-public
 fi
 
 # storage.network reaches every process that talks to S3 — the server, worker and workload

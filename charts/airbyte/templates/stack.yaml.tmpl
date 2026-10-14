@@ -21,6 +21,9 @@
 {{- if and (eq .Values.auth.mode "none") (eq .Values.exposure.mode "published") }}
 {{- fail "auth.mode none cannot use exposure.mode published: the port would serve Airbyte, which runs any connector image it is given next to your database, to anyone who reaches it. Use exposure.mode traefik with traefik.basicAuthUsers, or exposure.mode none behind a proxy that authenticates." -}}
 {{- end }}
+{{- if and .Values.storage.network (eq .Values.storage.network .Values.exposure.network) }}
+{{- fail (printf "storage.network %s is exposure.network: everything the edge proxy routes shares that overlay and would reach the Airbyte server's API and the connector containers. Give the store an overlay only Airbyte joins." .Values.storage.network) -}}
+{{- end }}
 {{- if contains "_" (urlParse .Values.storage.endpoint).hostname }}
 {{- fail (printf "storage.endpoint %s: Airbyte's S3 client parses it with java.net.URI, which rejects a host name containing '_', so every storage call would fail. A stack's service name <stack>_<service> always has one: use an alias without it, such as the rustfs chart's http://<release>-rustfs:9000 or the seaweedfs chart's http://<release>-seaweedfs:8333, or a DNS name." .Values.storage.endpoint) -}}
 {{- end }}
