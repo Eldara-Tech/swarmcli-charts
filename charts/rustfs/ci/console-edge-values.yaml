@@ -1,0 +1,12 @@
+# The console routed through the in-repo traefik chart as a real edge while the S3 API
+# has no router (exposure.mode none): a browser reaches the console and the S3 host is
+# unrouted at the edge. Port 9000 is still reachable from traefik-public, which the
+# routed console attaches. ci/e2e-setup.sh stands the edge up. Plain HTTP (tls:false):
+# CI cannot issue an ACME certificate.
+console:
+  enabled: true
+  exposure:
+    mode: traefik
+  ingress:
+    host: rustfs-console.e2e.test
+    tls: false
