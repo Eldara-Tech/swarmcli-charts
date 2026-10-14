@@ -50,7 +50,8 @@ overlay, which swarmcli creates if it is missing. Another stack joins that netwo
 (`http://s3-rustfs:9000` above), an alias the chart adds on that network, with `_` and
 `.` in the release name turned into `-`. The stack's own service name
 `<release>_rustfs` resolves too, but Java clients (anything on the AWS SDK for Java,
-such as Airbyte) reject a host name containing `_`.
+such as Airbyte) reject a host name containing `_`. Releases whose names differ only
+in those characters (`my_s3`, `my-s3`) get the same alias, so keep them off one network.
 
 Clients use **path-style** addressing (`http://<endpoint>/<bucket>/<key>`), the
 default for every non-AWS S3 client, and region `us-east-1`. For virtual-hosted-style
