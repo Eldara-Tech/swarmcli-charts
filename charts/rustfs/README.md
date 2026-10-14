@@ -46,8 +46,12 @@ swarmcli charts install s3 swarmcli-charts/rustfs --set 'buckets={runner-cache}'
 
 By default (`exposure.mode: none`) the store is reachable only on the `rustfs-net`
 overlay, which swarmcli creates if it is missing. Another stack joins that network as
-`external: true` and uses the endpoint `http://<release>_rustfs:9000`
-(`http://s3_rustfs:9000` above).
+`external: true` and uses the endpoint `http://<release>-rustfs:9000`
+(`http://s3-rustfs:9000` above), an alias the chart adds on that network, with `_` and
+`.` in the release name turned into `-`. The stack's own service name
+`<release>_rustfs` resolves too, but Java clients (anything on the AWS SDK for Java,
+such as Airbyte) reject a host name containing `_`. Releases whose names differ only
+in those characters (`my_s3`, `my-s3`) get the same alias, so keep them off one network.
 
 Clients use **path-style** addressing (`http://<endpoint>/<bucket>/<key>`), the
 default for every non-AWS S3 client, and region `us-east-1`. For virtual-hosted-style
@@ -132,7 +136,7 @@ on the edge if multi-gigabyte uploads fail part-way.
 The console listens on `console.port` (9001) and serves its UI under
 `/rustfs/console/`; you log in with the key pair from the secrets, or through
 [single sign-on](#single-sign-on). On `rustfs-net` it is
-`http://<release>_rustfs:9001`; `console.exposure.mode` routes it on
+`http://<release>-rustfs:9001`; `console.exposure.mode` routes it on
 `console.ingress.host` or publishes it as `console.publish.port` (see
 [Exposure](#exposure) for the console-only example). A browser that opens `/` is
 redirected to `/rustfs/console/`. Routed, the console needs a host of its own, not
@@ -150,7 +154,7 @@ keeps them in the browser's local storage. Leave it off where you do not use it.
 The runner's job helper containers upload and download the cache archive
 themselves, and they run on the node's own Docker engine — not on any overlay. So
 the runner needs an endpoint reachable from a plain container on each runner
-node: the Traefik host (or a published port), not `<release>_rustfs`. With the
+node: the Traefik host (or a published port), not `<release>-rustfs`. With the
 [gitlab-runner chart](../gitlab-runner):
 
 ```yaml

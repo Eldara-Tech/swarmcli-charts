@@ -100,9 +100,12 @@ hc="$(q "$svc.healthcheck.test | join(\" \")")"
 [ "$(q "$svc.stop_grace_period")" != "null" ] || bad "no stop_grace_period"
 
 # ── networks ──────────────────────────────────────────────────────────────────────────
-nets="$(q "$svc.networks[]")"
+nets="$(q "$svc.networks | keys | .[]")"
 grep -Fx rustfs-net <<<"$nets" >/dev/null || bad "the service is not on network.name (rustfs-net): other stacks could not reach it"
 [ "$(q '.networks."rustfs-net".external')" = "true" ] || bad "rustfs-net is not external — it would be stack-scoped and unreachable by name from other stacks"
+# Java clients cannot dial ci_rustfs: java.net.URI rejects the '_' in it.
+[ "$(q "$svc.networks.\"rustfs-net\".aliases | join(\" \")")" = "ci-rustfs" ] \
+  || bad "the service's alias on rustfs-net is not exactly ci-rustfs, the name without '_' Java clients dial"
 
 # ── the console: a second listener with the full API, only when asked for ─────────────
 case "$case" in traefik|published|console-edge|oidc) console=1 ;; *) console="" ;; esac
@@ -284,6 +287,12 @@ if [ "$case" = "default" ]; then
       bad "$* failed, but not with \"$want\": $(tr '\n' ' ' <"$tmp.err")"
     fi
   }
+  if "${SWARMCLI:?render-check needs SWARMCLI to render the refusals}" charts template my_s3.x "$chart" >"$tmp" 2>"$tmp.err"; then
+    [ "$(yq -r "$svc.networks.\"rustfs-net\".aliases[]" "$tmp")" = "my-s3-x-rustfs" ] \
+      || bad "release my_s3.x does not get the alias my-s3-x-rustfs: '_' and '.' must become '-'"
+  else
+    bad "release my_s3.x was refused: $(tr '\n' ' ' <"$tmp.err")"
+  fi
   refused 'console.ingress.host is required' --set console.enabled=true --set console.exposure.mode=traefik
   refused 'console.ingress.host must differ from ingress.host' --set exposure.mode=traefik --set console.enabled=true \
     --set console.exposure.mode=traefik --set console.ingress.host=s3.example.com
