@@ -99,9 +99,12 @@ hc="$(q "$svc.healthcheck.test | join(\" \")")"
 [ "$(q "$svc.stop_grace_period")" != "null" ] || bad "no stop_grace_period"
 
 # ── networks ──────────────────────────────────────────────────────────────────────────
-nets="$(q "$svc.networks[]")"
+nets="$(q "$svc.networks | keys | .[]")"
 grep -Fx seaweedfs-net <<<"$nets" >/dev/null || bad "the service is not on network.name (seaweedfs-net): other stacks could not reach it"
 [ "$(q '.networks."seaweedfs-net".external')" = "true" ] || bad "seaweedfs-net is not external — it would be stack-scoped and unreachable by name from other stacks"
+# Java clients cannot dial ci_seaweedfs: java.net.URI rejects the '_' in it.
+[ "$(q "$svc.networks.\"seaweedfs-net\".aliases | join(\" \")")" = "ci-seaweedfs" ] \
+  || bad "the service's alias on seaweedfs-net is not exactly ci-seaweedfs, the name without '_' Java clients dial"
 
 # ── exposure ──────────────────────────────────────────────────────────────────────────
 labels="$(q "$svc.deploy.labels[]")"
@@ -182,6 +185,19 @@ case "$case" in
 esac
 if [ "$case" = "buckets" ]; then
   grep -Fx 'node.role == manager' <<<"$constraints" >/dev/null || bad "case $case: placement.constraints was not applied"
+fi
+
+# ── the alias of a release name with '_' or '.' (from the default fixture only) ──────
+if [ "$case" = "default" ]; then
+  tmp="$(mktemp)"
+  trap 'rm -f "$tmp" "$tmp.err"' EXIT
+  if "${SWARMCLI:?render-check needs SWARMCLI to render a second release}" charts template my_s3.x \
+    "$(cd "$(dirname "$0")/.." && pwd)" >"$tmp" 2>"$tmp.err"; then
+    [ "$(yq -r "$svc.networks.\"seaweedfs-net\".aliases[]" "$tmp")" = "my-s3-x-seaweedfs" ] \
+      || bad "release my_s3.x does not get the alias my-s3-x-seaweedfs: '_' and '.' must become '-'"
+  else
+    bad "release my_s3.x was refused: $(tr '\n' ' ' <"$tmp.err")"
+  fi
 fi
 
 exit "$fail"

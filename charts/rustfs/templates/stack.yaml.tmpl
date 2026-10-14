@@ -109,6 +109,9 @@ version: "3.9"
 {{- $nets := list .Values.network.name }}
 {{- if or $s3Routed $consoleRouted }}{{ $nets = append $nets .Values.exposure.network }}{{- end }}
 {{- $nets = $nets | uniq }}
+{{- /* The name clients dial on network.name. A stack's own <release>_rustfs has a '_', which is
+       not valid in a host name: java.net.URI, and so every AWS SDK for Java client, rejects it. */}}
+{{- $alias := printf "%s-rustfs" (.Release.Name | replace "_" "-" | replace "." "-") }}
 
 services:
 
@@ -247,7 +250,11 @@ services:
 
     networks:
 {{- range $nets }}
-      - {{ . }}
+      {{ . }}:
+{{- if eq . $.Values.network.name }}
+        aliases:
+          - {{ $alias }}
+{{- end }}
 {{- end }}
 
 {{- if or (eq $mode "published") $consolePublished }}
