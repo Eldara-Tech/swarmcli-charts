@@ -1,0 +1,10 @@
+# The GitLab Runner cache shape: buckets created at start, extra placement constraint,
+# a dotted name to prove the validator admits every legal character. ci/e2e-check.sh
+# asserts both buckets exist, and that a forced restart keeps the data and does not
+# trip over the buckets already being there.
+buckets:
+  - runner-cache
+  - e2e.second-bucket
+placement:
+  constraints:
+    - node.role == manager

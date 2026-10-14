@@ -1,0 +1,6 @@
+# Persistence off: no volume and no node pin (a pin without a volume would strand the
+# task Pending on a label nobody needs to set).
+persistence:
+  enabled: false
+buckets:
+  - scratch

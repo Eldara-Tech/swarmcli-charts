@@ -1,0 +1,6 @@
+# Host-path persistence: /data bind-mounted from a host directory on a differently
+# named data node. ci/e2e-setup.sh creates the directory on the node, owned by 10001,
+# and the label.
+persistence:
+  volumePath: /tmp/rustfs-e2e/data
+  nodeLabel: rustfs-e2e-node

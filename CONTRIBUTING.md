@@ -302,14 +302,22 @@ reference):
 - The README shows loading them through prometheus-stack's own values:
   `--set-file prometheus.extraRules.<key>=…` and
   `--set-file grafana.dashboards.<key>=…`.
-- `ci/e2e-check.sh` runs `promtool test rules` on them with a pinned
-  `prom/prometheus` image. Nothing deploys them, so nothing else would notice they
-  broke.
-- `--reuse-values` is safe for that upgrade only while prometheus-stack's chart
-  version stays the same. Across a chart-version change it replaces the new
-  version's defaults with the old release's values, so every key the new version
-  adds renders `<no value>`, and `--dry-run` still exits 0
-  (Eldara-Tech/swarmcli#687).
+- `ci/e2e-check.sh` runs `promtool test rules` on them with `prom/prometheus` at
+  the `appVersion` of `charts/prometheus-stack/Chart.yaml`, which Renovate keeps
+  current, not a literal tag. Nothing deploys them, so nothing else would notice
+  they broke.
+- The README's upgrade pins prometheus-stack's running version (`--version` read
+  from `charts status`), the only case in which `--reuse-values` is safe. Across a
+  chart-version change it replaces the new version's defaults with the old
+  release's values, so every key the new version adds renders `<no value>`, and
+  `--dry-run` still exits 0 (Eldara-Tech/swarmcli#687).
+- Severity is `critical` only when users lose service, writes or data now — the
+  backend unreachable, writes refused, quorum at risk, a certificate expiring within
+  7 days, 5xx on the app's own endpoints — and `warning` otherwise. Alerts derived
+  from upstream are re-rated to this where they differ, and the rules header says so.
+- An alert that aggregates keeps both discovery labels, `by (stack, job, …)`, or
+  only `by (stack)` when it is about a release spanning several services, as
+  galera's cluster alerts are.
 
 **Generated config files** — a chart that renders an upstream program's config
 file must check each key's upstream *type*, not only its name. A nullable field
