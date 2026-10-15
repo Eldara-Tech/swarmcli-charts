@@ -366,7 +366,7 @@ if [ "$case" = "admin-oauth2" ]; then
     --cookie-secret-file=/run/secrets/seaweedfs-admin-oauth2-cookie-secret --provider-ca-file=/run/secrets/seaweedfs-e2e-oidc-ca \
     --cookie-secure=true --cookie-samesite=lax --cookie-refresh=1m --redirect-url=https://admin.e2e.test/oauth2/callback '--email-domain=*' \
     --allowed-group=storage-admins '--scope=openid email profile' --code-challenge-method=S256 --reverse-proxy=true \
-    --trusted-proxy-ip=10.0.0.0/8 --upstream=http://seaweedfs:23646/ --proxy-prefix=/oauth2 --pass-basic-auth=false \
+    --trusted-proxy-ip=10.0.0.0/8 --upstream=http://ci_seaweedfs:23646/ --proxy-prefix=/oauth2 --pass-basic-auth=false \
     --pass-user-headers=false --pass-access-token=false --pass-authorization-header=false --set-xauthrequest=false \
     --skip-jwt-bearer-tokens=false)"
   got_cmd="$(q "$px.command[]")"
@@ -375,7 +375,7 @@ if [ "$case" = "admin-oauth2" ]; then
   [ "$(q "$px.networks[]" | sort | tr '\n' ' ')" = "admin-oauth2 traefik-public " ] \
     || bad "case $case: oauth2-proxy is on $(q "$px.networks[]" | tr '\n' ' ')instead of exactly traefik-public and admin-oauth2"
   [ "$(q '.networks."admin-oauth2".external // false')" = "false" ] && [ "$(q '.networks."admin-oauth2".attachable // false')" = "false" ] \
-    || bad "case $case: admin-oauth2 is external or attachable, so something besides the proxy could join it"
+    || bad "case $case: admin-oauth2 is external or attachable, so a container besides the proxy could join it"
   for sec in seaweedfs-admin-oauth2-client-secret seaweedfs-admin-oauth2-cookie-secret seaweedfs-e2e-oidc-ca; do
     q "$px.secrets[]" | grep -Fx "$sec" >/dev/null && [ "$(q ".secrets.\"$sec\".external")" = "true" ] \
       || bad "case $case: oauth2-proxy does not mount the external secret $sec"

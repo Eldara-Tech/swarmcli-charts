@@ -583,7 +583,9 @@ services:
 {{-   $o2v := $admin.oauth2 }}
 
   # admin.oauth2: oauth2-proxy signs a user in at the provider and admits only allowedGroups,
-  # then proxies to the UI over admin-oauth2, where the UI still asks for its password: the
+  # then proxies to the UI over admin-oauth2, by the full service name: the proxy is on the
+  # edge's overlay too, where another stack's `seaweedfs` would answer to the short one. The
+  # UI still asks for its password: the
   # UI also answers on every overlay seaweedfs joins, where nothing stands in front of it.
   # The proxy carries the UI's routers and their edge rules. Both secrets are read from
   # their files. The cookie is secure, SameSite=Lax and host-only; no identity header goes
@@ -612,7 +614,7 @@ services:
       - --code-challenge-method=S256
       - --reverse-proxy=true
       - {{ printf "--trusted-proxy-ip=%s" $o2v.trustedProxyIp | replace "$" "$$" | quote }}
-      - --upstream=http://seaweedfs:{{ $adminPort }}/
+      - {{ printf "--upstream=http://%s_seaweedfs:%d/" .Release.Name $adminPort | quote }}
       - --proxy-prefix=/oauth2
       - --pass-basic-auth=false
       - --pass-user-headers=false
@@ -670,7 +672,7 @@ networks:
     external: true
 {{- end }}
 {{- if $o2 }}
-  # Only oauth2-proxy and seaweedfs join it, and nothing can attach to it.
+  # Only oauth2-proxy and seaweedfs join it; no standalone container can attach to it.
   admin-oauth2: {}
 {{- end }}
 
