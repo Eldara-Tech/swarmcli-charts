@@ -247,6 +247,16 @@ case "$case" in
       [ "$(status <<<"$got")" = "200" ] && [ -z "$(header Content-Security-Policy <<<"$got")" ] \
         || die "the dashboard is not served unsandboxed (HTTP $(status <<<"$got"), CSP '$(header Content-Security-Policy <<<"$got")')"
       echo "  ok: an uploaded image downloads inline through the edge under 'Content-Security-Policy: sandbox'; the dashboard has no CSP"
+
+      # Traefik matches the escaped path and weed admin the decoded one, so a route spelled
+      # with %2F would miss the sandboxed router and still reach the file: the edge refuses it.
+      enc="/api%2Ffiles/download?path=/buckets/$bucket/$u.png&inline=true"
+      got="$(docker run --rm --network seaweedfs-net "$CURL_IMAGE" -s -o /dev/null -w '%{http_code}' --max-time 10 \
+        -H "Cookie: $sess" "http://${svc}:23646$enc" 2>/dev/null || true)"
+      [ "$got" = "200" ] || die "weed admin does not serve the file at a path with %2F on the overlay (HTTP $got), so a 404 at the edge would prove nothing"
+      got="$(a -o /dev/null -H "Cookie: $sess" "$abase$enc")"
+      [ "$(status <<<"$got")" = "404" ] || die "a path with an encoded slash reached the UI through the edge (HTTP $(status <<<"$got"))"
+      echo "  ok: weed admin serves the file at /api%2Ffiles/download on the overlay, and the edge refuses that path (404)"
     fi
 
     # A stopped UI comes back, and S3 keeps serving from the same task meanwhile.
