@@ -92,8 +92,9 @@ network:
 # How the S3 API is exposed beyond network.name (the admin UI has its own
 # admin.exposure):
 #   none      - (default) no route or port of its own: services on network.name reach
-#               it, and while the admin UI is traefik-routed so does everything on
-#               exposure.network (the service joins it, and S3 listens on all interfaces).
+#               it, and while the admin UI is traefik-routed (not through admin.oauth2) so
+#               does everything on exposure.network (the service joins it, and S3 listens
+#               on all interfaces).
 #   traefik   - Traefik deploy labels on exposure.network, routing ingress.host to the
 #               S3 port. Path-style addressing (https://<host>/<bucket>/<key>), which is
 #               what non-AWS S3 clients use, including the GitLab Runner cache.
@@ -234,7 +235,8 @@ admin:
     scope: "openid email profile"
     # How often an active session is checked again at the provider, with its refresh token:
     # a user removed from allowedGroups, or disabled there, loses the session at the next
-    # check. "0" checks only at sign-in, so a session then lasts its cookie's 7 days.
+    # check. Keep it under the cookie's 7 days; 0s checks only at sign-in, so a session
+    # then lasts those 7 days.
     cookieRefresh: 1m
     # The proxy believes X-Forwarded-* headers only from these addresses, which must cover
     # the edge proxy's on exposure.network. 10.0.0.0/8 is Swarm's default overlay pool.

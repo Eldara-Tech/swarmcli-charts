@@ -67,7 +67,7 @@ mode. `exposure.mode` adds:
 
 | Mode | What it adds |
 |------|--------------|
-| `none` (default) | no route or port of its own — overlay clients only; on `exposure.network` too while the admin UI is traefik-routed, as the service then joins it |
+| `none` (default) | no route or port of its own — overlay clients only; on `exposure.network` too while the admin UI is traefik-routed without `admin.oauth2`, as the service then joins it |
 | `traefik` | Traefik labels on `exposure.network`, routing `ingress.host` to the S3 port, with an HTTPS router and ACME certificate when `ingress.tls` |
 | `published` | `s3.port` published on the Swarm as `publish.port` |
 
@@ -190,8 +190,8 @@ S3 secret key.
   [Single sign-on](#single-sign-on-seaweedfs-enterprise). [`s3.oidc`](#oidc-for-the-s3-api)
   covers the S3 API alone.
 - **The overlays bypass the router.** Anything on `network.name` — and on
-  `exposure.network` whenever either API is traefik-routed, even with the UI's
-  own mode `none` — reaches the UI directly on `admin.port`: past the routers'
+  `exposure.network` whenever the S3 API, or the UI without `admin.oauth2`, is
+  traefik-routed, even with the UI's own mode `none` — reaches the UI directly on `admin.port`: past the routers'
   middlewares, their `/metrics`, cross-site and sandbox rules, and with no rate
   limit. The
   UI's worker gRPC port (`admin.port + 10000`) has no authentication and stays
@@ -284,13 +284,16 @@ Airbyte: a user signs in at your identity provider, must be in one of
 cannot be combined with `admin.oidc`, and the chart refuses both at once.
 
 The password stays because the UI also answers on every overlay the store joins
-(`network.name`, `monitoring` with metrics on), where nothing stands in front of it. The
+(`network.name`, `exposure.network` while the S3 API is routed, `monitoring` with metrics
+on), where nothing stands in front of it. The
 proxy decides who reaches the login page from the edge; it does not replace the password.
 
 It needs `admin.exposure.mode: traefik` with `admin.ingress.tls`: the proxy carries the
 UI's routers and every edge rule above, and sets a secure cookie. seaweedfs then joins
 `exposure.network` only when the S3 API is routed, and meets the proxy on `admin-oauth2`,
-an overlay of the stack's own that nothing else can attach to.
+an overlay of the stack's own that no standalone container can attach to. The proxy dials
+the UI by its full service name, `<release>_seaweedfs`: it is on the edge's overlay too,
+where another stack's `seaweedfs` would answer to the short name.
 
 With [Keycloak](../keycloak), in your realm:
 
@@ -319,7 +322,7 @@ admin:
 ```
 
 - **Who gets in.** A user whose ID token's `groups` claim holds an `allowedGroups` value,
-  matched exactly, reaches the login page; anyone else gets oauth2-proxy's `403`. Everyone
+  matched exactly, and whose email the provider marks verified, reaches the login page; anyone else gets oauth2-proxy's `403`. Everyone
   admitted then needs the one UI password: the free UI has no per-user roles.
 - **Other providers** work too: the proxy runs as a generic OIDC client, and needs only a
   `groups` claim in the ID token. Dex and Authentik send it only when asked, so add
@@ -331,8 +334,10 @@ admin:
 - **The session** lives in an encrypted cookie, Secure, SameSite=Lax and only for
   `admin.ingress.host`, for up to oauth2-proxy's default 7 days. While it is used, the proxy
   checks it again at the provider every `admin.oauth2.cookieRefresh` (1 minute): a user
-  removed from the groups, or disabled, is refused from the next check on. Without that
-  check (`"0"`) such a user keeps the session for the 7 days. Rotating the cookie secret
+  disabled there is refused from the next check on, and so is one removed from the groups
+  when the provider sends a new ID token with the refresh, as Keycloak does. Keep it under
+  the 7 days; with `0s` the proxy checks only at sign-in, and such a user keeps the session
+  for the 7 days. Rotating the cookie secret
   signs everyone out. No identity header goes to the UI, and a bearer token does not skip
   the sign-in. `admin.oauth2.trustedProxyIp` must cover the edge proxy's address on
   `exposure.network`.
@@ -357,7 +362,8 @@ admin:
 - **No telemetry.** `weed server` reports anonymous cluster statistics to
   telemetry.seaweedfs.com by default; the chart passes `-master.telemetry=false`.
 - Everything on `network.name`, and everything on `exposure.network` whenever
-  the S3 API or the admin UI is traefik-routed, can reach the S3 port. That is
+  the S3 API, or the admin UI without `admin.oauth2`, is traefik-routed, can reach the
+  S3 port. That is
   the intent; the key pair is what protects the data.
 
 ## Buckets
@@ -592,7 +598,7 @@ processes must never share `/data`.
 | `placement.constraints` | `[]` | Extra constraints, always applied |
 | `network.name` | `seaweedfs-net` | Overlay S3 clients join (external, auto-created) |
 | `exposure.mode` | `none` | S3 API: `none`, `traefik` or `published` |
-| `exposure.network` | `traefik-public` | Edge overlay, joined when the S3 API or the admin UI is routed |
+| `exposure.network` | `traefik-public` | Edge overlay, joined when the S3 API or the admin UI is routed; with `admin.oauth2` by oauth2-proxy for the UI |
 | `ingress.host` | `s3.example.com` | S3 API Traefik `Host()` rule |
 | `ingress.tls` | `true` | S3 API HTTPS router + redirect (traefik mode) |
 | `traefik.certResolver` | `le` | ACME resolver |
@@ -625,7 +631,7 @@ processes must never share `/data`.
 | `admin.oauth2.caSecret` | `""` | External secret holding the CA bundle for a provider on a private CA |
 | `admin.oauth2.allowedGroups` | `[]` | `groups` claim values admitted; at least one is required |
 | `admin.oauth2.scope` | `openid email profile` | Scopes requested at sign-in |
-| `admin.oauth2.cookieRefresh` | `1m` | How often an active session is checked again at the provider; `"0"` = only at sign-in |
+| `admin.oauth2.cookieRefresh` | `1m` | How often an active session is checked again at the provider, under 7 days; `0s` = only at sign-in |
 | `admin.oauth2.trustedProxyIp` | `10.0.0.0/8` | Addresses whose `X-Forwarded-*` headers the proxy believes |
 | `extraArgs` | `[]` | Extra `weed server` flags |
 | `metrics.enabled` | `false` | Serve Prometheus metrics, labelled for Swarm service discovery. See *Metrics* |
