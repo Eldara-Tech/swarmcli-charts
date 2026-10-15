@@ -382,7 +382,8 @@ version's defaults, so every `metrics.*` key would render empty
 - `metrics.network` names a different overlay. It must differ from `network.name` and
   `exposure.network`, and the render fails if it does not.
 - **Turning it off** leaves the collector running, because swarmcli deploys without
-  `--prune`. Remove it yourself: `docker service rm <release>_rustfs-metrics`.
+  `--prune`. Remove it yourself: `docker service rm <release>_rustfs-metrics`. Until you
+  do, it answers with no RustFS series, which `RustFSNotReporting` reports.
 - With swarmcli-cd, add `monitoring` to `allow.networks`.
 
 **A collector of your own.** With `metrics.enabled` off, `extraEnv` may point RustFS

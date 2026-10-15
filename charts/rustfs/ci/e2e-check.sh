@@ -139,9 +139,9 @@ echo "  ok: nofile 65536 inside the task, server log on docker service logs"
 # ── metrics: scraped where Prometheus would scrape it ─────────────────────────────────
 # From the monitoring overlay, on the port the discovery label names. RustFS pushes every
 # 30 seconds and reads its drive every 60, and the per-bucket series wait for its first
-# data-usage scan, which took 2 to 4 minutes in a trial run. The round trip above has run,
-# so its request series must be there too. Every name the rules
-# and the dashboard read is checked, so a renamed metric fails here rather than in a panel.
+# data-usage scan, which took up to a few minutes in trial runs. The round trip above has
+# run, so its request series must be there too. Every name the rules and the dashboard
+# read is checked, so a renamed metric fails here rather than in a panel.
 metrics_ok=""
 msvc="${release}_rustfs-metrics"
 if [ "$case" != "metrics" ]; then
@@ -165,7 +165,8 @@ else
   grep -E '^rustfs_http_server_request_duration_seconds_count\{.*status_class="2xx".*\} [1-9]' <<<"$m" >/dev/null \
     || die "the collector does not count the round trip's 2xx responses"
   echo "  ok: the collector on monitoring:${mport} serves all $(wc -l <<<"$want" | tr -d ' ') RustFS metrics the rules and the dashboard read"
-  got="$(docker run --rm --network monitoring "$CURL_IMAGE" -s -o /dev/null -w '%{http_code}' --max-time 5 "http://${release}-rustfs:9000/" 2>/dev/null || true)"
+  # By service name, which resolves on every network the service joins (the alias is rustfs-net's).
+  got="$(docker run --rm --network monitoring "$CURL_IMAGE" -s -o /dev/null -w '%{http_code}' --max-time 5 "http://${svc}:9000/" 2>/dev/null || true)"
   [ "$got" = "000" ] || die "the S3 port answers HTTP $got from the monitoring overlay; RustFS must not join it"
   # Read again: by now the collector has received several exports, so a stdout exporter would have printed.
   logs="$(docker service logs --raw "$svc" 2>&1 || true)"
