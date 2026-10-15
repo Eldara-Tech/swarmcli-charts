@@ -126,7 +126,7 @@ case "$case" in
     if grep -F 'traefik.' <<<"$labels" >/dev/null; then bad "case $case: Traefik labels rendered although exposure.mode is none"; fi
     want_nets=seaweedfs-net
     [ "$case" = "metrics" ] && want_nets="$(printf 'seaweedfs-net\nmonitoring')"
-    [ "$nets" = "$want_nets" ] || bad "case $case: attached to $(tr '\n' ' ' <<<"$nets")instead of $(tr '\n' ' ' <<<"$want_nets")"
+    [ "$(sort <<<"$nets")" = "$(sort <<<"$want_nets")" ] || bad "case $case: attached to $(tr '\n' ' ' <<<"$nets")instead of $(tr '\n' ' ' <<<"$want_nets")"
     ;;
 esac
 
