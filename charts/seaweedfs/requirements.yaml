@@ -16,6 +16,13 @@ networks:
     attachable: true
     autoCreate: false
     description: "exposure.mode=traefik only - the edge proxy's ingress overlay; provided by the proxy stack/operator"
+  # Attached while metrics.enabled. autoCreate:true, like the prometheus-stack chart's
+  # own declaration of it: whichever stack installs first creates it.
+  - name: "{{ .Values.metrics.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: true
+    description: "Overlay the service shares with Prometheus (when metrics.enabled); the prometheus-stack chart scrapes on it by default"
 secrets:
   - name: "{{ .Values.s3.accessKeySecret }}"
     description: "S3 access key id of the admin identity. Pre-create: printf '%s' '<key-id>' | docker secret create seaweedfs-s3-access-key -"
