@@ -183,7 +183,7 @@ services:
       - {{ printf "--redirect-url=%s://%s/oauth2/callback" $scheme .Values.exposure.host | quote }}
       - {{ printf "--email-domain=%s" .Values.oauth2.emailDomain | quote }}
       - --session-store-type=redis
-      - --redis-connection-url=redis://oauth2-redis:6379
+      - {{ printf "--redis-connection-url=redis://%s_oauth2-redis:6379" .Release.Name | quote }}
       - --set-xauthrequest=false
       - --pass-access-token=false
       - --pass-authorization-header=false
@@ -193,7 +193,7 @@ services:
       - {{ printf "--trusted-proxy-ip=%s" .Values.oauth2.trustedProxyIp | quote }}
       - --code-challenge-method=S256
       - {{ printf "--scope=%s" .Values.oauth2.scope | quote }}
-      - --upstream=http://server:8001/
+      - {{ printf "--upstream=http://%s_server:8001/" .Release.Name | quote }}
       - --skip-jwt-bearer-tokens={{ .Values.oauth2.skipJwtBearerTokens }}
       - {{ printf "--extra-jwt-issuers=%s=%s" .Values.oauth2.issuerUrl .Values.oauth2.clientId | quote }}
       - --ssl-insecure-skip-verify={{ .Values.oauth2.sslInsecureSkipVerify }}
