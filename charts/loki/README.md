@@ -213,6 +213,46 @@ The Alloy shipper (`shipper.enabled`) is not labelled. Its HTTP server, besides
 container on its node, plus a support bundle and pprof. Scraping it safely needs
 Alloy's HTTP auth configured, which is a follow-up.
 
+### Alerts and a dashboard
+
+The chart ships both under [`monitoring/`](monitoring) for your Prometheus and Grafana,
+and deploys neither: scraping is automatic, but which rules and dashboards a monitoring
+stack loads is its operator's choice. With the prometheus-stack chart they go in
+through its own configuration:
+
+```bash
+base=https://raw.githubusercontent.com/Eldara-Tech/swarmcli-charts/main/charts/loki/monitoring
+curl -fsSL -O "$base/loki-rules.yml" -O "$base/loki-dashboard.json"
+v="$(swarmcli charts status mon | sed -n 's/^CHART: prometheus-stack-//p')"
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --version "${v:?}" --reuse-values \
+  --set-file prometheus.extraRules.loki=./loki-rules.yml \
+  --set-file grafana.dashboards.loki=./loki-dashboard.json
+```
+
+`--version` keeps prometheus-stack at the version it runs, the only case in which
+`--reuse-values` is safe (Eldara-Tech/swarmcli#687).
+
+prometheus-stack's README, *Keeping your setup in git*, has the values-file form.
+
+- **Alerts** (`loki-rules.yml`): `LokiRequestErrors`, `LokiRequestPanics`,
+  `LokiRequestLatency` and `LokiCompactorHasNotSuccessfullyRunCompaction`, derived
+  from the [loki-mixin](https://github.com/grafana/loki/tree/main/production/loki-mixin)
+  (Apache-2.0, like all of the Loki repository's `production/`). Then
+  `LokiLinesDiscarded`, this chart's: Loki answers a line it refuses (over the
+  ingestion rate limit, too old, too long) with a 4xx, which the error-rate alert does
+  not count. A Loki that stops answering is prometheus-stack's `TargetDown`.
+- **Dashboard** (`loki-dashboard.json`, uid `loki`), trimmed from the
+  [loki-mixin](https://github.com/grafana/loki/tree/main/production/loki-mixin)
+  (Apache-2.0): lines received and discarded, streams in memory, time since the last
+  compaction; push and query rates and latency, 5xx by route; ingested bytes, discards
+  by reason, compaction and retention runs, and memory. It shows Loki's own health, not
+  the logs in it: prometheus-stack's *Loki* section adds Loki as a data source for
+  those. Pick a release by its `stack`.
+
+The dashboard picks a release by the `stack` label prometheus-stack's discovery puts on
+every target, and the alerts carry it. Another Prometheus needs the same relabelling of
+`__meta_dockerswarm_service_label_com_docker_stack_namespace` to `stack`.
+
 ## Retention
 
 Loki deletes nothing unless its compactor is told to apply retention, so the
