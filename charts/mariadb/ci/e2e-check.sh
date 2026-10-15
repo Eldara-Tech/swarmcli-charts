@@ -75,7 +75,18 @@ else
     echo "  exporter grants are not the least-privilege set: $grants"
     exit 1
   fi
-  metrics_ok=", exporter scraped on monitoring (mysql_up 1, all collectors OK)"
+  # The alert rules the chart ships for operators to load (monitoring/), checked here
+  # because nothing deploys them: their logic, under the promtool of a pinned Prometheus.
+  chart="$(cd "$2" && pwd)"
+  prom_tag="$(sed -n 's/^appVersion: *"\(.*\)"$/\1/p' "$chart/../prometheus-stack/Chart.yaml")"
+  promtool_image="${MARIADB_E2E_PROMTOOL_IMAGE:-prom/prometheus:${prom_tag:?no appVersion in charts/prometheus-stack/Chart.yaml}}"
+  if ! out="$(docker run --rm --entrypoint promtool -v "$chart:/chart:ro" "$promtool_image" \
+      test rules /chart/ci/mariadb-rules-test.yml 2>&1)"; then
+    echo "  promtool test rules fails on monitoring/mariadb-rules.yml:"
+    echo "$out" | sed 's/^/    /'
+    exit 1
+  fi
+  metrics_ok=", exporter scraped on monitoring (mysql_up 1, all collectors OK), alert rules pass promtool"
 fi
 
 # Persistence: a named volume shows up as a distinct mount at the data dir; an
