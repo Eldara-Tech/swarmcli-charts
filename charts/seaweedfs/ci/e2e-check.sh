@@ -44,7 +44,9 @@ SIG='aws:amz:us-east-1:s3'
 
 svc="${release}_seaweedfs"
 net=seaweedfs-net
-base="http://${svc}:8333"
+# The alias the chart adds on seaweedfs-net, which Java clients need: their URI parser rejects
+# the '_' in $svc. scripts/e2e-test.sh names releases [a-z0-9-] only, so it needs no mapping.
+base="http://${release}-seaweedfs:8333"
 route=()
 buckets=""
 case "$case" in
@@ -127,7 +129,9 @@ echo "  ok: signed PUT/GET round trip (path-style $base/$bucket/…), anonymous 
 # On the client overlay: the edge fixture's network is traefik-public, where the service
 # is reachable too, but one network proves the bind address. admin-edge checks both, and
 # the admin's worker gRPC port (23646 + 10000) as well; on the Enterprise image also the
-# UI's own port (23646 + 1), which only the forwarder may reach.
+# UI's own port (23646 + 1), which only the forwarder may reach. With metrics on, the
+# monitoring overlay is checked as well: everything Prometheus shares it with reaches the
+# service there, and must find S3 authenticated and the internal APIs shut.
 if [ "$case" != "edge" ]; then
   overlays=seaweedfs-net
   ports="9333 8888 8080"
@@ -135,11 +139,15 @@ if [ "$case" != "edge" ]; then
     admin-edge) overlays="seaweedfs-net traefik-public"; ports="$ports 33646" ;;
     admin-oidc) ports="$ports 33646 23647" ;;
     admin-*) ports="$ports 33646" ;;
+    metrics) overlays="seaweedfs-net monitoring" ;;
   esac
   # curl exits 7 only when the connection is refused: a listening gRPC port gives no HTTP
   # code either, so the code alone cannot tell the two apart.
   refused() { local rc=0; docker run --rm --network "$1" "$CURL_IMAGE" -s -o /dev/null --max-time 5 "http://${svc}:$2/" >/dev/null 2>&1 || rc=$?; echo "$rc"; }
   for n in $overlays; do
+    got="$(docker run --rm --network "$n" "$CURL_IMAGE" -s -o /dev/null -w '%{http_code}' \
+      --max-time 5 "http://${svc}:8333/" 2>/dev/null || true)"
+    [ "$got" = "403" ] || die "anonymous GET of S3 from $n returned '$got', expected 403"
     for p in $ports; do
       rc="$(refused "$n" "$p")"
       [ "$rc" = "7" ] || die "port $p (an unauthenticated master/filer/volume API or the admin's worker gRPC) did not refuse a connection from $n (curl exit $rc)"
@@ -147,13 +155,16 @@ if [ "$case" != "edge" ]; then
   done
   rc="$(refused seaweedfs-net 18333)"
   [ "$rc" != "7" ] || die "curl reports the S3 gRPC port, which listens on every interface, as refused too — the check above proves nothing"
-  echo "  ok: ports $ports refuse connections from $overlays (the listening S3 gRPC port does not: curl exit $rc)"
+  echo "  ok: from $overlays, S3 refuses anonymous requests and ports $ports refuse connections (the listening S3 gRPC port does not: curl exit $rc)"
 
-  out="$(docker run --rm --network seaweedfs-net "$GRPCURL_IMAGE" -plaintext -max-time 10 \
-    -d '{"identity":{"name":"e2e-intruder","credentials":[{"accessKey":"intruderkey","secretKey":"intrudersecret"}],"actions":["Admin"]}}' \
-    "${svc}:18333" messaging_pb.SeaweedS3IamCache/PutIdentity 2>&1 || true)"
-  grep -F 'Unauthenticated' <<<"$out" >/dev/null \
-    || die "the S3 gRPC port did not refuse an unsigned PutIdentity: $out"
+  for n in $overlays; do
+
+    out="$(docker run --rm --network "$n" "$GRPCURL_IMAGE" -plaintext -max-time 10 \
+      -d '{"identity":{"name":"e2e-intruder","credentials":[{"accessKey":"intruderkey","secretKey":"intrudersecret"}],"actions":["Admin"]}}' \
+      "${svc}:18333" messaging_pb.SeaweedS3IamCache/PutIdentity 2>&1 || true)"
+    grep -F 'Unauthenticated' <<<"$out" >/dev/null \
+      || die "the S3 gRPC port did not refuse an unsigned PutIdentity from $n: $out"
+  done
   got="$(code --aws-sigv4 "$SIG" --user "intruderkey:intrudersecret" "$base/")"
   [ "$got" = "403" ] || die "the injected identity was accepted (HTTP $got)"
   echo "  ok: gRPC PutIdentity without the signing key refused, and the identity does not work"
@@ -419,6 +430,42 @@ if [ "$case" = "admin-oauth2" ]; then
   echo "  ok: through the proxy a member of storage-admins reaches the UI's password login, logs in, and lists buckets; the UI's session alone does not pass"
 fi
 
+# ── metrics: scraped where Prometheus would scrape it ─────────────────────────────────
+# From the monitoring overlay, on the port the discovery label names. A listener left on
+# loopback, or a label naming another port, converges just as healthily and is only
+# caught here. The S3 round trip above has run, so the gateway's request counter must
+# already carry it — proof the registry is the live process's, not an empty one.
+metrics_ok=""
+mport="$(docker service inspect "$svc" --format '{{index .Spec.Labels "prometheus.io/port"}}')"
+if [ "$case" != "metrics" ]; then
+  [ -z "$mport" ] || die "case $case opted the service in to discovery (prometheus.io/port=$mport) although metrics are off"
+else
+  [ -n "$mport" ] || die "the service carries no prometheus.io/port deploy label"
+  m=""
+  for _ in $(seq 1 15); do
+    m="$(docker run --rm --network monitoring "$CURL_IMAGE" -sSf --max-time 10 "http://${svc}:${mport}/metrics" 2>&1 || true)"
+    grep -E '^SeaweedFS_s3_request_total\{' <<<"$m" >/dev/null && break
+    sleep 2
+  done
+  grep -E '^SeaweedFS_s3_request_total\{' <<<"$m" >/dev/null \
+    || die "no SeaweedFS_s3_request_total series on http://${svc}:${mport}/metrics from monitoring (got: $(sed -n 1,3p <<<"$m"))"
+  n_series="$(grep -cE '^SeaweedFS_' <<<"$m" || true)"
+  echo "  ok: /metrics on monitoring:${mport} serves ${n_series} SeaweedFS_ samples, S3 requests counted"
+  metrics_ok=", metrics scraped on monitoring"
+
+  # The alert rules the chart ships for operators to load (monitoring/), checked here
+  # because nothing deploys them: their logic, under the promtool of a pinned Prometheus.
+  # The image follows prometheus-stack's appVersion, which Renovate keeps current.
+  chart="$(cd "$dir" && pwd)"
+  prom_tag="$(sed -n 's/^appVersion: *"\(.*\)"$/\1/p' "$chart/../prometheus-stack/Chart.yaml")"
+  promtool_image="${SEAWEEDFS_E2E_PROMTOOL_IMAGE:-prom/prometheus:${prom_tag:?no appVersion in charts/prometheus-stack/Chart.yaml}}"
+  out="$(docker run --rm --entrypoint promtool -v "$chart:/chart:ro" "$promtool_image" \
+    test rules /chart/ci/seaweedfs-rules-test.yml 2>&1)" \
+    || die "promtool test rules fails on monitoring/seaweedfs-rules.yml: $out"
+  echo "  ok: the alert rules pass promtool"
+  metrics_ok="$metrics_ok, alert rules pass promtool"
+fi
+
 # ── restart: data persists, bootstrap is idempotent ───────────────────────────────────
 if [ "$case" = "buckets" ]; then
   before="$(docker service ps -q --filter desired-state=running "$svc" | sed -n 1p)"
@@ -560,4 +607,4 @@ if [ "$case" = "admin-published" ]; then
   echo "  ok: the admin UI published on the routing mesh as 24646"
 fi
 
-echo "  seaweedfs [$case]: all checks passed"
+echo "  seaweedfs [$case]: all checks passed${metrics_ok}"

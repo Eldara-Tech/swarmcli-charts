@@ -302,6 +302,10 @@ reference):
 - The README shows loading them through prometheus-stack's own values:
   `--set-file prometheus.extraRules.<key>=…` and
   `--set-file grafana.dashboards.<key>=…`.
+- It also shows transcribing both into values files, for a release file or
+  swarmcli-cd, neither of which has `--set-file`: each file's content indented
+  under its key as a block string, the dashboard kept as JSON, since a YAML
+  mapping fails the schema. `charts/mariadb-galera` has the snippet.
 - `ci/e2e-check.sh` runs `promtool test rules` on them with `prom/prometheus` at
   the `appVersion` of `charts/prometheus-stack/Chart.yaml`, which Renovate keeps
   current, not a literal tag. Nothing deploys them, so nothing else would notice

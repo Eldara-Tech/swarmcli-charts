@@ -120,6 +120,21 @@ else
     bad "the runner joined the monitoring overlay although it carries no prometheus.io/scrape label"
   fi
 fi
+# The alert rules the chart ships for operators to load (monitoring/), checked here because
+# nothing deploys them: their logic, under the promtool of a pinned Prometheus. They do not
+# depend on the release, so the metrics case alone runs them.
+if [ "$case" = "metrics" ]; then
+  chart="$(cd "$dir" && pwd)"
+  prom_tag="$(sed -n 's/^appVersion: *"\(.*\)"$/\1/p' "$chart/../prometheus-stack/Chart.yaml")"
+  promtool_image="${GITLAB_RUNNER_E2E_PROMTOOL_IMAGE:-prom/prometheus:${prom_tag:?no appVersion in charts/prometheus-stack/Chart.yaml}}"
+  if out="$(docker run --rm --entrypoint promtool -v "$chart:/chart:ro" "$promtool_image" \
+      test rules /chart/ci/gitlab-runner-rules-test.yml 2>&1)"; then
+    note "metrics: alert rules pass promtool"
+  else
+    bad "promtool test rules fails on monitoring/gitlab-runner-rules.yml:"
+    echo "$out" | sed 's/^/    /' >&2
+  fi
+fi
 # The probe-only listener answers on loopback, where the probe looks, and on no interface
 # of the overlay — /debug/pprof and /debug/jobs/list have no business there.
 if [ "$case" = "healthcheck-only" ]; then

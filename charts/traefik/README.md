@@ -174,6 +174,65 @@ on `monitoring`.
 
 With swarmcli-cd, allow the `monitoring` network and the users secret.
 
+### Alerts and a dashboard
+
+The chart ships both under [`monitoring/`](monitoring) for your Prometheus and Grafana,
+and deploys neither: scraping is automatic, but which rules and dashboards a monitoring
+stack loads is its operator's choice. With the prometheus-stack chart they go in
+through its own configuration:
+
+```bash
+base=https://raw.githubusercontent.com/Eldara-Tech/swarmcli-charts/main/charts/traefik/monitoring
+curl -fsSL -O "$base/traefik-rules.yml" -O "$base/traefik-dashboard.json"
+v="$(swarmcli charts status mon | sed -n 's/^CHART: prometheus-stack-//p')"
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --version "${v:?}" --reuse-values \
+  --set-file prometheus.extraRules.traefik=./traefik-rules.yml \
+  --set-file grafana.dashboards.traefik=./traefik-dashboard.json
+```
+
+`--version` keeps prometheus-stack at the version it runs, the only case in which `--reuse-values`
+is safe (Eldara-Tech/swarmcli#687).
+
+A release file and swarmcli-cd take values files only, not `--set-file`, so there both
+files go in as values files: each file's content, as it is, indented under its key as a
+block string. From the two files downloaded above:
+
+```bash
+mkdir -p monitoring/rules monitoring/dashboards
+{ printf 'prometheus:\n  extraRules:\n    traefik: |\n'; sed 's/^./      &/' traefik-rules.yml; } > monitoring/rules/traefik.yaml
+{ printf 'grafana:\n  dashboards:\n    traefik: |\n'; sed 's/^./      &/' traefik-dashboard.json; } > monitoring/dashboards/traefik.yaml
+```
+
+The dashboard stays JSON: converted to YAML it becomes a mapping, which the render
+refuses (`got object, want string`). prometheus-stack's README, *Keeping your setup in
+git*, shows where to list the two files.
+
+- **Alerts** (`traefik-rules.yml`): `TraefikTLSCertificatesExpiring` under 7 days and
+  `TraefikTLSCertificatesExpiringSoon` under 14, derived from the
+  [traefik-mixin](https://github.com/grafana/jsonnet-libs/tree/master/traefik-mixin)
+  (Apache-2.0) and counting only the newest certificate per SAN list, since Traefik
+  keeps reporting a renewed one's predecessor. Traefik keeps trying to renew every
+  certificate in `acme.json` and never resets the expiry gauge, so a certificate for
+  a domain no longer pointed here eventually trips the critical alert (and goes
+  negative after expiry) until it is removed from `acme.json` and Traefik restarted.
+  Then `TraefikServiceHighErrorRate` while more than 5% of a service's responses are
+  5xx, which covers routed charts with no metrics of their own. It cannot see a
+  service with no running, healthy task: Traefik drops that service, and its requests
+  become 404s.
+- **Dashboard** (`traefik-dashboard.json`, uid `traefik`): requests, server errors,
+  open connections and the next certificate expiry; requests and connections per
+  entrypoint, responses by status class and days left per certificate; then
+  requests, 5xx share, mean response time and traffic per service. Its layout
+  borrows from Traefik's own
+  [`contrib/grafana`](https://github.com/traefik/traefik/tree/master/contrib/grafana)
+  dashboard and the
+  [traefik-mixin](https://github.com/grafana/jsonnet-libs/tree/master/traefik-mixin)'s.
+  Pick a release by its `stack`.
+
+The dashboard picks a release by the `stack` label prometheus-stack's discovery puts on
+every target, and the alerts carry it. Another Prometheus needs the same relabelling of
+`__meta_dockerswarm_service_label_com_docker_stack_namespace` to `stack`.
+
 ## Logging
 
 The Traefik service logs via Docker's logging driver. It defaults to `json-file`

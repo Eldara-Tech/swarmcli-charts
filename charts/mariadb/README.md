@@ -116,6 +116,63 @@ database's node.
 - **swarmcli-cd** additionally needs `mariadb_exporter_password` in `allow.secrets`
   and `monitoring` in `allow.networks`.
 
+### Alerts and a dashboard
+
+The chart ships both under [`monitoring/`](monitoring) for your Prometheus and Grafana,
+and deploys neither: scraping is automatic, but which rules and dashboards a monitoring
+stack loads is its operator's choice. With the prometheus-stack chart they go in
+through its own configuration:
+
+```bash
+base=https://raw.githubusercontent.com/Eldara-Tech/swarmcli-charts/main/charts/mariadb/monitoring
+curl -fsSL -O "$base/mariadb-rules.yml" -O "$base/mariadb-dashboard.json"
+v="$(swarmcli charts status mon | sed -n 's/^CHART: prometheus-stack-//p')"
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --version "${v:?}" --reuse-values \
+  --set-file prometheus.extraRules.mariadb=./mariadb-rules.yml \
+  --set-file grafana.dashboards.mariadb=./mariadb-dashboard.json
+```
+
+`--version` keeps prometheus-stack at the version it runs, the only case in which `--reuse-values`
+is safe (Eldara-Tech/swarmcli#687).
+
+A release file and swarmcli-cd take values files only, not `--set-file`, so there both
+files go in as values files: each file's content, as it is, indented under its key as a
+block string. From the two files downloaded above:
+
+```bash
+mkdir -p monitoring/rules monitoring/dashboards
+{ printf 'prometheus:\n  extraRules:\n    mariadb: |\n'; sed 's/^./      &/' mariadb-rules.yml; } > monitoring/rules/mariadb.yaml
+{ printf 'grafana:\n  dashboards:\n    mariadb: |\n'; sed 's/^./      &/' mariadb-dashboard.json; } > monitoring/dashboards/mariadb.yaml
+```
+
+The dashboard stays JSON: converted to YAML it becomes a mapping, which the render
+refuses (`got object, want string`). prometheus-stack's README, *Keeping your setup in
+git*, shows where to list the two files.
+
+- **Alerts** (`mariadb-rules.yml`): `MySQLDown` from the
+  [mysqld-mixin](https://github.com/prometheus/mysqld_exporter/tree/main/mysqld-mixin)
+  (Apache-2.0), as mariadb-galera ships it; `MySQLConnectionsNearLimit` while more
+  than 80% of `max_connections` is in use; and `MySQLAbortedConnections` while
+  connection attempts keep failing. MariaDB counts a client refused at
+  `max_connections` as an aborted connection, and refuses the exporter too, which
+  then reads as `MySQLDown`.
+- **Dashboard** (`mariadb-dashboard.json`, uid `mariadb`), trimmed from the
+  [mysqld-mixin's MySQL dashboard](https://github.com/prometheus/mysqld_exporter/blob/main/mysqld-mixin/dashboards/mysql-overview.json)
+  (Apache-2.0): server up, uptime, connections used and queries per second, then
+  connections, threads running, queries, slow queries, buffer-pool hits, aborted
+  connections, network traffic and the busiest commands. Pick a release by its `stack`.
+
+mariadb-galera's peers run the same exporter, so the dashboard's picker lists Galera
+clusters too and these alerts fire on Galera peers as well. `MySQLAbortedConnections`
+leaves out bare TCP probes, such as the one mariadb-galera's proxy healthcheck sends a
+peer every 10 seconds, which MariaDB also counts as aborted connections. With both
+charts' rules loaded, Prometheus evaluates `MySQLDown` twice: Alertmanager merges the
+identical alerts, while the Prometheus Alerts page lists it twice.
+
+The dashboard picks a release by the `stack` label prometheus-stack's discovery puts on
+every target, and the alerts carry it. Another Prometheus needs the same relabelling of
+`__meta_dockerswarm_service_label_com_docker_stack_namespace` to `stack`.
+
 ## Values
 
 | Key | Default | Description |

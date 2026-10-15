@@ -204,6 +204,33 @@
         - "traefik.http.middlewares.{{ $r }}-admin-sandbox.headers.contentTypeNosniff=true"
 {{- template "seaweedfs.traefik-routers" (dict "router" (printf "%s-admin-content" $r) "rule" (printf "%s && (Path(`/api/files/download`) || Path(`/api/files/view`) || Path(`/api/files/metadata`))" $adminRule) "tls" .admin.ingress.tls "traefik" .traefik "service" (printf "%s-admin" $r) "middlewares" (printf "%s-admin-sandbox" $r)) }}
 {{- end -}}
+{{- if .Values.metrics.enabled -}}
+{{-   $mp := .Values.metrics.port | int -}}
+{{-   $sp := .Values.s3.port | int -}}
+{{- /* weed binds every one of these, so a metrics listener on any of them fails the
+       whole process at start: the S3 port and its gRPC twin, and the master, volume
+       and filer ports and theirs on loopback. */}}
+{{-   if has $mp (list $sp (add $sp 10000 | int) 9333 19333 8080 18080 8888 18888) -}}
+{{-     fail (printf "metrics.port %d is already taken inside the container: weed binds the S3 port %d and its gRPC port %d, and the master, volume and filer ports 9333, 8080 and 8888 and their gRPC ports 19333, 18080 and 18888. Pick another port." $mp $sp (add $sp 10000)) -}}
+{{-   end -}}
+{{- /* With the web UI on, weed admin binds its port and its worker gRPC port, and on the
+       Enterprise image the UI one port up behind the forwarder. */}}
+{{-   if .Values.admin.enabled -}}
+{{-     $ap := .Values.admin.port | int -}}
+{{-     $ui := list $ap (add $ap 10000 | int) -}}
+{{-     if $ent }}{{ $ui = append $ui (add $ap 1 | int) }}{{ end -}}
+{{-     if has $mp $ui -}}
+{{-       fail (printf "metrics.port %d collides with the web UI: weed admin binds %s (admin.port, its worker gRPC port%s). Pick another port." $mp (join ", " $ui) (ternary " and, on the Enterprise image, the UI behind the forwarder" "" $ent)) -}}
+{{-     end -}}
+{{-   end -}}
+{{- /* Once a service opts in to discovery, every deploy label it carries is readable
+       through Prometheus's targets API, so credential material must not ride along. */}}
+{{-   range $key, $val := .Values.labels -}}
+{{-     if regexMatch "(?i)((basic|digest)auth\\.users|customrequestheaders\\.authorization)$" $key -}}
+{{-       fail (printf "labels %q carries credentials, and metrics.enabled makes every deploy label of this service readable through Prometheus's targets API. Point the middleware's usersfile at a file the proxy reads (a mounted secret), or leave metrics off." $key) -}}
+{{-     end -}}
+{{-   end -}}
+{{- end -}}
 version: "3.9"
 
 {{- $mode := .Values.exposure.mode }}
@@ -229,9 +256,13 @@ version: "3.9"
 
 {{- $nets := list .Values.network.name }}
 {{- if $routed }}{{ $nets = append $nets .Values.exposure.network }}{{- end }}
+{{- if .Values.metrics.enabled }}{{ $nets = append $nets .Values.metrics.network }}{{- end }}
 {{- $nets = $nets | uniq }}
 {{- $extNets := $nets }}
 {{- if $o2 }}{{ $extNets = append $extNets .Values.exposure.network | uniq }}{{- end }}
+{{- /* The name clients dial on network.name. A stack's own <release>_seaweedfs has a '_', which is
+       not valid in a host name: java.net.URI, and so every AWS SDK for Java client, rejects it. */}}
+{{- $alias := printf "%s-seaweedfs" (.Release.Name | replace "_" "-" | replace "." "-") }}
 
 {{- /* `weed server` flags. The image's entrypoint already adds -dir=/data. -ip and -ip.bind
        put the master, volume server and filer on loopback: their HTTP and gRPC APIs carry
@@ -290,6 +321,12 @@ version: "3.9"
 {{-   $iam = dict "policy" (dict "defaultEffect" "Deny") "providers" (list (dict "name" "oidc" "type" "oidc" "config" $provider)) "policies" (list $policy) "roles" (list $role) }}
 {{-   $args = append $args (printf "-s3.iam.config=%s" $iamFile) }}
 {{-   $args = append $args "-s3.iam=false" }}
+{{- end }}
+{{- /* One metrics listener serves the registry of every role in the process. Its address
+       defaults to -ip.bind, i.e. loopback, so it is bound to every interface explicitly. */}}
+{{- if .Values.metrics.enabled }}
+{{-   $args = append $args (printf "-metricsPort=%d" (.Values.metrics.port | int)) }}
+{{-   $args = append $args "-metricsIp=0.0.0.0" }}
 {{- end }}
 {{- range .Values.extraArgs }}{{ $args = append $args . }}{{- end }}
 
@@ -451,10 +488,14 @@ services:
 
     networks:
 {{- range $nets }}
-      - {{ . }}
+      {{ . }}:
+{{- if eq . $.Values.network.name }}
+        aliases:
+          - {{ $alias }}
+{{- end }}
 {{- end }}
 {{- if $o2 }}
-      - admin-oauth2
+      admin-oauth2:
 {{- end }}
 
 {{- if or (eq $mode "published") (eq $adminMode "published") }}
@@ -516,8 +557,13 @@ services:
 {{- end }}
       restart_policy:
         condition: any
-{{- if or $routed .Values.labels }}
+{{- if or $routed .Values.metrics.enabled .Values.labels }}
       labels:
+{{- if .Values.metrics.enabled }}
+        # Docker Swarm service discovery (the prometheus-stack chart's swarm-tasks job).
+        - "prometheus.io/scrape=true"
+        - "prometheus.io/port={{ .Values.metrics.port }}"
+{{- end }}
 {{- if $routed }}
         - "traefik.enable=true"
         - "traefik.swarm.network={{ .Values.exposure.network }}"

@@ -1,0 +1,88 @@
+# promtool unit tests for monitoring/traefik-rules.yml, which the chart ships for
+# operators to load into their Prometheus but does not deploy itself. ci/e2e-check.sh
+# runs them with a pinned prom/prometheus image's promtool in the metrics case.
+#
+# Release `edge` has a certificate in each expiry band, one replaced by a renewal, a
+# failing service and a merely noisy one. Release `ok` is healthy and must raise nothing.
+# At eval time 10m, time() is 600: a not_after of 600 + N*86400 is N days away.
+rule_files:
+  - ../monitoring/traefik-rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      # 5 days left, 10 days left, and a certificate whose renewal (80 days) has
+      # replaced one with 3 days left, which Traefik still reports.
+      - series: 'traefik_tls_certs_not_after{job="edge_traefik",instance="10.0.1.5:8082",stack="edge",cn="app.example.com",serial="1",sans="app.example.com"}'
+        values: '432600x12'
+      - series: 'traefik_tls_certs_not_after{job="edge_traefik",instance="10.0.1.5:8082",stack="edge",cn="www.example.com",serial="2",sans="example.com,www.example.com"}'
+        values: '864600x12'
+      - series: 'traefik_tls_certs_not_after{job="edge_traefik",instance="10.0.1.5:8082",stack="edge",cn="renewed.example.com",serial="3",sans="renewed.example.com"}'
+        values: '259800x12'
+      - series: 'traefik_tls_certs_not_after{job="edge_traefik",instance="10.0.1.5:8082",stack="edge",cn="renewed.example.com",serial="4",sans="renewed.example.com"}'
+        values: '6912600x12'
+      - series: 'traefik_tls_certs_not_after{job="ok_traefik",instance="10.0.2.5:8082",stack="ok",cn="ok.example.com",serial="5",sans="ok.example.com"}'
+        values: '5184600x12'
+      # api@swarm: 9 req/s succeed (two methods), 1 req/s gets a 502, 10%. whoami@swarm
+      # fails 1% of its requests, under the threshold.
+      - series: 'traefik_service_requests_total{job="edge_traefik",instance="10.0.1.5:8082",stack="edge",service="api@swarm",code="200",method="GET",protocol="http"}'
+        values: '0+480x12'
+      - series: 'traefik_service_requests_total{job="edge_traefik",instance="10.0.1.5:8082",stack="edge",service="api@swarm",code="201",method="POST",protocol="http"}'
+        values: '0+60x12'
+      - series: 'traefik_service_requests_total{job="edge_traefik",instance="10.0.1.5:8082",stack="edge",service="api@swarm",code="502",method="GET",protocol="http"}'
+        values: '0+60x12'
+      - series: 'traefik_service_requests_total{job="edge_traefik",instance="10.0.1.5:8082",stack="edge",service="whoami@swarm",code="200",method="GET",protocol="http"}'
+        values: '0+990x12'
+      - series: 'traefik_service_requests_total{job="edge_traefik",instance="10.0.1.5:8082",stack="edge",service="whoami@swarm",code="500",method="GET",protocol="http"}'
+        values: '0+10x12'
+      - series: 'traefik_service_requests_total{job="ok_traefik",instance="10.0.2.5:8082",stack="ok",service="app@swarm",code="200",method="GET",protocol="http"}'
+        values: '0+600x12'
+      - series: 'traefik_service_requests_total{job="ok_traefik",instance="10.0.2.5:8082",stack="ok",service="app@swarm",code="404",method="GET",protocol="http"}'
+        values: '0+60x12'
+
+    alert_rule_test:
+      # Four minutes in, nothing has lasted the 5m `for` yet.
+      - eval_time: 4m
+        alertname: TraefikTLSCertificatesExpiring
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: TraefikServiceHighErrorRate
+        exp_alerts: []
+
+      # Only app.example.com: the replaced certificate's 3 days do not count.
+      - eval_time: 10m
+        alertname: TraefikTLSCertificatesExpiring
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              stack: edge
+              job: edge_traefik
+              sans: app.example.com
+            exp_annotations:
+              summary: 'TLS certificate for app.example.com expires in under 7 days'
+              description: 'The newest certificate Traefik edge serves for app.example.com expires in 5 days.'
+      - eval_time: 10m
+        alertname: TraefikTLSCertificatesExpiringSoon
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              stack: edge
+              job: edge_traefik
+              sans: example.com,www.example.com
+            exp_annotations:
+              summary: 'TLS certificate for example.com,www.example.com expires in under 14 days'
+              description: 'The newest certificate Traefik edge serves for example.com,www.example.com expires in 10 days.'
+      # api@swarm only; a 404 at release ok is the client's error, not the service's.
+      - eval_time: 10m
+        alertname: TraefikServiceHighErrorRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              stack: edge
+              job: edge_traefik
+              service: api@swarm
+            exp_annotations:
+              summary: 'Traefik service api@swarm is failing requests'
+              description: '10% of the requests Traefik edge sent to api@swarm have answered 5xx for 5 minutes.'

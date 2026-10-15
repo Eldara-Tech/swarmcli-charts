@@ -250,6 +250,62 @@ does not widen `monitoring_whitelist`, and GitLab's bundled Prometheus stays off
   GitLab is one service. Background-job and Git metrics are a follow-up.
 - **swarmcli-cd** needs `monitoring` in `allow.networks`.
 
+### Alerts and a dashboard
+
+The chart ships both under [`monitoring/`](monitoring) for your Prometheus and Grafana,
+and deploys neither: scraping is automatic, but which rules and dashboards a monitoring
+stack loads is its operator's choice. With the prometheus-stack chart they go in
+through its own configuration:
+
+```bash
+base=https://raw.githubusercontent.com/Eldara-Tech/swarmcli-charts/main/charts/gitlab/monitoring
+curl -fsSL -O "$base/gitlab-rules.yml" -O "$base/gitlab-dashboard.json"
+v="$(swarmcli charts status mon | sed -n 's/^CHART: prometheus-stack-//p')"
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --version "${v:?}" --reuse-values \
+  --set-file prometheus.extraRules.gitlab=./gitlab-rules.yml \
+  --set-file grafana.dashboards.gitlab=./gitlab-dashboard.json
+```
+
+`--version` keeps prometheus-stack at the version it runs, the only case in which `--reuse-values`
+is safe (Eldara-Tech/swarmcli#687).
+
+A release file and swarmcli-cd take values files only, not `--set-file`, so there both
+files go in as values files: each file's content, as it is, indented under its key as a
+block string. From the two files downloaded above:
+
+```bash
+mkdir -p monitoring/rules monitoring/dashboards
+{ printf 'prometheus:\n  extraRules:\n    gitlab: |\n'; sed 's/^./      &/' gitlab-rules.yml; } > monitoring/rules/gitlab.yaml
+{ printf 'grafana:\n  dashboards:\n    gitlab: |\n'; sed 's/^./      &/' gitlab-dashboard.json; } > monitoring/dashboards/gitlab.yaml
+```
+
+The dashboard stays JSON: converted to YAML it becomes a mapping, which the render
+refuses (`got object, want string`). prometheus-stack's README, *Keeping your setup in
+git*, shows where to list the two files.
+
+- **Alerts** (`gitlab-rules.yml`): `GitLabHigh5xxResponses` while more than 10% of Rails
+  requests answer 5xx, and `GitLabHighRunnerAuthFailure` while GitLab has refused a runner
+  token in the last 65 minutes, usually a runner whose token was deleted or reset in
+  GitLab. Such a runner backs off for an hour after three refusals, and the alert holds
+  between bursts; only a release younger than 65 minutes waits for the second burst. Both
+  are derived from the
+  [gitlab-mixin](https://github.com/grafana/jsonnet-libs/tree/master/gitlab-mixin)
+  (Apache-2.0) and corrected where it misses on GitLab 19. Its 4xx alert is left out,
+  since most 4xx are routine (Git over HTTP gets a 401 before it sends credentials), and
+  so is its job-registration alert, which counts every poll of an empty job queue.
+- **Dashboard** (`gitlab-dashboard.json`, uid `gitlab`), trimmed from the
+  [gitlab-mixin](https://github.com/grafana/jsonnet-libs/tree/master/gitlab-mixin)
+  (Apache-2.0): requests, server-error share, Puma thread use and version; requests by
+  status, latency, top feature categories, sign-ins and runner authentication; Puma
+  threads, the database connection pool, and memory and CPU per Puma process. Pick a
+  release by its `stack`.
+
+Both cover web metrics only, as above: nothing here sees Sidekiq, Gitaly or Workhorse.
+
+The dashboard picks a release by the `stack` label prometheus-stack's discovery puts on
+every target, and the alerts carry it. Another Prometheus needs the same relabelling of
+`__meta_dockerswarm_service_label_com_docker_stack_namespace` to `stack`.
+
 ## Values
 
 | Key | Default | Description |

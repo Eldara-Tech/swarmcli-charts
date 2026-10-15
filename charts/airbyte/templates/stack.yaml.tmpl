@@ -7,13 +7,25 @@
 {{- if or (eq .Values.exposure.mode "traefik") (eq .Values.exposure.mode "none") }}{{ $proxyNetworks = append $proxyNetworks .Values.exposure.network }}{{- end }}
 {{- $workloadNetworks := list .Values.database.network }}
 {{- range .Values.workloadLauncher.extraNetworks }}{{ $workloadNetworks = append $workloadNetworks . }}{{- end }}
+{{- /* The replication orchestrator and the connector sidecar the launcher starts write to S3 too. */}}
+{{- with .Values.storage.network }}{{ $workloadNetworks = append $workloadNetworks . }}{{- end }}
 {{- $workloadNetworks = $workloadNetworks | uniq }}
+{{- /* The services that read and write S3 themselves. */}}
+{{- $storageNetworks := list "airbyte" .Values.database.network }}
+{{- with .Values.storage.network }}{{ $storageNetworks = append $storageNetworks . }}{{- end }}
+{{- $storageNetworks = $storageNetworks | uniq }}
 {{- $router := .Release.Name }}
 {{- $scheme := ternary "https" "http" .Values.exposure.tls }}
 {{- $oauth := eq .Values.auth.mode "oauth2" }}
 {{- $airbyteAuth := eq .Values.auth.mode "airbyte" }}
 {{- if and (eq .Values.auth.mode "none") (eq .Values.exposure.mode "published") }}
 {{- fail "auth.mode none cannot use exposure.mode published: the port would serve Airbyte, which runs any connector image it is given next to your database, to anyone who reaches it. Use exposure.mode traefik with traefik.basicAuthUsers, or exposure.mode none behind a proxy that authenticates." -}}
+{{- end }}
+{{- if and .Values.storage.network (eq .Values.storage.network .Values.exposure.network) }}
+{{- fail (printf "storage.network %s is exposure.network: everything the edge proxy routes shares that overlay and would reach the Airbyte server's API and the connector containers. Give the store an overlay only Airbyte joins." .Values.storage.network) -}}
+{{- end }}
+{{- if contains "_" (urlParse .Values.storage.endpoint).hostname }}
+{{- fail (printf "storage.endpoint %s: Airbyte's S3 client parses it with java.net.URI, which rejects a host name containing '_', so every storage call would fail. A stack's service name <stack>_<service> always has one: use an alias without it, such as the rustfs chart's http://<release>-rustfs:9000 or the seaweedfs chart's http://<release>-seaweedfs:8333, or a DNS name." .Values.storage.endpoint) -}}
 {{- end }}
 {{- if and (eq .Values.auth.mode "none") (eq .Values.exposure.mode "traefik") (not .Values.traefik.basicAuthUsers) }}
 {{- fail "auth.mode none with exposure.mode traefik needs traefik.basicAuthUsers: without it, anyone who resolves exposure.host can run connector images next to your database." -}}
@@ -207,7 +219,7 @@ services:
   workload-launcher:
     image: {{ .Values.workloadLauncher.image.repository }}:{{ .Values.workloadLauncher.image.tag | default $airbyteVersion }}
     user: "0"
-    networks: [airbyte, {{ .Values.database.network }}]
+    networks: [{{ $storageNetworks | join ", " }}]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     configs:
@@ -333,7 +345,7 @@ services:
 
   server:
     image: {{ $serverImage }}
-    networks: [airbyte, {{ .Values.database.network }}{{ if $serverPublic }}, {{ .Values.exposure.network }}{{ end }}]
+    networks: [{{ $storageNetworks | join ", " }}{{ if and $serverPublic (not (has .Values.exposure.network $storageNetworks)) }}, {{ .Values.exposure.network }}{{ end }}]
     secrets:
       - {{ .Values.database.userSecretName }}
       - {{ .Values.database.passwordSecretName }}
@@ -412,7 +424,7 @@ services:
 
   worker:
     image: {{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag | default $airbyteVersion }}
-    networks: [airbyte, {{ .Values.database.network }}]
+    networks: [{{ $storageNetworks | join ", " }}]
     secrets:
       - {{ .Values.database.userSecretName }}
       - {{ .Values.database.passwordSecretName }}
@@ -531,9 +543,10 @@ networks:
 {{- if $oauth }}
   {{ .Values.oauth2.redisNetwork }}: {}
 {{- end }}
-  {{ .Values.database.network }}:
-    external: true
-{{- if or (eq .Values.exposure.mode "traefik") (eq .Values.exposure.mode "none") }}
-  {{ .Values.exposure.network }}:
+{{- $externalNetworks := list .Values.database.network }}
+{{- if or (eq .Values.exposure.mode "traefik") (eq .Values.exposure.mode "none") }}{{ $externalNetworks = append $externalNetworks .Values.exposure.network }}{{- end }}
+{{- with .Values.storage.network }}{{ $externalNetworks = append $externalNetworks . }}{{- end }}
+{{- range $externalNetworks | uniq }}
+  {{ . }}:
     external: true
 {{- end }}

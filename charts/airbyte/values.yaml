@@ -87,12 +87,20 @@ database:
   network: airbyte-db-net
 
 # S3-compatible object storage for logs, state and workload payloads. Access
-# credentials are external secrets, never values.
+# credentials are external secrets, never values. Airbyte's Java S3 client rejects a
+# host name containing '_', so the render refuses one: reach a service in another
+# stack by an alias without it, such as the rustfs chart's http://<release>-rustfs:9000.
 storage:
   endpoint: https://minio.example.com
   accessKeySecretName: airbyte_s3_access_key
   secretKeySecretName: airbyte_s3_secret_key
   bucket: airbyte-storage
+  # External attachable overlay the endpoint is reachable on. The server, worker,
+  # workload launcher and every container it starts join it, so everything else on it
+  # reaches them: use an overlay only Airbyte and the store join, never
+  # exposure.network (refused). Empty: none, for an endpoint reached through routing
+  # or on database.network.
+  network: ""
 
 # Airbyte's connector registry loads Enterprise source stubs from this URL.
 connectorRegistry:

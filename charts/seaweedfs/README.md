@@ -48,7 +48,12 @@ swarmcli charts install s3 swarmcli-charts/seaweedfs --set 'buckets={runner-cach
 By default (`exposure.mode: none`) the store is reachable only on the
 `seaweedfs-net` overlay, which swarmcli creates if it is missing. Another stack
 joins that network as `external: true` and uses the endpoint
-`http://<release>_seaweedfs:8333` (`http://s3_seaweedfs:8333` above).
+`http://<release>-seaweedfs:8333` (`http://s3-seaweedfs:8333` above), an alias the
+chart adds on that network, with `_` and `.` in the release name turned into `-`. The
+stack's own service name `<release>_seaweedfs` resolves too, but Java clients (anything
+on the AWS SDK for Java, such as Airbyte) reject a host name containing `_`. Releases
+whose names differ only in those characters (`my_s3`, `my-s3`) get the same alias, so
+keep them off one network.
 
 Clients use **path-style** addressing (`http://<endpoint>/<bucket>/<key>`), the
 default for every non-AWS S3 client. The region is not checked; send any, e.g.
@@ -87,7 +92,7 @@ edge if uploads fail part-way.
 The runner's job helper containers upload and download the cache archive
 themselves, and they run on the node's own Docker engine — not on any overlay. So
 the runner needs an endpoint reachable from a plain container on each runner
-node: the Traefik host (or a published port), not `<release>_seaweedfs`. With the
+node: the Traefik host (or a published port), not `<release>-seaweedfs`. With the
 [gitlab-runner chart](../gitlab-runner):
 
 ```yaml
@@ -440,6 +445,118 @@ are discovered from `<issuer>/.well-known/openid-configuration`.
 - The generated IAM configuration is in the manifest and `docker inspect` as
   `SEAWEEDFS_IAM_CONFIG`. It holds no secret.
 
+## Metrics
+
+SeaweedFS serves its own Prometheus metrics. `metrics.enabled` turns the listener
+on — one registry for the master, volume server, filer and S3 gateway in the
+process — labels the service `prometheus.io/scrape=true` and
+`prometheus.io/port=9327`, and attaches it to the `monitoring` overlay, which is
+where the [prometheus-stack chart](../prometheus-stack) scrapes by default. So
+Prometheus finds it by itself, with no scrape config; any Prometheus using Docker
+Swarm service discovery on those labels works the same way.
+
+```bash
+swarmcli charts upgrade s3 swarmcli-charts/seaweedfs -f seaweedfs-values.yaml --set metrics.enabled=true
+```
+
+Pass the values you installed with (`-f`, or the same `--set`s), not `--reuse-values`.
+That flag merges over the previous release's stored values *instead of* this chart
+version's defaults, so every `metrics.*` key would render empty
+([swarmcli#687](https://github.com/Eldara-Tech/swarmcli/issues/687)).
+
+You get the `SeaweedFS_*` series: S3 requests by type, status code and bucket
+(`SeaweedFS_s3_request_total`, `SeaweedFS_s3_request_seconds`), volume server and
+filer request rates and latencies and disk usage, plus the Go runtime and process
+series. Turning it on or off changes the service spec, so weed restarts once.
+
+**What `monitoring` can reach.** The listener binds every interface, and Swarm
+overlays do not filter ports, so everything attached to `monitoring` reaches:
+
+- port 9327, unauthenticated: `/metrics`, and on the same listener Go's
+  `/debug/pprof/` and `/debug/vars`. weed imports both handlers globally, so they
+  cannot be switched off. They hand out the command line, memory statistics and
+  goroutine dumps, and CPU profiles and execution traces on request, which cost
+  the process CPU while they run. No credentials appear in them: the S3 keys
+  are environment variables, and neither endpoint reads the environment. gRPC's
+  `/debug/requests` and `/debug/events` sit on the same listener but answer 401
+  to anything but loopback;
+- the S3 port and its gRPC port, exactly as on `seaweedfs-net`: S3 refuses
+  unsigned requests, and the gRPC port refuses identity updates without the
+  per-start signing key;
+- with `admin.enabled`, the web UI's port (`admin.port`): its login page, and its own
+  `/metrics`, which needs no login; everything else is behind the password. Its worker
+  gRPC port stays on 127.0.0.1;
+- not the master, volume or filer APIs, which stay on 127.0.0.1.
+
+Every deploy label of the service is also readable through Prometheus's targets
+API once it opts in, so `labels` must not carry credentials; the render fails on a
+basic-auth label while metrics are on. The metrics port is never published.
+
+To keep the store off a shared overlay, set `metrics.network=seaweedfs-net` (the
+service is on it already) and attach Prometheus to that overlay instead, e.g.
+prometheus-stack's `prometheus.extraNetworks`. Prometheus should share exactly one
+overlay with the service, or it scrapes it once per overlay.
+
+Under [swarmcli-cd](../../docs/gitops.md), the application's `allow` must list the
+`monitoring` network as well.
+
+### Alerts and a dashboard
+
+The chart ships both under [`monitoring/`](monitoring) for your Prometheus and Grafana,
+and deploys neither: scraping is automatic, but which rules and dashboards a monitoring
+stack loads is its operator's choice. With the prometheus-stack chart they go in
+through its own configuration:
+
+```bash
+base=https://raw.githubusercontent.com/Eldara-Tech/swarmcli-charts/main/charts/seaweedfs/monitoring
+curl -fsSL -O "$base/seaweedfs-rules.yml" -O "$base/seaweedfs-dashboard.json"
+v="$(swarmcli charts status mon | sed -n 's/^CHART: prometheus-stack-//p')"
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --version "${v:?}" --reuse-values \
+  --set-file prometheus.extraRules.seaweedfs=./seaweedfs-rules.yml \
+  --set-file grafana.dashboards.seaweedfs=./seaweedfs-dashboard.json
+```
+
+`--version` keeps prometheus-stack at the version it runs, the only case in which `--reuse-values`
+is safe (Eldara-Tech/swarmcli#687).
+
+A release file and swarmcli-cd take values files only, not `--set-file`, so there both
+files go in as values files: each file's content, as it is, indented under its key as a
+block string. From the two files downloaded above:
+
+```bash
+mkdir -p monitoring/rules monitoring/dashboards
+{ printf 'prometheus:\n  extraRules:\n    seaweedfs: |\n'; sed 's/^./      &/' seaweedfs-rules.yml; } > monitoring/rules/seaweedfs.yaml
+{ printf 'grafana:\n  dashboards:\n    seaweedfs: |\n'; sed 's/^./      &/' seaweedfs-dashboard.json; } > monitoring/dashboards/seaweedfs.yaml
+```
+
+The dashboard stays JSON: converted to YAML it becomes a mapping, which the render
+refuses (`got object, want string`). prometheus-stack's README, *Keeping your setup in
+git*, shows where to list the two files.
+
+- **Alerts** (`seaweedfs-rules.yml`): SeaweedFS publishes no alert rules, so these are the
+  chart's. Critical: `SeaweedFSDiskFull` once free space falls below
+  `-volume.minFreeSpace` (1% by default), where every volume turns read-only and S3
+  writes fail with 500; `SeaweedFSDiskError` and `SeaweedFSVolumeQuarantined` once weed
+  stops serving a disk or a volume after I/O errors; `SeaweedFSNoLeader` while the master
+  assigns no volume; and `SeaweedFSS3ServerErrors` while more than 5% of S3 requests answer
+  5xx, leaving out 501, which is a client asking for something SeaweedFS does not
+  implement. Warnings: `SeaweedFSVolumeSlotsExhausted` once every volume slot the disk
+  allows is taken, so a new bucket, or one whose volumes are full, cannot be written to;
+  `SeaweedFSReadOnlyVolumes` for volumes marked read-only or found damaged; and
+  `SeaweedFSStorageIOErrors`. Each writable volume reserves 1 GiB of free space by
+  default, so a small disk runs out of slots after a few buckets. A down target is
+  prometheus-stack's `TargetDown`.
+- **Dashboard** (`seaweedfs-dashboard.json`, uid `seaweedfs`), trimmed from SeaweedFS's
+  [`other/metrics/grafana_seaweedfs.json`](https://github.com/seaweedfs/seaweedfs/blob/master/other/metrics/grafana_seaweedfs.json)
+  (Apache-2.0): master leader, uptime, disk available and used, volume slots and
+  read-only volumes; S3 requests, non-2xx responses, p99 latency and traffic per bucket;
+  bucket size and objects, volumes per bucket and volumes out of service; disk space,
+  volume server errors, and the process's memory and CPU. Pick a release by its `stack`.
+
+The dashboard picks a release by the `stack` label prometheus-stack's discovery puts on
+every target, and the alerts carry it. Another Prometheus needs the same relabelling of
+`__meta_dockerswarm_service_label_com_docker_stack_namespace` to `stack`.
+
 ## Persistence & node pinning
 
 Everything lives under `/data` on the `seaweedfs-data` volume, pinned to the node
@@ -507,6 +624,9 @@ processes must never share `/data`.
 | `admin.oauth2.scope` | `openid email profile` | Scopes requested at sign-in |
 | `admin.oauth2.trustedProxyIp` | `10.0.0.0/8` | Addresses whose `X-Forwarded-*` headers the proxy believes |
 | `extraArgs` | `[]` | Extra `weed server` flags |
+| `metrics.enabled` | `false` | Serve Prometheus metrics, labelled for Swarm service discovery. See *Metrics* |
+| `metrics.port` | `9327` | Metrics listen port (never published; must differ from the S3, gRPC and web UI ports) |
+| `metrics.network` | `monitoring` | Overlay shared with Prometheus (external, auto-created) |
 | `healthcheck.*` | enabled, 15s/5s/4, start 30s, monitor 2m | `curl` of `/healthz` on the S3 port |
 | `stopGracePeriod` | `30s` | SIGTERM → SIGKILL window |
 | `resources.limits.memory` / `resources.reservations.memory` | `""` | Optional memory limits |

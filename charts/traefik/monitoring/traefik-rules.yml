@@ -1,0 +1,53 @@
+# Traefik alerts for the metrics that metrics.enabled turns on. The chart does not deploy
+# them: hand the file to your Prometheus, e.g. the prometheus-stack chart's
+# prometheus.extraRules (README § Alerts and a dashboard).
+# TraefikTLSCertificatesExpiring and TraefikTLSCertificatesExpiringSoon are derived from
+# the traefik-mixin in grafana/jsonnet-libs (Apache-2.0). Its config-reload alert is
+# left out: Traefik v3 no longer has traefik_config_reloads_failure_total.
+# TraefikServiceHighErrorRate is this chart's. Each alert groups by the `stack` and `job`
+# labels prometheus-stack's discovery adds, not by `instance`, which changes with every task.
+# Critical only while users lose service, writes or data now: of these, a certificate within
+# 7 days of expiry, as upstream rates it.
+#
+# Validate (from the repo root):
+#   docker run --rm --entrypoint promtool -v "$PWD/charts/traefik:/chart:ro" \
+#     "prom/prometheus:$(sed -n 's/^appVersion: *"\(.*\)"$/\1/p' charts/prometheus-stack/Chart.yaml)" \
+#     test rules /chart/ci/traefik-rules-test.yml
+groups:
+  - name: traefik
+    rules:
+      # Traefik keeps a replaced certificate's series until it restarts, so only the
+      # newest certificate per SAN list counts (max). Generated default certs are not
+      # reported. Traefik renews an ACME certificate 30 days ahead by default.
+      - alert: TraefikTLSCertificatesExpiring
+        expr: max by (stack, job, sans) ((last_over_time(traefik_tls_certs_not_after[5m]) - time()) / 86400) < 7
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'TLS certificate for {{ $labels.sans }} expires in under 7 days'
+          description: 'The newest certificate Traefik {{ $labels.stack }} serves for {{ $labels.sans }} expires in {{ printf "%.0f" $value }} days.'
+      - alert: TraefikTLSCertificatesExpiringSoon
+        expr: max by (stack, job, sans) ((last_over_time(traefik_tls_certs_not_after[5m]) - time()) / 86400) < 14 >= 7
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'TLS certificate for {{ $labels.sans }} expires in under 14 days'
+          description: 'The newest certificate Traefik {{ $labels.stack }} serves for {{ $labels.sans }} expires in {{ printf "%.0f" $value }} days.'
+      # A warning: the 5xx belong to the backend services, not to Traefik. Covers routed
+      # charts that serve no metrics of their own. A service left with no running, healthy
+      # task drops out of Traefik's configuration and its series with it: its requests
+      # become the entrypoint's 404s and this alert resolves. No traffic floor: on a quiet
+      # service a few failures in five minutes are enough.
+      - alert: TraefikServiceHighErrorRate
+        expr: |
+          sum by (stack, job, service) (rate(traefik_service_requests_total{code=~"5.."}[5m]))
+            / sum by (stack, job, service) (rate(traefik_service_requests_total[5m]))
+            > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Traefik service {{ $labels.service }} is failing requests'
+          description: '{{ $value | humanizePercentage }} of the requests Traefik {{ $labels.stack }} sent to {{ $labels.service }} have answered 5xx for 5 minutes.'

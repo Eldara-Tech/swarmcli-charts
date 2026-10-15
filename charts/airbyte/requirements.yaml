@@ -10,6 +10,13 @@ networks:
     attachable: true
     autoCreate: false
     description: "Shared ingress overlay for Traefik"
+{{- with .Values.storage.network }}
+  - name: "{{ . }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "External overlay where the S3-compatible storage endpoint is reachable"
+{{- end }}
 {{- range .Values.workloadLauncher.extraNetworks }}
   - name: "{{ . }}"
     driver: overlay

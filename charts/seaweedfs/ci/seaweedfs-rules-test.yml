@@ -1,0 +1,188 @@
+# promtool unit tests for monitoring/seaweedfs-rules.yml, which the chart ships for operators
+# to load into their Prometheus but does not deploy itself. ci/e2e-check.sh runs them with a
+# pinned prom/prometheus image's promtool in the metrics case.
+#
+# One release per failure. Release `ok` must raise nothing: it starts as weed does, with no
+# leader for its first minute and max_volumes 0 until a heartbeat (held here for 20 minutes),
+# answers a third of its S3 requests 501 and another third 403, and has I/O errors from long
+# ago. Release `full` is below its minimum free space, so its volumes are read-only for low
+# disk space, which only SeaweedFSDiskFull reports.
+rule_files:
+  - ../monitoring/seaweedfs-rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'SeaweedFS_volumeServer_resource{job="ok_seaweedfs",instance="10.0.9.5:9327",stack="ok",name="/data",type="avail"}'
+        values: '80000000000x30'
+      - series: 'SeaweedFS_volumeServer_disk_error_status{job="ok_seaweedfs",instance="10.0.9.5:9327",stack="ok",name="/data",type="error"}'
+        values: '0x30'
+      - series: 'SeaweedFS_volumeServer_io_quarantine{job="ok_seaweedfs",instance="10.0.9.5:9327",stack="ok",kind="volume"}'
+        values: '0x30'
+      - series: 'SeaweedFS_volumeServer_io_quarantine{job="ok_seaweedfs",instance="10.0.9.5:9327",stack="ok",kind="ec_shard"}'
+        values: '0x30'
+      - series: 'SeaweedFS_master_is_leader{job="ok_seaweedfs",instance="10.0.9.5:9327",stack="ok"}'
+        values: '0 1x29'
+      - series: 'SeaweedFS_s3_request_total{job="ok_seaweedfs",instance="10.0.9.5:9327",stack="ok",bucket="b",code="200",type="PUT"}'
+        values: '0+50x30'
+      - series: 'SeaweedFS_s3_request_total{job="ok_seaweedfs",instance="10.0.9.5:9327",stack="ok",bucket="b",code="501",type="GET"}'
+        values: '0+50x30'
+      - series: 'SeaweedFS_s3_request_total{job="ok_seaweedfs",instance="10.0.9.5:9327",stack="ok",bucket="",code="403",type="GET"}'
+        values: '0+50x30'
+      - series: 'SeaweedFS_volumeServer_volumes{job="ok_seaweedfs",instance="10.0.9.5:9327",stack="ok",collection="b",type="volume"}'
+        values: '7x30'
+      - series: 'SeaweedFS_volumeServer_max_volumes{job="ok_seaweedfs",instance="10.0.9.5:9327",stack="ok"}'
+        values: '0x20 79x10'
+      - series: 'SeaweedFS_volumeServer_read_only_volumes{job="ok_seaweedfs",instance="10.0.9.5:9327",stack="ok",collection="b",type="noWriteOrDelete"}'
+        values: '0x30'
+      - series: 'SeaweedFS_volumeServer_read_only_volumes{job="ok_seaweedfs",instance="10.0.9.5:9327",stack="ok",collection="b",type="noWriteCanDelete"}'
+        values: '0x30'
+      - series: 'SeaweedFS_volumeServer_storage_io_error_total{job="ok_seaweedfs",instance="10.0.9.5:9327",stack="ok"}'
+        values: '5x30'
+      # Release `full` drops below its minimum free space at 2m.
+      - series: 'SeaweedFS_volumeServer_resource{job="full_seaweedfs",instance="10.0.1.5:9327",stack="full",name="/data",type="avail"}'
+        values: '900000000 900000000 0x29'
+      - series: 'SeaweedFS_volumeServer_read_only_volumes{job="full_seaweedfs",instance="10.0.1.5:9327",stack="full",collection="b",type="isDiskSpaceLow"}'
+        values: '0 0 7x29'
+      - series: 'SeaweedFS_volumeServer_read_only_volumes{job="full_seaweedfs",instance="10.0.1.5:9327",stack="full",collection="b",type="IsReadOnly"}'
+        values: '0 0 7x29'
+      - series: 'SeaweedFS_volumeServer_read_only_volumes{job="full_seaweedfs",instance="10.0.1.5:9327",stack="full",collection="b",type="noWriteOrDelete"}'
+        values: '0x30'
+      # Release `diskerr` fails its disk checks from 2m, release `quar` quarantines a volume.
+      - series: 'SeaweedFS_volumeServer_disk_error_status{job="diskerr_seaweedfs",instance="10.0.2.5:9327",stack="diskerr",name="/data",type="error"}'
+        values: '0 0 1x29'
+      - series: 'SeaweedFS_volumeServer_io_quarantine{job="quar_seaweedfs",instance="10.0.3.5:9327",stack="quar",kind="volume"}'
+        values: '0 0 1x29'
+      - series: 'SeaweedFS_volumeServer_io_quarantine{job="quar_seaweedfs",instance="10.0.3.5:9327",stack="quar",kind="ec_shard"}'
+        values: '0x30'
+      # Release `noleader` loses its leader at 2m.
+      - series: 'SeaweedFS_master_is_leader{job="noleader_seaweedfs",instance="10.0.4.5:9327",stack="noleader"}'
+        values: '1 1 0x29'
+      # Release `s3err` answers 10% of its S3 requests 500.
+      - series: 'SeaweedFS_s3_request_total{job="s3err_seaweedfs",instance="10.0.5.5:9327",stack="s3err",bucket="b",code="200",type="PUT"}'
+        values: '0+90x30'
+      - series: 'SeaweedFS_s3_request_total{job="s3err_seaweedfs",instance="10.0.5.5:9327",stack="s3err",bucket="b",code="500",type="PUT"}'
+        values: '0+10x30'
+      # Release `slots` holds all 79 volumes its disk allows, across two buckets.
+      - series: 'SeaweedFS_volumeServer_volumes{job="slots_seaweedfs",instance="10.0.6.5:9327",stack="slots",collection="a",type="volume"}'
+        values: '40x30'
+      - series: 'SeaweedFS_volumeServer_volumes{job="slots_seaweedfs",instance="10.0.6.5:9327",stack="slots",collection="b",type="volume"}'
+        values: '39x30'
+      - series: 'SeaweedFS_volumeServer_max_volumes{job="slots_seaweedfs",instance="10.0.6.5:9327",stack="slots"}'
+        values: '79x30'
+      # Release `ro` has two volumes marked read-only from 2m.
+      - series: 'SeaweedFS_volumeServer_read_only_volumes{job="ro_seaweedfs",instance="10.0.7.5:9327",stack="ro",collection="b",type="noWriteCanDelete"}'
+        values: '0 0 2x29'
+      - series: 'SeaweedFS_volumeServer_read_only_volumes{job="ro_seaweedfs",instance="10.0.7.5:9327",stack="ro",collection="b",type="IsReadOnly"}'
+        values: '0 0 2x29'
+      # Release `ioerr` gets three I/O errors at 3m.
+      - series: 'SeaweedFS_volumeServer_storage_io_error_total{job="ioerr_seaweedfs",instance="10.0.8.5:9327",stack="ioerr"}'
+        values: '0 0 0 3x28'
+
+    alert_rule_test:
+      # A minute after the failures, nothing has lasted its `for` yet.
+      - eval_time: 3m
+        alertname: SeaweedFSDiskFull
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: SeaweedFSNoLeader
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: SeaweedFSS3ServerErrors
+        exp_alerts: []
+
+      # Not release ok, nor full's volumes read-only for low disk space.
+      - eval_time: 10m
+        alertname: SeaweedFSDiskFull
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: full_seaweedfs
+              stack: full
+              name: /data
+            exp_annotations:
+              summary: 'SeaweedFS full has stopped writing to /data'
+              description: '/data of SeaweedFS full has been below its minimum free space for 2 minutes: every volume on it is read-only and S3 writes fail.'
+      - eval_time: 10m
+        alertname: SeaweedFSDiskError
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: diskerr_seaweedfs
+              stack: diskerr
+              name: /data
+            exp_annotations:
+              summary: 'SeaweedFS diskerr cannot read its disk /data'
+              description: 'SeaweedFS diskerr has failed its checks of /data and stopped serving the volumes on it.'
+      - eval_time: 10m
+        alertname: SeaweedFSVolumeQuarantined
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: quar_seaweedfs
+              stack: quar
+            exp_annotations:
+              summary: 'SeaweedFS quar has quarantined a volume'
+              description: 'SeaweedFS quar has taken 1 volume(s) out of service after repeated I/O errors. Their objects cannot be read until weed restarts on a healthy disk.'
+      # Not release ok, whose first minute without a leader is weed starting.
+      - eval_time: 10m
+        alertname: SeaweedFSNoLeader
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: noleader_seaweedfs
+              stack: noleader
+            exp_annotations:
+              summary: 'SeaweedFS noleader has no master leader'
+              description: 'The master of SeaweedFS noleader has not been leader for 5 minutes, so it refuses every write.'
+      # Not release ok's errors from long ago.
+      - eval_time: 10m
+        alertname: SeaweedFSStorageIOErrors
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: ioerr_seaweedfs
+              stack: ioerr
+            exp_annotations:
+              summary: 'SeaweedFS ioerr is getting I/O errors from its disk'
+              description: 'SeaweedFS ioerr has had 3 I/O error(s) from its disk in the last 15 minutes.'
+
+      # Not release ok, whose 501s and 403s are the clients'.
+      - eval_time: 20m
+        alertname: SeaweedFSS3ServerErrors
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: s3err_seaweedfs
+              stack: s3err
+            exp_annotations:
+              summary: 'SeaweedFS s3err is failing S3 requests'
+              description: '10% of the S3 requests to SeaweedFS s3err have answered 5xx for 10 minutes.'
+      # Not release ok, whose max_volumes is still 0 before its first heartbeat.
+      - eval_time: 20m
+        alertname: SeaweedFSVolumeSlotsExhausted
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: slots_seaweedfs
+              stack: slots
+            exp_annotations:
+              summary: 'SeaweedFS slots has no room for another volume'
+              description: 'SeaweedFS slots has used every volume slot its disk allows for 15 minutes. A new bucket, or one whose volumes are full, cannot be written to.'
+      - eval_time: 20m
+        alertname: SeaweedFSReadOnlyVolumes
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: ro_seaweedfs
+              stack: ro
+            exp_annotations:
+              summary: 'SeaweedFS ro has read-only volumes'
+              description: 'SeaweedFS ro has had 2 volume(s) marked read-only or found damaged for 10 minutes. Its log says which.'
+
+      # The errors at 3m have left the 15-minute window.
+      - eval_time: 30m
+        alertname: SeaweedFSStorageIOErrors
+        exp_alerts: []

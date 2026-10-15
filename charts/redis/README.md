@@ -126,6 +126,58 @@ auth there is nothing to restrict, and no secret is needed.
 - With swarmcli-cd, add `redis_exporter_password` to `allow.secrets` and
   `monitoring` to `allow.networks`.
 
+### Alerts and a dashboard
+
+The chart ships both under [`monitoring/`](monitoring) for your Prometheus and Grafana,
+and deploys neither: scraping is automatic, but which rules and dashboards a monitoring
+stack loads is its operator's choice. With the prometheus-stack chart they go in
+through its own configuration:
+
+```bash
+base=https://raw.githubusercontent.com/Eldara-Tech/swarmcli-charts/main/charts/redis/monitoring
+curl -fsSL -O "$base/redis-rules.yml" -O "$base/redis-dashboard.json"
+v="$(swarmcli charts status mon | sed -n 's/^CHART: prometheus-stack-//p')"
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --version "${v:?}" --reuse-values \
+  --set-file prometheus.extraRules.redis=./redis-rules.yml \
+  --set-file grafana.dashboards.redis=./redis-dashboard.json
+```
+
+`--version` keeps prometheus-stack at the version it runs, the only case in which `--reuse-values`
+is safe (Eldara-Tech/swarmcli#687).
+
+A release file and swarmcli-cd take values files only, not `--set-file`, so there both
+files go in as values files: each file's content, as it is, indented under its key as a
+block string. From the two files downloaded above:
+
+```bash
+mkdir -p monitoring/rules monitoring/dashboards
+{ printf 'prometheus:\n  extraRules:\n    redis: |\n'; sed 's/^./      &/' redis-rules.yml; } > monitoring/rules/redis.yaml
+{ printf 'grafana:\n  dashboards:\n    redis: |\n'; sed 's/^./      &/' redis-dashboard.json; } > monitoring/dashboards/redis.yaml
+```
+
+The dashboard stays JSON: converted to YAML it becomes a mapping, which the render
+refuses (`got object, want string`). prometheus-stack's README, *Keeping your setup in
+git*, shows where to list the two files.
+
+- **Alerts** (`redis-rules.yml`): `RedisDown` and `RedisTooManyConnections` (above 90%
+  of `maxclients`), derived from the
+  [redis-mixin](https://github.com/oliver006/redis_exporter/tree/master/contrib/redis-mixin)
+  (MIT). Then the chart's own: `RedisRejectingWrites` while Redis keeps answering OOM,
+  `RedisMemoryNearLimit` above 90% of `maxmemory`, and `RedisPersistenceFailed` while
+  the last RDB save or AOF write has failed, which by default makes Redis refuse writes.
+  `RedisMemoryNearLimit` needs `maxmemory` set and `maxmemoryPolicy: noeviction`: with
+  the default `maxmemory` there is no limit to approach, and an evicting policy sits at
+  it by design.
+- **Dashboard** (`redis-dashboard.json`, uid `redis`), trimmed from the
+  [redis-mixin dashboard](https://github.com/oliver006/redis_exporter/tree/master/contrib/redis-mixin/dashboards)
+  (MIT): status, uptime, hit ratio, memory against `maxmemory` and clients against
+  `maxclients`; commands, p99 latency, errors by type and clients; memory, evicted and
+  expired keys, keys per database and persistence status. Pick a release by its `stack`.
+
+The dashboard picks a release by the `stack` label prometheus-stack's discovery puts on
+every target, and the alerts carry it. Another Prometheus needs the same relabelling of
+`__meta_dockerswarm_service_label_com_docker_stack_namespace` to `stack`.
+
 ## Values
 
 | Key | Default | Description |

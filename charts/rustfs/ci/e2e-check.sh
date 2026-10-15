@@ -41,7 +41,9 @@ SIG='aws:amz:us-east-1:s3'
 
 svc="${release}_rustfs"
 net=rustfs-net
-base="http://${svc}:9000"
+# The alias the chart adds on rustfs-net, which Java clients need: their URI parser rejects
+# the '_' in $svc. scripts/e2e-test.sh names releases [a-z0-9-] only, so it needs no mapping.
+base="http://${release}-rustfs:9000"
 route=()
 buckets=""
 console=""

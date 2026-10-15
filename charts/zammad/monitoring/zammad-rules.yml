@@ -1,0 +1,81 @@
+# memcached and Elasticsearch alerts for the two exporters metrics.enabled adds; Zammad itself
+# serves no metrics. The chart does not deploy them: hand the file to your Prometheus, e.g. the
+# prometheus-stack chart's prometheus.extraRules (README § Alerts and a dashboard).
+# The three memcached alerts are derived from the memcached-mixin in grafana/jsonnet-libs
+# (Apache-2.0). ElasticsearchHeapTooHigh is from the example rules in
+# prometheus-community/elasticsearch_exporter (Apache-2.0), whose mixin ships no alerts; the
+# other Elasticsearch alerts are this chart's.
+# Critical only while users lose service, writes or data now, so MemcachedDown (Zammad serves
+# without its cache, only more slowly) and ElasticsearchHeapTooHigh are warnings, unlike upstream.
+# The embedded Elasticsearch is a single node, and Zammad creates its indices with the default of
+# one replica, which a single node never assigns: yellow is its normal health, so only red
+# alerts, and no node-count alert applies.
+#
+# Validate (from the repo root):
+#   docker run --rm --entrypoint promtool -v "$PWD/charts/zammad:/chart:ro" \
+#     "prom/prometheus:$(sed -n 's/^appVersion: *"\(.*\)"$/\1/p' charts/prometheus-stack/Chart.yaml)" \
+#     test rules /chart/ci/zammad-rules-test.yml
+groups:
+  - name: zammad
+    rules:
+      - alert: MemcachedDown
+        expr: memcached_up == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.job }} cannot reach its memcached'
+          description: 'memcached_exporter {{ $labels.job }} on {{ $labels.instance }} has not reached memcached for 15 minutes. Zammad serves without its cache, more slowly.'
+      - alert: MemcachedConnectionLimitApproaching
+        expr: memcached_current_connections / memcached_max_connections > 0.8
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'memcached behind {{ $labels.job }} is near its connection limit'
+          description: 'memcached behind {{ $labels.job }} has used {{ $value | humanizePercentage }} of its connections for 15 minutes; at the limit it refuses new ones.'
+      - alert: MemcachedOutOfMemoryErrors
+        expr: sum without (slab) (rate(memcached_slab_items_outofmemory_total[5m])) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'memcached behind {{ $labels.job }} refuses stores'
+          description: 'memcached behind {{ $labels.job }} has failed to store items for lack of memory for 15 minutes, {{ printf "%.2f" $value }} per second.'
+      # The exporter reports no health or node series at all while Elasticsearch is
+      # unreachable, so ElasticsearchClusterRed cannot stand in for this one.
+      - alert: ElasticsearchUnreachable
+        expr: elasticsearch_scrape_success{collector="cluster-info"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $labels.job }} cannot reach its Elasticsearch'
+          description: 'elasticsearch_exporter {{ $labels.job }} on {{ $labels.instance }} has not reached Elasticsearch for 5 minutes. Zammad''s full-text search and indexing depend on it.'
+      - alert: ElasticsearchClusterRed
+        expr: elasticsearch_cluster_health_status{color="red"} == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Elasticsearch behind {{ $labels.job }} is red'
+          description: 'Elasticsearch {{ $labels.cluster }} behind {{ $labels.job }} has had an unassigned primary shard for 5 minutes: searches over that index fail or come back partial.'
+      - alert: ElasticsearchHeapTooHigh
+        expr: elasticsearch_jvm_memory_used_bytes{area="heap"} / elasticsearch_jvm_memory_max_bytes{area="heap"} > 0.9
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Elasticsearch node {{ $labels.name }} heap is over 90%'
+          description: 'Elasticsearch node {{ $labels.name }} behind {{ $labels.job }} has used over 90% of its heap for 15 minutes. Raise elasticsearch.javaOpts and elasticsearchResources together.'
+      # At the default low watermark (85%), before the high one (90%), past which Elasticsearch
+      # allocates no new shard, so an index Zammad creates (a reindex does) goes red, and before
+      # flood stage (95%), at which it blocks writes to every index.
+      - alert: ElasticsearchDiskSpaceLow
+        expr: 1 - elasticsearch_filesystem_data_available_bytes / elasticsearch_filesystem_data_size_bytes > 0.85
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Elasticsearch node {{ $labels.name }} data disk is {{ $value | humanizePercentage }} full'
+          description: 'The data disk of Elasticsearch node {{ $labels.name }} behind {{ $labels.job }} has been over 85% full for 15 minutes. At 90% it allocates no new shard, at 95% it blocks writes.'

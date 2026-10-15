@@ -115,7 +115,8 @@ placement:
   constraints: []
 
 # The overlay S3 clients reach the store on, in every exposure mode. Other stacks join
-# it as an external network and dial http://<release>_rustfs:<s3.port>.
+# it as an external network and dial http://<release>-rustfs:<s3.port>, an alias the
+# chart adds there ('_' and '.' in the release name become '-').
 # requirements.yaml declares it autoCreate:true, so it is created on first install.
 network:
   name: rustfs-net

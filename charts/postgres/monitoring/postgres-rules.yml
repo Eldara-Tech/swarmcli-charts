@@ -1,0 +1,76 @@
+# PostgreSQL alerts for the postgres_exporter metrics.enabled adds, or any postgres_exporter
+# target. The chart does not deploy them: hand the file to your Prometheus, e.g. the
+# prometheus-stack chart's prometheus.extraRules (README § Alerts and a dashboard).
+# All five are derived from the postgres_mixin in prometheus-community/postgres_exporter
+# (Apache-2.0), keeping those that hold for a single server. PostgresHasExporterErrors
+# watches each collector's success gauge: a failing collector never sets the
+# pg_exporter_last_scrape_error the mixin reads. The connection alerts sum per target, by
+# job, instance and the `stack` label prometheus-stack's discovery adds. Severity: critical
+# only while the server is unreachable or refuses connections, warning otherwise, which
+# re-rates the mixin's PostgreSQLDown and PostgreSQLMaxConnectionsReached (warning) to
+# critical and its PostgresHasExporterErrors (critical) to warning.
+#
+# Validate (from the repo root):
+#   docker run --rm --entrypoint promtool -v "$PWD/charts/postgres:/chart:ro" \
+#     "prom/prometheus:$(sed -n 's/^appVersion: *"\(.*\)"$/\1/p' charts/prometheus-stack/Chart.yaml)" \
+#     test rules /chart/ci/postgres-rules-test.yml
+groups:
+  - name: postgres
+    rules:
+      - alert: PostgreSQLDown
+        expr: pg_up != 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $labels.job }} cannot reach its PostgreSQL server'
+          description: 'postgres_exporter {{ $labels.job }} on {{ $labels.instance }} has not reached its server for 5 minutes.'
+      # Roles that are not superusers get max_connections minus superuser_reserved_connections.
+      # This chart's exporter is one: it opens a connection per scrape for its collectors, which
+      # is refused once those slots are full, so the count never reaches the limit. Every
+      # collector metric vanishes instead while pg_up stays 1, which the second operand
+      # catches. The first still serves an exporter that logs in as a superuser.
+      - alert: PostgreSQLMaxConnectionsReached
+        expr: |
+          sum by (stack, job, instance) (pg_stat_activity_count)
+            >=
+          sum by (stack, job, instance) (pg_settings_max_connections)
+            - sum by (stack, job, instance) (pg_settings_superuser_reserved_connections)
+          or
+          max by (stack, job, instance) (pg_up == 1 unless on (stack, job, instance) pg_scrape_collector_success)
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'PostgreSQL behind {{ $labels.job }} has no connection slot left for roles that are not superusers'
+          description: 'For a minute, every slot outside superuser_reserved_connections has been taken, so roles that are not superusers cannot connect; superusers still can. An exporter that is not a superuser, like this chart''s, then reports pg_up 1 with no collector metrics.'
+      - alert: PostgreSQLHighConnections
+        expr: |
+          sum by (stack, job, instance) (pg_stat_activity_count)
+            >
+          (
+            sum by (stack, job, instance) (pg_settings_max_connections)
+              - sum by (stack, job, instance) (pg_settings_superuser_reserved_connections)
+          ) * 0.8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'PostgreSQL behind {{ $labels.job }} is above 80% of its connection limit'
+          description: '{{ $value }} connections have been open for 10 minutes, more than 80% of max_connections minus superuser_reserved_connections.'
+      - alert: PostgresHasHighDeadLocks
+        expr: rate(pg_stat_database_deadlocks{datname!~"template.*"}[5m]) * 60 > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Deadlocks in database {{ $labels.datname }} behind {{ $labels.job }}'
+          description: 'Database {{ $labels.datname }} has had more than 5 deadlocks a minute for 5 minutes, {{ $value | humanize }} now. Each one aborts a transaction.'
+      - alert: PostgresHasExporterErrors
+        expr: pg_scrape_collector_success == 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.job }} collector {{ $labels.collector }} is failing'
+          description: 'postgres_exporter {{ $labels.job }} has failed its {{ $labels.collector }} collector for 30 minutes, usually for a privilege its role lacks. Alerts and panels built on those metrics see nothing.'

@@ -334,6 +334,9 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   runner's `openssl`, the fixture names the CA as `admin.oauth2.caSecret`, and the stub issues
   RS256 ID tokens for the codes it hands out, redeeming them only with the client secret setup
   created. The check signs in as a member of the allowed group and as an outsider.
+  The `metrics` fixture scrapes `/metrics` from the `monitoring` overlay, where Prometheus
+  would, repeats the anonymous-S3 and closed-internal-port probes there, and runs
+  `promtool test rules` on the alert rules under `monitoring/`.
 - **gitlab-runner** — the runner authentication-token secret + the `gitlab-runner-data` node
   label, plus the two S3 cache secrets for the `cache` fixture (their values deliberately
   contain the `/` and `+` of a real base64 key, so the TOML quoting is exercised). The mock
@@ -364,8 +367,8 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   through the socket-proxy, the Watchdog alert in Alertmanager, Grafana's datasources and
   dashboards, the proxy's allow-list, and `promtool`/`amtool` on the configs the tasks run.
 
-- **airbyte** — the eight operator secrets + `airbyte-db-net`/`traefik-public` + the
-  `airbyte-data` node label, and three throwaway backends: PostgreSQL, SeaweedFS for S3
+- **airbyte** — the eight operator secrets + `airbyte-db-net`/`airbyte-e2e-s3-net`/`traefik-public`
+  + the `airbyte-data` node label, and three throwaway backends: PostgreSQL, SeaweedFS for S3
   (Airbyte creates its bucket itself; MinIO's images were gone from quay.io and Docker Hub by
   2026-09-25) and an OIDC discovery mock (`ci/mock-oidc.js`) that oauth2-proxy needs to start
   at all. The `mock`, `noauth` and `login` fixtures deploy against them; the others are

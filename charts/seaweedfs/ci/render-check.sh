@@ -110,9 +110,12 @@ hc="$(q "$svc.healthcheck.test | join(\" \")")"
 [ "$(q "$svc.stop_grace_period")" != "null" ] || bad "no stop_grace_period"
 
 # ── networks ──────────────────────────────────────────────────────────────────────────
-nets="$(q "$svc.networks[]")"
+nets="$(q "$svc.networks | keys | .[]")"
 grep -Fx seaweedfs-net <<<"$nets" >/dev/null || bad "the service is not on network.name (seaweedfs-net): other stacks could not reach it"
 [ "$(q '.networks."seaweedfs-net".external')" = "true" ] || bad "seaweedfs-net is not external — it would be stack-scoped and unreachable by name from other stacks"
+# Java clients cannot dial ci_seaweedfs: java.net.URI rejects the '_' in it.
+[ "$(q "$svc.networks.\"seaweedfs-net\".aliases | join(\" \")")" = "ci-seaweedfs" ] \
+  || bad "the service's alias on seaweedfs-net is not exactly ci-seaweedfs, the name without '_' Java clients dial"
 
 # ── exposure ──────────────────────────────────────────────────────────────────────────
 labels="$(q "$svc.deploy.labels[]")"
@@ -174,9 +177,88 @@ case "$case" in
   *)
     [ "$(q "$svc.ports")" = "null" ] || bad "case $case: a port is published although exposure.mode is none"
     if grep -F 'traefik.' <<<"$labels" >/dev/null; then bad "case $case: Traefik labels rendered although exposure.mode is none"; fi
-    [ "$nets" = "seaweedfs-net" ] || bad "case $case: attached to more than network.name: $(tr '\n' ' ' <<<"$nets")"
+    want_nets=seaweedfs-net
+    [ "$case" = "metrics" ] && want_nets="$(printf 'seaweedfs-net\nmonitoring')"
+    [ "$(sort <<<"$nets")" = "$(sort <<<"$want_nets")" ] || bad "case $case: attached to $(tr '\n' ' ' <<<"$nets")instead of $(tr '\n' ' ' <<<"$want_nets")"
     ;;
 esac
+
+# ── metrics: opt-in, never published, one port value drives listener and label ──────
+# A listener left on loopback still renders, labels and deploys cleanly — and every
+# scrape fails. A label naming another port fails the same way.
+if [ "$case" = "metrics" ]; then
+  mport="$(sed -n 's/^-metricsPort=\([0-9]*\)$/\1/p' <<<"$args")"
+  [ "$mport" = "9327" ] || bad "case $case: -metricsPort is '$mport', expected 9327"
+  grep -Fx -- '-metricsIp=0.0.0.0' <<<"$args" >/dev/null \
+    || bad "case $case: -metricsIp=0.0.0.0 is missing — the listener would follow -ip.bind onto loopback, out of Prometheus's reach"
+  # Exactly the two discovery labels: an extra prometheus.io/path would point every
+  # scrape somewhere else on this listener, /debug/pprof included.
+  disc="$(grep -E '^prometheus\.io/' <<<"$labels" | LC_ALL=C sort | tr '\n' ' ' || true)"
+  [ "$disc" = "prometheus.io/port=$mport prometheus.io/scrape=true " ] \
+    || bad "case $case: discovery labels are '$disc', expected exactly prometheus.io/port=$mport and prometheus.io/scrape=true"
+  [ "$(q '.networks.monitoring.external')" = "true" ] || bad "case $case: the monitoring overlay is not external — Prometheus in another stack could not reach it"
+  if q "$svc.ports[].target" | grep -Fx "$mport" >/dev/null; then bad "case $case: the metrics port is published; /metrics and /debug/pprof have no authentication"; fi
+else
+  if grep -E -- '^-metrics(Port|Ip)=' <<<"$args" >/dev/null; then bad "case $case: a metrics listener is rendered although metrics.enabled is off"; fi
+  if grep -F 'prometheus.io/' <<<"$labels" >/dev/null; then bad "case $case: discovery labels are rendered although metrics.enabled is off"; fi
+  if grep -Fx monitoring <<<"$nets" >/dev/null; then bad "case $case: attached to the monitoring overlay although metrics.enabled is off"; fi
+fi
+
+# ── the refusals ──────────────────────────────────────────────────────────────────────
+# Rendered once, from the metrics fixture, with the renderer test-charts.sh runs.
+if [ "$case" = "metrics" ]; then
+  chart="$(cd "$(dirname "$0")/.." && pwd)"
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  render() { "${SWARMCLI:?render-check needs SWARMCLI to test the refusals}" charts template r "$chart" -f "$chart/ci/metrics-values.yaml" "$@"; }
+  refused() {
+    local want="$1"; shift
+    if render "$@" >/dev/null 2>"$tmp/err"; then
+      bad "rendered with $* — it must be refused"
+    elif ! grep -F -- "$want" "$tmp/err" >/dev/null; then
+      bad "$* failed, but not with \"$want\": $(cat "$tmp/err")"
+    fi
+  }
+  # Every port weed binds inside the container: a second listener on one of them
+  # takes the whole process down at start.
+  for p in 8333 18333 9333 19333 8080 18080 8888 18888; do
+    refused "metrics.port $p is already taken" --set "metrics.port=$p"
+  done
+  refused "metrics.port 19000 is already taken" --set s3.port=9000 --set metrics.port=19000
+  # With the web UI on, its port and its worker gRPC port are taken too, and on the
+  # Enterprise image the UI one port up, behind the forwarder.
+  refused "metrics.port 23646 collides with the web UI" --set admin.enabled=true --set metrics.port=23646
+  refused "metrics.port 33646 collides with the web UI" --set admin.enabled=true --set metrics.port=33646
+  refused "metrics.port 23647 collides with the web UI" --set admin.enabled=true \
+    --set image.repository=chrislusf/seaweedfs-enterprise --set metrics.port=23647
+  render --set admin.enabled=true --set metrics.port=23647 >/dev/null 2>"$tmp/err" \
+    || bad "metrics.port 23647 was refused on the free image, where weed admin does not bind it: $(cat "$tmp/err")"
+  cat >"$tmp/basic.yaml" <<'EOF'
+labels:
+  traefik.http.middlewares.ops.BasicAuth.Users: "ops:$$apr1$$x$$y"
+EOF
+  cat >"$tmp/digest.yaml" <<'EOF'
+labels:
+  traefik.http.middlewares.ops.digestauth.users: "ops:realm:abc"
+EOF
+  cat >"$tmp/header.yaml" <<'EOF'
+labels:
+  traefik.http.middlewares.up.headers.customRequestHeaders.Authorization: "Bearer x"
+EOF
+  cat >"$tmp/usersfile.yaml" <<'EOF'
+labels:
+  traefik.http.middlewares.ops.basicauth.usersfile: /run/secrets/ops-users
+EOF
+  refused '"traefik.http.middlewares.ops.BasicAuth.Users" carries credentials' -f "$tmp/basic.yaml"
+  refused '"traefik.http.middlewares.ops.digestauth.users" carries credentials' -f "$tmp/digest.yaml"
+  refused 'customRequestHeaders.Authorization" carries credentials' -f "$tmp/header.yaml"
+  render -f "$tmp/usersfile.yaml" >/dev/null 2>"$tmp/err" \
+    || bad "a basicauth.usersfile label was refused with metrics on; it is the alternative the refusal recommends: $(cat "$tmp/err")"
+  render -f "$tmp/basic.yaml" --set metrics.enabled=false >/dev/null 2>"$tmp/err" \
+    || bad "a basic-auth label was refused with metrics off; only metrics makes it readable: $(cat "$tmp/err")"
+  render --set metrics.port=9100 >/dev/null 2>"$tmp/err" \
+    || bad "metrics.port 9100 was refused; only ports weed binds may be: $(cat "$tmp/err")"
+fi
 case "$case" in
   traefik)
     grep -Fx 'traefik.http.routers.ci-http.middlewares=https-redirect' <<<"$labels" >/dev/null \
@@ -663,7 +745,7 @@ if [ "$case" = "admin-oauth2" ]; then
   render "$chart" --set exposure.mode=traefik --set ingress.host=s3-cache.example.com >"$tmp/out.yaml" 2>"$tmp/err" \
     && yq -r '.services.seaweedfs.deploy.labels[]' "$tmp/out.yaml" | grep -Fx 'traefik.http.routers.ci-https.service=ci' >/dev/null \
     && ! yq -r '.services.seaweedfs.deploy.labels[]' "$tmp/out.yaml" | grep -F 'ci-admin' >/dev/null \
-    && yq -r '.services.seaweedfs.networks[]' "$tmp/out.yaml" | grep -Fx traefik-public >/dev/null \
+    && yq -r '.services.seaweedfs.networks | keys | .[]' "$tmp/out.yaml" | grep -Fx traefik-public >/dev/null \
     && yq -r '.services."oauth2-proxy".deploy.labels[]' "$tmp/out.yaml" | grep -Fx 'traefik.http.routers.ci-admin-https.service=ci-admin' >/dev/null \
     || bad "with S3 and the UI both routed, S3's routers are not on seaweedfs alone and the UI's on oauth2-proxy alone: $(tail -1 "$tmp/err")"
   # With the UI off, admin.oauth2 is neither checked nor rendered.
@@ -674,6 +756,19 @@ if [ "$case" = "admin-oauth2" ]; then
   render "$chart" --set 'admin.oauth2.clientId=seaweedfs$admin' >"$tmp/out.yaml" 2>"$tmp/err" \
     && grep -F -- '--client-id=seaweedfs$$admin' "$tmp/out.yaml" >/dev/null \
     || bad "a \$ in admin.oauth2.clientId is not escaped as \$\$ — Docker would interpolate it"
+fi
+
+# ── the alias of a release name with '_' or '.' (from the default fixture only) ──────
+if [ "$case" = "default" ]; then
+  tmp="$(mktemp)"
+  trap 'rm -f "$tmp" "$tmp.err"' EXIT
+  if "${SWARMCLI:?render-check needs SWARMCLI to render a second release}" charts template my_s3.x \
+    "$(cd "$(dirname "$0")/.." && pwd)" >"$tmp" 2>"$tmp.err"; then
+    [ "$(yq -r "$svc.networks.\"seaweedfs-net\".aliases[]" "$tmp")" = "my-s3-x-seaweedfs" ] \
+      || bad "release my_s3.x does not get the alias my-s3-x-seaweedfs: '_' and '.' must become '-'"
+  else
+    bad "release my_s3.x was refused: $(tr '\n' ' ' <"$tmp.err")"
+  fi
 fi
 
 exit "$fail"

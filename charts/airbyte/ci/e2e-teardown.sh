@@ -4,7 +4,7 @@
 # release, once per fixture:
 #   $1 = release name   $2 = chart directory   $3 = fixture case name
 # Removes what ci/e2e-setup.sh created — the three backing services, the mock's config, the
-# eight secrets and the airbyte-db-net overlay — plus any connector container or volume the
+# eight secrets and the airbyte-db-net and airbyte-e2e-s3-net overlays — plus any connector container or volume the
 # release's FakeK8s left behind (they carry airbyte.fakek8s/owner=<release>; a clean run
 # leaves none), and for noauth and login the traefik edge. Leaves the shared traefik-public overlay.
 # Best-effort: every step tolerates already-gone resources.
@@ -30,17 +30,19 @@ for s in airbyte_db_user airbyte_db_password airbyte_s3_access_key airbyte_s3_se
   docker secret rm "$s" >/dev/null 2>&1 || true
 done
 
-# The overlay can linger "in use" for a moment after the services detach; retry a few. Swarm
+# An overlay can linger "in use" for a moment after the services detach; retry a few. Swarm
 # then deletes it asynchronously, so wait until it is gone: the next fixture's setup would
 # otherwise "create" it onto the dying object and attach its services to a vanished ID
 # ("network … not found").
-for _ in $(seq 1 10); do
-  docker network rm airbyte-db-net >/dev/null 2>&1 && break
-  sleep 1
-done
-for _ in $(seq 1 30); do
-  docker network inspect airbyte-db-net >/dev/null 2>&1 || break
-  sleep 1
+for net in airbyte-db-net airbyte-e2e-s3-net; do
+  for _ in $(seq 1 10); do
+    docker network rm "$net" >/dev/null 2>&1 && break
+    sleep 1
+  done
+  for _ in $(seq 1 30); do
+    docker network inspect "$net" >/dev/null 2>&1 || break
+    sleep 1
+  done
 done
 
 exit 0

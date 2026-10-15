@@ -1,0 +1,174 @@
+# promtool unit tests for monitoring/loki-rules.yml, which the chart ships for operators
+# to load into their Prometheus but does not deploy itself. ci/e2e-check.sh runs them
+# with a pinned prom/prometheus image's promtool in the `metrics` case.
+#
+# Release `logs` is broken in every way an alert has to notice, next to a route that is
+# merely not perfect. Release `stale` compacted once, then stopped. Release `ok` is
+# healthy and must raise nothing.
+rule_files:
+  - ../monitoring/loki-rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      # Push answers a third of its requests with a 500. query_range fails 1 in 100,
+      # under the 10% threshold.
+      - series: 'loki_request_duration_seconds_count{job="logs_loki",instance="10.0.1.5:3100",stack="logs",method="POST",route="loki_api_v1_push",status_code="204",ws="false"}'
+        values: '0+10x30'
+      - series: 'loki_request_duration_seconds_count{job="logs_loki",instance="10.0.1.5:3100",stack="logs",method="POST",route="loki_api_v1_push",status_code="500",ws="false"}'
+        values: '0+5x30'
+      - series: 'loki_request_duration_seconds_count{job="logs_loki",instance="10.0.1.5:3100",stack="logs",method="GET",route="loki_api_v1_query_range",status_code="200",ws="false"}'
+        values: '0+99x30'
+      - series: 'loki_request_duration_seconds_count{job="logs_loki",instance="10.0.1.5:3100",stack="logs",method="GET",route="loki_api_v1_query_range",status_code="500",ws="false"}'
+        values: '0+1x30'
+      - series: 'loki_request_duration_seconds_count{job="ok_loki",instance="10.0.2.5:3100",stack="ok",method="POST",route="loki_api_v1_push",status_code="204",ws="false"}'
+        values: '0+10x30'
+      # Every query_range takes 1-2s, so its 99th percentile is 1.99s. Push stays under
+      # 0.5s. Tail and QuerierLoop are as slow, and excluded.
+      - series: 'loki_request_duration_seconds_bucket{job="logs_loki",instance="10.0.1.5:3100",stack="logs",method="GET",route="loki_api_v1_query_range",status_code="200",ws="false",le="1"}'
+        values: '0x30'
+      - series: 'loki_request_duration_seconds_bucket{job="logs_loki",instance="10.0.1.5:3100",stack="logs",method="GET",route="loki_api_v1_query_range",status_code="200",ws="false",le="2"}'
+        values: '0+10x30'
+      - series: 'loki_request_duration_seconds_bucket{job="logs_loki",instance="10.0.1.5:3100",stack="logs",method="GET",route="loki_api_v1_query_range",status_code="200",ws="false",le="+Inf"}'
+        values: '0+10x30'
+      - series: 'loki_request_duration_seconds_bucket{job="logs_loki",instance="10.0.1.5:3100",stack="logs",method="POST",route="loki_api_v1_push",status_code="204",ws="false",le="0.5"}'
+        values: '0+10x30'
+      - series: 'loki_request_duration_seconds_bucket{job="logs_loki",instance="10.0.1.5:3100",stack="logs",method="POST",route="loki_api_v1_push",status_code="204",ws="false",le="+Inf"}'
+        values: '0+10x30'
+      - series: 'loki_request_duration_seconds_bucket{job="logs_loki",instance="10.0.1.5:3100",stack="logs",method="GET",route="loki_api_v1_tail",status_code="200",ws="true",le="1"}'
+        values: '0x30'
+      - series: 'loki_request_duration_seconds_bucket{job="logs_loki",instance="10.0.1.5:3100",stack="logs",method="GET",route="loki_api_v1_tail",status_code="200",ws="true",le="2"}'
+        values: '0+1x30'
+      - series: 'loki_request_duration_seconds_bucket{job="logs_loki",instance="10.0.1.5:3100",stack="logs",method="GET",route="loki_api_v1_tail",status_code="200",ws="true",le="+Inf"}'
+        values: '0+1x30'
+      - series: 'loki_request_duration_seconds_bucket{job="logs_loki",instance="10.0.1.5:3100",stack="logs",method="gRPC",route="/schedulerpb.SchedulerForQuerier/QuerierLoop",status_code="success",ws="false",le="1"}'
+        values: '0x30'
+      - series: 'loki_request_duration_seconds_bucket{job="logs_loki",instance="10.0.1.5:3100",stack="logs",method="gRPC",route="/schedulerpb.SchedulerForQuerier/QuerierLoop",status_code="success",ws="false",le="2"}'
+        values: '0+1x30'
+      - series: 'loki_request_duration_seconds_bucket{job="logs_loki",instance="10.0.1.5:3100",stack="logs",method="gRPC",route="/schedulerpb.SchedulerForQuerier/QuerierLoop",status_code="success",ws="false",le="+Inf"}'
+        values: '0+1x30'
+      - series: 'loki_request_duration_seconds_bucket{job="ok_loki",instance="10.0.2.5:3100",stack="ok",method="POST",route="loki_api_v1_push",status_code="204",ws="false",le="0.5"}'
+        values: '0+10x30'
+      - series: 'loki_request_duration_seconds_bucket{job="ok_loki",instance="10.0.2.5:3100",stack="ok",method="POST",route="loki_api_v1_push",status_code="204",ws="false",le="+Inf"}'
+        values: '0+10x30'
+      # One panic at 16m.
+      - series: 'loki_panic_total{job="logs_loki",instance="10.0.1.5:3100",stack="logs"}'
+        values: '0x15 1x15'
+      - series: 'loki_panic_total{job="ok_loki",instance="10.0.2.5:3100",stack="ok"}'
+        values: '0x30'
+      # A sender over the rate limit, refused 60 lines a minute. One burst of old lines
+      # at 2m stops on its own.
+      - series: 'loki_discarded_samples_total{job="logs_loki",instance="10.0.1.5:3100",stack="logs",format="loki",policy="",reason="rate_limited",retention_hours="744",tenant="fake"}'
+        values: '0+60x30'
+      - series: 'loki_discarded_samples_total{job="logs_loki",instance="10.0.1.5:3100",stack="logs",format="loki",policy="",reason="greater_than_max_sample_age",retention_hours="744",tenant="fake"}'
+        values: '0 0 50x28'
+
+    alert_rule_test:
+      # Ten minutes in, nothing has lasted the 15m `for` yet, and the panic is still ahead.
+      - eval_time: 10m
+        alertname: LokiRequestErrors
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: LokiRequestLatency
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: LokiRequestPanics
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: LokiLinesDiscarded
+        exp_alerts: []
+
+      # Push only: query_range's 1% stays under the threshold.
+      - eval_time: 20m
+        alertname: LokiRequestErrors
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: logs_loki
+              stack: logs
+              route: loki_api_v1_push
+            exp_annotations:
+              summary: 'logs_loki loki_api_v1_push is failing requests'
+              description: 'logs_loki loki_api_v1_push has answered 33.33% of requests with a 5xx for 15 minutes.'
+      - eval_time: 20m
+        alertname: LokiRequestPanics
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: logs_loki
+              stack: logs
+            exp_annotations:
+              summary: 'logs_loki is panicking'
+              description: 'logs_loki recovered from 1 panic(s) in the last 10 minutes.'
+      # query_range only: push is fast, tail and QuerierLoop are excluded.
+      - eval_time: 20m
+        alertname: LokiRequestLatency
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: logs_loki
+              stack: logs
+              route: loki_api_v1_query_range
+            exp_annotations:
+              summary: 'logs_loki loki_api_v1_query_range is slow'
+              description: 'logs_loki loki_api_v1_query_range has had a 99th percentile latency of 1.99s for 15 minutes.'
+      # The rate limit only: the old-line burst ended long before.
+      - eval_time: 20m
+        alertname: LokiLinesDiscarded
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: logs_loki
+              stack: logs
+              reason: rate_limited
+            exp_annotations:
+              summary: 'logs_loki is discarding log lines (rate_limited)'
+              description: 'logs_loki has refused 1.00 lines/s for 15 minutes, reason rate_limited: they are lost unless the sender retries them.'
+
+  # A real clock, so time() is far from 0 as in production. `logs` never compacts and
+  # fires an hour after start; `stale` compacted at 10m, then stopped; `ok` has just
+  # compacted at every sample.
+  - interval: 1m
+    start_timestamp: 1760000000
+    input_series:
+      - series: 'loki_boltdb_shipper_compact_tables_operation_last_successful_run_timestamp_seconds{job="logs_loki",instance="10.0.1.5:3100",stack="logs"}'
+        values: '0x270'
+      - series: 'loki_boltdb_shipper_compact_tables_operation_last_successful_run_timestamp_seconds{job="stale_loki",instance="10.0.3.5:3100",stack="stale"}'
+        values: '0x9 1760000600x261'
+      - series: 'loki_boltdb_shipper_compact_tables_operation_last_successful_run_timestamp_seconds{job="ok_loki",instance="10.0.2.5:3100",stack="ok"}'
+        values: '1760000000+60x270'
+
+    alert_rule_test:
+      - eval_time: 59m
+        alertname: LokiCompactorHasNotSuccessfullyRunCompaction
+        exp_alerts: []
+      - eval_time: 61m
+        alertname: LokiCompactorHasNotSuccessfullyRunCompaction
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: logs_loki
+              stack: logs
+            exp_annotations:
+              summary: 'logs_loki is not compacting'
+              description: 'logs_loki has not completed a compaction in 3 hours, or in the hour since it started. Without compaction, retention deletes nothing.'
+      # `stale` is 3h behind from 190m on and fires an hour later.
+      - eval_time: 260m
+        alertname: LokiCompactorHasNotSuccessfullyRunCompaction
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: logs_loki
+              stack: logs
+            exp_annotations:
+              summary: 'logs_loki is not compacting'
+              description: 'logs_loki has not completed a compaction in 3 hours, or in the hour since it started. Without compaction, retention deletes nothing.'
+          - exp_labels:
+              severity: warning
+              job: stale_loki
+              stack: stale
+            exp_annotations:
+              summary: 'stale_loki is not compacting'
+              description: 'stale_loki has not completed a compaction in 3 hours, or in the hour since it started. Without compaction, retention deletes nothing.'

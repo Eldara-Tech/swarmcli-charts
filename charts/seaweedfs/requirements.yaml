@@ -9,13 +9,21 @@ networks:
     driver: overlay
     attachable: true
     autoCreate: true
-    description: "Overlay S3 clients join to reach <release>_seaweedfs (network.name)"
-  # Attached only while the S3 API or the admin UI is traefik-routed.
+    description: "Overlay S3 clients join to reach <release>-seaweedfs (network.name)"
+  # Attached only while the S3 API or the admin UI is traefik-routed; with admin.oauth2 by
+  # oauth2-proxy, which then carries the UI's routers.
   - name: "{{ .Values.exposure.network }}"
     driver: overlay
     attachable: true
     autoCreate: false
     description: "exposure.mode=traefik or admin.exposure.mode=traefik only - the edge proxy's ingress overlay; provided by the proxy stack/operator"
+  # Attached while metrics.enabled. autoCreate:true, like the prometheus-stack chart's
+  # own declaration of it: whichever stack installs first creates it.
+  - name: "{{ .Values.metrics.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: true
+    description: "Overlay the service shares with Prometheus (when metrics.enabled); the prometheus-stack chart scrapes on it by default"
 secrets:
   - name: "{{ .Values.s3.accessKeySecret }}"
     description: "S3 access key id of the admin identity. Pre-create: printf '%s' '<key-id>' | docker secret create seaweedfs-s3-access-key -"
