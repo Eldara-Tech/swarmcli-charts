@@ -199,6 +199,41 @@ admin:
     # required.
     adminGroups: []
     readonlyGroups: []
+  # Single sign-on in front of the UI through oauth2-proxy, on the free image too (off by
+  # default). Not together with admin.oidc. A user signs in at the identity provider, must
+  # be in one of allowedGroups, and then logs in to the UI with its password as before:
+  # the UI also answers on every overlay the store joins, where the proxy is not in the
+  # way, so the password stays. Needs admin.exposure.mode traefik with admin.ingress.tls;
+  # the proxy then carries the UI's routers and reaches the UI over an overlay of this
+  # stack's own that only the two join.
+  oauth2:
+    enabled: false
+    image:
+      repository: quay.io/oauth2-proxy/oauth2-proxy
+      tag: "v7.15.4"
+    # The provider's https:// issuer URL, e.g. https://sso.example.com/realms/infra. The
+    # proxy reads its discovery document at start, so it must be reachable from the proxy.
+    issuer: ""
+    clientId: seaweedfs-admin
+    # EXTERNAL Swarm secrets. Pre-create both; the cookie secret must be 16, 24 or 32 bytes:
+    #   printf '%s' '<client secret>' | docker secret create seaweedfs-admin-oauth2-client-secret -
+    #   head -c 32 /dev/urandom | docker secret create seaweedfs-admin-oauth2-cookie-secret -
+    clientSecretSecret: seaweedfs-admin-oauth2-client-secret
+    cookieSecretSecret: seaweedfs-admin-oauth2-cookie-secret
+    # EXTERNAL Swarm secret holding the PEM CA bundle that signed the provider's
+    # certificate, for a provider on a private CA, e.g.
+    #   docker secret create seaweedfs-admin-oauth2-ca ./ca.pem
+    # "" => the image's public roots. The provider's certificate is always verified.
+    caSecret: ""
+    # Values of the ID token's `groups` claim, matched exactly; a user in none of them is
+    # refused. At least one is required, and `,` is refused.
+    allowedGroups: []
+    # Scopes requested at sign-in. Some providers (Dex, Authentik) send `groups` only when
+    # it is asked for: add it there.
+    scope: "openid email profile"
+    # The proxy believes X-Forwarded-* headers only from these addresses, which must cover
+    # the edge proxy's on exposure.network. 10.0.0.0/8 is Swarm's default overlay pool.
+    trustedProxyIp: 10.0.0.0/8
 
 # Extra `weed server` flags, appended verbatim after the chart's own, e.g.
 # ["-master.volumeSizeLimitMB=512"]. Run `docker run --rm chrislusf/seaweedfs weed

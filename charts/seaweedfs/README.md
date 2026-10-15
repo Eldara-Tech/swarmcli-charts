@@ -270,6 +270,67 @@ admin:
   runs the UI on 127.0.0.1, on `admin.port + 1`, and busybox `nc` forwards `admin.port` to
   it. Neither port is reachable from the overlays.
 
+### Single sign-on through oauth2-proxy
+
+`admin.oauth2` puts [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/) in front
+of the UI, on the free image as on Enterprise, as the [airbyte chart](../airbyte) does for
+Airbyte: a user signs in at your identity provider, must be in one of
+`admin.oauth2.allowedGroups`, and then logs in to the UI with its password as before. It
+cannot be combined with `admin.oidc`, and the chart refuses both at once.
+
+The password stays because the UI also answers on every overlay the store joins
+(`network.name`, `monitoring` with metrics on), where nothing stands in front of it. The
+proxy decides who reaches the login page from the edge; it does not replace the password.
+
+It needs `admin.exposure.mode: traefik` with `admin.ingress.tls`: the proxy carries the
+UI's routers and every edge rule above, and sets a secure cookie. seaweedfs then joins
+`exposure.network` only when the S3 API is routed, and meets the proxy on `admin-oauth2`,
+an overlay of the stack's own that nothing else can attach to.
+
+With [Keycloak](../keycloak), in your realm:
+
+1. Create an OpenID Connect client, e.g. `seaweedfs-admin`, with **Client authentication**
+   and **Standard flow** on; turn the other flows off. oauth2-proxy sends a PKCE S256
+   challenge, so **PKCE Method** may be `S256`.
+2. Set **Valid redirect URIs** to `https://<admin.ingress.host>/oauth2/callback`.
+3. Add the **Group Membership** mapper as above: claim `groups`, **Full group path** off,
+   **Add to ID token** on.
+4. Put the client secret in a Swarm secret, and a random cookie secret beside it:
+   `printf '%s' '<client secret>' | docker secret create seaweedfs-admin-oauth2-client-secret -`
+   and `head -c 32 /dev/urandom | docker secret create seaweedfs-admin-oauth2-cookie-secret -`
+
+```yaml
+admin:
+  enabled: true
+  exposure:
+    mode: traefik
+  ingress:
+    host: seaweedfs-admin.example.com
+  oauth2:
+    enabled: true
+    issuer: https://keycloak.example.com/realms/<realm>
+    clientId: seaweedfs-admin
+    allowedGroups: [storage-admins]
+```
+
+- **Who gets in.** A user whose ID token's `groups` claim holds an `allowedGroups` value,
+  matched exactly, reaches the login page; anyone else gets oauth2-proxy's `403`. Everyone
+  admitted then needs the one UI password: the free UI has no per-user roles.
+- **Other providers** work too: the proxy runs as a generic OIDC client, and needs only a
+  `groups` claim in the ID token. Dex and Authentik send it only when asked, so add
+  `groups` to `admin.oauth2.scope` there.
+- **A private CA.** The proxy always verifies the provider's certificate. For a provider on
+  a private CA, put the CA bundle in a Swarm secret and name it in `admin.oauth2.caSecret`.
+- **The provider must be up when the proxy starts**: it reads the discovery document once
+  and exits without it, and Swarm restarts it until it succeeds.
+- **The session** lives in an encrypted cookie, Secure, SameSite=Lax and only for
+  `admin.ingress.host`, for oauth2-proxy's default 7 days. Rotating the cookie secret signs
+  everyone out. No identity header goes to the UI, and a bearer token does not skip the
+  sign-in. `admin.oauth2.trustedProxyIp` must cover the edge proxy's address on
+  `exposure.network`.
+- **`labels`** still go on seaweedfs. In this mode the UI's routers are the proxy's, so a
+  middleware for them cannot be added through `labels`.
+
 ## Security
 
 - **Credentials.** The wrapper reads both secrets from `/run/secrets` and exports
@@ -435,6 +496,16 @@ processes must never share `/data`.
 | `admin.oidc.browserUrl` | `""` | The UI's https base URL for the callback; `""` = from `admin.ingress` when routed with TLS |
 | `admin.oidc.adminGroups` | `[]` | `groups` claim values that get full control |
 | `admin.oidc.readonlyGroups` | `[]` | `groups` claim values that get read-only access; one of the two lists is required |
+| `admin.oauth2.enabled` | `false` | oauth2-proxy sign-in in front of the UI; not with `admin.oidc` |
+| `admin.oauth2.image.repository` / `admin.oauth2.image.tag` | `quay.io/oauth2-proxy/oauth2-proxy` / pinned in `values.yaml` | oauth2-proxy image |
+| `admin.oauth2.issuer` | `""` | The provider's https issuer URL |
+| `admin.oauth2.clientId` | `seaweedfs-admin` | Client ID |
+| `admin.oauth2.clientSecretSecret` | `seaweedfs-admin-oauth2-client-secret` | External secret holding the client secret |
+| `admin.oauth2.cookieSecretSecret` | `seaweedfs-admin-oauth2-cookie-secret` | External secret holding the cookie secret (16, 24 or 32 bytes) |
+| `admin.oauth2.caSecret` | `""` | External secret holding the CA bundle for a provider on a private CA |
+| `admin.oauth2.allowedGroups` | `[]` | `groups` claim values admitted; at least one is required |
+| `admin.oauth2.scope` | `openid email profile` | Scopes requested at sign-in |
+| `admin.oauth2.trustedProxyIp` | `10.0.0.0/8` | Addresses whose `X-Forwarded-*` headers the proxy believes |
 | `extraArgs` | `[]` | Extra `weed server` flags |
 | `healthcheck.*` | enabled, 15s/5s/4, start 30s, monitor 2m | `curl` of `/healthz` on the S3 port |
 | `stopGracePeriod` | `30s` | SIGTERM → SIGKILL window |

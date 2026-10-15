@@ -27,4 +27,11 @@ secrets:
   # Mounted only while admin.enabled and admin.oidc.enabled.
   - name: "{{ .Values.admin.oidc.clientSecretSecret }}"
     description: "admin.oidc.enabled only - the web UI's OIDC client secret. Pre-create: printf '%s' '<client secret>' | docker secret create seaweedfs-admin-oidc-client-secret -"
+  # Mounted by the oauth2-proxy service only while admin.enabled and admin.oauth2.enabled.
+  - name: "{{ .Values.admin.oauth2.clientSecretSecret }}"
+    description: "admin.oauth2.enabled only - oauth2-proxy's OIDC client secret. Pre-create: printf '%s' '<client secret>' | docker secret create seaweedfs-admin-oauth2-client-secret -"
+  - name: "{{ .Values.admin.oauth2.cookieSecretSecret }}"
+    description: "admin.oauth2.enabled only - oauth2-proxy's cookie secret, 16, 24 or 32 bytes. Pre-create: head -c 32 /dev/urandom | docker secret create seaweedfs-admin-oauth2-cookie-secret -"
+  - name: "{{ .Values.admin.oauth2.caSecret | default `seaweedfs-admin-oauth2-ca` }}"
+    description: "admin.oauth2.caSecret only - the PEM CA bundle that signed the identity provider's certificate. Pre-create: docker secret create seaweedfs-admin-oauth2-ca ./ca.pem"
 configs: []

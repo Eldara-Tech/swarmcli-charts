@@ -162,6 +162,31 @@
               "uniqueItems": true
             }
           }
+        },
+        "oauth2": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "image": {
+              "type": "object",
+              "properties": {
+                "repository": { "type": "string", "minLength": 1 },
+                "tag": { "type": "string", "minLength": 1 }
+              }
+            },
+            "issuer": { "type": "string", "pattern": "^$|^https://[^/?#]" },
+            "clientId": { "type": "string" },
+            "clientSecretSecret": { "type": "string" },
+            "cookieSecretSecret": { "type": "string" },
+            "caSecret": { "type": "string" },
+            "allowedGroups": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1, "pattern": "^[^,]+$" },
+              "uniqueItems": true
+            },
+            "scope": { "type": "string", "minLength": 1 },
+            "trustedProxyIp": { "type": "string", "minLength": 1 }
+          }
         }
       }
     },

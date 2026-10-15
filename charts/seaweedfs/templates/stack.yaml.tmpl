@@ -81,6 +81,9 @@
        callback except on localhost. All of it is checked here rather than left to a
        warning in the log. */}}
 {{-   $oidc := .Values.admin.oidc -}}
+{{-   if and $oidc.enabled .Values.admin.oauth2.enabled -}}
+{{-     fail "admin.oidc and admin.oauth2 cannot both be enabled: pick one way to sign in to the web UI" -}}
+{{-   end -}}
 {{-   if $oidc.enabled -}}
 {{-     if not $ent -}}
 {{-       fail "admin.oidc needs the SeaweedFS Enterprise image: set image.repository to chrislusf/seaweedfs-enterprise (the free weed admin has no OIDC login)" -}}
@@ -113,6 +116,39 @@
 {{-     $bu := $oidc.browserUrl | default (printf "%s://%s" (ternary "https" "http" .Values.admin.ingress.tls) .Values.admin.ingress.host) -}}
 {{-     if not (regexMatch `^(https://|http://(localhost|127\.0\.0\.1)([:/]|$))` $bu) -}}
 {{-       fail (printf "admin.oidc needs an https callback, and %s is not: SeaweedFS refuses a plain-http redirect URL except on localhost. Keep admin.ingress.tls on, or set an https admin.oidc.browserUrl" $bu) -}}
+{{-     end -}}
+{{-   end -}}
+{{- /* oauth2-proxy in front of the UI. It sets a secure cookie and carries the UI's routers,
+       so it needs them routed with TLS; its groups become repeated --allowed-group flags,
+       which oauth2-proxy splits on commas. */}}
+{{-   $o2 := .Values.admin.oauth2 -}}
+{{-   if $o2.enabled -}}
+{{-     if not (and (eq .Values.admin.exposure.mode "traefik") .Values.admin.ingress.tls) -}}
+{{-       fail "admin.oauth2 needs admin.exposure.mode=traefik with admin.ingress.tls: oauth2-proxy carries the UI's routers and sets a secure cookie" -}}
+{{-     end -}}
+{{-     if not (regexMatch `^https://[^/?#]` $o2.issuer) -}}
+{{-       fail "admin.oauth2.issuer must be the provider's https:// issuer URL" -}}
+{{-     end -}}
+{{-     if not $o2.clientId -}}
+{{-       fail "admin.oauth2.clientId is required" -}}
+{{-     end -}}
+{{-     $mine := list .Values.s3.accessKeySecret .Values.s3.secretKeySecret .Values.admin.passwordSecret -}}
+{{-     if or (not $o2.clientSecretSecret) (has $o2.clientSecretSecret $mine) -}}
+{{-       fail "admin.oauth2.clientSecretSecret must name a secret of its own, not the S3 key pair's or admin.passwordSecret" -}}
+{{-     end -}}
+{{-     if or (not $o2.cookieSecretSecret) (has $o2.cookieSecretSecret (append $mine $o2.clientSecretSecret)) -}}
+{{-       fail "admin.oauth2.cookieSecretSecret must name a secret of its own, not the S3 key pair's, admin.passwordSecret or the client secret" -}}
+{{-     end -}}
+{{-     if and $o2.caSecret (has $o2.caSecret (concat $mine (list $o2.clientSecretSecret $o2.cookieSecretSecret))) -}}
+{{-       fail "admin.oauth2.caSecret must name a secret of its own, not one of the other secrets the chart mounts" -}}
+{{-     end -}}
+{{-     if not $o2.allowedGroups -}}
+{{-       fail "admin.oauth2.allowedGroups needs at least one group: without one oauth2-proxy admits every user of the provider" -}}
+{{-     end -}}
+{{-     range $o2.allowedGroups -}}
+{{-       if or (not .) (contains "," .) -}}
+{{-         fail (printf "admin.oauth2.allowedGroups: group %q must be a non-empty groups-claim value without ','" (. | default "")) -}}
+{{-       end -}}
 {{-     end -}}
 {{-   end -}}
 {{-   if eq .Values.admin.exposure.mode "traefik" -}}
@@ -151,6 +187,23 @@
         - "traefik.http.services.{{ $.router }}.loadbalancer.server.port={{ . }}"
 {{- end }}
 {{- end -}}
+{{- /* The admin UI's routers, on whichever service serves it: seaweedfs, or oauth2-proxy
+       with admin.oauth2. /metrics answers without a login, so the edge does not serve it.
+       Any method but GET/HEAD that a browser marks as sent from another site, same-site
+       included, is refused. The three routes that return stored files or their metadata get
+       a router of their own — its rule is longer, so Traefik ranks it first — whose
+       responses carry `Content-Security-Policy: sandbox` and nosniff. Traefik matches paths
+       still escaped, so an encoded slash is refused on every admin router: no request
+       reaches those routes around their router (the UI passes file paths in the query
+       string, never the path). */ -}}
+{{- define "seaweedfs.admin-routers" }}
+{{- $r := .router }}
+{{- $adminRule := printf "Host(`%s`) && !PathPrefix(`/metrics`) && !PathRegexp(`(?i)%%2f`) && (Method(`GET`) || Method(`HEAD`) || !HeaderRegexp(`Sec-Fetch-Site`, `^(cross|same)-site`))" .admin.ingress.host }}
+{{- template "seaweedfs.traefik-routers" (dict "router" (printf "%s-admin" $r) "rule" $adminRule "tls" .admin.ingress.tls "traefik" .traefik "port" .port) }}
+        - "traefik.http.middlewares.{{ $r }}-admin-sandbox.headers.contentSecurityPolicy=sandbox"
+        - "traefik.http.middlewares.{{ $r }}-admin-sandbox.headers.contentTypeNosniff=true"
+{{- template "seaweedfs.traefik-routers" (dict "router" (printf "%s-admin-content" $r) "rule" (printf "%s && (Path(`/api/files/download`) || Path(`/api/files/view`) || Path(`/api/files/metadata`))" $adminRule) "tls" .admin.ingress.tls "traefik" .traefik "service" (printf "%s-admin" $r) "middlewares" (printf "%s-admin-sandbox" $r)) }}
+{{- end -}}
 version: "3.9"
 
 {{- $mode := .Values.exposure.mode }}
@@ -168,11 +221,17 @@ version: "3.9"
 {{- if and $adminOidc (not $browser) }}{{ $browser = printf "%s://%s" (ternary "https" "http" $admin.ingress.tls) $admin.ingress.host }}{{- end }}
 {{- $adminMode := "none" }}
 {{- if $admin.enabled }}{{ $adminMode = $admin.exposure.mode }}{{- end }}
-{{- $routed := or (eq $mode "traefik") (eq $adminMode "traefik") }}
+{{- /* With admin.oauth2 the UI's routers are oauth2-proxy's, so seaweedfs joins the edge's
+       overlay only for the S3 API, and meets the proxy on admin-oauth2, this stack's own. */}}
+{{- $o2 := and $admin.enabled $admin.oauth2.enabled }}
+{{- $adminRouted := and (eq $adminMode "traefik") (not $o2) }}
+{{- $routed := or (eq $mode "traefik") $adminRouted }}
 
 {{- $nets := list .Values.network.name }}
 {{- if $routed }}{{ $nets = append $nets .Values.exposure.network }}{{- end }}
 {{- $nets = $nets | uniq }}
+{{- $extNets := $nets }}
+{{- if $o2 }}{{ $extNets = append $extNets .Values.exposure.network | uniq }}{{- end }}
 
 {{- /* `weed server` flags. The image's entrypoint already adds -dir=/data. -ip and -ip.bind
        put the master, volume server and filer on loopback: their HTTP and gRPC APIs carry
@@ -394,6 +453,9 @@ services:
 {{- range $nets }}
       - {{ . }}
 {{- end }}
+{{- if $o2 }}
+      - admin-oauth2
+{{- end }}
 
 {{- if or (eq $mode "published") (eq $adminMode "published") }}
     ports:
@@ -464,23 +526,71 @@ services:
 {{- if eq $mode "traefik" }}
 {{-   template "seaweedfs.traefik-routers" (dict "router" $router "rule" (printf "Host(`%s`)" .Values.ingress.host) "tls" .Values.ingress.tls "traefik" .Values.traefik "port" $port) }}
 {{- end }}
-{{- /* /metrics answers without a login, so the edge does not serve it. Any method but
-       GET/HEAD that a browser marks as sent from another site, same-site included, is
-       refused. The three routes that return stored files or their metadata get a router of
-       their own — its rule is longer, so Traefik ranks it first — whose responses carry
-       `Content-Security-Policy: sandbox` and nosniff. Traefik matches paths still escaped,
-       so an encoded slash is refused on every admin router: no request reaches those routes
-       around their router (the UI passes file paths in the query string, never the path). */}}
-{{- if eq $adminMode "traefik" }}
-{{-   $adminRule := printf "Host(`%s`) && !PathPrefix(`/metrics`) && !PathRegexp(`(?i)%%2f`) && (Method(`GET`) || Method(`HEAD`) || !HeaderRegexp(`Sec-Fetch-Site`, `^(cross|same)-site`))" $admin.ingress.host }}
-{{-   template "seaweedfs.traefik-routers" (dict "router" (printf "%s-admin" $router) "rule" $adminRule "tls" $admin.ingress.tls "traefik" .Values.traefik "port" $adminPort) }}
-        - "traefik.http.middlewares.{{ $router }}-admin-sandbox.headers.contentSecurityPolicy=sandbox"
-        - "traefik.http.middlewares.{{ $router }}-admin-sandbox.headers.contentTypeNosniff=true"
-{{-   template "seaweedfs.traefik-routers" (dict "router" (printf "%s-admin-content" $router) "rule" (printf "%s && (Path(`/api/files/download`) || Path(`/api/files/view`) || Path(`/api/files/metadata`))" $adminRule) "tls" $admin.ingress.tls "traefik" .Values.traefik "service" (printf "%s-admin" $router) "middlewares" (printf "%s-admin-sandbox" $router)) }}
+{{- if $adminRouted }}
+{{-   template "seaweedfs.admin-routers" (dict "router" $router "admin" $admin "traefik" .Values.traefik "port" $adminPort) }}
 {{- end }}
 {{- range $key, $val := .Values.labels }}
         - "{{ $key }}={{ $val }}"
 {{- end }}
+{{- end }}
+{{- if $o2 }}
+{{-   $o2v := $admin.oauth2 }}
+
+  # admin.oauth2: oauth2-proxy signs a user in at the provider and admits only allowedGroups,
+  # then proxies to the UI over admin-oauth2, where the UI still asks for its password: the
+  # UI also answers on every overlay seaweedfs joins, where nothing stands in front of it.
+  # The proxy carries the UI's routers and their edge rules. Both secrets are read from
+  # their files. The cookie is secure, SameSite=Lax and host-only; no identity header goes
+  # upstream, and a bearer token does not skip the sign-in.
+  oauth2-proxy:
+    image: "{{ $o2v.image.repository }}:{{ $o2v.image.tag }}"
+    command:
+      - --http-address=0.0.0.0:4180
+      - --provider=oidc
+      - {{ printf "--oidc-issuer-url=%s" $o2v.issuer | replace "$" "$$" | quote }}
+      - {{ printf "--client-id=%s" $o2v.clientId | replace "$" "$$" | quote }}
+      - --client-secret-file=/run/secrets/{{ $o2v.clientSecretSecret }}
+      - --cookie-secret-file=/run/secrets/{{ $o2v.cookieSecretSecret }}
+{{-   with $o2v.caSecret }}
+      - --provider-ca-file=/run/secrets/{{ . }}
+{{-   end }}
+      - --cookie-secure=true
+      - --cookie-samesite=lax
+      - --redirect-url=https://{{ $admin.ingress.host }}/oauth2/callback
+      - --email-domain=*
+{{-   range $o2v.allowedGroups }}
+      - {{ printf "--allowed-group=%s" . | replace "$" "$$" | quote }}
+{{-   end }}
+      - {{ printf "--scope=%s" $o2v.scope | replace "$" "$$" | quote }}
+      - --code-challenge-method=S256
+      - --reverse-proxy=true
+      - {{ printf "--trusted-proxy-ip=%s" $o2v.trustedProxyIp | replace "$" "$$" | quote }}
+      - --upstream=http://seaweedfs:{{ $adminPort }}/
+      - --proxy-prefix=/oauth2
+      - --pass-basic-auth=false
+      - --pass-user-headers=false
+      - --pass-access-token=false
+      - --pass-authorization-header=false
+      - --set-xauthrequest=false
+      - --skip-jwt-bearer-tokens=false
+    secrets:
+      - {{ $o2v.clientSecretSecret }}
+      - {{ $o2v.cookieSecretSecret }}
+{{-   with $o2v.caSecret }}
+      - {{ . }}
+{{-   end }}
+    networks:
+      - {{ .Values.exposure.network }}
+      - admin-oauth2
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+      labels:
+        - "traefik.enable=true"
+        - "traefik.swarm.network={{ .Values.exposure.network }}"
+        - "traefik.constraint-label={{ .Values.traefik.constraintLabel }}"
+{{-   template "seaweedfs.admin-routers" (dict "router" $router "admin" $admin "traefik" .Values.traefik "port" 4180) }}
 {{- end }}
 
 secrets:
@@ -496,11 +606,25 @@ secrets:
   {{ $cs }}:
     external: true
 {{- end }}
-
-networks:
-{{- range $nets }}
+{{- if $o2 }}
+  {{ $admin.oauth2.clientSecretSecret }}:
+    external: true
+  {{ $admin.oauth2.cookieSecretSecret }}:
+    external: true
+{{- with $admin.oauth2.caSecret }}
   {{ . }}:
     external: true
+{{- end }}
+{{- end }}
+
+networks:
+{{- range $extNets }}
+  {{ . }}:
+    external: true
+{{- end }}
+{{- if $o2 }}
+  # Only oauth2-proxy and seaweedfs join it, and nothing can attach to it.
+  admin-oauth2: {}
 {{- end }}
 
 {{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) }}
