@@ -387,7 +387,10 @@ services:
   # and Prometheus scrapes the same metrics from it on metrics.network (port 8889). RustFS
   # itself never joins metrics.network. The image has no shell, so there is no healthcheck;
   # a collector that stops answering is prometheus-stack's TargetDown. Its configuration is
-  # an environment variable, read by the collector's env provider.
+  # an environment variable, read by the collector's env provider. Anything on either
+  # network can push to it unauthenticated, so the memory_limiter, first in the pipeline,
+  # refuses pushes from 150 MiB (limit_mib - spike_limit_mib) and forces a GC at 200 MiB,
+  # below the service's memory limit.
   rustfs-metrics:
     image: {{ .Values.metrics.image.repository }}:{{ .Values.metrics.image.tag }}
     command:
@@ -399,6 +402,11 @@ services:
             protocols:
               http:
                 endpoint: 0.0.0.0:4318
+        processors:
+          memory_limiter:
+            check_interval: 1s
+            limit_mib: 200
+            spike_limit_mib: 50
         exporters:
           prometheus:
             endpoint: 0.0.0.0:8889
@@ -406,6 +414,7 @@ services:
           pipelines:
             metrics:
               receivers: [otlp]
+              processors: [memory_limiter]
               exporters: [prometheus]
     networks:
       {{ .Values.network.name }}:
@@ -414,6 +423,9 @@ services:
       {{ .Values.metrics.network }}:
     deploy:
       replicas: 1
+      resources:
+        limits:
+          memory: {{ .Values.metrics.resources.limits.memory | quote }}
       restart_policy:
         condition: any
       # Exactly the two discovery labels: every deploy label of a service that opts in is

@@ -312,6 +312,14 @@ else
     && [ "$(yq -r '.service.pipelines.metrics.receivers | join(" ")' <<<"$cfg")" = "otlp" ] \
     && [ "$(yq -r '.service.pipelines.metrics.exporters | join(" ")' <<<"$cfg")" = "prometheus" ] \
     || bad "the collector's only pipeline is not metrics: otlp -> prometheus"
+  # Anything on either network can push unauthenticated, so the collector is bounded: the
+  # memory_limiter first in the pipeline, refusing pushes below the service's memory limit.
+  [ "$(yq -r '.service.pipelines.metrics.processors[0]' <<<"$cfg")" = "memory_limiter" ] \
+    || bad "memory_limiter is not the first processor of the collector's pipeline"
+  [ "$(yq -r '.processors.memory_limiter | [.check_interval, .limit_mib, .spike_limit_mib] | join(" ")' <<<"$cfg")" = "1s 200 50" ] \
+    || bad "the memory_limiter is not check_interval 1s, limit_mib 200, spike_limit_mib 50"
+  [ "$(q "$m.deploy.resources.limits.memory")" = "256M" ] \
+    || bad "the collector's memory limit is not 256M, above its memory_limiter's 200 MiB (got '$(q "$m.deploy.resources.limits.memory")')"
   # Every deploy label of an opted-in service is readable through Prometheus's targets API.
   [ "$(q "$m.deploy.labels | join(\" \")")" = "prometheus.io/scrape=true prometheus.io/port=8889" ] \
     || bad "collector deploy labels are '$(q "$m.deploy.labels | join(\" \")")', expected exactly the two discovery labels"

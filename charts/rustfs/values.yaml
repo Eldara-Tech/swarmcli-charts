@@ -205,6 +205,13 @@ metrics:
   # External overlay the collector shares with Prometheus. Only the collector joins it,
   # never RustFS. requirements.yaml declares it autoCreate:true.
   network: monitoring
+  # The collector's Swarm memory limit. Anything on network.name or metrics.network can push
+  # to it unauthenticated, so it is bounded: its memory_limiter refuses pushes from 150 MiB
+  # and forces a GC at 200 MiB, below this limit. Keep it at 256M or more, or the kernel
+  # kills the collector before the limiter refuses anything.
+  resources:
+    limits:
+      memory: "256M"
 
 # Probes /health/ready on the S3 port with the image's curl: 503 until storage and IAM
 # are up, 200 after.

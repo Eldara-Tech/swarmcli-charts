@@ -380,10 +380,12 @@ version's defaults, so every `metrics.*` key would render empty
   `monitoring` or `rustfs-net` reaches both. On 8889 that means every bucket's name, size
   and object count (`rustfs_cluster_usage_buckets_*{bucket="…"}`), with no credentials and
   past RustFS's IAM, which would refuse an unsigned ListBuckets. On 4318 it means pushing
-  series the collector then serves as RustFS's. prometheus-stack already treats
-  `monitoring` as a trust zone (its README, *Security*). The collector's own telemetry
-  stays on loopback, neither port is published, and RustFS's S3 and console ports stay off
-  `monitoring`.
+  series the collector then serves as RustFS's. Its `memory_limiter` refuses pushes once it
+  holds 150 MiB, below its 256M memory limit (`metrics.resources.limits.memory`), so a
+  flood of them is refused rather than getting the collector killed. prometheus-stack
+  already treats `monitoring` as a trust zone (its README, *Security*). The collector's own
+  telemetry stays on loopback, neither port is published, and RustFS's S3 and console
+  ports stay off `monitoring`.
 - `metrics.network` names a different overlay. It must differ from `network.name` and
   `exposure.network`, and the render fails if it does not.
 - **Turning it off** leaves the collector running, because swarmcli deploys without
@@ -505,6 +507,7 @@ every target, and the alerts carry it. Another Prometheus needs the same relabel
 | `metrics.image.repository` | `otel/opentelemetry-collector` | Collector image |
 | `metrics.image.tag` | pinned in `values.yaml` | Collector image tag (a concrete pin; Renovate maintains it) |
 | `metrics.network` | `monitoring` | External overlay the collector shares with Prometheus (auto-created) |
+| `metrics.resources.limits.memory` | `256M` | The collector's memory limit; keep it at 256M or more, above its `memory_limiter`'s 200 MiB |
 | `healthcheck.*` | enabled, 15s/5s/4, start 30s, monitor 2m | `curl` of `/health/ready` on the S3 port |
 | `stopGracePeriod` | `30s` | SIGTERM → SIGKILL window |
 | `resources.limits.memory` / `resources.reservations.memory` | `""` | Optional memory limits |
