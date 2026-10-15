@@ -1,0 +1,193 @@
+# promtool unit tests for monitoring/gitlab-runner-rules.yml, which the chart ships for
+# operators to load into their Prometheus but does not deploy itself. ci/e2e-check.sh runs
+# them with a pinned prom/prometheus image's promtool in the metrics case.
+#
+# Release `ci` runs five runner tasks, each tripping one alert. Release `ok` is busy but
+# healthy — some 503s, script failures, a rare system failure, jobs below capacity — and
+# must raise nothing.
+# Series carry the labels the runner gives them, since the rules aggregate across them.
+rule_files:
+  - ../monitoring/gitlab-runner-rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      # Every task: concurrent = 4, an idle series, and no limit or skipped polls unless stated.
+      - series: 'gitlab_runner_concurrent{job="ci_gitlab-runner",instance="10.0.1.5:9252",stack="ci"}'
+        values: '4x60'
+      - series: 'gitlab_runner_concurrent{job="ci_gitlab-runner",instance="10.0.1.6:9252",stack="ci"}'
+        values: '4x60'
+      - series: 'gitlab_runner_concurrent{job="ci_gitlab-runner",instance="10.0.1.7:9252",stack="ci"}'
+        values: '4x60'
+      - series: 'gitlab_runner_concurrent{job="ci_gitlab-runner",instance="10.0.1.8:9252",stack="ci"}'
+        values: '4x60'
+      - series: 'gitlab_runner_concurrent{job="ci_gitlab-runner",instance="10.0.1.9:9252",stack="ci"}'
+        values: '4x60'
+      - series: 'gitlab_runner_concurrent{job="ok_gitlab-runner",instance="10.0.2.5:9252",stack="ok"}'
+        values: '4x60'
+      - series: 'gitlab_runner_limit{job="ci_gitlab-runner",instance="10.0.1.5:9252",stack="ci",runner="t1",runner_name="ci",system_id="r_1"}'
+        values: '0x60'
+      - series: 'gitlab_runner_limit{job="ci_gitlab-runner",instance="10.0.1.6:9252",stack="ci",runner="t1",runner_name="ci",system_id="r_2"}'
+        values: '0x60'
+      # Task 3's limit is above concurrent, so concurrent is still the cap; task 4's is below.
+      - series: 'gitlab_runner_limit{job="ci_gitlab-runner",instance="10.0.1.7:9252",stack="ci",runner="t1",runner_name="ci",system_id="r_3"}'
+        values: '10x60'
+      - series: 'gitlab_runner_limit{job="ci_gitlab-runner",instance="10.0.1.8:9252",stack="ci",runner="t1",runner_name="ci",system_id="r_4"}'
+        values: '2x60'
+      - series: 'gitlab_runner_limit{job="ci_gitlab-runner",instance="10.0.1.9:9252",stack="ci",runner="t1",runner_name="ci",system_id="r_5"}'
+        values: '0x60'
+      - series: 'gitlab_runner_limit{job="ok_gitlab-runner",instance="10.0.2.5:9252",stack="ok",runner="t2",runner_name="ok",system_id="r_6"}'
+        values: '0x60'
+      - series: 'gitlab_runner_jobs{job="ci_gitlab-runner",instance="10.0.1.5:9252",stack="ci",runner="t1",runner_name="ci",system_id="r_1",state="idle",stage="idle",executor_stage="idle"}'
+        values: '0x60'
+      - series: 'gitlab_runner_jobs{job="ci_gitlab-runner",instance="10.0.1.6:9252",stack="ci",runner="t1",runner_name="ci",system_id="r_2",state="idle",stage="idle",executor_stage="idle"}'
+        values: '0x60'
+      - series: 'gitlab_runner_jobs{job="ci_gitlab-runner",instance="10.0.1.7:9252",stack="ci",runner="t1",runner_name="ci",system_id="r_3",state="idle",stage="idle",executor_stage="idle"}'
+        values: '0x60'
+      - series: 'gitlab_runner_jobs{job="ci_gitlab-runner",instance="10.0.1.8:9252",stack="ci",runner="t1",runner_name="ci",system_id="r_4",state="idle",stage="idle",executor_stage="idle"}'
+        values: '0x60'
+      - series: 'gitlab_runner_jobs{job="ci_gitlab-runner",instance="10.0.1.9:9252",stack="ci",runner="t1",runner_name="ci",system_id="r_5",state="idle",stage="idle",executor_stage="idle"}'
+        values: '0x60'
+      - series: 'gitlab_runner_jobs{job="ok_gitlab-runner",instance="10.0.2.5:9252",stack="ok",runner="t2",runner_name="ok",system_id="r_6",state="idle",stage="idle",executor_stage="idle"}'
+        values: '0x60'
+      - series: 'gitlab_runner_worker_feed_failures_total{job="ci_gitlab-runner",instance="10.0.1.6:9252",stack="ci",runner="t1",runner_name="ci",system_id="r_2"}'
+        values: '0x60'
+      - series: 'gitlab_runner_worker_feed_failures_total{job="ci_gitlab-runner",instance="10.0.1.7:9252",stack="ci",runner="t1",runner_name="ci",system_id="r_3"}'
+        values: '0x60'
+      - series: 'gitlab_runner_worker_feed_failures_total{job="ci_gitlab-runner",instance="10.0.1.8:9252",stack="ci",runner="t1",runner_name="ci",system_id="r_4"}'
+        values: '0x60'
+      - series: 'gitlab_runner_worker_feed_failures_total{job="ci_gitlab-runner",instance="10.0.1.9:9252",stack="ci",runner="t1",runner_name="ci",system_id="r_5"}'
+        values: '0x60'
+      - series: 'gitlab_runner_worker_feed_failures_total{job="ok_gitlab-runner",instance="10.0.2.5:9252",stack="ok",runner="t2",runner_name="ok",system_id="r_6"}'
+        values: '0x60'
+
+      # Task 1 polls fine for 10 minutes, then gets three 403s and disables itself: no more
+      # requests, and a skipped poll every 3 seconds.
+      - series: 'gitlab_runner_api_request_statuses_total{job="ci_gitlab-runner",instance="10.0.1.5:9252",stack="ci",runner="t1",system_id="r_1",endpoint="request_job",status="204",method="post"}'
+        values: '0+20x10 200x50'
+      - series: 'gitlab_runner_api_request_statuses_total{job="ci_gitlab-runner",instance="10.0.1.5:9252",stack="ci",runner="t1",system_id="r_1",endpoint="request_job",status="403",method="post"}'
+        values: '_x10 3x50'
+      - series: 'gitlab_runner_worker_feed_failures_total{job="ci_gitlab-runner",instance="10.0.1.5:9252",stack="ci",runner="t1",runner_name="ci",system_id="r_1"}'
+        values: '0x10 20+20x49'
+
+      # Task 2 fails 3 job requests in 5: network errors (status -1), 5xx and 429 in equal
+      # parts, so leaving any one of them out of the rule would keep it under half.
+      - series: 'gitlab_runner_api_request_statuses_total{job="ci_gitlab-runner",instance="10.0.1.6:9252",stack="ci",runner="t1",system_id="r_2",endpoint="request_job",status="204",method="post"}'
+        values: '0+8x60'
+      - series: 'gitlab_runner_api_request_statuses_total{job="ci_gitlab-runner",instance="10.0.1.6:9252",stack="ci",runner="t1",system_id="r_2",endpoint="request_job",status="-1",method="post"}'
+        values: '_ 1+4x59'
+      - series: 'gitlab_runner_api_request_statuses_total{job="ci_gitlab-runner",instance="10.0.1.6:9252",stack="ci",runner="t1",system_id="r_2",endpoint="request_job",status="500",method="post"}'
+        values: '_ 1+2x59'
+      - series: 'gitlab_runner_api_request_statuses_total{job="ci_gitlab-runner",instance="10.0.1.6:9252",stack="ci",runner="t1",system_id="r_2",endpoint="request_job",status="502",method="post"}'
+        values: '_ 1+2x59'
+      - series: 'gitlab_runner_api_request_statuses_total{job="ci_gitlab-runner",instance="10.0.1.6:9252",stack="ci",runner="t1",system_id="r_2",endpoint="request_job",status="429",method="post"}'
+        values: '_ 1+4x59'
+
+      # Tasks 3 and 4 run at their cap: 4 jobs against concurrent, 2 against the limit.
+      - series: 'gitlab_runner_jobs{job="ci_gitlab-runner",instance="10.0.1.7:9252",stack="ci",runner="t1",runner_name="ci",system_id="r_3",state="running",stage="step_script",executor_stage="docker_run"}'
+        values: '3x60'
+      - series: 'gitlab_runner_jobs{job="ci_gitlab-runner",instance="10.0.1.7:9252",stack="ci",runner="t1",runner_name="ci",system_id="r_3",state="running",stage="prepare_executor",executor_stage="docker_prepare"}'
+        values: '1x60'
+      - series: 'gitlab_runner_jobs{job="ci_gitlab-runner",instance="10.0.1.8:9252",stack="ci",runner="t1",runner_name="ci",system_id="r_4",state="running",stage="step_script",executor_stage="docker_run"}'
+        values: '2x60'
+
+      # Task 5 fails half its jobs with runner_system_failure from 5m on; its script
+      # failures must not count. A failure series appears with its first failure.
+      - series: 'gitlab_runner_jobs_total{job="ci_gitlab-runner",instance="10.0.1.9:9252",stack="ci",runner="t1",runner_name="ci",system_id="r_5"}'
+        values: '0+2x60'
+      - series: 'gitlab_runner_failed_jobs_total{job="ci_gitlab-runner",instance="10.0.1.9:9252",stack="ci",runner="t1",runner_name="ci",failure_reason="runner_system_failure",mode="traditional"}'
+        values: '_x5 1+1x55'
+      - series: 'gitlab_runner_failed_jobs_total{job="ci_gitlab-runner",instance="10.0.1.9:9252",stack="ci",runner="t1",runner_name="ci",failure_reason="script_failure",mode="traditional"}'
+        values: '_x2 1+1x58'
+      - series: 'gitlab_runner_jobs{job="ci_gitlab-runner",instance="10.0.1.9:9252",stack="ci",runner="t1",runner_name="ci",system_id="r_5",state="running",stage="step_script",executor_stage="docker_run"}'
+        values: '1x60'
+
+      # Release ok: 3 of 4 slots busy, 1 request in 10 a 503, 1 job in 20 a system failure.
+      - series: 'gitlab_runner_jobs{job="ok_gitlab-runner",instance="10.0.2.5:9252",stack="ok",runner="t2",runner_name="ok",system_id="r_6",state="running",stage="step_script",executor_stage="docker_run"}'
+        values: '3x60'
+      - series: 'gitlab_runner_api_request_statuses_total{job="ok_gitlab-runner",instance="10.0.2.5:9252",stack="ok",runner="t2",system_id="r_6",endpoint="request_job",status="204",method="post"}'
+        values: '0+18x60'
+      - series: 'gitlab_runner_api_request_statuses_total{job="ok_gitlab-runner",instance="10.0.2.5:9252",stack="ok",runner="t2",system_id="r_6",endpoint="request_job",status="503",method="post"}'
+        values: '_ 1+2x59'
+      - series: 'gitlab_runner_jobs_total{job="ok_gitlab-runner",instance="10.0.2.5:9252",stack="ok",runner="t2",runner_name="ok",system_id="r_6"}'
+        values: '0+10x60'
+      - series: 'gitlab_runner_failed_jobs_total{job="ok_gitlab-runner",instance="10.0.2.5:9252",stack="ok",runner="t2",runner_name="ok",failure_reason="runner_system_failure",mode="traditional"}'
+        values: '_x5 1+0.5x55'
+      - series: 'gitlab_runner_failed_jobs_total{job="ok_gitlab-runner",instance="10.0.2.5:9252",stack="ok",runner="t2",runner_name="ok",failure_reason="script_failure",mode="traditional"}'
+        values: '_x2 1+5x58'
+
+    alert_rule_test:
+      # Five minutes in, nothing has lasted its `for` yet.
+      - eval_time: 5m
+        alertname: GitLabRunnerDisabled
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: GitLabRunnerJobRequestsFailing
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: GitLabRunnerSaturated
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: GitLabRunnerSystemFailures
+        exp_alerts: []
+      # Saturation has to last half an hour.
+      - eval_time: 25m
+        alertname: GitLabRunnerSaturated
+        exp_alerts: []
+
+      - eval_time: 50m
+        alertname: GitLabRunnerDisabled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: ci_gitlab-runner
+              instance: 10.0.1.5:9252
+              stack: ci
+            exp_annotations:
+              summary: 'ci_gitlab-runner has stopped asking GitLab for jobs'
+              description: 'Runner task 10.0.1.5:9252 of ci_gitlab-runner has skipped its job polls for 10 minutes: after 3 job requests failed outright, usually a 403 for its token, it disables itself for an hour at a time. Check the runner in GitLab and the token secret.'
+      # Task 2 only: task 1's 403s stopped its requests rather than outnumbering its
+      # successes, and release ok's 503s are 1 in 10.
+      - eval_time: 50m
+        alertname: GitLabRunnerJobRequestsFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: ci_gitlab-runner
+              instance: 10.0.1.6:9252
+              stack: ci
+            exp_annotations:
+              summary: 'ci_gitlab-runner cannot fetch jobs from GitLab'
+              description: '60% of the job requests runner task 10.0.1.6:9252 of ci_gitlab-runner sent in the last 5 minutes failed, and it has been over half for 10 minutes.'
+      - eval_time: 50m
+        alertname: GitLabRunnerSaturated
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: ci_gitlab-runner
+              instance: 10.0.1.7:9252
+              stack: ci
+            exp_annotations:
+              summary: 'ci_gitlab-runner has been running at capacity for 30 minutes'
+              description: 'Runner task 10.0.1.7:9252 of ci_gitlab-runner has run 4 jobs, its capacity, for 30 minutes: further jobs wait in the queue. Raise concurrent or runner.limit, or add replicas.'
+          - exp_labels:
+              severity: warning
+              job: ci_gitlab-runner
+              instance: 10.0.1.8:9252
+              stack: ci
+            exp_annotations:
+              summary: 'ci_gitlab-runner has been running at capacity for 30 minutes'
+              description: 'Runner task 10.0.1.8:9252 of ci_gitlab-runner has run 2 jobs, its capacity, for 30 minutes: further jobs wait in the queue. Raise concurrent or runner.limit, or add replicas.'
+      - eval_time: 50m
+        alertname: GitLabRunnerSystemFailures
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: ci_gitlab-runner
+              instance: 10.0.1.9:9252
+              stack: ci
+            exp_annotations:
+              summary: 'ci_gitlab-runner is failing jobs with system failures'
+              description: '50% of the jobs runner task 10.0.1.9:9252 of ci_gitlab-runner took in the last 30 minutes failed with runner_system_failure. The job logs say why.'
