@@ -5,6 +5,10 @@
 {{- $consoleRouted := and $console (eq .Values.console.exposure.mode "traefik") -}}
 {{- $consolePublished := and $console (eq .Values.console.exposure.mode "published") -}}
 {{- $oidc := .Values.console.oidc.enabled -}}
+{{- $metrics := .Values.metrics.enabled -}}
+{{- if and $metrics (has .Values.metrics.network (list .Values.network.name .Values.exposure.network)) -}}
+{{-   fail "metrics.network must differ from network.name and exposure.network: the collector joins network.name, and the point of a separate metrics overlay is that Prometheus never shares one with the S3 port" -}}
+{{- end -}}
 {{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) (contains "/" .Values.persistence.volumeName) -}}
 {{-   fail "persistence.volumeName is a Docker named-volume name and cannot contain '/'. To store data under a host directory, set persistence.volumePath instead." -}}
 {{- end -}}
@@ -93,6 +97,9 @@
 {{-   if eq $k "RUSTFS_BROWSER_REDIRECT_URL" }}
 {{-     fail "extraEnv: RUSTFS_BROWSER_REDIRECT_URL is set by the chart from console.oidc.browserUrl; use that instead" }}
 {{-   end }}
+{{-   if and $metrics (has $k (list "RUSTFS_OBS_ENDPOINT" "RUSTFS_OBS_METRIC_ENDPOINT" "RUSTFS_OBS_TRACE_ENDPOINT" "RUSTFS_OBS_LOG_ENDPOINT" "RUSTFS_OBS_TRACES_EXPORT_ENABLED" "RUSTFS_OBS_LOGS_EXPORT_ENABLED" "RUSTFS_OBS_LOG_STDOUT_ENABLED")) }}
+{{-     fail (printf "extraEnv: %s is set by the chart while metrics.enabled: RustFS pushes its metrics, and only its metrics, to the chart's collector" $k) }}
+{{-   end }}
 {{- end -}}
 version: "3.9"
 
@@ -112,6 +119,8 @@ version: "3.9"
 {{- /* The name clients dial on network.name. A stack's own <release>_rustfs has a '_', which is
        not valid in a host name: java.net.URI, and so every AWS SDK for Java client, rejects it. */}}
 {{- $alias := printf "%s-rustfs" (.Release.Name | replace "_" "-" | replace "." "-") }}
+{{- /* The collector's name on network.name, where RustFS dials it, without the '_' and '.'. */}}
+{{- $metricsAlias := printf "%s-metrics" $alias }}
 
 services:
 
@@ -213,6 +222,15 @@ services:
       # for every outbound connection it polices, so webhook and Object Lambda targets may
       # reach this origin too.
       RUSTFS_OUTBOUND_ALLOW_ORIGINS: {{ regexFind "^https?://[^/]+" .Values.console.oidc.configUrl | quote }}
+{{- end }}
+{{- if $metrics }}
+      # metrics.enabled: OTLP/HTTP to the collector below; RustFS appends /v1/metrics. Traces
+      # and logs stay off, and with any endpoint set RustFS (environment production, the
+      # image's) writes its log to stdout only when LOG_STDOUT_ENABLED says so.
+      RUSTFS_OBS_ENDPOINT: "http://{{ $metricsAlias }}:4318"
+      RUSTFS_OBS_TRACES_EXPORT_ENABLED: "false"
+      RUSTFS_OBS_LOGS_EXPORT_ENABLED: "false"
+      RUSTFS_OBS_LOG_STDOUT_ENABLED: "true"
 {{- end }}
 {{- range $k, $v := .Values.extraEnv }}
       {{ $k }}: {{ $v | quote }}
@@ -356,6 +374,48 @@ services:
 {{- end }}
 {{- end }}
 
+{{- if $metrics }}
+
+  # An OpenTelemetry Collector: RustFS pushes OTLP/HTTP to it on network.name (port 4318),
+  # and Prometheus scrapes the same metrics from it on metrics.network (port 8889). RustFS
+  # itself never joins metrics.network. The image has no shell, so there is no healthcheck;
+  # a collector that stops answering is prometheus-stack's TargetDown. Its configuration is
+  # an environment variable, read by the collector's env provider.
+  rustfs-metrics:
+    image: {{ .Values.metrics.image.repository }}:{{ .Values.metrics.image.tag }}
+    command:
+      - --config=env:COLLECTOR_CONFIG
+    environment:
+      COLLECTOR_CONFIG: |
+        receivers:
+          otlp:
+            protocols:
+              http:
+                endpoint: 0.0.0.0:4318
+        exporters:
+          prometheus:
+            endpoint: 0.0.0.0:8889
+        service:
+          pipelines:
+            metrics:
+              receivers: [otlp]
+              exporters: [prometheus]
+    networks:
+      {{ .Values.network.name }}:
+        aliases:
+          - {{ $metricsAlias }}
+      {{ .Values.metrics.network }}:
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+      # Exactly the two discovery labels: every deploy label of a service that opts in is
+      # readable through Prometheus's targets API.
+      labels:
+        - "prometheus.io/scrape=true"
+        - "prometheus.io/port=8889"
+{{- end }}
+
 secrets:
   {{ $access }}:
     external: true
@@ -369,6 +429,10 @@ secrets:
 networks:
 {{- range $nets }}
   {{ . }}:
+    external: true
+{{- end }}
+{{- if $metrics }}
+  {{ .Values.metrics.network }}:
     external: true
 {{- end }}
 

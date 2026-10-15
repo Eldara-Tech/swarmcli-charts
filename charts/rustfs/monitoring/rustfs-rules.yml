@@ -1,0 +1,80 @@
+# RustFS alerts for the metrics that metrics.enabled turns on: RustFS pushes them over
+# OTLP to the chart's OpenTelemetry Collector, which Prometheus scrapes. The chart does not
+# deploy them: hand the file to your Prometheus, e.g. the prometheus-stack chart's
+# prometheus.extraRules (README § Alerts and a dashboard).
+# RustFS ships no alert rules that fit a single-drive store (its own are GET-path and KMS
+# regression alerts against a day-old baseline), so these are this chart's, written against
+# the metrics RustFS 1.0.1 pushes. A down collector is prometheus-stack's TargetDown, not
+# repeated here. Each alert groups by the `stack` and `job` labels prometheus-stack's
+# discovery adds, `job` being the collector's service, <release>_rustfs-metrics. Critical
+# only while users lose service, writes or data now: RustFS not reporting, its drive
+# offline, and S3 answering 5xx. Low free space and drive errors warn.
+#
+# Validate (from the repo root):
+#   docker run --rm --entrypoint promtool -v "$PWD/charts/rustfs:/chart:ro" \
+#     "prom/prometheus:$(sed -n 's/^appVersion: *"\(.*\)"$/\1/p' charts/prometheus-stack/Chart.yaml)" \
+#     test rules /chart/ci/rustfs-rules-test.yml
+groups:
+  - name: rustfs
+    rules:
+      # The collector answers but serves no RustFS series: RustFS pushes every 30 seconds, and
+      # the collector drops a series 5 minutes after its last update. The process gauges are
+      # pushed whether or not anyone uses the store, so their absence means RustFS stopped
+      # pushing: its task is down or restarting, or its export failed.
+      - alert: RustFSNotReporting
+        expr: |
+          max by (stack, job) (up{job=~".+_rustfs-metrics"}) == 1
+            unless on (stack, job) max by (stack, job) (rustfs_system_process_uptime_seconds)
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'RustFS {{ $labels.stack }} has stopped reporting metrics'
+          description: '{{ $labels.job }} is up but has received no metrics from RustFS for 15 minutes: the RustFS task is down or restarting, or its OTLP export failed (docker service logs {{ $labels.stack }}_rustfs).'
+      # The chart runs one drive. Offline, RustFS answers every read and write with 503 while
+      # /health/ready still says 200, so the healthcheck does not restart it.
+      - alert: RustFSDriveOffline
+        expr: max by (stack, job) (rustfs_cluster_health_drives_offline_count) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'RustFS {{ $labels.stack }} has lost its drive'
+          description: 'RustFS {{ $labels.stack }} has reported its drive offline for 5 minutes; it refuses every read and write until the drive is back.'
+      # Every request either listener answered, by status class. No traffic floor: on a quiet
+      # store a few failures in 10 minutes are enough, and with no requests at all the ratio
+      # is 0/0, which returns nothing.
+      - alert: RustFSS3ServerErrors
+        expr: |
+          sum by (stack, job) (rate(rustfs_http_server_request_duration_seconds_count{status_class="5xx"}[5m]))
+            / sum by (stack, job) (rate(rustfs_http_server_request_duration_seconds_count[5m]))
+            > 0.05
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'RustFS {{ $labels.stack }} is failing S3 requests'
+          description: '{{ $value | humanizePercentage }} of the requests RustFS {{ $labels.stack }} answered in the last 5 minutes were 5xx.'
+      # Free space on the drive, as RustFS sees it. A named volume shares the node's Docker
+      # filesystem, so prometheus-stack's NodeFilesystemAlmostOutOfSpace may report it too.
+      # A usable total of 0 makes the ratio NaN or +Inf, which compares false.
+      - alert: RustFSCapacityLow
+        expr: |
+          max by (stack, job) (rustfs_cluster_capacity_free_bytes)
+            / max by (stack, job) (rustfs_cluster_capacity_usable_total_bytes)
+            < 0.1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'RustFS {{ $labels.stack }} is running out of space'
+          description: 'RustFS {{ $labels.stack }} has {{ $value | humanizePercentage }} of its drive free.'
+      # I/O errors and timeouts on the drive. RustFS 1.0.1 counts both here; its
+      # rustfs_system_drive_io_errors_total is never emitted for a local drive.
+      - alert: RustFSDriveIOErrors
+        expr: sum by (stack, job) (increase(rustfs_system_drive_availability_errors_total[15m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: 'RustFS {{ $labels.stack }} is getting errors from its drive'
+          description: 'RustFS {{ $labels.stack }} counted {{ $value | printf "%.0f" }} I/O errors or timeouts on its drive in the last 15 minutes.'

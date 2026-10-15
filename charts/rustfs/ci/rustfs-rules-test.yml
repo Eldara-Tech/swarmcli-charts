@@ -1,0 +1,187 @@
+# promtool unit tests for monitoring/rustfs-rules.yml, which the chart ships for operators to
+# load into their Prometheus but does not deploy itself. ci/e2e-check.sh runs them with a
+# pinned prom/prometheus image's promtool in the metrics case.
+#
+# One release per failure. Three must raise nothing: `ok` serves traffic with 1% of it 5xx
+# and has drive errors from long ago; `idle` has never served a request, so it has no request
+# series at all; `start` is RustFS starting, whose first push reaches the collector after
+# 2 minutes, with a capacity of 0 in it to prove the ratio cannot fire on one.
+rule_files:
+  - ../monitoring/rustfs-rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      # Every release's collector answers throughout.
+      - series: 'up{job="ok_rustfs-metrics",instance="10.0.9.5:8889",stack="ok"}'
+        values: '1x35'
+      - series: 'up{job="idle_rustfs-metrics",instance="10.0.9.6:8889",stack="idle"}'
+        values: '1x35'
+      - series: 'up{job="start_rustfs-metrics",instance="10.0.9.7:8889",stack="start"}'
+        values: '1x35'
+      - series: 'up{job="down_rustfs-metrics",instance="10.0.1.5:8889",stack="down"}'
+        values: '1x35'
+      - series: 'up{job="driveoff_rustfs-metrics",instance="10.0.2.5:8889",stack="driveoff"}'
+        values: '1x35'
+      - series: 'up{job="errors_rustfs-metrics",instance="10.0.3.5:8889",stack="errors"}'
+        values: '1x35'
+      - series: 'up{job="full_rustfs-metrics",instance="10.0.4.5:8889",stack="full"}'
+        values: '1x35'
+      - series: 'up{job="ioerr_rustfs-metrics",instance="10.0.5.5:8889",stack="ioerr"}'
+        values: '1x35'
+      # Another job's target with no RustFS series is none of these alerts' business.
+      - series: 'up{job="ok_redis-exporter",instance="10.0.9.9:9121",stack="ok"}'
+        values: '1x35'
+
+      # ok: healthy under load.
+      - series: 'rustfs_system_process_uptime_seconds{job="ok_rustfs-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="10.0.10.4",server=":::9000"}'
+        values: '600+60x35'
+      - series: 'rustfs_cluster_health_drives_offline_count{job="ok_rustfs-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="10.0.10.4",collection_scope="cluster",observer=":::9000"}'
+        values: '0x35'
+      - series: 'rustfs_http_server_request_duration_seconds_count{job="ok_rustfs-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="10.0.10.4",status_class="2xx"}'
+        values: '0+90x35'
+      - series: 'rustfs_http_server_request_duration_seconds_count{job="ok_rustfs-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="10.0.10.4",status_class="4xx"}'
+        values: '0+9x35'
+      - series: 'rustfs_http_server_request_duration_seconds_count{job="ok_rustfs-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="10.0.10.4",status_class="5xx"}'
+        values: '0+1x35'
+      - series: 'rustfs_cluster_capacity_free_bytes{job="ok_rustfs-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="10.0.10.4",collection_scope="cluster",observer=":::9000"}'
+        values: '50000000000x35'
+      - series: 'rustfs_cluster_capacity_usable_total_bytes{job="ok_rustfs-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="10.0.10.4",collection_scope="cluster",observer=":::9000"}'
+        values: '100000000000x35'
+      - series: 'rustfs_system_drive_availability_errors_total{job="ok_rustfs-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="10.0.10.4",collection_scope="local",drive="/data",observer=":::9000",server=":::9000"}'
+        values: '3x35'
+
+      # idle: no request has ever reached it.
+      - series: 'rustfs_system_process_uptime_seconds{job="idle_rustfs-metrics",instance="10.0.9.6:8889",stack="idle",exported_job="RustFS",exported_instance="10.0.10.5",server=":::9000"}'
+        values: '600+60x35'
+      - series: 'rustfs_cluster_health_drives_offline_count{job="idle_rustfs-metrics",instance="10.0.9.6:8889",stack="idle",exported_job="RustFS",exported_instance="10.0.10.5",collection_scope="cluster",observer=":::9000"}'
+        values: '0x35'
+      - series: 'rustfs_cluster_capacity_free_bytes{job="idle_rustfs-metrics",instance="10.0.9.6:8889",stack="idle",exported_job="RustFS",exported_instance="10.0.10.5",collection_scope="cluster",observer=":::9000"}'
+        values: '90000000000x35'
+      - series: 'rustfs_cluster_capacity_usable_total_bytes{job="idle_rustfs-metrics",instance="10.0.9.6:8889",stack="idle",exported_job="RustFS",exported_instance="10.0.10.5",collection_scope="cluster",observer=":::9000"}'
+        values: '100000000000x35'
+      - series: 'rustfs_system_drive_availability_errors_total{job="idle_rustfs-metrics",instance="10.0.9.6:8889",stack="idle",exported_job="RustFS",exported_instance="10.0.10.5",collection_scope="local",drive="/data",observer=":::9000",server=":::9000"}'
+        values: '0x35'
+
+      # start: nothing for its first 2 minutes, then a capacity of 0 for one more.
+      - series: 'rustfs_system_process_uptime_seconds{job="start_rustfs-metrics",instance="10.0.9.7:8889",stack="start",exported_job="RustFS",exported_instance="10.0.10.6",server=":::9000"}'
+        values: '_x2 30+60x33'
+      - series: 'rustfs_cluster_capacity_free_bytes{job="start_rustfs-metrics",instance="10.0.9.7:8889",stack="start",exported_job="RustFS",exported_instance="10.0.10.6",collection_scope="cluster",observer=":::9000"}'
+        values: '_x2 0 90000000000x32'
+      - series: 'rustfs_cluster_capacity_usable_total_bytes{job="start_rustfs-metrics",instance="10.0.9.7:8889",stack="start",exported_job="RustFS",exported_instance="10.0.10.6",collection_scope="cluster",observer=":::9000"}'
+        values: '_x2 0 100000000000x32'
+
+      # down: RustFS stops pushing after 5 minutes; its collector keeps answering.
+      - series: 'rustfs_system_process_uptime_seconds{job="down_rustfs-metrics",instance="10.0.1.5:8889",stack="down",exported_job="RustFS",exported_instance="10.0.10.7",server=":::9000"}'
+        values: '600+60x5 _x30'
+
+      # driveoff: the drive goes offline at 2m.
+      - series: 'rustfs_system_process_uptime_seconds{job="driveoff_rustfs-metrics",instance="10.0.2.5:8889",stack="driveoff",exported_job="RustFS",exported_instance="10.0.10.8",server=":::9000"}'
+        values: '600+60x35'
+      - series: 'rustfs_cluster_health_drives_offline_count{job="driveoff_rustfs-metrics",instance="10.0.2.5:8889",stack="driveoff",exported_job="RustFS",exported_instance="10.0.10.8",collection_scope="cluster",observer=":::9000"}'
+        values: '0 0 1x33'
+
+      # errors: a tenth of its requests answer 5xx.
+      - series: 'rustfs_system_process_uptime_seconds{job="errors_rustfs-metrics",instance="10.0.3.5:8889",stack="errors",exported_job="RustFS",exported_instance="10.0.10.9",server=":::9000"}'
+        values: '600+60x35'
+      - series: 'rustfs_http_server_request_duration_seconds_count{job="errors_rustfs-metrics",instance="10.0.3.5:8889",stack="errors",exported_job="RustFS",exported_instance="10.0.10.9",status_class="2xx"}'
+        values: '0+90x35'
+      - series: 'rustfs_http_server_request_duration_seconds_count{job="errors_rustfs-metrics",instance="10.0.3.5:8889",stack="errors",exported_job="RustFS",exported_instance="10.0.10.9",status_class="5xx"}'
+        values: '0+10x35'
+
+      # full: 5% free.
+      - series: 'rustfs_system_process_uptime_seconds{job="full_rustfs-metrics",instance="10.0.4.5:8889",stack="full",exported_job="RustFS",exported_instance="10.0.10.10",server=":::9000"}'
+        values: '600+60x35'
+      - series: 'rustfs_cluster_capacity_free_bytes{job="full_rustfs-metrics",instance="10.0.4.5:8889",stack="full",exported_job="RustFS",exported_instance="10.0.10.10",collection_scope="cluster",observer=":::9000"}'
+        values: '5000000000x35'
+      - series: 'rustfs_cluster_capacity_usable_total_bytes{job="full_rustfs-metrics",instance="10.0.4.5:8889",stack="full",exported_job="RustFS",exported_instance="10.0.10.10",collection_scope="cluster",observer=":::9000"}'
+        values: '100000000000x35'
+
+      # ioerr: four drive errors at 15m, none after.
+      - series: 'rustfs_system_process_uptime_seconds{job="ioerr_rustfs-metrics",instance="10.0.5.5:8889",stack="ioerr",exported_job="RustFS",exported_instance="10.0.10.11",server=":::9000"}'
+        values: '600+60x35'
+      - series: 'rustfs_system_drive_availability_errors_total{job="ioerr_rustfs-metrics",instance="10.0.5.5:8889",stack="ioerr",exported_job="RustFS",exported_instance="10.0.10.11",collection_scope="local",drive="/data",observer=":::9000",server=":::9000"}'
+        values: '0x14 4x21'
+
+    alert_rule_test:
+      # Before any `for` has run out, nothing fires: start's first minutes without metrics
+      # and its capacity of 0 included.
+      - eval_time: 5m
+        alertname: RustFSNotReporting
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: RustFSDriveOffline
+        exp_alerts: []
+      - eval_time: 9m
+        alertname: RustFSS3ServerErrors
+        exp_alerts: []
+      - eval_time: 14m
+        alertname: RustFSCapacityLow
+        exp_alerts: []
+      - eval_time: 14m
+        alertname: RustFSDriveIOErrors
+        exp_alerts: []
+
+      # Only down, and not before its series have been gone for 10 minutes: the last
+      # sample at 5m is still in the 5-minute lookback until 10m.
+      - eval_time: 19m
+        alertname: RustFSNotReporting
+        exp_alerts: []
+      - eval_time: 21m
+        alertname: RustFSNotReporting
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: down_rustfs-metrics
+              stack: down
+            exp_annotations:
+              summary: 'RustFS down has stopped reporting metrics'
+              description: 'down_rustfs-metrics is up but has received no metrics from RustFS for 15 minutes: the RustFS task is down or restarting, or its OTLP export failed (docker service logs down_rustfs).'
+      - eval_time: 8m
+        alertname: RustFSDriveOffline
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: driveoff_rustfs-metrics
+              stack: driveoff
+            exp_annotations:
+              summary: 'RustFS driveoff has lost its drive'
+              description: 'RustFS driveoff has reported its drive offline for 5 minutes; it refuses every read and write until the drive is back.'
+      # Not ok's 1%, nor idle's 0/0.
+      - eval_time: 12m
+        alertname: RustFSS3ServerErrors
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: errors_rustfs-metrics
+              stack: errors
+            exp_annotations:
+              summary: 'RustFS errors is failing S3 requests'
+              description: '10% of the requests RustFS errors answered in the last 5 minutes were 5xx.'
+      # Not start's capacity of 0.
+      - eval_time: 17m
+        alertname: RustFSCapacityLow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: full_rustfs-metrics
+              stack: full
+            exp_annotations:
+              summary: 'RustFS full is running out of space'
+              description: 'RustFS full has 5% of its drive free.'
+      # Not ok's errors from long ago; and ioerr's stop counting once they leave the window.
+      - eval_time: 20m
+        alertname: RustFSDriveIOErrors
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: ioerr_rustfs-metrics
+              stack: ioerr
+            exp_annotations:
+              summary: 'RustFS ioerr is getting errors from its drive'
+              description: 'RustFS ioerr counted 4 I/O errors or timeouts on its drive in the last 15 minutes.'
+      - eval_time: 31m
+        alertname: RustFSDriveIOErrors
+        exp_alerts: []

@@ -19,6 +19,10 @@
 #   * The OIDC client secret has no _FILE form in RustFS, so the wrapper exports it; it
 #     must never reach environment:, and RustFS must be told the callback base and the
 #     provider's origin, or SSO silently disappears or follows a client's Host header.
+#   * Metrics are opt-in, through a collector of their own: RustFS never joins the metrics
+#     overlay (everything on it could reach the S3 port), the collector carries exactly the
+#     two discovery labels, and RustFS pushes only metrics, keeping its log on stdout. Any
+#     OTLP endpoint makes RustFS drop its stdout log unless LOG_STDOUT_ENABLED says otherwise.
 #
 # No check pipes into `grep -q` (scripts/lint.sh enforces it): match with `grep … >/dev/null`
 # or a here-string.
@@ -273,6 +277,50 @@ if [ "$case" = "buckets" ]; then
   grep -Fx 'node.role == manager' <<<"$constraints" >/dev/null || bad "case $case: placement.constraints was not applied"
 fi
 
+# ── metrics: a collector RustFS pushes to, the only service on the metrics overlay ────
+m='.services."rustfs-metrics"'
+services="$(q '.services | keys | join(" ")')"
+obs="RUSTFS_OBS_ENDPOINT RUSTFS_OBS_TRACES_EXPORT_ENABLED RUSTFS_OBS_LOGS_EXPORT_ENABLED RUSTFS_OBS_LOG_STDOUT_ENABLED"
+if [ "$case" != "metrics" ]; then
+  [ "$services" = "rustfs" ] || bad "case $case: services are '$services'; metrics must be opt-in"
+  [ "$(q '.networks.monitoring')" = "null" ] || bad "case $case: the monitoring overlay is declared although metrics are off"
+  for v in $obs; do
+    [ "$(env_ "$v")" = "null" ] || bad "case $case: $v is set although metrics are off"
+  done
+else
+  [ "$services" = "rustfs rustfs-metrics" ] || bad "services are '$services', expected rustfs and rustfs-metrics"
+  if grep -Fx monitoring <<<"$nets" >/dev/null; then bad "RustFS joins the monitoring overlay; everything on it could reach the S3 port"; fi
+  [ "$(q '.networks.monitoring.external')" = "true" ] || bad "the monitoring overlay is not declared external"
+  # RustFS appends /v1/metrics to the root endpoint. A per-signal endpoint alone would make it
+  # dump every metric to stdout, and any endpoint drops its stdout log unless told otherwise.
+  [ "$(env_ RUSTFS_OBS_ENDPOINT)" = "http://ci-rustfs-metrics:4318" ] \
+    || bad "RUSTFS_OBS_ENDPOINT is not the collector's alias on rustfs-net (got '$(env_ RUSTFS_OBS_ENDPOINT)')"
+  [ "$(env_ RUSTFS_OBS_TRACES_EXPORT_ENABLED)" = "false" ] || bad "trace export is not off; the collector has no traces pipeline"
+  [ "$(env_ RUSTFS_OBS_LOGS_EXPORT_ENABLED)" = "false" ] || bad "log export is not off; the server log would leave docker service logs"
+  [ "$(env_ RUSTFS_OBS_LOG_STDOUT_ENABLED)" = "true" ] \
+    || bad "RUSTFS_OBS_LOG_STDOUT_ENABLED is not true: with an OTLP endpoint set, RustFS (environment production) would stop logging to stdout"
+  [ "$(q "$m.image")" = "otel/opentelemetry-collector:$(yq -r '.metrics.image.tag' "$(dirname "$0")/../values.yaml")" ] \
+    || bad "the collector image is not values.yaml's metrics.image (got '$(q "$m.image")')"
+  [ "$(q "$m.command | join(\" \")")" = "--config=env:COLLECTOR_CONFIG" ] || bad "the collector does not read its config from COLLECTOR_CONFIG"
+  cfg="$(q "$m.environment.COLLECTOR_CONFIG")"
+  [ "$(yq -r '.receivers.otlp.protocols.http.endpoint' <<<"$cfg")" = "0.0.0.0:4318" ] \
+    || bad "the collector does not receive OTLP/HTTP on 0.0.0.0:4318, where RUSTFS_OBS_ENDPOINT points"
+  [ "$(yq -r '.receivers.otlp.protocols | keys | join(" ")' <<<"$cfg")" = "http" ] || bad "the collector receives more than OTLP/HTTP"
+  [ "$(yq -r '.exporters.prometheus.endpoint' <<<"$cfg")" = "0.0.0.0:8889" ] \
+    || bad "the collector's prometheus exporter does not listen on 0.0.0.0:8889, the port the discovery label names"
+  [ "$(yq -r '.service.pipelines | keys | join(" ")' <<<"$cfg")" = "metrics" ] \
+    && [ "$(yq -r '.service.pipelines.metrics.receivers | join(" ")' <<<"$cfg")" = "otlp" ] \
+    && [ "$(yq -r '.service.pipelines.metrics.exporters | join(" ")' <<<"$cfg")" = "prometheus" ] \
+    || bad "the collector's only pipeline is not metrics: otlp -> prometheus"
+  # Every deploy label of an opted-in service is readable through Prometheus's targets API.
+  [ "$(q "$m.deploy.labels | join(\" \")")" = "prometheus.io/scrape=true prometheus.io/port=8889" ] \
+    || bad "collector deploy labels are '$(q "$m.deploy.labels | join(\" \")")', expected exactly the two discovery labels"
+  [ "$(q "$m.networks | keys | join(\" \")")" = "monitoring rustfs-net" ] || bad "the collector is not on exactly rustfs-net and monitoring"
+  [ "$(q "$m.networks.\"rustfs-net\".aliases | join(\" \")")" = "ci-rustfs-metrics" ] \
+    || bad "the collector's alias on rustfs-net is not ci-rustfs-metrics, the name RustFS dials"
+  [ "$(q "$m.ports // [] | length")" = "0" ] || bad "the collector publishes a port; neither of its listeners authenticates"
+fi
+
 # ── refusals and one-off renders (from the default fixture only) ──────────────────────
 if [ "$case" = "default" ]; then
   chart="$(cd "$(dirname "$0")/.." && pwd)"
@@ -292,6 +340,23 @@ if [ "$case" = "default" ]; then
       || bad "release my_s3.x does not get the alias my-s3-x-rustfs: '_' and '.' must become '-'"
   else
     bad "release my_s3.x was refused: $(tr '\n' ' ' <"$tmp.err")"
+  fi
+  refused 'metrics.network must differ from network.name and exposure.network' --set metrics.enabled=true --set metrics.network=rustfs-net
+  refused 'metrics.network must differ from network.name and exposure.network' --set metrics.enabled=true --set metrics.network=traefik-public
+  # While metrics are on, the chart owns RustFS's OTLP wiring; while they are off, extraEnv may set it.
+  for k in RUSTFS_OBS_ENDPOINT RUSTFS_OBS_METRIC_ENDPOINT RUSTFS_OBS_TRACE_ENDPOINT RUSTFS_OBS_LOG_ENDPOINT \
+           RUSTFS_OBS_TRACES_EXPORT_ENABLED RUSTFS_OBS_LOGS_EXPORT_ENABLED RUSTFS_OBS_LOG_STDOUT_ENABLED; do
+    refused "extraEnv: $k is set by the chart while metrics.enabled" --set metrics.enabled=true --set "extraEnv.$k=x"
+  done
+  render --set extraEnv.RUSTFS_OBS_ENDPOINT=http://otel:4318 \
+    && [ "$(yq -r "$svc.environment.RUSTFS_OBS_ENDPOINT" "$tmp")" = "http://otel:4318" ] \
+    || bad "extraEnv.RUSTFS_OBS_ENDPOINT with metrics off was refused or not passed on: $(tr '\n' ' ' <"$tmp.err")"
+  if "${SWARMCLI:?render-check needs SWARMCLI to render the refusals}" charts template my_s3.x "$chart" --set metrics.enabled=true >"$tmp" 2>"$tmp.err"; then
+    [ "$(yq -r '.services."rustfs-metrics".networks."rustfs-net".aliases[]' "$tmp")" = "my-s3-x-rustfs-metrics" ] \
+      && [ "$(yq -r "$svc.environment.RUSTFS_OBS_ENDPOINT" "$tmp")" = "http://my-s3-x-rustfs-metrics:4318" ] \
+      || bad "release my_s3.x: the collector alias or RustFS's endpoint is not my-s3-x-rustfs-metrics"
+  else
+    bad "release my_s3.x with metrics on was refused: $(tr '\n' ' ' <"$tmp.err")"
   fi
   refused 'console.ingress.host is required' --set console.enabled=true --set console.exposure.mode=traefik
   refused 'console.ingress.host must differ from ingress.host' --set exposure.mode=traefik --set console.enabled=true \
