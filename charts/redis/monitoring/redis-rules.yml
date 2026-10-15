@@ -1,0 +1,70 @@
+# Redis alerts for the redis_exporter metrics.enabled adds, or any redis_exporter
+# target. The chart does not deploy them: hand the file to your Prometheus, e.g. the
+# prometheus-stack chart's prometheus.extraRules (README § Alerts and a dashboard).
+# RedisDown and RedisTooManyConnections are derived from the redis-mixin in
+# oliver006/redis_exporter (contrib/redis-mixin, MIT); TooManyConnections compares with
+# Redis's own maxclients instead of the mixin's fixed 100. The mixin's RedisOutOfMemory
+# needs --include-system-metrics, which the chart does not pass, and its cluster alerts
+# need cluster mode, which it does not run. The memory and persistence alerts are this
+# chart's. Critical only while clients lose Redis or their writes (RedisDown,
+# RedisRejectingWrites, RedisPersistenceFailed); the two near-limit alerts warn.
+#
+# Validate (from the repo root):
+#   docker run --rm --entrypoint promtool -v "$PWD/charts/redis:/chart:ro" \
+#     "prom/prometheus:$(sed -n 's/^appVersion: *"\(.*\)"$/\1/p' charts/prometheus-stack/Chart.yaml)" \
+#     test rules /chart/ci/redis-rules-test.yml
+groups:
+  - name: redis
+    rules:
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $labels.job }} cannot reach its Redis server'
+          description: 'redis_exporter {{ $labels.job }} on {{ $labels.instance }} has not reached its server for 5 minutes.'
+      # Writes are failing: Redis is at maxmemory and its policy frees nothing. It never
+      # answers OOM while maxmemory is 0, the chart's default; the host's memory is
+      # prometheus-stack's NodeMemoryHighUtilization then.
+      - alert: RedisRejectingWrites
+        expr: increase(redis_errors_total{err="OOM"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $labels.job }} reports Redis rejecting writes'
+          description: 'The Redis behind {{ $labels.job }} has kept answering commands with OOM for 5 minutes: it is at maxmemory and its policy frees nothing.'
+      # Only with maxmemory set and under noeviction, the chart's maxmemoryPolicy: an
+      # evicting policy sits at the limit by design, and maxmemory 0 has no limit.
+      - alert: RedisMemoryNearLimit
+        expr: |
+          (
+            redis_memory_used_bytes / (redis_memory_max_bytes > 0) > 0.9
+          )
+          and on (job, instance)
+            redis_instance_info{maxmemory_policy="noeviction"}
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.job }} reports Redis near maxmemory'
+          description: 'The Redis behind {{ $labels.job }} has used {{ $value | humanizePercentage }} of maxmemory for 5 minutes. Under noeviction it rejects writes at the limit.'
+      - alert: RedisTooManyConnections
+        expr: redis_connected_clients / redis_max_clients > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.job }} reports Redis near maxclients'
+          description: 'The Redis behind {{ $labels.job }} has held {{ $value | humanizePercentage }} of maxclients for 5 minutes. At the limit it refuses new connections.'
+      # A full data volume, or a fork that fails for memory. With the defaults Redis
+      # refuses writes (MISCONF) until a save succeeds.
+      - alert: RedisPersistenceFailed
+        expr: redis_rdb_last_bgsave_status == 0 or redis_aof_last_write_status == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $labels.job }} reports a failed Redis save'
+          description: 'The last RDB save or AOF write of the Redis behind {{ $labels.job }} failed, and none has succeeded for 5 minutes. By default Redis refuses writes until one does; its log says why.'

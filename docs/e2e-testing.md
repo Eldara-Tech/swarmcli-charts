@@ -346,8 +346,8 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   through the socket-proxy, the Watchdog alert in Alertmanager, Grafana's datasources and
   dashboards, the proxy's allow-list, and `promtool`/`amtool` on the configs the tasks run.
 
-- **airbyte** — the eight operator secrets + `airbyte-db-net`/`traefik-public` + the
-  `airbyte-data` node label, and three throwaway backends: PostgreSQL, SeaweedFS for S3
+- **airbyte** — the eight operator secrets + `airbyte-db-net`/`airbyte-e2e-s3-net`/`traefik-public`
+  + the `airbyte-data` node label, and three throwaway backends: PostgreSQL, SeaweedFS for S3
   (Airbyte creates its bucket itself; MinIO's images were gone from quay.io and Docker Hub by
   2026-09-25) and an OIDC discovery mock (`ci/mock-oidc.js`) that oauth2-proxy needs to start
   at all. The `mock`, `noauth` and `login` fixtures deploy against them; the others are

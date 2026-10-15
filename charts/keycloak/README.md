@@ -204,6 +204,59 @@ Attach only services you trust to `monitoring`. Event metrics
 are opt-in in Keycloak for their cardinality and cost, and the default set covers
 health, load and the database.
 
+### Alerts and a dashboard
+
+The chart ships both under [`monitoring/`](monitoring) for your Prometheus and Grafana,
+and deploys neither: scraping is automatic, but which rules and dashboards a monitoring
+stack loads is its operator's choice. With the prometheus-stack chart they go in
+through its own configuration:
+
+```bash
+base=https://raw.githubusercontent.com/Eldara-Tech/swarmcli-charts/main/charts/keycloak/monitoring
+curl -fsSL -O "$base/keycloak-rules.yml" -O "$base/keycloak-dashboard.json"
+v="$(swarmcli charts status mon | sed -n 's/^CHART: prometheus-stack-//p')"
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --version "${v:?}" --reuse-values \
+  --set-file prometheus.extraRules.keycloak=./keycloak-rules.yml \
+  --set-file grafana.dashboards.keycloak=./keycloak-dashboard.json
+```
+
+`--version` keeps prometheus-stack at the version it runs, the only case in which `--reuse-values`
+is safe (Eldara-Tech/swarmcli#687).
+
+A release file and swarmcli-cd take values files only, not `--set-file`, so there both
+files go in as values files: each file's content, as it is, indented under its key as a
+block string. From the two files downloaded above:
+
+```bash
+mkdir -p monitoring/rules monitoring/dashboards
+{ printf 'prometheus:\n  extraRules:\n    keycloak: |\n'; sed 's/^./      &/' keycloak-rules.yml; } > monitoring/rules/keycloak.yaml
+{ printf 'grafana:\n  dashboards:\n    keycloak: |\n'; sed 's/^./      &/' keycloak-dashboard.json; } > monitoring/dashboards/keycloak.yaml
+```
+
+The dashboard stays JSON: converted to YAML it becomes a mapping, which the render
+refuses (`got object, want string`). prometheus-stack's README, *Keeping your setup in
+git*, shows where to list the two files.
+
+- **Alerts** (`keycloak-rules.yml`): Keycloak publishes no alert rules, so these are
+  the chart's own, from the metrics above. `KeycloakServerErrors` when more than 5% of
+  login and token requests end in a 5xx (Keycloak's documented error SLI),
+  `KeycloakPasswordFailures` when more than half of a realm's password checks fail, at
+  over 6 a minute (a wrong password for an existing user; an unknown username is not
+  counted), `KeycloakHeapPressure` when the heap stays over 90% full after garbage
+  collection, and `KeycloakDatabasePoolExhausted` when requests queue for a database
+  connection. A down target is prometheus-stack's `TargetDown`.
+- **Dashboard** (`keycloak-dashboard.json`, uid `keycloak`): login server errors,
+  failed password checks, heap after GC and DB-pool waits, then requests by outcome,
+  server errors and mean response time by endpoint, password checks by realm, heap, GC
+  overhead, database connections and CPU, trimmed from the troubleshooting and
+  capacity-planning dashboards in
+  [keycloak/keycloak-grafana-dashboard](https://github.com/keycloak/keycloak-grafana-dashboard)
+  (Apache-2.0) to what this chart's metric set emits. Pick a release by its `stack`.
+
+The dashboard picks a release by the `stack` label prometheus-stack's discovery puts
+on every target, and the alerts carry it. Another Prometheus needs the same relabelling of
+`__meta_dockerswarm_service_label_com_docker_stack_namespace` to `stack`.
+
 ## Values
 
 | Key | Default | Description |

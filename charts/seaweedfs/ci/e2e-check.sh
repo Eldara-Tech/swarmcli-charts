@@ -33,7 +33,9 @@ SIG='aws:amz:us-east-1:s3'
 
 svc="${release}_seaweedfs"
 net=seaweedfs-net
-base="http://${svc}:8333"
+# The alias the chart adds on seaweedfs-net, which Java clients need: their URI parser rejects
+# the '_' in $svc. scripts/e2e-test.sh names releases [a-z0-9-] only, so it needs no mapping.
+base="http://${release}-seaweedfs:8333"
 route=()
 buckets=""
 case "$case" in

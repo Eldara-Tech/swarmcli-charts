@@ -9,7 +9,7 @@ networks:
     driver: overlay
     attachable: true
     autoCreate: true
-    description: "Overlay S3 clients join to reach <release>_seaweedfs (network.name)"
+    description: "Overlay S3 clients join to reach <release>-seaweedfs (network.name)"
   # Attached in traefik mode only.
   - name: "{{ .Values.exposure.network }}"
     driver: overlay

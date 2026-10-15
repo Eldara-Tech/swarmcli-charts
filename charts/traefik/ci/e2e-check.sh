@@ -108,6 +108,20 @@ if [ "$case" = "metrics" ]; then
   for p in $pub; do
     [ "$p" != 8082 ] || { echo "  the metrics port 8082 is published"; exit 1; }
   done
+
+  # The alert rules the chart ships for operators to load (monitoring/), checked here
+  # because nothing deploys them: their logic, under the promtool of the Prometheus that
+  # prometheus-stack pins.
+  chart="$(cd "$2" && pwd)"
+  prom_tag="$(sed -n 's/^appVersion: *"\(.*\)"$/\1/p' "$chart/../prometheus-stack/Chart.yaml")"
+  promtool_image="${TRAEFIK_E2E_PROMTOOL_IMAGE:-prom/prometheus:${prom_tag:?no appVersion in charts/prometheus-stack/Chart.yaml}}"
+  if ! out="$(docker run --rm --entrypoint promtool -v "$chart:/chart:ro" "$promtool_image" \
+      test rules /chart/ci/traefik-rules-test.yml 2>&1)"; then
+    echo "  promtool test rules fails on monitoring/traefik-rules.yml:"
+    echo "$out" | sed 's/^/    /'
+    exit 1
+  fi
+  echo "  alert rules pass promtool"
 fi
 
 exit 0

@@ -1,0 +1,210 @@
+# promtool unit tests for monitoring/postgres-rules.yml, which the chart ships for operators
+# to load into their Prometheus but does not deploy itself. ci/e2e-check.sh runs them
+# with a pinned prom/prometheus image's promtool in the metrics case.
+#
+# Release `down` loses its server two minutes in. Release `full` fills its connection slots
+# the way a live server shows it: the exporter counts one below the limit, then, at 12m,
+# every collector metric vanishes while pg_up stays 1. `warm` is past 80% of its slots and
+# deadlocks; `blind` has a collector failing. `su`'s exporter logs in as a superuser, so it
+# can count all 97 slots taken. Release `ok` stays healthy and must raise nothing.
+rule_files:
+  - ../monitoring/postgres-rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'pg_up{job="down_postgres-exporter",instance="10.0.1.5:9187",stack="down"}'
+        values: '1 1 0x38'
+      - series: 'pg_up{job="full_postgres-exporter",instance="10.0.2.5:9187",stack="full"}'
+        values: '1x40'
+      - series: 'pg_up{job="warm_postgres-exporter",instance="10.0.3.5:9187",stack="warm"}'
+        values: '1x40'
+      - series: 'pg_up{job="ok_postgres-exporter",instance="10.0.4.5:9187",stack="ok"}'
+        values: '1x40'
+      - series: 'pg_up{job="blind_postgres-exporter",instance="10.0.5.5:9187",stack="blind"}'
+        values: '1x40'
+      - series: 'pg_up{job="su_postgres-exporter",instance="10.0.6.5:9187",stack="su"}'
+        values: '1x40'
+      # Every release allows 100 connections and reserves 3 for a superuser: 97 slots. full
+      # counts 96 across two states (the exporter's own collector connection holds the 97th
+      # and is not counted), su 97, warm 80 (> 77.6), ok 10.
+      - series: 'pg_stat_activity_count{datname="app",state="active",job="full_postgres-exporter",instance="10.0.2.5:9187",stack="full"}'
+        values: '60x11 stale'
+      - series: 'pg_stat_activity_count{datname="app",state="idle",job="full_postgres-exporter",instance="10.0.2.5:9187",stack="full"}'
+        values: '36x11 stale'
+      - series: 'pg_stat_activity_count{datname="app",state="active",job="su_postgres-exporter",instance="10.0.6.5:9187",stack="su"}'
+        values: '97x40'
+      - series: 'pg_stat_activity_count{datname="app",state="active",job="warm_postgres-exporter",instance="10.0.3.5:9187",stack="warm"}'
+        values: '80x40'
+      - series: 'pg_stat_activity_count{datname="postgres",state="idle",job="ok_postgres-exporter",instance="10.0.4.5:9187",stack="ok"}'
+        values: '10x40'
+      - series: 'pg_settings_max_connections{job="full_postgres-exporter",instance="10.0.2.5:9187",stack="full"}'
+        values: '100x11 stale'
+      - series: 'pg_settings_max_connections{job="su_postgres-exporter",instance="10.0.6.5:9187",stack="su"}'
+        values: '100x40'
+      - series: 'pg_settings_max_connections{job="warm_postgres-exporter",instance="10.0.3.5:9187",stack="warm"}'
+        values: '100x40'
+      - series: 'pg_settings_max_connections{job="ok_postgres-exporter",instance="10.0.4.5:9187",stack="ok"}'
+        values: '100x40'
+      - series: 'pg_settings_superuser_reserved_connections{job="full_postgres-exporter",instance="10.0.2.5:9187",stack="full"}'
+        values: '3x11 stale'
+      - series: 'pg_settings_superuser_reserved_connections{job="su_postgres-exporter",instance="10.0.6.5:9187",stack="su"}'
+        values: '3x40'
+      - series: 'pg_settings_superuser_reserved_connections{job="warm_postgres-exporter",instance="10.0.3.5:9187",stack="warm"}'
+        values: '3x40'
+      - series: 'pg_settings_superuser_reserved_connections{job="ok_postgres-exporter",instance="10.0.4.5:9187",stack="ok"}'
+        values: '3x40'
+      # 10 deadlocks a minute in warm's app database and in template1, which is left out;
+      # 2 a minute in ok's, under the threshold.
+      - series: 'pg_stat_database_deadlocks{datid="16384",datname="app",job="warm_postgres-exporter",instance="10.0.3.5:9187",stack="warm"}'
+        values: '0+10x40'
+      - series: 'pg_stat_database_deadlocks{datid="1",datname="template1",job="warm_postgres-exporter",instance="10.0.3.5:9187",stack="warm"}'
+        values: '0+10x40'
+      - series: 'pg_stat_database_deadlocks{datid="5",datname="postgres",job="ok_postgres-exporter",instance="10.0.4.5:9187",stack="ok"}'
+        values: '0+2x40'
+      # Every reachable release reports its collectors, except full once it is out of slots.
+      - series: 'pg_scrape_collector_success{collector="stat_activity",job="full_postgres-exporter",instance="10.0.2.5:9187",stack="full"}'
+        values: '1x11 stale'
+      - series: 'pg_scrape_collector_success{collector="stat_activity",job="su_postgres-exporter",instance="10.0.6.5:9187",stack="su"}'
+        values: '1x40'
+      - series: 'pg_scrape_collector_success{collector="stat_activity",job="warm_postgres-exporter",instance="10.0.3.5:9187",stack="warm"}'
+        values: '1x40'
+      - series: 'pg_scrape_collector_success{collector="stat_activity",job="ok_postgres-exporter",instance="10.0.4.5:9187",stack="ok"}'
+        values: '1x40'
+      - series: 'pg_scrape_collector_success{collector="stat_activity",job="blind_postgres-exporter",instance="10.0.5.5:9187",stack="blind"}'
+        values: '0x40'
+      - series: 'pg_scrape_collector_success{collector="database",job="blind_postgres-exporter",instance="10.0.5.5:9187",stack="blind"}'
+        values: '1x40'
+
+    alert_rule_test:
+      # Four minutes in, neither has lasted its `for` yet.
+      - eval_time: 4m
+        alertname: PostgreSQLDown
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: PostgreSQLHighConnections
+        exp_alerts: []
+
+      # full at 96 of 97: high, but not out of slots; su counts all 97.
+      - eval_time: 11m
+        alertname: PostgreSQLMaxConnectionsReached
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: su_postgres-exporter
+              instance: 10.0.6.5:9187
+              stack: su
+            exp_annotations:
+              summary: 'PostgreSQL behind su_postgres-exporter has no connection slot left for roles that are not superusers'
+              description: "For a minute, every slot outside superuser_reserved_connections has been taken, so roles that are not superusers cannot connect; superusers still can. An exporter that is not a superuser, like this chart's, then reports pg_up 1 with no collector metrics."
+      - eval_time: 11m
+        alertname: PostgreSQLHighConnections
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: full_postgres-exporter
+              instance: 10.0.2.5:9187
+              stack: full
+            exp_annotations:
+              summary: 'PostgreSQL behind full_postgres-exporter is above 80% of its connection limit'
+              description: '96 connections have been open for 10 minutes, more than 80% of max_connections minus superuser_reserved_connections.'
+          - exp_labels:
+              severity: warning
+              job: su_postgres-exporter
+              instance: 10.0.6.5:9187
+              stack: su
+            exp_annotations:
+              summary: 'PostgreSQL behind su_postgres-exporter is above 80% of its connection limit'
+              description: '97 connections have been open for 10 minutes, more than 80% of max_connections minus superuser_reserved_connections.'
+          - exp_labels:
+              severity: warning
+              job: warm_postgres-exporter
+              instance: 10.0.3.5:9187
+              stack: warm
+            exp_annotations:
+              summary: 'PostgreSQL behind warm_postgres-exporter is above 80% of its connection limit'
+              description: '80 connections have been open for 10 minutes, more than 80% of max_connections minus superuser_reserved_connections.'
+
+      - eval_time: 20m
+        alertname: PostgreSQLDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: down_postgres-exporter
+              instance: 10.0.1.5:9187
+              stack: down
+            exp_annotations:
+              summary: 'down_postgres-exporter cannot reach its PostgreSQL server'
+              description: 'postgres_exporter down_postgres-exporter on 10.0.1.5:9187 has not reached its server for 5 minutes.'
+      # full's collectors vanished at 12m with pg_up still 1, and su still counts 97; blind
+      # still reports its collectors, and down is not reachable at all.
+      - eval_time: 20m
+        alertname: PostgreSQLMaxConnectionsReached
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: full_postgres-exporter
+              instance: 10.0.2.5:9187
+              stack: full
+            exp_annotations:
+              summary: 'PostgreSQL behind full_postgres-exporter has no connection slot left for roles that are not superusers'
+              description: "For a minute, every slot outside superuser_reserved_connections has been taken, so roles that are not superusers cannot connect; superusers still can. An exporter that is not a superuser, like this chart's, then reports pg_up 1 with no collector metrics."
+          - exp_labels:
+              severity: critical
+              job: su_postgres-exporter
+              instance: 10.0.6.5:9187
+              stack: su
+            exp_annotations:
+              summary: 'PostgreSQL behind su_postgres-exporter has no connection slot left for roles that are not superusers'
+              description: "For a minute, every slot outside superuser_reserved_connections has been taken, so roles that are not superusers cannot connect; superusers still can. An exporter that is not a superuser, like this chart's, then reports pg_up 1 with no collector metrics."
+      - eval_time: 20m
+        alertname: PostgreSQLHighConnections
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: su_postgres-exporter
+              instance: 10.0.6.5:9187
+              stack: su
+            exp_annotations:
+              summary: 'PostgreSQL behind su_postgres-exporter is above 80% of its connection limit'
+              description: '97 connections have been open for 10 minutes, more than 80% of max_connections minus superuser_reserved_connections.'
+          - exp_labels:
+              severity: warning
+              job: warm_postgres-exporter
+              instance: 10.0.3.5:9187
+              stack: warm
+            exp_annotations:
+              summary: 'PostgreSQL behind warm_postgres-exporter is above 80% of its connection limit'
+              description: '80 connections have been open for 10 minutes, more than 80% of max_connections minus superuser_reserved_connections.'
+      # app only: template1 is filtered out, ok's 2 a minute is under 5.
+      - eval_time: 20m
+        alertname: PostgresHasHighDeadLocks
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              datid: '16384'
+              datname: app
+              job: warm_postgres-exporter
+              instance: 10.0.3.5:9187
+              stack: warm
+            exp_annotations:
+              summary: 'Deadlocks in database app behind warm_postgres-exporter'
+              description: 'Database app has had more than 5 deadlocks a minute for 5 minutes, 10 now. Each one aborts a transaction.'
+      - eval_time: 20m
+        alertname: PostgresHasExporterErrors
+        exp_alerts: []
+
+      - eval_time: 35m
+        alertname: PostgresHasExporterErrors
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              collector: stat_activity
+              job: blind_postgres-exporter
+              instance: 10.0.5.5:9187
+              stack: blind
+            exp_annotations:
+              summary: 'blind_postgres-exporter collector stat_activity is failing'
+              description: 'postgres_exporter blind_postgres-exporter has failed its stat_activity collector for 30 minutes, usually for a privilege its role lacks. Alerts and panels built on those metrics see nothing.'

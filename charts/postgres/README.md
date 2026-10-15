@@ -137,6 +137,60 @@ dashboards and alert rules written for postgres_exporter apply as they are.
   them yourself: `docker service rm <release>_postgres-exporter <release>_postgres-exporter-user`.
 - **With swarmcli-cd**, add the secret to `allow.secrets` and `monitoring` to `allow.networks`.
 
+### Alerts and a dashboard
+
+The chart ships both under [`monitoring/`](monitoring) for your Prometheus and Grafana,
+and deploys neither: scraping is automatic, but which rules and dashboards a monitoring
+stack loads is its operator's choice. With the prometheus-stack chart they go in
+through its own configuration:
+
+```bash
+base=https://raw.githubusercontent.com/Eldara-Tech/swarmcli-charts/main/charts/postgres/monitoring
+curl -fsSL -O "$base/postgres-rules.yml" -O "$base/postgres-dashboard.json"
+v="$(swarmcli charts status mon | sed -n 's/^CHART: prometheus-stack-//p')"
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --version "${v:?}" --reuse-values \
+  --set-file prometheus.extraRules.postgres=./postgres-rules.yml \
+  --set-file grafana.dashboards.postgres=./postgres-dashboard.json
+```
+
+`--version` keeps prometheus-stack at the version it runs, the only case in which `--reuse-values`
+is safe (Eldara-Tech/swarmcli#687).
+
+A release file and swarmcli-cd take values files only, not `--set-file`, so there both
+files go in as values files: each file's content, as it is, indented under its key as a
+block string. From the two files downloaded above:
+
+```bash
+mkdir -p monitoring/rules monitoring/dashboards
+{ printf 'prometheus:\n  extraRules:\n    postgres: |\n'; sed 's/^./      &/' postgres-rules.yml; } > monitoring/rules/postgres.yaml
+{ printf 'grafana:\n  dashboards:\n    postgres: |\n'; sed 's/^./      &/' postgres-dashboard.json; } > monitoring/dashboards/postgres.yaml
+```
+
+The dashboard stays JSON: converted to YAML it becomes a mapping, which the render
+refuses (`got object, want string`). prometheus-stack's README, *Keeping your setup in
+git*, shows where to list the two files.
+
+- **Alerts** (`postgres-rules.yml`): `PostgreSQLDown` while the exporter cannot reach the
+  server, `PostgreSQLMaxConnectionsReached` once roles that are not superusers can no longer
+  connect (seen as the exporter, one of them, losing its collector metrics),
+  `PostgreSQLHighConnections` above 80% of their slots,
+  `PostgresHasHighDeadLocks` above 5 deadlocks a minute, and `PostgresHasExporterErrors`
+  while a collector fails. All five are derived from the
+  [postgres_mixin](https://github.com/prometheus-community/postgres_exporter/tree/master/postgres_mixin)
+  (Apache-2.0). The rest of it is left out: replication (this is one server), workload
+  thresholds that fire on healthy databases, and rules whose metrics or arithmetic do not
+  hold for the pinned exporter.
+- **Dashboard** (`postgres-dashboard.json`, uid `postgres`): server up, connections used,
+  transactions and database size, then connections by state, commits and rollbacks, rows,
+  cache hits, the oldest open transaction, locks, deadlocks, temporary files, and database and
+  WAL size; its transaction, row and cache panels are trimmed from the mixin's
+  [PostgreSQL overview](https://github.com/prometheus-community/postgres_exporter/blob/master/postgres_mixin/dashboards/postgres-overview.json)
+  (Apache-2.0). Pick a release by its `stack`.
+
+The dashboard picks a release by the `stack` label prometheus-stack's discovery puts on every
+target, and the alerts carry it. Another Prometheus needs the same relabelling of
+`__meta_dockerswarm_service_label_com_docker_stack_namespace` to `stack`.
+
 ## Values
 
 | Key | Default | Description |

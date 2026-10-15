@@ -46,6 +46,9 @@ version: "3.9"
 {{- if eq $mode "traefik" }}{{ $nets = append $nets .Values.exposure.network }}{{- end }}
 {{- if .Values.metrics.enabled }}{{ $nets = append $nets .Values.metrics.network }}{{- end }}
 {{- $nets = $nets | uniq }}
+{{- /* The name clients dial on network.name. A stack's own <release>_seaweedfs has a '_', which is
+       not valid in a host name: java.net.URI, and so every AWS SDK for Java client, rejects it. */}}
+{{- $alias := printf "%s-seaweedfs" (.Release.Name | replace "_" "-" | replace "." "-") }}
 
 {{- /* `weed server` flags. The image's entrypoint already adds -dir=/data. -ip and -ip.bind
        put the master, volume server and filer on loopback: their HTTP and gRPC APIs carry
@@ -138,7 +141,11 @@ services:
 
     networks:
 {{- range $nets }}
-      - {{ . }}
+      {{ . }}:
+{{- if eq . $.Values.network.name }}
+        aliases:
+          - {{ $alias }}
+{{- end }}
 {{- end }}
 
 {{- if eq $mode "published" }}

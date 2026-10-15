@@ -100,6 +100,29 @@ if [ "$case" = "default" ]; then
   refused 'needs traefik.basicAuthUsers' --set auth.mode=none
   refused 'cannot use exposure.mode published' --set auth.mode=none --set exposure.mode=published \
     --set 'traefik.basicAuthUsers=u:$$apr1$$x$$y'
+  # java.net.URI drops a host with '_' (a <stack>_<service> name), and S3 calls fail at run time.
+  refused "rejects a host name containing '_'" --set storage.endpoint=http://s3_rustfs:9000
+  # The edge overlay would put the server's API, unauthenticated in oauth2 mode, next to everything routed.
+  refused 'is exposure.network' --set storage.network=traefik-public
+fi
+
+# storage.network reaches every process that talks to S3 — the server, worker and workload
+# launcher, and through FAKEK8S_POD_EXTRA_NETWORKS the orchestrator and sidecar it starts — and
+# nothing else. Without it, none of them joins an extra overlay.
+s3net=""
+case "$case" in mock|noauth|login) s3net=airbyte-e2e-s3-net ;; esac
+if [ -n "$s3net" ]; then
+  [ "$(yq -o=json -I=0 "[.services | to_entries[] | select(.value.networks[] == \"$s3net\") | .key] | sort" "$out")" = '["server","worker","workload-launcher"]' ] \
+    || { echo "  FAIL($case): storage.network is not joined by exactly the server, worker and workload launcher"; fail=1; }
+  yq -r '.services["workload-launcher"].environment.FAKEK8S_POD_EXTRA_NETWORKS' "$out" | tr ',' '\n' | grep -x "$s3net" >/dev/null \
+    || { echo "  FAIL($case): the launcher's workloads do not join storage.network"; fail=1; }
+  [ "$(yq ".networks[\"$s3net\"].external" "$out")" = true ] \
+    || { echo "  FAIL($case): storage.network is not declared external"; fail=1; }
+else
+  for svc in worker workload-launcher; do
+    [ "$(yq -o=json -I=0 ".services[\"$svc\"].networks" "$out")" = '["airbyte","airbyte-db-net"]' ] \
+      || { echo "  FAIL($case): $svc joins an overlay without storage.network"; fail=1; }
+  done
 fi
 
 # placement.constraints reaches every service that runs an Airbyte platform image: since 2.3.0 they
@@ -144,4 +167,4 @@ esac
   || { echo "  FAIL($case): expected $pins data-node pin(s), one per named volume"; fail=1; }
 
 [ "$fail" -eq 0 ] || exit 1
-echo "  $case: public URLs use $scheme://, auth.mode wiring checked, one Airbyte version, one socket mount, $pins data pin"
+echo "  $case: public URLs use $scheme://, auth.mode wiring checked, one Airbyte version, one socket mount, $pins data pin, storage overlay ${s3net:-none}"

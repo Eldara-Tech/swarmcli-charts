@@ -44,7 +44,12 @@ swarmcli charts install s3 swarmcli-charts/seaweedfs --set 'buckets={runner-cach
 By default (`exposure.mode: none`) the store is reachable only on the
 `seaweedfs-net` overlay, which swarmcli creates if it is missing. Another stack
 joins that network as `external: true` and uses the endpoint
-`http://<release>_seaweedfs:8333` (`http://s3_seaweedfs:8333` above).
+`http://<release>-seaweedfs:8333` (`http://s3-seaweedfs:8333` above), an alias the
+chart adds on that network, with `_` and `.` in the release name turned into `-`. The
+stack's own service name `<release>_seaweedfs` resolves too, but Java clients (anything
+on the AWS SDK for Java, such as Airbyte) reject a host name containing `_`. Releases
+whose names differ only in those characters (`my_s3`, `my-s3`) get the same alias, so
+keep them off one network.
 
 Clients use **path-style** addressing (`http://<endpoint>/<bucket>/<key>`), the
 default for every non-AWS S3 client. The region is not checked; send any, e.g.
@@ -81,7 +86,7 @@ edge if uploads fail part-way.
 The runner's job helper containers upload and download the cache archive
 themselves, and they run on the node's own Docker engine — not on any overlay. So
 the runner needs an endpoint reachable from a plain container on each runner
-node: the Traefik host (or a published port), not `<release>_seaweedfs`. With the
+node: the Traefik host (or a published port), not `<release>-seaweedfs`. With the
 [gitlab-runner chart](../gitlab-runner):
 
 ```yaml
