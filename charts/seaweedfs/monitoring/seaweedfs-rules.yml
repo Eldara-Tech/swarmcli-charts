@@ -1,0 +1,107 @@
+# SeaweedFS alerts for the metrics that metrics.enabled turns on. The chart does not deploy
+# them: hand the file to your Prometheus, e.g. the prometheus-stack chart's
+# prometheus.extraRules (README § Alerts and a dashboard).
+# SeaweedFS publishes no alert rules, so these are this chart's, written against the metrics
+# weed 4.48 serves for the one `weed server` process the chart runs. A down target is
+# prometheus-stack's TargetDown, not repeated here. Each alert groups by the `stack` and `job`
+# labels prometheus-stack's discovery adds, not by `instance`, which changes with every task.
+# Critical only while users lose service, writes or data now: a full or failed disk, a
+# quarantined volume, no master leader, and S3 answering 5xx. The volume-slot, read-only
+# volume and I/O error alerts warn.
+#
+# Validate (from the repo root):
+#   docker run --rm --entrypoint promtool -v "$PWD/charts/seaweedfs:/chart:ro" \
+#     "prom/prometheus:$(sed -n 's/^appVersion: *"\(.*\)"$/\1/p' charts/prometheus-stack/Chart.yaml)" \
+#     test rules /chart/ci/seaweedfs-rules-test.yml
+groups:
+  - name: seaweedfs
+    rules:
+      # Below -volume.minFreeSpace (1% by default) weed makes every volume in the directory
+      # read-only, and S3 writes fail with 500. avail is free space minus that reserve,
+      # floored at 0, so 0 is exactly that state. It also reads 0 after a disk error.
+      - alert: SeaweedFSDiskFull
+        expr: max by (stack, job, name) (SeaweedFS_volumeServer_resource{type="avail"}) == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'SeaweedFS {{ $labels.stack }} has stopped writing to {{ $labels.name }}'
+          description: '{{ $labels.name }} of SeaweedFS {{ $labels.stack }} has been below its minimum free space for 2 minutes: every volume on it is read-only and S3 writes fail.'
+      # Set after five failed disk checks in a row, about 5 minutes. weed then stops
+      # announcing the directory's volumes, so their objects cannot be read.
+      - alert: SeaweedFSDiskError
+        expr: max by (stack, job, name) (SeaweedFS_volumeServer_disk_error_status) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'SeaweedFS {{ $labels.stack }} cannot read its disk {{ $labels.name }}'
+          description: 'SeaweedFS {{ $labels.stack }} has failed its checks of {{ $labels.name }} and stopped serving the volumes on it.'
+      # A volume with three I/O errors in a row is quarantined until weed restarts: it is no
+      # longer announced, so its objects cannot be read.
+      - alert: SeaweedFSVolumeQuarantined
+        expr: max by (stack, job) (SeaweedFS_volumeServer_io_quarantine) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'SeaweedFS {{ $labels.stack }} has quarantined a volume'
+          description: 'SeaweedFS {{ $labels.stack }} has taken {{ $value }} volume(s) out of service after repeated I/O errors. Their objects cannot be read until weed restarts on a healthy disk.'
+      # Without a leader the master assigns no volume, so no write lands. weed elects itself
+      # within seconds of starting.
+      - alert: SeaweedFSNoLeader
+        expr: max by (stack, job) (SeaweedFS_master_is_leader) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'SeaweedFS {{ $labels.stack }} has no master leader'
+          description: 'The master of SeaweedFS {{ $labels.stack }} has not been leader for 5 minutes, so it refuses every write.'
+      # 501 is a subresource SeaweedFS does not implement, which the client asked for. No
+      # traffic floor: on a quiet store a few failures in 10 minutes are enough.
+      - alert: SeaweedFSS3ServerErrors
+        expr: |
+          sum by (stack, job) (rate(SeaweedFS_s3_request_total{code=~"5..", code!="501"}[5m]))
+            / sum by (stack, job) (rate(SeaweedFS_s3_request_total[5m]))
+            > 0.05
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'SeaweedFS {{ $labels.stack }} is failing S3 requests'
+          description: '{{ $value | humanizePercentage }} of the S3 requests to SeaweedFS {{ $labels.stack }} have answered 5xx for 10 minutes.'
+      # Every volume slot the disk allows is taken, so no volume can be added. A bucket whose
+      # volumes are all full, and every new bucket, then fails its writes with 500. Each
+      # writable volume reserves its size limit (1 GiB, the image's default) of free space, so
+      # a small disk gets here after a few buckets. max_volumes reads 0 until the master's
+      # first heartbeat.
+      - alert: SeaweedFSVolumeSlotsExhausted
+        expr: |
+          sum by (stack, job) (SeaweedFS_volumeServer_volumes{type="volume"})
+            >= (max by (stack, job) (SeaweedFS_volumeServer_max_volumes) > 0)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'SeaweedFS {{ $labels.stack }} has no room for another volume'
+          description: 'SeaweedFS {{ $labels.stack }} has used every volume slot its disk allows for 15 minutes. A new bucket, or one whose volumes are full, cannot be written to.'
+      # Marked read-only, or found damaged when loaded (an unwritable .dat, a failed integrity
+      # check). Neither a volume at its size limit nor one read-only for low disk space, which
+      # SeaweedFSDiskFull covers, is counted.
+      - alert: SeaweedFSReadOnlyVolumes
+        expr: sum by (stack, job) (SeaweedFS_volumeServer_read_only_volumes{type=~"noWriteOrDelete|noWriteCanDelete"}) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'SeaweedFS {{ $labels.stack }} has read-only volumes'
+          description: 'SeaweedFS {{ $labels.stack }} has had {{ $value }} volume(s) marked read-only or found damaged for 10 minutes. Its log says which.'
+      # EIO from the disk, never a full disk. weed retries elsewhere where it can, so this
+      # warns before SeaweedFSVolumeQuarantined.
+      - alert: SeaweedFSStorageIOErrors
+        expr: sum by (stack, job) (increase(SeaweedFS_volumeServer_storage_io_error_total[15m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: 'SeaweedFS {{ $labels.stack }} is getting I/O errors from its disk'
+          description: 'SeaweedFS {{ $labels.stack }} has had {{ $value | printf "%.0f" }} I/O error(s) from its disk in the last 15 minutes.'

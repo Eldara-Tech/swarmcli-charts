@@ -164,6 +164,18 @@ else
   n_series="$(grep -cE '^SeaweedFS_' <<<"$m" || true)"
   echo "  ok: /metrics on monitoring:${mport} serves ${n_series} SeaweedFS_ samples, S3 requests counted"
   metrics_ok=", metrics scraped on monitoring"
+
+  # The alert rules the chart ships for operators to load (monitoring/), checked here
+  # because nothing deploys them: their logic, under the promtool of a pinned Prometheus.
+  # The image follows prometheus-stack's appVersion, which Renovate keeps current.
+  chart="$(cd "$dir" && pwd)"
+  prom_tag="$(sed -n 's/^appVersion: *"\(.*\)"$/\1/p' "$chart/../prometheus-stack/Chart.yaml")"
+  promtool_image="${SEAWEEDFS_E2E_PROMTOOL_IMAGE:-prom/prometheus:${prom_tag:?no appVersion in charts/prometheus-stack/Chart.yaml}}"
+  out="$(docker run --rm --entrypoint promtool -v "$chart:/chart:ro" "$promtool_image" \
+    test rules /chart/ci/seaweedfs-rules-test.yml 2>&1)" \
+    || die "promtool test rules fails on monitoring/seaweedfs-rules.yml: $out"
+  echo "  ok: the alert rules pass promtool"
+  metrics_ok="$metrics_ok, alert rules pass promtool"
 fi
 
 # ── restart: data persists, bootstrap is idempotent ───────────────────────────────────

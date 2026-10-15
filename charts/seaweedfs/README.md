@@ -181,6 +181,63 @@ overlay with the service, or it scrapes it once per overlay.
 Under [swarmcli-cd](../../docs/gitops.md), the application's `allow` must list the
 `monitoring` network as well.
 
+### Alerts and a dashboard
+
+The chart ships both under [`monitoring/`](monitoring) for your Prometheus and Grafana,
+and deploys neither: scraping is automatic, but which rules and dashboards a monitoring
+stack loads is its operator's choice. With the prometheus-stack chart they go in
+through its own configuration:
+
+```bash
+base=https://raw.githubusercontent.com/Eldara-Tech/swarmcli-charts/main/charts/seaweedfs/monitoring
+curl -fsSL -O "$base/seaweedfs-rules.yml" -O "$base/seaweedfs-dashboard.json"
+v="$(swarmcli charts status mon | sed -n 's/^CHART: prometheus-stack-//p')"
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --version "${v:?}" --reuse-values \
+  --set-file prometheus.extraRules.seaweedfs=./seaweedfs-rules.yml \
+  --set-file grafana.dashboards.seaweedfs=./seaweedfs-dashboard.json
+```
+
+`--version` keeps prometheus-stack at the version it runs, the only case in which `--reuse-values`
+is safe (Eldara-Tech/swarmcli#687).
+
+A release file and swarmcli-cd take values files only, not `--set-file`, so there both
+files go in as values files: each file's content, as it is, indented under its key as a
+block string. From the two files downloaded above:
+
+```bash
+mkdir -p monitoring/rules monitoring/dashboards
+{ printf 'prometheus:\n  extraRules:\n    seaweedfs: |\n'; sed 's/^./      &/' seaweedfs-rules.yml; } > monitoring/rules/seaweedfs.yaml
+{ printf 'grafana:\n  dashboards:\n    seaweedfs: |\n'; sed 's/^./      &/' seaweedfs-dashboard.json; } > monitoring/dashboards/seaweedfs.yaml
+```
+
+The dashboard stays JSON: converted to YAML it becomes a mapping, which the render
+refuses (`got object, want string`). prometheus-stack's README, *Keeping your setup in
+git*, shows where to list the two files.
+
+- **Alerts** (`seaweedfs-rules.yml`): SeaweedFS publishes no alert rules, so these are the
+  chart's. Critical: `SeaweedFSDiskFull` once free space falls below
+  `-volume.minFreeSpace` (1% by default), where every volume turns read-only and S3
+  writes fail with 500; `SeaweedFSDiskError` and `SeaweedFSVolumeQuarantined` once weed
+  stops serving a disk or a volume after I/O errors; `SeaweedFSNoLeader` while the master
+  assigns no volume; and `SeaweedFSS3ServerErrors` while more than 5% of S3 requests answer
+  5xx, leaving out 501, which is a client asking for something SeaweedFS does not
+  implement. Warnings: `SeaweedFSVolumeSlotsExhausted` once every volume slot the disk
+  allows is taken, so a new bucket, or one whose volumes are full, cannot be written to;
+  `SeaweedFSReadOnlyVolumes` for volumes marked read-only or found damaged; and
+  `SeaweedFSStorageIOErrors`. Each writable volume reserves 1 GiB of free space by
+  default, so a small disk runs out of slots after a few buckets. A down target is
+  prometheus-stack's `TargetDown`.
+- **Dashboard** (`seaweedfs-dashboard.json`, uid `seaweedfs`), trimmed from SeaweedFS's
+  [`other/metrics/grafana_seaweedfs.json`](https://github.com/seaweedfs/seaweedfs/blob/master/other/metrics/grafana_seaweedfs.json)
+  (Apache-2.0): master leader, uptime, disk available and used, volume slots and
+  read-only volumes; S3 requests, non-2xx responses, p99 latency and traffic per bucket;
+  bucket size and objects, volumes per bucket and volumes out of service; disk space,
+  volume server errors, and the process's memory and CPU. Pick a release by its `stack`.
+
+The dashboard picks a release by the `stack` label prometheus-stack's discovery puts on
+every target, and the alerts carry it. Another Prometheus needs the same relabelling of
+`__meta_dockerswarm_service_label_com_docker_stack_namespace` to `stack`.
+
 ## Persistence & node pinning
 
 Everything lives under `/data` on the `seaweedfs-data` volume, pinned to the node
