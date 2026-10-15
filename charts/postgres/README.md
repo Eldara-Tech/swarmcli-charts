@@ -156,7 +156,19 @@ swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --version "${v:?}" 
 `--version` keeps prometheus-stack at the version it runs, the only case in which `--reuse-values`
 is safe (Eldara-Tech/swarmcli#687).
 
-prometheus-stack's README, *Keeping your setup in git*, has the values-file form.
+A release file and swarmcli-cd take values files only, not `--set-file`, so there both
+files go in as values files: each file's content, as it is, indented under its key as a
+block string. From the two files downloaded above:
+
+```bash
+mkdir -p monitoring/rules monitoring/dashboards
+{ printf 'prometheus:\n  extraRules:\n    postgres: |\n'; sed 's/^./      &/' postgres-rules.yml; } > monitoring/rules/postgres.yaml
+{ printf 'grafana:\n  dashboards:\n    postgres: |\n'; sed 's/^./      &/' postgres-dashboard.json; } > monitoring/dashboards/postgres.yaml
+```
+
+The dashboard stays JSON: converted to YAML it becomes a mapping, which the render
+refuses (`got object, want string`). prometheus-stack's README, *Keeping your setup in
+git*, shows where to list the two files.
 
 - **Alerts** (`postgres-rules.yml`): `PostgreSQLDown` while the exporter cannot reach the
   server, `PostgreSQLMaxConnectionsReached` once roles that are not superusers can no longer

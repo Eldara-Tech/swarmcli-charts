@@ -227,6 +227,15 @@ grafana:
       {"uid": "app", "title": "App", "panels": [ … ]}
 ```
 
+A release file and swarmcli-cd have no `--set-file`, so a file you already have, such as
+a dashboard exported from Grafana or one a chart ships under `monitoring/`, goes in this
+way too: its content as it is, indented under its key. A dashboard stays JSON: converted
+to YAML it becomes a mapping, which the render refuses (`got object, want string`).
+
+```bash
+{ printf 'grafana:\n  dashboards:\n    app: |\n'; sed 's/^./      &/' app.json; } > monitoring/dashboards/app.yaml
+```
+
 The three maps merge across values files, so each rule file, scrape-job file and
 dashboard can live in a file of its own; `alertmanager.config` is a single file.
 Keys are lower-case letters, digits and `-`. With swarmcli-cd, list the files in
