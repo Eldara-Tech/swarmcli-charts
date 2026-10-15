@@ -371,10 +371,15 @@ version's defaults, so every `metrics.*` key would render empty
   `RUSTFS_OBS_LOG_STDOUT_ENABLED`, without which RustFS stops writing its log to
   `docker service logs` as soon as any OTLP endpoint is set. While metrics are on,
   `extraEnv` refuses `RUSTFS_OBS_ENDPOINT`, the per-signal `RUSTFS_OBS_METRIC_ENDPOINT`,
-  `_TRACE_ENDPOINT` and `_LOG_ENDPOINT`, and the three settings the chart makes.
+  `_TRACE_ENDPOINT` and `_LOG_ENDPOINT`, the three settings the chart makes, and three
+  that would break the push: `RUSTFS_OBS_USE_STDOUT` (a copy of every metric in the log),
+  `RUSTFS_OBS_METRICS_EXPORT_ENABLED` (no push at all) and `RUSTFS_OBS_METER_INTERVAL`
+  (past the collector's 5 minutes, every series disappears between pushes).
 - **What `monitoring` and `rustfs-net` can reach.** The collector listens on two ports and
   authenticates neither: 8889 serves the metrics, and 4318 takes OTLP pushes. Everything on
-  `monitoring` or `rustfs-net` reaches both, so it can read RustFS's metrics and push
+  `monitoring` or `rustfs-net` reaches both. On 8889 that means every bucket's name, size
+  and object count (`rustfs_cluster_usage_buckets_*{bucket="…"}`), with no credentials and
+  past RustFS's IAM, which would refuse an unsigned ListBuckets. On 4318 it means pushing
   series the collector then serves as RustFS's. prometheus-stack already treats
   `monitoring` as a trust zone (its README, *Security*). The collector's own telemetry
   stays on loopback, neither port is published, and RustFS's S3 and console ports stay off
@@ -382,8 +387,13 @@ version's defaults, so every `metrics.*` key would render empty
 - `metrics.network` names a different overlay. It must differ from `network.name` and
   `exposure.network`, and the render fails if it does not.
 - **Turning it off** leaves the collector running, because swarmcli deploys without
-  `--prune`. Remove it yourself: `docker service rm <release>_rustfs-metrics`. Until you
-  do, it answers with no RustFS series, which `RustFSNotReporting` reports.
+  `--prune`, and with nothing left pushing to it, `RustFSNotReporting` fires at critical
+  about 15 minutes later. So remove it in the same step:
+
+  ```bash
+  swarmcli charts upgrade s3 swarmcli-charts/rustfs -f rustfs-values.yaml --set metrics.enabled=false
+  docker service rm s3_rustfs-metrics
+  ```
 - With swarmcli-cd, add `monitoring` to `allow.networks`.
 
 **A collector of your own.** With `metrics.enabled` off, `extraEnv` may point RustFS
@@ -427,12 +437,14 @@ refuses (`got object, want string`). prometheus-stack's README, *Keeping your se
 git*, shows where to list the two files.
 
 - **Alerts** (`rustfs-rules.yml`): RustFS ships no alert rules that fit a single-drive
-  store, so these are the chart's. Critical: `RustFSNotReporting` while the collector
-  answers but has had nothing from RustFS for 5 minutes, because the task is down or
-  restarting or its export failed; `RustFSDriveOffline` while the drive is offline, when
+  store, so these are the chart's. Critical: `RustFSNotReporting` once the collector has
+  answered with nothing from RustFS for about 15 minutes (its series expire 5 minutes after
+  the last push, then the alert waits 10), because the task is down or restarting, its
+  export failed, or metrics were turned off without removing the collector;
+  `RustFSDriveOffline` while the drive is offline, when
   RustFS answers every read and write with 503 although `/health/ready` still answers 200,
   so the healthcheck does not restart it; and `RustFSS3ServerErrors` while more than 5% of
-  requests answer 5xx. Warnings: `RustFSCapacityLow` below 10% free space, and
+  the requests either listener answers, health checks included, are 5xx. Warnings: `RustFSCapacityLow` below 10% free space, and
   `RustFSDriveIOErrors` for I/O errors and timeouts on the drive. A down collector is
   prometheus-stack's `TargetDown`.
 - **Dashboard** (`rustfs-dashboard.json`, uid `rustfs`), trimmed from RustFS's

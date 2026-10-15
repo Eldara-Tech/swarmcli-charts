@@ -3,9 +3,11 @@
 # pinned prom/prometheus image's promtool in the metrics case.
 #
 # One release per failure. Three must raise nothing: `ok` serves traffic with 1% of it 5xx
-# and has drive errors from long ago; `idle` has never served a request, so it has no request
-# series at all; `start` is RustFS starting, whose first push reaches the collector after
-# 2 minutes, with a capacity of 0 in it to prove the ratio cannot fire on one.
+# and has drive errors from long ago; `idle` has served nothing but the healthcheck, whose
+# /health/ready probes count as 2xx requests, 4 a minute, after two answered 503 while it
+# started long ago; `start` is RustFS starting, whose first push reaches the collector after
+# 2 minutes with two probes answered 503 and a capacity of 0, then one more 503, to prove a
+# start trips neither ratio.
 rule_files:
   - ../monitoring/rustfs-rules.yml
 
@@ -53,7 +55,11 @@ tests:
       - series: 'rustfs_system_drive_availability_errors_total{job="ok_rustfs-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="10.0.10.4",collection_scope="local",drive="/data",observer=":::9000",server=":::9000"}'
         values: '3x35'
 
-      # idle: no request has ever reached it.
+      # idle: the healthcheck's probes only.
+      - series: 'rustfs_http_server_request_duration_seconds_count{job="idle_rustfs-metrics",instance="10.0.9.6:8889",stack="idle",exported_job="RustFS",exported_instance="10.0.10.5",status_class="2xx"}'
+        values: '600+4x35'
+      - series: 'rustfs_http_server_request_duration_seconds_count{job="idle_rustfs-metrics",instance="10.0.9.6:8889",stack="idle",exported_job="RustFS",exported_instance="10.0.10.5",status_class="5xx"}'
+        values: '2x35'
       - series: 'rustfs_system_process_uptime_seconds{job="idle_rustfs-metrics",instance="10.0.9.6:8889",stack="idle",exported_job="RustFS",exported_instance="10.0.10.5",server=":::9000"}'
         values: '600+60x35'
       - series: 'rustfs_cluster_health_drives_offline_count{job="idle_rustfs-metrics",instance="10.0.9.6:8889",stack="idle",exported_job="RustFS",exported_instance="10.0.10.5",collection_scope="cluster",observer=":::9000"}'
@@ -65,7 +71,12 @@ tests:
       - series: 'rustfs_system_drive_availability_errors_total{job="idle_rustfs-metrics",instance="10.0.9.6:8889",stack="idle",exported_job="RustFS",exported_instance="10.0.10.5",collection_scope="local",drive="/data",observer=":::9000",server=":::9000"}'
         values: '0x35'
 
-      # start: nothing for its first 2 minutes, then a capacity of 0 for one more.
+      # start: nothing for its first 2 minutes, then a capacity of 0 for one more, and three
+      # probes answered 503 before the healthcheck's first 2xx.
+      - series: 'rustfs_http_server_request_duration_seconds_count{job="start_rustfs-metrics",instance="10.0.9.7:8889",stack="start",exported_job="RustFS",exported_instance="10.0.10.6",status_class="2xx"}'
+        values: '_x2 0 1+4x32'
+      - series: 'rustfs_http_server_request_duration_seconds_count{job="start_rustfs-metrics",instance="10.0.9.7:8889",stack="start",exported_job="RustFS",exported_instance="10.0.10.6",status_class="5xx"}'
+        values: '_x2 2 3x32'
       - series: 'rustfs_system_process_uptime_seconds{job="start_rustfs-metrics",instance="10.0.9.7:8889",stack="start",exported_job="RustFS",exported_instance="10.0.10.6",server=":::9000"}'
         values: '_x2 30+60x33'
       - series: 'rustfs_cluster_capacity_free_bytes{job="start_rustfs-metrics",instance="10.0.9.7:8889",stack="start",exported_job="RustFS",exported_instance="10.0.10.6",collection_scope="cluster",observer=":::9000"}'
@@ -149,7 +160,7 @@ tests:
             exp_annotations:
               summary: 'RustFS driveoff has lost its drive'
               description: 'RustFS driveoff has reported its drive offline for 5 minutes; it refuses every read and write until the drive is back.'
-      # Not ok's 1%, nor idle's 0/0.
+      # Not ok's 1%, nor idle's health checks, nor start's 503s.
       - eval_time: 12m
         alertname: RustFSS3ServerErrors
         exp_alerts:
@@ -158,8 +169,8 @@ tests:
               job: errors_rustfs-metrics
               stack: errors
             exp_annotations:
-              summary: 'RustFS errors is failing S3 requests'
-              description: '10% of the requests RustFS errors answered in the last 5 minutes were 5xx.'
+              summary: 'RustFS errors is failing requests'
+              description: '10% of the requests RustFS errors answered in the last 5 minutes, health checks and console included, were 5xx.'
       # Not start's capacity of 0.
       - eval_time: 17m
         alertname: RustFSCapacityLow
@@ -185,3 +196,17 @@ tests:
       - eval_time: 31m
         alertname: RustFSDriveIOErrors
         exp_alerts: []
+
+    promql_expr_test:
+      # start's 503s do put its ratio over 5% for a few minutes; RustFSS3ServerErrors's
+      # `for: 10m` is what keeps a start silent.
+      - expr: |
+          count(
+            sum by (stack, job) (rate(rustfs_http_server_request_duration_seconds_count{stack="start",status_class="5xx"}[5m]))
+              / sum by (stack, job) (rate(rustfs_http_server_request_duration_seconds_count{stack="start"}[5m]))
+              > 0.05
+          )
+        eval_time: 4m
+        exp_samples:
+          - labels: '{}'
+            value: 1

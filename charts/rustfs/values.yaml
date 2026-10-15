@@ -186,7 +186,8 @@ nofile: 65536
 # on the listener addresses (set s3.port / console.* instead), on every
 # RUSTFS_IDENTITY_OPENID_* setting except the tuning keys README "Single sign-on" lists,
 # allowed with console.oidc.enabled, and, while metrics.enabled, on the OTLP endpoints and
-# export settings the chart sets.
+# export settings the chart sets and on the three that would break its push
+# (RUSTFS_OBS_USE_STDOUT, RUSTFS_OBS_METRICS_EXPORT_ENABLED, RUSTFS_OBS_METER_INTERVAL).
 extraEnv: {}
 
 # Metrics. RustFS serves no Prometheus endpoint; it pushes OpenTelemetry (OTLP) metrics.

@@ -348,6 +348,13 @@ if [ "$case" = "default" ]; then
            RUSTFS_OBS_TRACES_EXPORT_ENABLED RUSTFS_OBS_LOGS_EXPORT_ENABLED RUSTFS_OBS_LOG_STDOUT_ENABLED; do
     refused "extraEnv: $k is set by the chart while metrics.enabled" --set metrics.enabled=true --set "extraEnv.$k=x"
   done
+  # ...and the three that would break the push: a stdout copy of every metric, no push, or a
+  # push less often than the collector's 5-minute expiry.
+  for k in RUSTFS_OBS_USE_STDOUT RUSTFS_OBS_METRICS_EXPORT_ENABLED RUSTFS_OBS_METER_INTERVAL; do
+    refused "extraEnv: $k cannot be set while metrics.enabled" --set metrics.enabled=true --set "extraEnv.$k=x"
+    render --set "extraEnv.$k=x" && [ "$(yq -r "$svc.environment.$k" "$tmp")" = "x" ] \
+      || bad "extraEnv.$k with metrics off was refused or not passed on: $(tr '\n' ' ' <"$tmp.err")"
+  done
   render --set extraEnv.RUSTFS_OBS_ENDPOINT=http://otel:4318 \
     && [ "$(yq -r "$svc.environment.RUSTFS_OBS_ENDPOINT" "$tmp")" = "http://otel:4318" ] \
     || bad "extraEnv.RUSTFS_OBS_ENDPOINT with metrics off was refused or not passed on: $(tr '\n' ' ' <"$tmp.err")"

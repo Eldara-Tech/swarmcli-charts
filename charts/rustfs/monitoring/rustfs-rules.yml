@@ -20,7 +20,9 @@ groups:
       # The collector answers but serves no RustFS series: RustFS pushes every 30 seconds, and
       # the collector drops a series 5 minutes after its last update. The process gauges are
       # pushed whether or not anyone uses the store, so their absence means RustFS stopped
-      # pushing: its task is down or restarting, or its export failed.
+      # pushing: its task is down or restarting, or its export failed. Turning metrics off
+      # leaves the collector running (swarmcli deploys without --prune), and this fires until
+      # it is removed: docker service rm <release>_rustfs-metrics.
       - alert: RustFSNotReporting
         expr: |
           max by (stack, job) (up{job=~".+_rustfs-metrics"}) == 1
@@ -41,9 +43,11 @@ groups:
         annotations:
           summary: 'RustFS {{ $labels.stack }} has lost its drive'
           description: 'RustFS {{ $labels.stack }} has reported its drive offline for 5 minutes; it refuses every read and write until the drive is back.'
-      # Every request either listener answered, by status class. No traffic floor: on a quiet
-      # store a few failures in 10 minutes are enough, and with no requests at all the ratio
-      # is 0/0, which returns nothing.
+      # Every request either listener answered, by status class, health checks and console
+      # included. The chart's healthcheck probes /health/ready every 15 seconds, so an idle
+      # store still answers some 20 requests per 5 minutes, all 2xx once it is up. Probes it
+      # answers 503 while starting count as 5xx, and leave the window before `for` runs out.
+      # No traffic floor: two failures in every 5 minutes, for 10 minutes, are enough.
       - alert: RustFSS3ServerErrors
         expr: |
           sum by (stack, job) (rate(rustfs_http_server_request_duration_seconds_count{status_class="5xx"}[5m]))
@@ -53,8 +57,8 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: 'RustFS {{ $labels.stack }} is failing S3 requests'
-          description: '{{ $value | humanizePercentage }} of the requests RustFS {{ $labels.stack }} answered in the last 5 minutes were 5xx.'
+          summary: 'RustFS {{ $labels.stack }} is failing requests'
+          description: '{{ $value | humanizePercentage }} of the requests RustFS {{ $labels.stack }} answered in the last 5 minutes, health checks and console included, were 5xx.'
       # Free space on the drive, as RustFS sees it. A named volume shares the node's Docker
       # filesystem, so prometheus-stack's NodeFilesystemAlmostOutOfSpace may report it too.
       # A usable total of 0 makes the ratio NaN or +Inf, which compares false.

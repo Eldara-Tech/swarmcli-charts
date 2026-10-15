@@ -100,6 +100,13 @@
 {{-   if and $metrics (has $k (list "RUSTFS_OBS_ENDPOINT" "RUSTFS_OBS_METRIC_ENDPOINT" "RUSTFS_OBS_TRACE_ENDPOINT" "RUSTFS_OBS_LOG_ENDPOINT" "RUSTFS_OBS_TRACES_EXPORT_ENABLED" "RUSTFS_OBS_LOGS_EXPORT_ENABLED" "RUSTFS_OBS_LOG_STDOUT_ENABLED")) }}
 {{-     fail (printf "extraEnv: %s is set by the chart while metrics.enabled: RustFS pushes its metrics, and only its metrics, to the chart's collector" $k) }}
 {{-   end }}
+{{- /* While metrics are on, these would break what the collector and the alerts rely on:
+       USE_STDOUT adds a stdout copy of every metric to the log, METRICS_EXPORT_ENABLED=false
+       stops the push, and a METER_INTERVAL past the collector's 5-minute expiry makes every
+       series disappear between pushes. */}}
+{{-   if and $metrics (has $k (list "RUSTFS_OBS_USE_STDOUT" "RUSTFS_OBS_METRICS_EXPORT_ENABLED" "RUSTFS_OBS_METER_INTERVAL")) }}
+{{-     fail (printf "extraEnv: %s cannot be set while metrics.enabled: the chart's collector, and the alerts written for it, rely on RustFS's defaults" $k) }}
+{{-   end }}
 {{- end -}}
 version: "3.9"
 

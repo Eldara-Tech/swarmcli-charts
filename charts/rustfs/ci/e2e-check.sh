@@ -140,8 +140,8 @@ echo "  ok: nofile 65536 inside the task, server log on docker service logs"
 # From the monitoring overlay, on the port the discovery label names. RustFS pushes every
 # 30 seconds and reads its drive every 60, and the per-bucket series wait for its first
 # data-usage scan, which took up to a few minutes in trial runs. The round trip above has
-# run, so its request series must be there too. Every name the rules and the dashboard
-# read is checked, so a renamed metric fails here rather than in a panel.
+# run, so its PUTs must be counted too. Every name the rules and the dashboard read is
+# checked, so a renamed metric fails here rather than in a panel.
 metrics_ok=""
 msvc="${release}_rustfs-metrics"
 if [ "$case" != "metrics" ]; then
@@ -162,9 +162,11 @@ else
     sleep 5
   done
   [ -z "$missing" ] || die "the collector on monitoring:${mport} does not serve $(tr '\n' ' ' <<<"$missing")(got: $(sed -n 1,3p <<<"$m"))"
-  grep -E '^rustfs_http_server_request_duration_seconds_count\{.*status_class="2xx".*\} [1-9]' <<<"$m" >/dev/null \
-    || die "the collector does not count the round trip's 2xx responses"
-  echo "  ok: the collector on monitoring:${mport} serves all $(wc -l <<<"$want" | tr -d ' ') RustFS metrics the rules and the dashboard read"
+  # A PUT, which only the round trip sends: the healthcheck's GETs of /health/ready are
+  # counted too, so a 2xx or GET count would pass on them alone.
+  grep -E '^rustfs_http_server_requests_total\{.*method="PUT".*\} [1-9]' <<<"$m" >/dev/null \
+    || die "the collector does not count the round trip's PUTs"
+  echo "  ok: the collector on monitoring:${mport} serves all $(wc -l <<<"$want" | tr -d ' ') RustFS metrics the rules and the dashboard read, and counts the round trip's PUTs"
   # By service name, which resolves on every network the service joins (the alias is rustfs-net's).
   got="$(docker run --rm --network monitoring "$CURL_IMAGE" -s -o /dev/null -w '%{http_code}' --max-time 5 "http://${svc}:9000/" 2>/dev/null || true)"
   [ "$got" = "000" ] || die "the S3 port answers HTTP $got from the monitoring overlay; RustFS must not join it"
