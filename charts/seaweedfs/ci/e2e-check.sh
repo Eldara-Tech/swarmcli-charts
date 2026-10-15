@@ -24,7 +24,10 @@
 # S3 keeps serving from the same task. `oidc` stands up a stub identity provider and proves
 # both grants work, through Bearer tokens and STS, and that what they do not grant is refused.
 # `admin-oidc` runs the Enterprise image: the same login checks through the chart's
-# forwarder, then the UI's OIDC button against a stub provider.
+# forwarder, then the UI's OIDC button against a stub provider. `admin-oauth2` signs in through
+# oauth2-proxy at a stub provider that issues real tokens: an allowed user reaches the UI's own
+# password login and gets in with the password, an outsider is refused, and the UI cannot be
+# reached around the proxy from the edge's overlay.
 set -euo pipefail
 
 release="$1"
@@ -337,6 +340,74 @@ case "$case" in
     fi
     ;;
 esac
+
+# ── admin.oauth2: a sign-in at the stub provider, through the proxy ───────────────────
+# The e2e edge has no TLS, which admin.oauth2 requires, so requests go to the proxy on
+# traefik-public carrying the Host and X-Forwarded-Proto that Traefik would set. Its cookies
+# are Secure and the hop is plain HTTP, so they are carried by hand. The browser's leg to
+# the stub takes -k: what it proves is the proxy's trust in the stub, which the proxy checks.
+if [ "$case" = "admin-oauth2" ]; then
+  proxy="http://${release}_oauth2-proxy:4180"
+  o() { docker run --rm --network traefik-public "$CURL_IMAGE" -sS --max-time 15 -D - \
+    -H 'Host: admin.e2e.test' -H 'X-Forwarded-Proto: https' "$@" 2>/dev/null | tr -d '\r' || true; }
+  cookie() { grep -i '^set-cookie:' | sed -n "s/^[^:]*: *\($1=[^;]*\).*/\1/p" | sed -n 1p; }
+
+  # The UI joins neither traefik-public nor any network but its own and admin-oauth2.
+  rc=0
+  docker run --rm --network traefik-public "$CURL_IMAGE" -s -o /dev/null --max-time 5 "http://${svc}:23646/" >/dev/null 2>&1 || rc=$?
+  [ "$rc" = "6" ] || [ "$rc" = "7" ] || die "the UI answered on traefik-public around the proxy (curl exit $rc)"
+  got=""
+  for _ in $(seq 1 30); do
+    got="$(o -o /dev/null "$proxy/")"
+    [ "$(status <<<"$got")" = "403" ] && break
+    sleep 3
+  done
+  [ "$(status <<<"$got")" = "403" ] || die "an anonymous request to the proxy was not refused with its sign-in page (HTTP $(status <<<"$got"))"
+  echo "  ok: the UI is unreachable on traefik-public, and the proxy refuses an anonymous request there (403)"
+
+  # One sign-in as stub user $1, the way a browser follows it; prints the proxy's session
+  # cookie, or nothing when the proxy refused the user.
+  signin() {
+    local start loc csrf back
+    start="$(o -o /dev/null "$proxy/oauth2/start?rd=%2F")"
+    loc="$(header Location <<<"$start")"
+    csrf="$(cookie _oauth2_proxy_csrf <<<"$start")"
+    [ "$(status <<<"$start")" = "302" ] && [ "${loc%%\?*}" = "https://seaweedfs-e2e-oidc:8443/authorize" ] && [ -n "$csrf" ] \
+      || die "the proxy's sign-in did not send the browser to the stub's /authorize (HTTP $(status <<<"$start"), Location '$loc')"
+    for want in client_id=seaweedfs-admin redirect_uri=https%3A%2F%2Fadmin.e2e.test%2Foauth2%2Fcallback \
+                code_challenge_method=S256 scope=openid+email+profile; do
+      grep -F "&$want&" <<<"&${loc#*\?}&" >/dev/null || die "the sign-in redirect lacks $want: $loc"
+    done
+    back="$(docker run --rm --network traefik-public "$CURL_IMAGE" -sSk --max-time 15 -D - -o /dev/null "$loc&user=$1" 2>/dev/null \
+      | tr -d '\r' | header Location)"
+    [ "${back%%\?*}" = "https://admin.e2e.test/oauth2/callback" ] || die "the stub did not send $1 back to the callback: '$back'"
+    o -o /dev/null -H "Cookie: $csrf" "$proxy/oauth2/callback?${back#*\?}" | cookie _oauth2_proxy
+  }
+
+  [ -z "$(signin outsider)" ] || die "a user in no allowed group got a session"
+  sess="$(signin admin)"
+  [ -n "$sess" ] || die "a member of storage-admins got no session: the code was not redeemed (the client secret or the CA did not reach the proxy?)"
+  echo "  ok: the sign-in goes to the stub with the client, the callback, PKCE S256 and the scope; an outsider is refused, a member of storage-admins gets a session"
+
+  # Signed in, the proxy hands over to the UI, which still asks for its password.
+  got="$(o -o /dev/null -H "Cookie: $sess" "$proxy/")"
+  [ "$(status <<<"$got")" = "307" ] && [ "$(header Location <<<"$got")" = "/login" ] \
+    || die "a signed-in request was not handed to the UI's own login (HTTP $(status <<<"$got"), Location '$(header Location <<<"$got")')"
+  page="$(o -H "Cookie: $sess" "$proxy/login")"
+  ptok="$(sed -n 's/.*name="csrf_token" value="\([0-9a-f]*\)".*/\1/p' <<<"$page" | sed -n 1p)"
+  ajar="$(session <<<"$page")"
+  [ -n "$ptok" ] && [ -n "$ajar" ] || die "the UI's login page did not come through the proxy"
+  got="$(o -o /dev/null -H "Cookie: $sess; $ajar" -H 'Sec-Fetch-Site: same-origin' --data-urlencode "csrf_token=$ptok" \
+    --data-urlencode username=admin --data-urlencode "password=$ADMIN_PASSWORD" "$proxy/login")"
+  [ "$(status <<<"$got")" = "303" ] && [ "$(header Location <<<"$got")" = "/admin" ] \
+    || die "the admin password was refused through the proxy (HTTP $(status <<<"$got"), Location '$(header Location <<<"$got")')"
+  asess="$(session <<<"$got")"
+  listing="$(o -H "Cookie: $sess; $asess" "$proxy/api/s3/buckets")"
+  [ "$(status <<<"$listing")" = "200" ] || die "the two sessions do not list the buckets through the proxy (HTTP $(status <<<"$listing"))"
+  [ "$(status <<<"$(o -o /dev/null -H "Cookie: $asess" "$proxy/api/s3/buckets")")" = "403" ] \
+    || die "the UI's session alone passed the proxy, without a sign-in"
+  echo "  ok: through the proxy a member of storage-admins reaches the UI's password login, logs in, and lists buckets; the UI's session alone does not pass"
+fi
 
 # ── restart: data persists, bootstrap is idempotent ───────────────────────────────────
 if [ "$case" = "buckets" ]; then

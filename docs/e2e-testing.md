@@ -328,6 +328,12 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   `admin-oidc` runs the SeaweedFS Enterprise image and needs only the OIDC client secret,
   which setup creates for every fixture: the check uploads a discovery document the same
   way, restarts `weed admin` so it reads it, and follows the login button to the stub.
+  `admin-oauth2` gets oauth2-proxy's client and cookie secrets and a stub identity provider,
+  `ci/oauth2-stub-oidc.js` on `node:22-alpine` as the `seaweedfs-e2e-oidc` service on
+  `traefik-public`: setup makes a throwaway CA and a certificate for the service name with the
+  runner's `openssl`, the fixture names the CA as `admin.oauth2.caSecret`, and the stub issues
+  RS256 ID tokens for the codes it hands out, redeeming them only with the client secret setup
+  created. The check signs in as a member of the allowed group and as an outsider.
 - **gitlab-runner** — the runner authentication-token secret + the `gitlab-runner-data` node
   label, plus the two S3 cache secrets for the `cache` fixture (their values deliberately
   contain the `/` and `+` of a real base64 key, so the TOML quoting is exercised). The mock

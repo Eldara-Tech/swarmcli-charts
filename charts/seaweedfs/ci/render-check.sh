@@ -23,6 +23,11 @@
 #   * On the Enterprise image weed admin binds its unauthenticated worker gRPC port with
 #     the UI, so both must stay on 127.0.0.1 behind the forwarder; admin.oidc's client
 #     secret must reach weed admin alone, like the password.
+#   * admin.oauth2 puts oauth2-proxy in front of the UI. Its flags are its whole security,
+#     and a wrong one still converges: no allowed group admits every user of the provider,
+#     a bearer-token skip admits any token, and a proxy-less route to the UI bypasses it.
+#     So the proxy's command is compared flag by flag, its routers must be the UI's, and
+#     seaweedfs must carry none of them.
 #
 # No check pipes into `grep -q` (scripts/lint.sh enforces it): match with `grep … >/dev/null`
 # or a here-string.
@@ -150,6 +155,12 @@ case "$case" in
     fi
     [ "$(q "$svc.ports")" = "null" ] || bad "case $case: a port is published although nothing is in published mode"
     ;;
+  admin-oauth2)
+    if grep -F 'traefik.' <<<"$labels" >/dev/null; then bad "case $case: seaweedfs carries Traefik labels, which are oauth2-proxy's in this mode"; fi
+    [ "$(sort <<<"$nets")" = "$(printf 'admin-oauth2\nseaweedfs-net')" ] \
+      || bad "case $case: seaweedfs is on $(tr '\n' ' ' <<<"$nets")instead of exactly seaweedfs-net and admin-oauth2"
+    [ "$(q "$svc.ports")" = "null" ] || bad "case $case: a port is published although nothing is in published mode"
+    ;;
   published)
     [ "$(q "$svc.ports[0].target")" = "$port" ] && [ "$(q "$svc.ports[0].published")" = "18333" ] \
       || bad "case $case: the S3 port is not published as 18333 -> $port"
@@ -262,6 +273,46 @@ if [ "$case" = "admin-oidc" ]; then
 else
   if grep -F -e 'nc -lk' -e ' admin -ip=' -e WEED_ADMIN_OIDC <<<"$script" >/dev/null || [ -n "$oidcenv" ] || grep -Fx "$cs" <<<"$mounted" >/dev/null; then
     bad "case $case: the Enterprise forwarder or admin.oidc is rendered on the free image"
+  fi
+fi
+
+# ── admin.oauth2: oauth2-proxy in front of the UI ────────────────────────────────────
+px='.services."oauth2-proxy"'
+if [ "$case" = "admin-oauth2" ]; then
+  want_cmd="$(printf '%s\n' --http-address=0.0.0.0:4180 --provider=oidc --oidc-issuer-url=https://seaweedfs-e2e-oidc:8443 \
+    --client-id=seaweedfs-admin --client-secret-file=/run/secrets/seaweedfs-admin-oauth2-client-secret \
+    --cookie-secret-file=/run/secrets/seaweedfs-admin-oauth2-cookie-secret --provider-ca-file=/run/secrets/seaweedfs-e2e-oidc-ca \
+    --cookie-secure=true --cookie-samesite=lax --redirect-url=https://admin.e2e.test/oauth2/callback '--email-domain=*' \
+    --allowed-group=storage-admins '--scope=openid email profile' --code-challenge-method=S256 --reverse-proxy=true \
+    --trusted-proxy-ip=10.0.0.0/8 --upstream=http://seaweedfs:23646/ --proxy-prefix=/oauth2 --pass-basic-auth=false \
+    --pass-user-headers=false --pass-access-token=false --pass-authorization-header=false --set-xauthrequest=false \
+    --skip-jwt-bearer-tokens=false)"
+  got_cmd="$(q "$px.command[]")"
+  [ "$got_cmd" = "$want_cmd" ] || bad "case $case: oauth2-proxy's command is not exactly the expected flags: $(diff <(echo "$want_cmd") <(echo "$got_cmd") | grep '^[<>]' | tr '\n' ' ')"
+  [ "$(q "$px.image")" = "quay.io/oauth2-proxy/oauth2-proxy:v7.15.4" ] || bad "case $case: oauth2-proxy runs $(q "$px.image"), not the values' pin"
+  [ "$(q "$px.networks[]" | sort | tr '\n' ' ')" = "admin-oauth2 traefik-public " ] \
+    || bad "case $case: oauth2-proxy is on $(q "$px.networks[]" | tr '\n' ' ')instead of exactly traefik-public and admin-oauth2"
+  [ "$(q '.networks."admin-oauth2".external // false')" = "false" ] && [ "$(q '.networks."admin-oauth2".attachable // false')" = "false" ] \
+    || bad "case $case: admin-oauth2 is external or attachable, so something besides the proxy could join it"
+  for sec in seaweedfs-admin-oauth2-client-secret seaweedfs-admin-oauth2-cookie-secret seaweedfs-e2e-oidc-ca; do
+    q "$px.secrets[]" | grep -Fx "$sec" >/dev/null && [ "$(q ".secrets.\"$sec\".external")" = "true" ] \
+      || bad "case $case: oauth2-proxy does not mount the external secret $sec"
+  done
+  if q "$svc.secrets[]" | grep -E '^seaweedfs-(admin-oauth2|e2e-oidc)-' >/dev/null; then bad "case $case: seaweedfs mounts one of oauth2-proxy's secrets"; fi
+  plabels="$(q "$px.deploy.labels[]")"
+  for l in 'traefik.enable=true' 'traefik.swarm.network=traefik-public' 'traefik.constraint-label=traefik-public' \
+           'traefik.http.services.ci-admin.loadbalancer.server.port=4180' \
+           "traefik.http.routers.ci-admin-https.rule=Host(\`admin.e2e.test\`) && $admin_guard" \
+           'traefik.http.routers.ci-admin-https.tls=true' 'traefik.http.routers.ci-admin-http.middlewares=https-redirect' \
+           "traefik.http.routers.ci-admin-content-https.rule=Host(\`admin.e2e.test\`) && $admin_guard && $content_paths" \
+           'traefik.http.routers.ci-admin-content-https.middlewares=ci-admin-sandbox' \
+           'traefik.http.middlewares.ci-admin-sandbox.headers.contentSecurityPolicy=sandbox'; do
+    grep -Fx -- "$l" <<<"$plabels" >/dev/null || bad "case $case: oauth2-proxy lacks label $l"
+  done
+  [ "$(grep -c '=ci-admin-sandbox$' <<<"$plabels")" = "1" ] || bad "case $case: the sandbox middleware is not on exactly the content router"
+else
+  if [ "$(q "$px")" != "null" ] || [ "$(q '.networks."admin-oauth2"')" != "null" ]; then
+    bad "case $case: oauth2-proxy or admin-oauth2 is rendered although admin.oauth2 is off"
   fi
 fi
 
@@ -558,6 +609,71 @@ if [ "$case" = "admin-oidc" ]; then
   render "$chart" --set 'admin.oidc.clientId=seaweedfs$admin' >"$tmp/out.yaml" 2>"$tmp/err" \
     && grep -F 'seaweedfs$$admin' "$tmp/out.yaml" >/dev/null \
     || bad "a \$ in admin.oidc.clientId is not escaped as \$\$ — Docker would interpolate it"
+fi
+
+# ── the admin.oauth2 guards, rendered once with SWARMCLI ──────────────────────────────
+if [ "$case" = "admin-oauth2" ]; then
+  chart="$(cd "$(dirname "$0")/.." && pwd)"
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  cp -R "$chart" "$tmp/noschema"
+  rm "$tmp/noschema/values.schema.json"
+  render() { local dir="$1"; shift; "${SWARMCLI:?render-check needs SWARMCLI to test the refusals}" charts template ci "$dir" -f "$chart/ci/admin-oauth2-values.yaml" "$@"; }
+  refused() {
+    local dir="$1" want="$2"; shift 2
+    if render "$dir" "$@" >/dev/null 2>"$tmp/err"; then
+      bad "rendered with $* ($dir) — it must be refused"
+    elif ! grep -F -- "$want" "$tmp/err" >/dev/null; then
+      bad "$* ($dir) failed, but not with \"$want\": $(tail -1 "$tmp/err")"
+    fi
+  }
+  ns="$tmp/noschema"
+  printf 'admin:\n  oauth2:\n    allowedGroups: ["a,b"]\n' >"$tmp/comma.yaml"
+  refused "$chart" "at '/admin/oauth2/issuer'" --set admin.oauth2.issuer=http://sso.example.com/realms/infra
+  refused "$chart" "at '/admin/oauth2/allowedGroups/0'" -f "$tmp/comma.yaml"
+  # Both logins on: the Enterprise image with a complete admin.oidc, so nothing else stops it.
+  refused "$ns" "admin.oidc and admin.oauth2 cannot both be enabled" --set image.repository=chrislusf/seaweedfs-enterprise \
+    --set admin.oidc.enabled=true --set admin.oidc.issuer=https://sso.example.com --set 'admin.oidc.adminGroups[0]=storage-admins'
+  refused "$ns" "admin.oauth2 needs admin.exposure.mode=traefik with admin.ingress.tls" --set admin.exposure.mode=none
+  refused "$ns" "admin.oauth2 needs admin.exposure.mode=traefik with admin.ingress.tls" --set admin.exposure.mode=published
+  refused "$ns" "admin.oauth2 needs admin.exposure.mode=traefik with admin.ingress.tls" --set admin.ingress.tls=false
+  refused "$ns" "admin.oauth2.issuer must be the provider's https:// issuer URL" --set admin.oauth2.issuer=http://sso.example.com/realms/infra
+  refused "$ns" "admin.oauth2.issuer must be the provider's https:// issuer URL" --set admin.oauth2.issuer=
+  refused "$ns" "admin.oauth2.clientId is required" --set admin.oauth2.clientId=
+  refused "$ns" "admin.oauth2.clientSecretSecret must name a secret of its own" --set admin.oauth2.clientSecretSecret=
+  refused "$ns" "admin.oauth2.clientSecretSecret must name a secret of its own" --set admin.oauth2.clientSecretSecret=seaweedfs-admin-password
+  refused "$ns" "admin.oauth2.clientSecretSecret must name a secret of its own" --set admin.oauth2.clientSecretSecret=seaweedfs-s3-secret-key
+  refused "$ns" "admin.oauth2.cookieSecretSecret must name a secret of its own" --set admin.oauth2.cookieSecretSecret=
+  refused "$ns" "admin.oauth2.cookieSecretSecret must name a secret of its own" --set admin.oauth2.cookieSecretSecret=seaweedfs-admin-oauth2-client-secret
+  refused "$ns" "admin.oauth2.cookieSecretSecret must name a secret of its own" --set admin.oauth2.cookieSecretSecret=seaweedfs-s3-access-key
+  refused "$ns" "admin.oauth2.caSecret must name a secret of its own" --set admin.oauth2.caSecret=seaweedfs-admin-oauth2-cookie-secret
+  refused "$ns" "admin.oauth2.caSecret must name a secret of its own" --set admin.oauth2.caSecret=seaweedfs-admin-password
+  refused "$ns" "admin.oauth2.allowedGroups needs at least one group" --set 'admin.oauth2.allowedGroups={}'
+  refused "$ns" "admin.oauth2.allowedGroups: group \"a,b\" must be a non-empty groups-claim value without ','" -f "$tmp/comma.yaml"
+  # Without caSecret the proxy trusts the image's roots: no CA flag, no CA secret.
+  render "$chart" --set admin.oauth2.caSecret= >"$tmp/out.yaml" 2>"$tmp/err" \
+    && ! grep -F -e provider-ca-file -e seaweedfs-e2e-oidc-ca "$tmp/out.yaml" >/dev/null \
+    || bad "with no caSecret, a CA file or secret is still rendered: $(tail -1 "$tmp/err")"
+  # Each group is its own flag.
+  render "$chart" --set 'admin.oauth2.allowedGroups={storage-admins,storage-auditors}' >"$tmp/out.yaml" 2>"$tmp/err" \
+    && [ "$(yq -r '.services."oauth2-proxy".command[] | select(test("^--allowed-group="))' "$tmp/out.yaml" | tr '\n' ' ')" \
+         = "--allowed-group=storage-admins --allowed-group=storage-auditors " ] \
+    || bad "two allowedGroups are not two --allowed-group flags"
+  # With the S3 API routed too, seaweedfs carries its routers and joins the edge; the UI's stay on the proxy.
+  render "$chart" --set exposure.mode=traefik --set ingress.host=s3-cache.example.com >"$tmp/out.yaml" 2>"$tmp/err" \
+    && yq -r '.services.seaweedfs.deploy.labels[]' "$tmp/out.yaml" | grep -Fx 'traefik.http.routers.ci-https.service=ci' >/dev/null \
+    && ! yq -r '.services.seaweedfs.deploy.labels[]' "$tmp/out.yaml" | grep -F 'ci-admin' >/dev/null \
+    && yq -r '.services.seaweedfs.networks[]' "$tmp/out.yaml" | grep -Fx traefik-public >/dev/null \
+    && yq -r '.services."oauth2-proxy".deploy.labels[]' "$tmp/out.yaml" | grep -Fx 'traefik.http.routers.ci-admin-https.service=ci-admin' >/dev/null \
+    || bad "with S3 and the UI both routed, S3's routers are not on seaweedfs alone and the UI's on oauth2-proxy alone: $(tail -1 "$tmp/err")"
+  # With the UI off, admin.oauth2 is neither checked nor rendered.
+  render "$ns" --set admin.enabled=false --set admin.oauth2.issuer= >"$tmp/out.yaml" 2>"$tmp/err" \
+    && ! grep -F -e oauth2-proxy -e admin-oauth2 "$tmp/out.yaml" >/dev/null \
+    || bad "admin.oauth2 is checked or rendered although admin.enabled is false"
+  # A `$` in a value must reach the container as `$`, not be interpolated by Docker.
+  render "$chart" --set 'admin.oauth2.clientId=seaweedfs$admin' >"$tmp/out.yaml" 2>"$tmp/err" \
+    && grep -F -- '--client-id=seaweedfs$$admin' "$tmp/out.yaml" >/dev/null \
+    || bad "a \$ in admin.oauth2.clientId is not escaped as \$\$ — Docker would interpolate it"
 fi
 
 exit "$fail"

@@ -1,0 +1,17 @@
+# The web UI behind oauth2-proxy (admin.oauth2) on the free image, with the S3 API
+# overlay-only. admin.oauth2 needs the UI routed with TLS, and the e2e edge has no TLS, so
+# ci/e2e-check.sh talks to the proxy on traefik-public as the edge would and signs in end to
+# end against the stub provider ci/e2e-setup.sh starts there. The stub's certificate comes
+# from a throwaway CA, which the proxy trusts through caSecret.
+admin:
+  enabled: true
+  exposure:
+    mode: traefik
+  ingress:
+    host: admin.e2e.test
+  oauth2:
+    enabled: true
+    issuer: https://seaweedfs-e2e-oidc:8443
+    caSecret: seaweedfs-e2e-oidc-ca
+    allowedGroups:
+      - storage-admins
