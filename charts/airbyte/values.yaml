@@ -149,8 +149,8 @@ oauth2:
   cookieSecretName: airbyte_oauth_cookie_secret
   cookieName: _oauth2_proxy_airbyte
   # How often an active session is checked again at the provider, with its refresh token:
-  # a user disabled or removed there loses the session at the next check. "0" checks only
-  # at sign-in, so a session then lasts its cookie's 7 days.
+  # a user disabled or removed there loses the session at the next check. 0s checks only
+  # at sign-in, so a session then lasts its cookie's 7 days. Keep it under those 7 days.
   cookieRefresh: 1m
   emailDomain: "*"
   redisNetwork: airbyte-oauth
