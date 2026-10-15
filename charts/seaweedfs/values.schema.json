@@ -185,6 +185,7 @@
               "uniqueItems": true
             },
             "scope": { "type": "string", "minLength": 1 },
+            "cookieRefresh": { "type": "string", "pattern": "^(0|([0-9]+(ms|s|m|h))+)$" },
             "trustedProxyIp": { "type": "string", "minLength": 1 }
           }
         }

@@ -602,6 +602,7 @@ services:
 {{-   end }}
       - --cookie-secure=true
       - --cookie-samesite=lax
+      - {{ printf "--cookie-refresh=%s" $o2v.cookieRefresh | quote }}
       - --redirect-url=https://{{ $admin.ingress.host }}/oauth2/callback
       - --email-domain=*
 {{-   range $o2v.allowedGroups }}

@@ -329,9 +329,12 @@ admin:
 - **The provider must be up when the proxy starts**: it reads the discovery document once
   and exits without it, and Swarm restarts it until it succeeds.
 - **The session** lives in an encrypted cookie, Secure, SameSite=Lax and only for
-  `admin.ingress.host`, for oauth2-proxy's default 7 days. Rotating the cookie secret signs
-  everyone out. No identity header goes to the UI, and a bearer token does not skip the
-  sign-in. `admin.oauth2.trustedProxyIp` must cover the edge proxy's address on
+  `admin.ingress.host`, for up to oauth2-proxy's default 7 days. While it is used, the proxy
+  checks it again at the provider every `admin.oauth2.cookieRefresh` (1 minute): a user
+  removed from the groups, or disabled, is refused from the next check on. Without that
+  check (`"0"`) such a user keeps the session for the 7 days. Rotating the cookie secret
+  signs everyone out. No identity header goes to the UI, and a bearer token does not skip
+  the sign-in. `admin.oauth2.trustedProxyIp` must cover the edge proxy's address on
   `exposure.network`.
 - **`labels`** still go on seaweedfs. In this mode the UI's routers are the proxy's, so a
   middleware for them cannot be added through `labels`.
@@ -622,6 +625,7 @@ processes must never share `/data`.
 | `admin.oauth2.caSecret` | `""` | External secret holding the CA bundle for a provider on a private CA |
 | `admin.oauth2.allowedGroups` | `[]` | `groups` claim values admitted; at least one is required |
 | `admin.oauth2.scope` | `openid email profile` | Scopes requested at sign-in |
+| `admin.oauth2.cookieRefresh` | `1m` | How often an active session is checked again at the provider; `"0"` = only at sign-in |
 | `admin.oauth2.trustedProxyIp` | `10.0.0.0/8` | Addresses whose `X-Forwarded-*` headers the proxy believes |
 | `extraArgs` | `[]` | Extra `weed server` flags |
 | `metrics.enabled` | `false` | Serve Prometheus metrics, labelled for Swarm service discovery. See *Metrics* |

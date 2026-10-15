@@ -364,7 +364,7 @@ if [ "$case" = "admin-oauth2" ]; then
   want_cmd="$(printf '%s\n' --http-address=0.0.0.0:4180 --provider=oidc --oidc-issuer-url=https://seaweedfs-e2e-oidc:8443 \
     --client-id=seaweedfs-admin --client-secret-file=/run/secrets/seaweedfs-admin-oauth2-client-secret \
     --cookie-secret-file=/run/secrets/seaweedfs-admin-oauth2-cookie-secret --provider-ca-file=/run/secrets/seaweedfs-e2e-oidc-ca \
-    --cookie-secure=true --cookie-samesite=lax --redirect-url=https://admin.e2e.test/oauth2/callback '--email-domain=*' \
+    --cookie-secure=true --cookie-samesite=lax --cookie-refresh=1m --redirect-url=https://admin.e2e.test/oauth2/callback '--email-domain=*' \
     --allowed-group=storage-admins '--scope=openid email profile' --code-challenge-method=S256 --reverse-proxy=true \
     --trusted-proxy-ip=10.0.0.0/8 --upstream=http://seaweedfs:23646/ --proxy-prefix=/oauth2 --pass-basic-auth=false \
     --pass-user-headers=false --pass-access-token=false --pass-authorization-header=false --set-xauthrequest=false \
@@ -713,6 +713,7 @@ if [ "$case" = "admin-oauth2" ]; then
   printf 'admin:\n  oauth2:\n    allowedGroups: ["a,b"]\n' >"$tmp/comma.yaml"
   refused "$chart" "at '/admin/oauth2/issuer'" --set admin.oauth2.issuer=http://sso.example.com/realms/infra
   refused "$chart" "at '/admin/oauth2/allowedGroups/0'" -f "$tmp/comma.yaml"
+  refused "$chart" "at '/admin/oauth2/cookieRefresh'" --set admin.oauth2.cookieRefresh=1min
   # Both logins on: the Enterprise image with a complete admin.oidc, so nothing else stops it.
   refused "$ns" "admin.oidc and admin.oauth2 cannot both be enabled" --set image.repository=chrislusf/seaweedfs-enterprise \
     --set admin.oidc.enabled=true --set admin.oidc.issuer=https://sso.example.com --set 'admin.oidc.adminGroups[0]=storage-admins'

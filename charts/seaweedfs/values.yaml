@@ -232,6 +232,10 @@ admin:
     # Scopes requested at sign-in. Some providers (Dex, Authentik) send `groups` only when
     # it is asked for: add it there.
     scope: "openid email profile"
+    # How often an active session is checked again at the provider, with its refresh token:
+    # a user removed from allowedGroups, or disabled there, loses the session at the next
+    # check. "0" checks only at sign-in, so a session then lasts its cookie's 7 days.
+    cookieRefresh: 1m
     # The proxy believes X-Forwarded-* headers only from these addresses, which must cover
     # the edge proxy's on exposure.network. 10.0.0.0/8 is Swarm's default overlay pool.
     trustedProxyIp: 10.0.0.0/8
