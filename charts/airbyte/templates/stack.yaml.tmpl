@@ -177,6 +177,7 @@ services:
       - --client-secret-file=/run/secrets/{{ .Values.oauth2.clientSecretName }}
       - --cookie-secret-file=/run/secrets/{{ .Values.oauth2.cookieSecretName }}
       - {{ printf "--cookie-name=%s" .Values.oauth2.cookieName | quote }}
+      - {{ printf "--cookie-refresh=%s" .Values.oauth2.cookieRefresh | quote }}
       - --cookie-secure={{ .Values.exposure.tls }}
       - {{ printf "--cookie-domain=%s" .Values.exposure.host | quote }}
       - {{ printf "--redirect-url=%s://%s/oauth2/callback" $scheme .Values.exposure.host | quote }}

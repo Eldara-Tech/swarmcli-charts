@@ -140,6 +140,11 @@ provider. The client and cookie secret names are always real external secret
 names. OAuth2 Proxy reads them directly from their mounted files; the cookie
 secret must be exactly 16, 24, or 32 raw bytes.
 
+A session lasts up to the cookie's 7 days. While it is used, the proxy checks it again at
+the provider every `oauth2.cookieRefresh` (1 minute), so a user disabled or removed there
+is refused from the next check on. With `"0"` it checks only at sign-in, and such a user
+keeps the session for the 7 days.
+
 ## Airbyte's own login
 
 `auth.mode: airbyte` drops oauth2-proxy and turns on Airbyte's email/password
@@ -251,6 +256,7 @@ after 30 minutes, and a pod whose image is still missing then fails. Kubernetes
 | `oauth2.issuerUrl` / `.clientId` | see `values.yaml` | OIDC discovery issuer and client ID |
 | `oauth2.clientSecretName` / `.cookieSecretName` | see `values.yaml` | External OIDC client and cookie-encryption secrets |
 | `oauth2.cookieName`, `.emailDomain`, `.trustedProxyIp`, `.scope` | see `values.yaml` | OAuth2 proxy cookie and OIDC request settings |
+| `oauth2.cookieRefresh` | `1m` | How often an active session is checked again at the provider; `"0"` = only at sign-in |
 | `oauth2.skipJwtBearerTokens`, `.sslInsecureSkipVerify`, `.upstreamTimeout` | `true`, `false`, `300s` | OAuth2 proxy token, TLS-validation, and upstream behavior |
 | `oauth2.redisNetwork` | `airbyte-oauth` | Chart-managed OAuth2 proxy/Redis overlay |
 | `traefik.*` | see `values.yaml` | Traefik router settings; defaults match this repository's Traefik chart |

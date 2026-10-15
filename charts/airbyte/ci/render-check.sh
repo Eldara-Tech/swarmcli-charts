@@ -81,6 +81,8 @@ case "$case" in
       || { echo "  FAIL($case): oauth2-proxy redirect-url is not $scheme://"; fail=1; }
     grep -q -- '--ssl-insecure-skip-verify=false' "$out" \
       || { echo "  FAIL($case): oauth2-proxy skips TLS verification by default"; fail=1; }
+    grep -q -- '--cookie-refresh=1m' "$out" \
+      || { echo "  FAIL($case): oauth2-proxy does not check sessions again at the provider every minute"; fail=1; }
     ;;
 esac
 
