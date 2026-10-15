@@ -373,10 +373,16 @@ if [ "$case" = "admin-oauth2" ]; then
     -H 'Host: admin.e2e.test' -H 'X-Forwarded-Proto: https' "$@" 2>/dev/null | tr -d '\r' || true; }
   cookie() { grep -i '^set-cookie:' | sed -n "s/^[^:]*: *\($1=[^;]*\).*/\1/p" | sed -n 1p; }
 
-  # The UI joins neither traefik-public nor any network but its own and admin-oauth2.
-  rc=0
-  docker run --rm --network traefik-public "$CURL_IMAGE" -s -o /dev/null --max-time 5 "http://${svc}:23646/" >/dev/null 2>&1 || rc=$?
-  [ "$rc" = "6" ] || [ "$rc" = "7" ] || die "the UI answered on traefik-public around the proxy (curl exit $rc)"
+  # seaweedfs does not join traefik-public, so nothing there reaches the UI around the proxy.
+  # How a request for it fails depends on the resolver (unknown name, refused, or a timeout
+  # while the name is forwarded upstream), so what counts is that no HTTP answer comes back.
+  tp_id="$(docker network inspect traefik-public --format '{{.Id}}')"
+  if docker service inspect "$svc" --format '{{range .Spec.TaskTemplate.Networks}}{{.Target}} {{end}}' | grep -F "$tp_id" >/dev/null; then
+    die "seaweedfs joined traefik-public, where the UI would be reachable around the proxy"
+  fi
+  got="$(docker run --rm --network traefik-public "$CURL_IMAGE" -s -o /dev/null -w '%{http_code}' --max-time 5 \
+    "http://${svc}:23646/" 2>/dev/null || true)"
+  [ "$got" = "000" ] || die "the UI answered HTTP $got on traefik-public around the proxy"
   got=""
   for _ in $(seq 1 30); do
     got="$(o -o /dev/null "$proxy/")"
