@@ -232,7 +232,19 @@ swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --version "${v:?}" 
 `--version` keeps prometheus-stack at the version it runs, the only case in which
 `--reuse-values` is safe (Eldara-Tech/swarmcli#687).
 
-prometheus-stack's README, *Keeping your setup in git*, has the values-file form.
+A release file and swarmcli-cd take values files only, not `--set-file`, so there both
+files go in as values files: each file's content, as it is, indented under its key as a
+block string. From the two files downloaded above:
+
+```bash
+mkdir -p monitoring/rules monitoring/dashboards
+{ printf 'prometheus:\n  extraRules:\n    loki: |\n'; sed 's/^./      &/' loki-rules.yml; } > monitoring/rules/loki.yaml
+{ printf 'grafana:\n  dashboards:\n    loki: |\n'; sed 's/^./      &/' loki-dashboard.json; } > monitoring/dashboards/loki.yaml
+```
+
+The dashboard stays JSON: converted to YAML it becomes a mapping, which the render
+refuses (`got object, want string`). prometheus-stack's README, *Keeping your setup in
+git*, shows where to list the two files.
 
 - **Alerts** (`loki-rules.yml`): `LokiRequestErrors`, `LokiRequestPanics`,
   `LokiRequestLatency` and `LokiCompactorHasNotSuccessfullyRunCompaction`, derived

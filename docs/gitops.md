@@ -33,6 +33,13 @@ nothing. `"0.1.8"` is a string and stays one.
 Chart versions are plain SemVer. The leading `v` belongs to the release git tag,
 not to the version in this file.
 
+**Files are values too.** A release file has no `--set-file`, so a file a chart takes
+as a value, such as a prometheus-stack alert rule file or Grafana dashboard, among them
+the ones these charts ship under `monitoring/`, goes in a values file as a block
+string, a dashboard still as JSON. prometheus-stack's README,
+[Keeping your setup in git](../charts/prometheus-stack/README.md#keeping-your-setup-in-git),
+shows how.
+
 ## Reaching the swarm from CI
 
 `swarmcli` deploys by running `docker --context <name> stack deploy`, so the CI
