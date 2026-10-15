@@ -180,6 +180,50 @@ export, and the render fails rather than doing nothing.
   `docker service rm <release>_memcached-exporter <release>_elasticsearch-exporter`.
 - **swarmcli-cd** additionally needs `monitoring` in `allow.networks`.
 
+### Alerts and a dashboard
+
+The chart ships both under [`monitoring/`](monitoring) for your Prometheus and Grafana,
+and deploys neither: scraping is automatic, but which rules and dashboards a monitoring
+stack loads is its operator's choice. With the prometheus-stack chart they go in
+through its own configuration:
+
+```bash
+base=https://raw.githubusercontent.com/Eldara-Tech/swarmcli-charts/main/charts/zammad/monitoring
+curl -fsSL -O "$base/zammad-rules.yml" -O "$base/zammad-dashboard.json"
+v="$(swarmcli charts status mon | sed -n 's/^CHART: prometheus-stack-//p')"
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --version "${v:?}" --reuse-values \
+  --set-file prometheus.extraRules.zammad=./zammad-rules.yml \
+  --set-file grafana.dashboards.zammad=./zammad-dashboard.json
+```
+
+`--version` keeps prometheus-stack at the version it runs, the only case in which `--reuse-values`
+is safe (Eldara-Tech/swarmcli#687).
+
+prometheus-stack's README, *Keeping your setup in git*, has the values-file form.
+
+- **Alerts** (`zammad-rules.yml`): `MemcachedDown`, `MemcachedConnectionLimitApproaching`
+  and `MemcachedOutOfMemoryErrors`, derived from the
+  [memcached-mixin](https://github.com/grafana/jsonnet-libs/tree/master/memcached-mixin)
+  (Apache-2.0), all warnings: Zammad serves without its cache, only more slowly.
+  `ElasticsearchHeapTooHigh` is from elasticsearch_exporter's
+  [example rules](https://github.com/prometheus-community/elasticsearch_exporter/blob/v1.11.0/examples/prometheus/elasticsearch.rules.yml)
+  (Apache-2.0). `ElasticsearchUnreachable`, `ElasticsearchClusterRed` and
+  `ElasticsearchDiskSpaceLow` (at the 85% low watermark, before the 90% high watermark stops
+  new shards and the 95% flood stage blocks writes) are this chart's. Yellow raises nothing:
+  Zammad's indices keep Elasticsearch's default of one replica, which the single embedded
+  node never assigns.
+- **Dashboard** (`zammad-dashboard.json`, uid `zammad`), trimmed from the
+  [memcached-mixin](https://github.com/grafana/jsonnet-libs/tree/master/memcached-mixin) and
+  [elasticsearch-mixin](https://github.com/prometheus-community/elasticsearch_exporter/tree/v1.11.0/elasticsearch-mixin)
+  dashboards (Apache-2.0): memcached and Elasticsearch reachability, cache hit ratio and
+  cluster health; memcached commands, memory, evictions and connections; Elasticsearch heap,
+  data disk, search and indexing rates, search latency, shards and thread-pool rejections.
+  Pick a release by its `stack`.
+
+The dashboard picks a release by the `stack` label prometheus-stack's discovery puts on every
+target, and the alerts carry it. Another Prometheus needs the same relabelling of
+`__meta_dockerswarm_service_label_com_docker_stack_namespace` to `stack`.
+
 ## Backing services (external vs embedded)
 
 `database.mode` and `redis.mode` are each `external` (default) or `embedded`:
