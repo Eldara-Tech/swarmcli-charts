@@ -272,8 +272,8 @@ the registry and registryctl (which shares the registry's configuration): all fo
 - **What joins `monitoring`, and what else it can reach there.** core, jobservice, the registry
   and the exporter, on every port they listen on, not just 8001:
   - core's API on 8080, reached without nginx, so also `/service/notifications`, which nginx
-    answers 404: jobservice's unauthenticated status hooks, which need a job's random id to
-    do anything;
+    answers 404: core's unauthenticated job hooks, which jobservice calls and which need a
+    job's random id to do anything;
   - jobservice's API on 8080, which requires the shared jobservice secret for everything but
     `/api/v1/stats` (its worker pools);
   - the registry on 5000, behind the htpasswd login core uses;
