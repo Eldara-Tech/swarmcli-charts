@@ -1,0 +1,13 @@
+# nginx published on the routing mesh, no Traefik. The e2e case: ci/e2e-setup.sh stands up a
+# PostgreSQL, and ci/e2e-check.sh pushes and pulls an image through this port.
+exposure:
+  mode: published
+publish:
+  port: 18080
+externalURL: http://127.0.0.1:18080
+persistence:
+  nodeLabel: ""
+# The throwaway PostgreSQL ci/e2e-setup.sh stands up, on an overlay of its own.
+database:
+  host: harbor-e2e-db
+  network: harbor-e2e-db-net

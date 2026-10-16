@@ -1,0 +1,4 @@
+# Traefik without TLS: a plain HTTP router, no redirect into an HTTPS router that does not
+# exist, and an http:// external URL (Harbor's cookies drop their Secure flag with it).
+ingress:
+  tls: false

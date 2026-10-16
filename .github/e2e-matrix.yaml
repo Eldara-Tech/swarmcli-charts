@@ -209,3 +209,10 @@ include:
   # published, loki and extras run in a local `make e2e`. Six services and six images per
   # fixture, hence the 10m convergence budget.
   - { chart: prometheus-stack, cases: "default minimal discovery edge ephemeral alertmanager-config", timeout: 10m }
+  # harbor: the three fixtures that deploy (ci/e2e-render-only lists why the rest do not), each
+  # against the throwaway PostgreSQL its ci/e2e-setup.sh stands up, with nginx published.
+  # `published` pushes and pulls an image through nginx, core and the registry and has Trivy
+  # scan it; `metrics` scrapes the four endpoints from the monitoring overlay and runs
+  # promtool; `oidc` follows a login to a stub provider. Nine images on the first pull, and
+  # core migrates an empty database before it answers.
+  - { chart: harbor,        cases: "published metrics oidc",                                                          timeout: 15m }
