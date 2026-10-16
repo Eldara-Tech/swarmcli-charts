@@ -170,8 +170,10 @@ include:
   # traefik chart; `console-edge` routes only the console through it and proves the S3 host is
   # not routed; `oidc` proves single sign-on against a stub provider (discovery, the login
   # redirect and its callback, the client secret reaching the process). traefik (labels only)
-  # and bind-mount are covered by charts.yml and run in a full local `make e2e`.
-  - { chart: rustfs,        cases: "default buckets ephemeral published edge console-edge oidc",                     timeout: 6m  }
+  # and bind-mount are covered by charts.yml and run in a full local `make e2e`. `metrics`
+  # scrapes the OpenTelemetry Collector RustFS pushes to from the monitoring overlay, as
+  # Prometheus would, for every metric the alert rules and dashboard read, and runs promtool.
+  - { chart: rustfs,        cases: "default buckets ephemeral published edge console-edge oidc metrics",             timeout: 6m  }
   # gitlab: ONE fixture. GitLab CE is a multi-gigabyte monolith (Postgres, Redis, Gitaly,
   # Puma, Sidekiq in one container) whose documented baseline is 8 vCPU / 16 GB, so the
   # runner boots exactly the case that carries the most signal per minute: `minimal` is the

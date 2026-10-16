@@ -72,8 +72,8 @@ A default install needs:
 ```
 
 Add `traefik-public` to `networks` when the S3 API or the console is traefik-routed,
-`rustfs-oidc-client-secret` to `secrets` with `console.oidc.enabled`, and the path to
-`hostPaths` when you set `persistence.volumePath`. Each entry is the name itself, so
+`monitoring` with `metrics.enabled`, `rustfs-oidc-client-secret` to `secrets` with
+`console.oidc.enabled`, and the path to `hostPaths` when you set `persistence.volumePath`. Each entry is the name itself, so
 an override in values needs the same change here.
 
 ## Exposure
@@ -340,10 +340,127 @@ it with a warning.
 
 ## Metrics
 
-RustFS 1.0 has no Prometheus endpoint to scrape, so this chart has no
-`metrics.enabled`. It pushes OpenTelemetry metrics, traces and logs instead: set
-`RUSTFS_OBS_ENDPOINT` in `extraEnv` to an OTLP/HTTP collector, and scrape the
-collector.
+RustFS serves no Prometheus metrics of its own; it pushes them over OpenTelemetry (OTLP)
+instead. So `metrics.enabled` adds an
+[OpenTelemetry Collector](https://opentelemetry.io/docs/collector/) service,
+`<release>_rustfs-metrics`, which RustFS pushes to over `rustfs-net` and which serves the
+same metrics for Prometheus. It carries the deploy labels `prometheus.io/scrape=true` and
+`prometheus.io/port=8889` and joins the `monitoring` overlay, which is where the
+[prometheus-stack](../prometheus-stack) chart scrapes by default, so Prometheus finds it by
+itself with no scrape config. Any Prometheus using Docker Swarm service discovery on those
+labels works the same way. RustFS itself never joins `monitoring`.
+
+```bash
+swarmcli charts upgrade s3 swarmcli-charts/rustfs -f rustfs-values.yaml --set metrics.enabled=true
+```
+
+Pass the values you installed with (`-f`, or the same `--set`s), not `--reuse-values`.
+That flag merges over the previous release's stored values *instead of* this chart
+version's defaults, so every `metrics.*` key would render empty
+([swarmcli#687](https://github.com/Eldara-Tech/swarmcli/issues/687)).
+
+- **Turning metrics on restarts RustFS once**, because its environment changes, and so does
+  turning them off. The S3 API is unavailable while the new task starts.
+- You get the `rustfs_*` series RustFS pushes, some 500 of them: requests by method,
+  status class and S3 operation, request latency, drive capacity and state, objects and
+  bytes per bucket, and the process's memory, CPU and open files. RustFS's own `job` and
+  `instance` labels (`RustFS` and the task's address) arrive as `exported_job` and
+  `exported_instance`, beside the `job` and `stack` that discovery gives the collector.
+  The collector drops a series 5 minutes after RustFS last pushed it.
+- **RustFS pushes only its metrics.** The chart turns its trace and log export off and sets
+  `RUSTFS_OBS_LOG_STDOUT_ENABLED`, without which RustFS stops writing its log to
+  `docker service logs` as soon as any OTLP endpoint is set. While metrics are on,
+  `extraEnv` refuses `RUSTFS_OBS_ENDPOINT`, the per-signal `RUSTFS_OBS_METRIC_ENDPOINT`,
+  `_TRACE_ENDPOINT` and `_LOG_ENDPOINT`, the three settings the chart makes, and three
+  that would break the push: `RUSTFS_OBS_USE_STDOUT` (a copy of every metric in the log),
+  `RUSTFS_OBS_METRICS_EXPORT_ENABLED` (no push at all) and `RUSTFS_OBS_METER_INTERVAL`
+  (past the collector's 5 minutes, every series disappears between pushes).
+- **What `monitoring` and `rustfs-net` can reach.** The collector listens on two ports and
+  authenticates neither: 8889 serves the metrics, and 4318 takes OTLP pushes. Everything on
+  `monitoring` or `rustfs-net` reaches both. On 8889 that means every bucket's name, size
+  and object count (`rustfs_cluster_usage_buckets_*{bucket="…"}`), with no credentials and
+  past RustFS's IAM, which would refuse an unsigned ListBuckets. On 4318 it means pushing
+  series the collector then serves as RustFS's. Its `memory_limiter` refuses pushes once it
+  holds 150 MiB, below its 256M memory limit (`metrics.resources.limits.memory`), so a
+  flood of them is refused rather than getting the collector killed. prometheus-stack
+  already treats `monitoring` as a trust zone (its README, *Security*). The collector's own
+  telemetry stays on loopback, neither port is published, and RustFS's S3 and console
+  ports stay off `monitoring`.
+- `metrics.network` names a different overlay. It must differ from `network.name` and
+  `exposure.network`, and the render fails if it does not.
+- **Turning it off** leaves the collector running, because swarmcli deploys without
+  `--prune`, and with nothing left pushing to it, `RustFSNotReporting` fires at critical
+  about 15 minutes later. So remove it in the same step:
+
+  ```bash
+  swarmcli charts upgrade s3 swarmcli-charts/rustfs -f rustfs-values.yaml --set metrics.enabled=false
+  docker service rm s3_rustfs-metrics
+  ```
+- With swarmcli-cd, add `monitoring` to `allow.networks`.
+
+**A collector of your own.** With `metrics.enabled` off, `extraEnv` may point RustFS
+elsewhere: `RUSTFS_OBS_ENDPOINT` is the OTLP/HTTP base URL (RustFS appends `/v1/metrics`,
+`/v1/traces` and `/v1/logs`), and RustFS then exports traces and logs as well, unless
+`RUSTFS_OBS_TRACES_EXPORT_ENABLED` and `RUSTFS_OBS_LOGS_EXPORT_ENABLED` are `"false"`. Set
+`RUSTFS_OBS_LOG_STDOUT_ENABLED: "true"` too, or the server log leaves
+`docker service logs`.
+
+### Alerts and a dashboard
+
+The chart ships both under [`monitoring/`](monitoring) for your Prometheus and Grafana,
+and deploys neither: scraping is automatic, but which rules and dashboards a monitoring
+stack loads is its operator's choice. With the prometheus-stack chart they go in
+through its own configuration:
+
+```bash
+base=https://raw.githubusercontent.com/Eldara-Tech/swarmcli-charts/main/charts/rustfs/monitoring
+curl -fsSL -O "$base/rustfs-rules.yml" -O "$base/rustfs-dashboard.json"
+v="$(swarmcli charts status mon | sed -n 's/^CHART: prometheus-stack-//p')"
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --version "${v:?}" --reuse-values \
+  --set-file prometheus.extraRules.rustfs=./rustfs-rules.yml \
+  --set-file grafana.dashboards.rustfs=./rustfs-dashboard.json
+```
+
+`--version` keeps prometheus-stack at the version it runs, the only case in which `--reuse-values`
+is safe (Eldara-Tech/swarmcli#687).
+
+A release file and swarmcli-cd take values files only, not `--set-file`, so there both
+files go in as values files: each file's content, as it is, indented under its key as a
+block string. From the two files downloaded above:
+
+```bash
+mkdir -p monitoring/rules monitoring/dashboards
+{ printf 'prometheus:\n  extraRules:\n    rustfs: |\n'; sed 's/^./      &/' rustfs-rules.yml; } > monitoring/rules/rustfs.yaml
+{ printf 'grafana:\n  dashboards:\n    rustfs: |\n'; sed 's/^./      &/' rustfs-dashboard.json; } > monitoring/dashboards/rustfs.yaml
+```
+
+The dashboard stays JSON: converted to YAML it becomes a mapping, which the render
+refuses (`got object, want string`). prometheus-stack's README, *Keeping your setup in
+git*, shows where to list the two files.
+
+- **Alerts** (`rustfs-rules.yml`): RustFS ships no alert rules that fit a single-drive
+  store, so these are the chart's. Critical: `RustFSNotReporting` once the collector has
+  answered with nothing from RustFS for about 15 minutes (its series expire 5 minutes after
+  the last push, then the alert waits 10), because the task is down or restarting, its
+  export failed, or metrics were turned off without removing the collector;
+  `RustFSDriveOffline` while the drive is offline, when
+  RustFS answers every read and write with 503 although `/health/ready` still answers 200,
+  so the healthcheck does not restart it; and `RustFSS3ServerErrors` while more than 5% of
+  the requests either listener answers, health checks included, are 5xx. Warnings: `RustFSCapacityLow` below 10% free space, and
+  `RustFSDriveIOErrors` for I/O errors and timeouts on the drive. A down collector is
+  prometheus-stack's `TargetDown`.
+- **Dashboard** (`rustfs-dashboard.json`, uid `rustfs`), trimmed from RustFS's
+  [`.docker/observability/grafana/dashboards/rustfs.json`](https://github.com/rustfs/rustfs/blob/main/.docker/observability/grafana/dashboards/rustfs.json)
+  (Apache-2.0): uptime, drive offline, free and used space, objects and buckets; requests
+  by method, responses by status class, S3 operations and latency; capacity, drive errors,
+  and size and objects per bucket; the process's memory, CPU and open files, and traffic.
+  Pick a release by its `stack`.
+
+The dashboard picks a release by the `stack` label prometheus-stack's discovery puts on
+every target, and the alerts carry it. Another Prometheus needs the same relabelling of
+`__meta_dockerswarm_service_label_com_docker_stack_namespace` to `stack`, and
+`RustFSNotReporting` expects the collector's `job` to be its service name,
+`<release>_rustfs-metrics`.
 
 ## Values
 
@@ -385,7 +502,12 @@ collector.
 | `traefik.idleTimeoutSeconds` | `120` | RustFS's idle-connection timeout while either listener is routed; must outlast Traefik's 90s |
 | `publish.port` / `publish.mode` | `9000` / `ingress` | S3 API published port (published mode) |
 | `nofile` | `65536` | Open-file limit; `0` = daemon default |
-| `extraEnv` | `{}` | Extra `RUSTFS_*` environment. Credentials, the listener addresses and every OIDC setting but the tuning ones ([Single sign-on](#single-sign-on)) are refused; `RUSTFS_OBS_LOG_DIRECTORY`, `RUSTFS_CHECK_UPDATE`, `RUSTFS_HTTP1_HEADER_READ_TIMEOUT` and `RUSTFS_OUTBOUND_ALLOW_ORIGINS` override the chart's defaults |
+| `extraEnv` | `{}` | Extra `RUSTFS_*` environment. Credentials, the listener addresses, every OIDC setting but the tuning ones ([Single sign-on](#single-sign-on)) and, while `metrics.enabled`, the OTLP endpoints and export settings ([Metrics](#metrics)) are refused; `RUSTFS_OBS_LOG_DIRECTORY`, `RUSTFS_CHECK_UPDATE`, `RUSTFS_HTTP1_HEADER_READ_TIMEOUT` and `RUSTFS_OUTBOUND_ALLOW_ORIGINS` override the chart's defaults |
+| `metrics.enabled` | `false` | An OpenTelemetry Collector RustFS pushes its metrics to, labelled for Prometheus service discovery. See *Metrics*. |
+| `metrics.image.repository` | `otel/opentelemetry-collector` | Collector image |
+| `metrics.image.tag` | pinned in `values.yaml` | Collector image tag (a concrete pin; Renovate maintains it) |
+| `metrics.network` | `monitoring` | External overlay the collector shares with Prometheus (auto-created) |
+| `metrics.resources.limits.memory` | `256M` | The collector's memory limit; keep it at 256M or more, above its `memory_limiter`'s 200 MiB |
 | `healthcheck.*` | enabled, 15s/5s/4, start 30s, monitor 2m | `curl` of `/health/ready` on the S3 port |
 | `stopGracePeriod` | `30s` | SIGTERM → SIGKILL window |
 | `resources.limits.memory` / `resources.reservations.memory` | `""` | Optional memory limits |

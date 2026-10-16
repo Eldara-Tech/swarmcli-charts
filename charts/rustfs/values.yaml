@@ -177,14 +177,41 @@ publish:
 nofile: 65536
 
 # Extra environment variables, e.g. RUSTFS_SERVER_DOMAINS for virtual-hosted-style
-# addressing, RUSTFS_REGION, or RUSTFS_OBS_ENDPOINT to push OpenTelemetry metrics and
-# traces to a collector. RUSTFS_OBS_LOG_DIRECTORY, RUSTFS_CHECK_UPDATE,
-# RUSTFS_HTTP1_HEADER_READ_TIMEOUT and RUSTFS_OUTBOUND_ALLOW_ORIGINS here override the
-# chart's own settings. The render fails on credentials (they belong in the secrets
-# above, and RustFS reads MINIO_* names as well), on the listener addresses (set
-# s3.port / console.* instead) and on every RUSTFS_IDENTITY_OPENID_* setting except the
-# tuning keys README "Single sign-on" lists, allowed with console.oidc.enabled.
+# addressing, RUSTFS_REGION, or (with metrics off) RUSTFS_OBS_ENDPOINT to push
+# OpenTelemetry data to a collector of your own, together with
+# RUSTFS_OBS_LOG_STDOUT_ENABLED: "true" to keep the log on stdout (README "Metrics").
+# RUSTFS_OBS_LOG_DIRECTORY, RUSTFS_CHECK_UPDATE, RUSTFS_HTTP1_HEADER_READ_TIMEOUT and
+# RUSTFS_OUTBOUND_ALLOW_ORIGINS here override the chart's own settings. The render fails on
+# credentials (they belong in the secrets above, and RustFS reads MINIO_* names as well),
+# on the listener addresses (set s3.port / console.* instead), on every
+# RUSTFS_IDENTITY_OPENID_* setting except the tuning keys README "Single sign-on" lists,
+# allowed with console.oidc.enabled, and, while metrics.enabled, on the OTLP endpoints and
+# export settings the chart sets and on the three that would break its push
+# (RUSTFS_OBS_USE_STDOUT, RUSTFS_OBS_METRICS_EXPORT_ENABLED, RUSTFS_OBS_METER_INTERVAL).
 extraEnv: {}
+
+# Metrics. RustFS serves no Prometheus endpoint; it pushes OpenTelemetry (OTLP) metrics.
+# enabled adds an OpenTelemetry Collector service, <release>_rustfs-metrics, that RustFS
+# pushes to over network.name and that serves them as Prometheus metrics on port 8889,
+# labelled for Docker Swarm service discovery. RustFS's trace and log export stay off, and
+# its log stays on docker service logs. Turning it on or off restarts RustFS once.
+metrics:
+  enabled: false
+  image:
+    repository: otel/opentelemetry-collector
+    # A concrete tag, not appVersion: this is a second image, and Renovate's
+    # helm-values manager maintains pins written here.
+    tag: "0.162.0"
+  # External overlay the collector shares with Prometheus. Only the collector joins it,
+  # never RustFS. requirements.yaml declares it autoCreate:true.
+  network: monitoring
+  # The collector's Swarm memory limit. Anything on network.name or metrics.network can push
+  # to it unauthenticated, so it is bounded: its memory_limiter refuses pushes from 150 MiB
+  # and forces a GC at 200 MiB, below this limit. Keep it at 256M or more, or the kernel
+  # kills the collector before the limiter refuses anything.
+  resources:
+    limits:
+      memory: "256M"
 
 # Probes /health/ready on the S3 port with the image's curl: 503 until storage and IAM
 # are up, 200 after.

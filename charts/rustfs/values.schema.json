@@ -126,6 +126,38 @@
       "type": "object",
       "additionalProperties": { "type": ["string", "number", "boolean"] }
     },
+    "metrics": {
+      "description": "An OpenTelemetry Collector RustFS pushes its metrics to, labelled for Docker Swarm service discovery.",
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string", "minLength": 1 }
+          }
+        },
+        "network": {
+          "description": "External overlay the collector shares with Prometheus.",
+          "type": "string", "minLength": 1
+        },
+        "resources": {
+          "type": "object",
+          "properties": {
+            "limits": {
+              "type": "object",
+              "properties": {
+                "memory": {
+                  "description": "The collector's memory limit; keep it at 256M or more, above its memory_limiter's 200 MiB.",
+                  "type": "string", "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "healthcheck": {
       "type": "object",
       "properties": {

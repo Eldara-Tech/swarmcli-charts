@@ -23,7 +23,10 @@
 #     spoofed Host cannot move it), and the client secret reached the server's environment
 #     but not `docker inspect`;
 #   * the raised open-file limit reached the process, and its log reaches `docker service
-#     logs` (both are chart settings a render cannot prove the daemon applied).
+#     logs` (both are chart settings a render cannot prove the daemon applied);
+#   * `metrics`: the collector serves, on the monitoring overlay, every RustFS metric the
+#     alert rules and the dashboard read, RustFS itself is not on that overlay, it dumps no
+#     metrics into its log, and the alert rules pass promtool. Elsewhere there is no collector.
 #
 # `buckets` additionally forces a task restart and proves the object survives it and the
 # bootstrap passes again over the buckets that now exist (RustFS answers 200 for a bucket
@@ -133,6 +136,61 @@ logs="$(docker service logs --raw "$svc" 2>&1 || true)"
 grep -F '"level":' <<<"$logs" >/dev/null || die "no server log line in docker service logs; RustFS is still logging to a file"
 echo "  ok: nofile 65536 inside the task, server log on docker service logs"
 
+# ── metrics: scraped where Prometheus would scrape it ─────────────────────────────────
+# From the monitoring overlay, on the port the discovery label names. RustFS pushes every
+# 30 seconds and reads its drive every 60, and the per-bucket series wait for its first
+# data-usage scan, which took up to a few minutes in trial runs. The round trip above has
+# run, so its PUTs must be counted too. Every name the rules and the dashboard read is
+# checked, so a renamed metric fails here rather than in a panel.
+metrics_ok=""
+msvc="${release}_rustfs-metrics"
+if [ "$case" != "metrics" ]; then
+  if docker service inspect "$msvc" >/dev/null 2>&1; then die "case $case created $msvc although metrics are off"; fi
+else
+  mport="$(docker service inspect "$msvc" --format '{{index .Spec.Labels "prometheus.io/port"}}')"
+  [ "$mport" = "8889" ] || die "$msvc carries prometheus.io/port='$mport', expected 8889"
+  mon="$dir/monitoring"
+  want="$( { grep -v -E '^[[:space:]]*(#|summary:|description:)' "$mon/rustfs-rules.yml"; grep -F '"expr"' "$mon/rustfs-dashboard.json"; } \
+    | grep -oE 'rustfs_[a-z0-9_]+' | sed -E 's/_(bucket|sum|count)$//' | sort -u)"
+  [ "$(wc -l <<<"$want")" -ge 15 ] || die "found only $(wc -l <<<"$want") metric names in monitoring/; the extraction is broken"
+  m=""; missing="$want"
+  for _ in $(seq 1 60); do
+    m="$(docker run --rm --network monitoring "$CURL_IMAGE" -sSf --max-time 10 "http://${msvc}:${mport}/metrics" 2>&1 || true)"
+    have="$(grep -oE '^rustfs_[a-z0-9_]+' <<<"$m" | sed -E 's/_(bucket|sum|count)$//' | sort -u)"
+    missing="$(comm -23 <(printf '%s\n' "$want") <(printf '%s\n' "$have"))"
+    [ -z "$missing" ] && break
+    sleep 5
+  done
+  [ -z "$missing" ] || die "the collector on monitoring:${mport} does not serve $(tr '\n' ' ' <<<"$missing")(got: $(sed -n 1,3p <<<"$m"))"
+  # A PUT, which only the round trip sends: the healthcheck's GETs of /health/ready are
+  # counted too, so a 2xx or GET count would pass on them alone.
+  grep -E '^rustfs_http_server_requests_total\{.*method="PUT".*\} [1-9]' <<<"$m" >/dev/null \
+    || die "the collector does not count the round trip's PUTs"
+  echo "  ok: the collector on monitoring:${mport} serves all $(wc -l <<<"$want" | tr -d ' ') RustFS metrics the rules and the dashboard read, and counts the round trip's PUTs"
+  # By service name, which resolves on every network the service joins (the alias is rustfs-net's).
+  got="$(docker run --rm --network monitoring "$CURL_IMAGE" -s -o /dev/null -w '%{http_code}' --max-time 5 "http://${svc}:9000/" 2>/dev/null || true)"
+  [ "$got" = "000" ] || die "the S3 port answers HTTP $got from the monitoring overlay; RustFS must not join it"
+  # Read again: by now the collector has received several exports, so a stdout exporter would have printed.
+  logs="$(docker service logs --raw "$svc" 2>&1 || true)"
+  if grep -F 'rustfs_system_process_uptime_seconds' <<<"$logs" >/dev/null; then
+    die "RustFS dumps its metrics into docker service logs: it is exporting to stdout as well as to the collector"
+  fi
+  echo "  ok: RustFS is not on monitoring, and dumps no metrics into its log"
+  metrics_ok=", metrics scraped on monitoring"
+
+  # The alert rules the chart ships for operators to load (monitoring/), checked here
+  # because nothing deploys them: their logic, under the promtool of a pinned Prometheus.
+  # The image follows prometheus-stack's appVersion, which Renovate keeps current.
+  chart="$(cd "$dir" && pwd)"
+  prom_tag="$(sed -n 's/^appVersion: *"\(.*\)"$/\1/p' "$chart/../prometheus-stack/Chart.yaml")"
+  promtool_image="${RUSTFS_E2E_PROMTOOL_IMAGE:-prom/prometheus:${prom_tag:?no appVersion in charts/prometheus-stack/Chart.yaml}}"
+  out="$(docker run --rm --entrypoint promtool -v "$chart:/chart:ro" "$promtool_image" \
+    test rules /chart/ci/rustfs-rules-test.yml 2>&1)" \
+    || die "promtool test rules fails on monitoring/rustfs-rules.yml: $out"
+  echo "  ok: the alert rules pass promtool"
+  metrics_ok="$metrics_ok, alert rules pass promtool"
+fi
+
 # ── the console listener: there exactly when console.enabled ──────────────────────────
 if [ "$case" != "edge" ]; then
   got="$(docker run --rm --network rustfs-net "$CURL_IMAGE" -s -o /dev/null -w '%{http_code}' \
@@ -234,4 +292,4 @@ if [ "$case" = "published" ]; then
   echo "  ok: S3 and console published on the routing mesh as 19000 / 19001"
 fi
 
-echo "  rustfs [$case]: all checks passed"
+echo "  rustfs [$case]: all checks passed${metrics_ok}"

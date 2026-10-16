@@ -16,6 +16,12 @@ networks:
     attachable: true
     autoCreate: false
     description: "exposure.mode=traefik or console.exposure.mode=traefik only - the edge proxy's ingress overlay; provided by the proxy stack/operator"
+  # Attached only by the metrics collector, while metrics.enabled.
+  - name: "{{ .Values.metrics.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: true
+    description: "Overlay the metrics collector shares with Prometheus (when metrics.enabled); the prometheus-stack chart scrapes on it by default"
 secrets:
   - name: "{{ .Values.s3.accessKeySecret }}"
     description: "RustFS root access key. Pre-create: printf '%s' '<key-id>' | docker secret create rustfs-access-key -"
