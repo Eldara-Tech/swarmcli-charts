@@ -143,11 +143,14 @@ done
   && [ "$(q '.configs.nginx.template_driver')" = "golang" ] \
   || bad "nginx is not told ci_core / ci_portal through its templated config"
 nginxconf="$(dirname "$0")/../files/nginx/nginx.conf"
-grep -F 'set $core "{{ env "HARBOR_CORE" }}:8080";' "$nginxconf" >/dev/null \
+grep -F 'server {{ env "HARBOR_CORE" }}:8080 resolve;' "$nginxconf" >/dev/null \
+  && grep -F 'server {{ env "HARBOR_PORTAL" }}:8080 resolve;' "$nginxconf" >/dev/null \
   && grep -F 'resolver 127.0.0.11' "$nginxconf" >/dev/null \
-  || bad "files/nginx/nginx.conf does not resolve HARBOR_CORE per request through Swarm's DNS"
-if grep -E '^[[:space:]]*(upstream|server [a-z]+:[0-9])' "$nginxconf" >/dev/null; then
-  bad "files/nginx/nginx.conf has an upstream block: nginx resolves it once at start and exits while core has no healthy task"
+  || bad "files/nginx/nginx.conf does not re-resolve HARBOR_CORE / HARBOR_PORTAL through Swarm's DNS; resolved once at start, nginx exits while core has no healthy task"
+# A variable in proxy_pass forwards the raw request URI: a `#` then carries a path past
+# `location /service/notifications` to core's unauthenticated job hooks.
+if grep -E 'proxy_pass[[:space:]]+[^;]*\$' "$nginxconf" >/dev/null; then
+  bad "files/nginx/nginx.conf has a variable in proxy_pass; keep upstream's static targets"
 fi
 for f in config.yml config-metrics.yml; do
   if grep -E 'redis_url:' "$(dirname "$0")/../files/jobservice/$f" >/dev/null; then bad "files/jobservice/$f names a redis_url; it comes from JOB_SERVICE_POOL_REDIS_URL"; fi
@@ -352,6 +355,7 @@ if [ "$case" = "default" ]; then
   render --set config.auth_mode=ldap_auth && [ "$(yq -r .services.core.environment.CONFIG_OVERWRITE_JSON "$tmp")" = '{"auth_mode":"ldap_auth"}' ] \
     || bad "config.auth_mode without OIDC (e.g. LDAP) was refused or not passed on: $(tr '\n' ' ' <"$tmp.err")"
   refused 'config.oidc_client_secret is set by the chart' --set config.oidc_client_secret=x
+  refused 'config.ldap_search_password is a credential' --set config.ldap_search_password=x
   refused 'oidc.endpoint must be' --set oidc.enabled=true
   refused 'is not a Docker secret name' --set 'oidc.enabled=true' --set oidc.endpoint=https://kc.example.com/realms/r --set 'oidc.clientSecretSecret=x;id'
   refused 'is not a Docker secret name' --set 'secrets.core=a b'

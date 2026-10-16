@@ -63,6 +63,9 @@
 {{-   if or (and $oidc (eq $k "auth_mode")) (hasPrefix "oidc_" $k) -}}
 {{-     fail (printf "config.%s is set by the chart from oidc.*; use those values instead" $k) -}}
 {{-   end -}}
+{{-   if regexMatch "(?i)(password|secret)$" $k -}}
+{{-     fail (printf "config.%s is a credential, and config lands verbatim in the service spec and the release record; set it in Harbor's UI, with config left empty so the UI stays editable" $k) -}}
+{{-   end -}}
 {{- end -}}
 {{- /* An overlay the exporter or a scraped component shares with Prometheus must not be one
        it shares with the database, the edge or the object store. */ -}}

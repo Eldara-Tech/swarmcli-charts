@@ -44,7 +44,7 @@ openssl rand -hex 8  | tr -d '\n' | docker secret create harbor-jobservice-secre
 openssl rand -hex 8  | tr -d '\n' | docker secret create harbor-registry-http-secret -
 openssl rand -hex 16 | tr -d '\n' | docker secret create harbor-csrf-key -     # exactly 32 characters
 openssl rand -hex 8  | tr -d '\n' | docker secret create harbor-secret-key -   # exactly 16 bytes, never rotate
-openssl genrsa -traditional 4096 | docker secret create harbor-token-key -   # LibreSSL (macOS): no -traditional
+openssl genrsa -traditional 4096 | docker secret create harbor-token-key -   # OpenSSL 1.1, LibreSSL: no -traditional
 
 # How core and jobservice log in to the registry: a password, and its bcrypt htpasswd line.
 pw="$(openssl rand -hex 16)"
@@ -106,7 +106,8 @@ same change here.
 ## Exposure
 
 nginx is the only service routed or published; core, portal and the rest sit behind it on
-the stack's own overlay, and core and jobservice also on `database.network`. The components
+the stack's own overlay, and core and jobservice (and the exporter, with metrics) also on
+`database.network`. The components
 reach each other by the stack's full service names (`<release>_core`), never the short
 ones, which are aliases on every overlay a service joins.
 
@@ -164,7 +165,9 @@ Two upstream behaviours come with it:
 
 - **Every system setting becomes read-only in the UI**, not only the OIDC ones, for as long
   as the variable is set. Put further settings in `config`, keyed as in Harbor's
-  configuration API, e.g. `config.project_creation_restriction: adminonly`.
+  configuration API, e.g. `config.project_creation_restriction: adminonly`. A key ending in
+  `_password` or `_secret` is refused, because `config` lands verbatim in the service spec:
+  LDAP with a bind password is set in the UI, with `config` left empty.
 - **Harbor switches the auth mode only while no user other than `admin` exists.** Turn OIDC
   on at install, or before anyone else has logged in; otherwise core refuses the setting
   and stops at start (`the auth mode cannot be modified as new users have been inserted
@@ -239,8 +242,9 @@ the `monitoring` overlay, which is where the prometheus-stack chart scrapes by d
 Prometheus finds all four by itself, with no scrape config. The exporter also joins
 `database.network`: it reads project and quota figures from Harbor's database and the job queue
 from Valkey. It logs in as a **read-only role of its own** (`metrics.database.*`), never as
-Harbor's owner role, because it shares an overlay with Prometheus. Create the role once; the
-default privileges cover the tables later Harbor upgrades add:
+Harbor's owner role, because it shares an overlay with Prometheus. Create the role once, in
+`database.name` and for `database.username` (`harbor` below); the default privileges cover
+the tables later Harbor upgrades add:
 
 ```bash
 printf '%s' 'S3cr3t-exporter' | docker secret create harbor-exporter-db-password -
@@ -341,11 +345,11 @@ Core migrates the database at every start, with no way back to an older Harbor, 
 the database before an upgrade that changes `appVersion`. Core answers its healthcheck only
 after the migration, so core and jobservice get an hour (`healthcheck.startPeriod`) before
 Swarm counts a failed check: a core killed mid-migration leaves the schema marked dirty and
-refuses to start until it is repaired by hand. The rollout itself is judged within
-`healthcheck.monitor` (8m), so a long migration finishes after the upgrade has reported. Keep the same values across
-upgrades with `-f` rather than `--reuse-values`, which replaces a new chart version's
-defaults with the old release's values, so every key it adds renders `<no value>`
-(Eldara-Tech/swarmcli#687).
+refuses to start until it is repaired by hand. The update waits for core to become healthy
+and then watches it for `healthcheck.monitor` (8m), so for a long migration pass `--wait`
+a `--timeout` that covers it. Keep the same values across upgrades with `-f` rather than
+`--reuse-values`, which replaces a new chart version's defaults with the old release's
+values, so every key it adds renders `<no value>` (Eldara-Tech/swarmcli#687).
 
 ## Values
 

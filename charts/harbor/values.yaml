@@ -215,7 +215,8 @@ oidc:
 # Further Harbor system settings applied through CONFIG_OVERWRITE_JSON, keyed as in Harbor's
 # configuration API, e.g. project_creation_restriction: adminonly. Any key here makes every
 # setting read-only in the UI, as oidc.enabled does. The oidc_* keys, and auth_mode while
-# oidc.enabled, come from oidc.* and are refused here.
+# oidc.enabled, come from oidc.* and are refused here, as is any *_password or *_secret key:
+# config lands verbatim in the service spec.
 config: {}
 
 # Prometheus metrics (prometheus-stack chart). On: core, jobservice and the registry serve
@@ -249,7 +250,8 @@ healthcheck:
   # dirty, which takes a manual fix; upstream's Helm chart allows the same hour. The period
   # ends at the first passing check, so a normal start is not slowed down.
   startPeriod: 3600s
-  # How long Swarm counts a task failure against the rollout, measured from task creation.
-  # It covers every service's normal start and a crashing task; a core that runs but never
-  # becomes healthy is only replaced once startPeriod has passed, after the rollout.
+  # How long Swarm keeps watching an updated task once it is healthy; a failure before that
+  # always counts. So an update waits for a migrating core, however long, and a core that
+  # never becomes healthy fails the rollout after startPeriod (swarmcli lint warns that
+  # monitor is shorter than that). Give `--wait` a `--timeout` to match a long migration.
   monitor: 8m
