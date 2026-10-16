@@ -1,0 +1,461 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository"
+      ]
+    }
+  },
+  "type": "object",
+  "properties": {
+    "image": {
+      "$ref": "#/$defs/image"
+    },
+    "portal": {
+      "type": "object",
+      "properties": {
+        "image": {
+          "$ref": "#/$defs/image"
+        }
+      }
+    },
+    "jobservice": {
+      "type": "object",
+      "properties": {
+        "image": {
+          "$ref": "#/$defs/image"
+        },
+        "workers": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "registry": {
+      "type": "object",
+      "properties": {
+        "image": {
+          "$ref": "#/$defs/image"
+        }
+      }
+    },
+    "registryctl": {
+      "type": "object",
+      "properties": {
+        "image": {
+          "$ref": "#/$defs/image"
+        }
+      }
+    },
+    "nginx": {
+      "type": "object",
+      "properties": {
+        "image": {
+          "$ref": "#/$defs/image"
+        }
+      }
+    },
+    "valkey": {
+      "type": "object",
+      "properties": {
+        "image": {
+          "$ref": "#/$defs/image"
+        }
+      }
+    },
+    "trivy": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "image": {
+          "$ref": "#/$defs/image"
+        },
+        "skipUpdate": {
+          "type": "boolean"
+        },
+        "offlineScan": {
+          "type": "boolean"
+        },
+        "ignoreUnfixed": {
+          "type": "boolean"
+        },
+        "timeout": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "exposure": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "traefik",
+            "published",
+            "none"
+          ]
+        },
+        "network": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "tls": {
+          "type": "boolean"
+        }
+      }
+    },
+    "traefik": {
+      "type": "object",
+      "properties": {
+        "certResolver": {
+          "type": "string"
+        },
+        "entrypoints": {
+          "type": "object",
+          "properties": {
+            "http": {
+              "type": "string",
+              "minLength": 1
+            },
+            "https": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "routerName": {
+          "type": "string"
+        },
+        "constraintLabel": {
+          "type": "string",
+          "minLength": 1
+        },
+        "redirectMiddleware": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "publish": {
+      "type": "object",
+      "properties": {
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "ingress",
+            "host"
+          ]
+        }
+      }
+    },
+    "externalURL": {
+      "type": "string"
+    },
+    "database": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string",
+          "minLength": 1
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "username": {
+          "type": "string",
+          "minLength": 1
+        },
+        "passwordSecret": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sslmode": {
+          "type": "string",
+          "enum": [
+            "disable",
+            "require",
+            "verify-ca",
+            "verify-full"
+          ]
+        },
+        "network": {
+          "type": "string",
+          "minLength": 1
+        },
+        "maxIdleConns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxOpenConns": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "admin": {
+      "type": "object",
+      "properties": {
+        "passwordSecret": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "properties": {
+        "core": {
+          "type": "string",
+          "minLength": 1
+        },
+        "jobservice": {
+          "type": "string",
+          "minLength": 1
+        },
+        "registryHttp": {
+          "type": "string",
+          "minLength": 1
+        },
+        "csrfKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "secretKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tokenKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "registryPassword": {
+          "type": "string",
+          "minLength": 1
+        },
+        "registryHtpasswd": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "filesystem",
+            "s3"
+          ]
+        },
+        "s3": {
+          "type": "object",
+          "properties": {
+            "endpoint": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string",
+              "minLength": 1
+            },
+            "bucket": {
+              "type": "string",
+              "minLength": 1
+            },
+            "rootDirectory": {
+              "type": "string"
+            },
+            "accessKeySecret": {
+              "type": "string",
+              "minLength": 1
+            },
+            "secretKeySecret": {
+              "type": "string",
+              "minLength": 1
+            },
+            "disableRedirect": {
+              "type": "boolean"
+            },
+            "network": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "persistence": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "registryVolume": {
+          "type": "string",
+          "minLength": 1
+        },
+        "valkeyVolume": {
+          "type": "string",
+          "minLength": 1
+        },
+        "registryPath": {
+          "type": "string"
+        },
+        "valkeyPath": {
+          "type": "string"
+        },
+        "nodeLabel": {
+          "type": "string"
+        }
+      }
+    },
+    "placement": {
+      "type": "object",
+      "properties": {
+        "constraints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "oidc": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "clientId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clientSecretSecret": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "type": "string",
+          "minLength": 1
+        },
+        "userClaim": {
+          "type": "string"
+        },
+        "autoOnboard": {
+          "type": "boolean"
+        },
+        "groupsClaim": {
+          "type": "string"
+        },
+        "adminGroup": {
+          "type": "string"
+        },
+        "groupFilter": {
+          "type": "string"
+        },
+        "verifyCert": {
+          "type": "boolean"
+        },
+        "logout": {
+          "type": "boolean"
+        }
+      }
+    },
+    "config": {
+      "type": "object"
+    },
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "network": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exporter": {
+          "type": "object",
+          "properties": {
+            "image": {
+              "$ref": "#/$defs/image"
+            }
+          }
+        }
+      }
+    },
+    "labels": {
+      "type": "object",
+      "additionalProperties": {
+        "type": [
+          "string",
+          "number",
+          "boolean"
+        ]
+      }
+    },
+    "healthcheck": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "interval": {
+          "type": "string"
+        },
+        "timeout": {
+          "type": "string"
+        },
+        "retries": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "startPeriod": {
+          "type": "string"
+        },
+        "monitor": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

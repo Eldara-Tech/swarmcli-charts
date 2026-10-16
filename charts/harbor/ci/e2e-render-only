@@ -1,0 +1,17 @@
+# Fixtures that render + validate in scripts/test-charts.sh but are not deployed by the default
+# `make e2e` sweep (name one in E2E_CASES to force it). The deployed ones, published, metrics
+# and oidc, run against the throwaway PostgreSQL in ci/e2e-setup.sh and publish nginx; these
+# would need more than that to prove anything a render does not:
+#   default, tls-off  Traefik exposure: converging proves nothing without an edge in front.
+#   none              exposure.network for an operator's own proxy, which e2e does not have.
+#   ephemeral         the render-check covers the no-volume, no-pin shape.
+#   bind-mount        host directories and a node label on a data node.
+#   s3                an S3 store on rustfs-net.
+#   config            CONFIG_OVERWRITE_JSON without OIDC; the oidc case deploys the same path.
+default
+tls-off
+none
+ephemeral
+bind-mount
+s3
+config

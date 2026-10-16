@@ -53,14 +53,15 @@
     },
 
     {
-      "description": "Services that own a schema or a static config: minor/patch flow as normal PRs, majors are breaking. Keycloak migrates the external DB schema; superset's init service runs `superset db upgrade` irreversibly; traefik v3->v4 breaks static config; redis RDB is forward-only; a Prometheus major drops flags and config options (3.0 did), which prometheus-stack's shipped prometheus.yml depends on; a Grafana major migrates its database irreversibly (13 moved to unified storage).",
+      "description": "Services that own a schema or a static config: minor/patch flow as normal PRs, majors are breaking. Keycloak migrates the external DB schema; superset's init service runs `superset db upgrade` irreversibly; traefik v3->v4 breaks static config; redis RDB is forward-only; a Prometheus major drops flags and config options (3.0 did), which prometheus-stack's shipped prometheus.yml depends on; a Grafana major migrates its database irreversibly (13 moved to unified storage); Harbor core migrates its database irreversibly at start.",
       "matchDepNames": [
         "quay.io/keycloak/keycloak",
         "apache/superset",
         "traefik",
         "redis",
         "prom/prometheus",
-        "grafana/grafana"
+        "grafana/grafana",
+        "goharbor/harbor-core"
       ],
       "matchUpdateTypes": ["major"],
       "dependencyDashboardApproval": true,
@@ -88,6 +89,7 @@
     },
     { "matchFileNames": ["charts/airbyte/**"], "semanticCommitScope": "airbyte" },
     { "matchFileNames": ["charts/gitlab-runner/**"], "semanticCommitScope": "gitlab-runner" },
+    { "matchFileNames": ["charts/harbor/**"], "semanticCommitScope": "harbor" },
     { "matchFileNames": ["charts/keycloak/**"], "semanticCommitScope": "keycloak" },
     { "matchFileNames": ["charts/loki/**"], "semanticCommitScope": "loki" },
     { "matchFileNames": ["charts/mariadb/**"], "semanticCommitScope": "mariadb" },

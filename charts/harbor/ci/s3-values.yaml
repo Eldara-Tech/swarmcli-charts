@@ -1,0 +1,11 @@
+# S3 storage on an overlay (the rustfs chart's), with Trivy off: no registry volume, so only
+# Valkey is pinned, and the registry and registryctl join the store's overlay.
+storage:
+  type: s3
+  s3:
+    endpoint: http://rustfs-rustfs:9000
+    bucket: harbor
+    rootDirectory: registry
+    network: rustfs-net
+trivy:
+  enabled: false

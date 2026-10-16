@@ -1,0 +1,245 @@
+# harbor chart default values
+#
+# Harbor on Docker Swarm, shaped like upstream's docker-compose installer: nginx in front of
+# core (API, token service and the /v2 proxy) and portal (the UI), jobservice for background
+# jobs, the registry with registryctl beside it, Valkey for sessions, caches and the job
+# queue, and optionally the Trivy scanner. PostgreSQL is EXTERNAL (e.g. the postgres chart).
+#
+# Upstream publishes linux/amd64 images only, so every service needs an amd64 node.
+
+# goharbor/harbor-core: the image Renovate maintains. Harbor releases every component under
+# one tag, so the images below follow this one.
+image:
+  repository: goharbor/harbor-core
+  tag: ""  # defaults to appVersion from Chart.yaml
+
+# The other components. An empty tag follows image.tag (and so appVersion); set one only to
+# run a component at a different patch than core.
+portal:
+  image:
+    repository: goharbor/harbor-portal
+    tag: ""
+jobservice:
+  image:
+    repository: goharbor/harbor-jobservice
+    tag: ""
+  # Concurrent job workers: replication, garbage collection, retention, scans.
+  workers: 10
+registry:
+  image:
+    repository: goharbor/registry-photon
+    tag: ""
+registryctl:
+  image:
+    repository: goharbor/harbor-registryctl
+    tag: ""
+nginx:
+  image:
+    repository: goharbor/nginx-photon
+    tag: ""
+# Sessions, caches and the job queue. No password: it joins only the stack's own overlay.
+valkey:
+  image:
+    repository: goharbor/valkey-photon
+    tag: ""
+
+# Vulnerability scanning. It downloads the Trivy database from mirror.gcr.io / ghcr.io on
+# first scan, so it needs outbound access unless skipUpdate and offlineScan are set.
+trivy:
+  enabled: true
+  image:
+    repository: goharbor/trivy-adapter-photon
+    tag: ""
+  # Its cache (the vulnerability database) lives in the container, so a replaced task
+  # downloads the database again.
+  # Skip the database download (skipUpdate) and scan without network access (offlineScan).
+  skipUpdate: false
+  offlineScan: false
+  # Report only vulnerabilities that already have a fix.
+  ignoreUnfixed: false
+  timeout: 5m0s
+
+# Exposure. Only nginx is exposed; core and portal stay on the stack's own overlay.
+#   traefik   - Traefik routes ingress.host to nginx (default)
+#   published - nginx publishes publish.port on the routing mesh; set externalURL
+#   none      - nothing exposed; nginx joins exposure.network for a proxy of your own,
+#               which reaches it as <release>_nginx:8080; set externalURL
+exposure:
+  mode: traefik
+  network: traefik-public
+
+ingress:
+  host: harbor.example.com
+  tls: true
+
+# Defaults match the in-repo traefik chart; override for a Traefik of your own.
+traefik:
+  certResolver: le
+  entrypoints:
+    http: http
+    https: https
+  # Router/service name prefix; "" uses the release name.
+  routerName: ""
+  constraintLabel: traefik-public
+  redirectMiddleware: https-redirect
+
+publish:
+  port: 8080
+  mode: ingress
+
+# The URL people and docker clients reach Harbor at (EXT_ENDPOINT): the token realm, OIDC
+# callback and push URLs are built from it. "" derives it from ingress.host and ingress.tls,
+# which is right in traefik mode; published and none must set it, with a port that is not
+# the scheme's default, e.g. http://registry.lan:8080.
+externalURL: ""
+
+# External PostgreSQL. Harbor creates its tables on first start; the database and its owner
+# must exist (README). Core, jobservice and the metrics exporter join `network`.
+database:
+  host: postgres_postgres
+  port: 5432
+  name: harbor
+  username: harbor
+  # EXTERNAL Swarm secret holding the password:
+  #   printf '%s' 'S3cr3t' | docker secret create harbor-db-password -
+  passwordSecret: harbor-db-password
+  # disable | require | verify-ca | verify-full
+  sslmode: disable
+  network: postgres-net
+  # Core's connection pool. Upstream's 900 assumes its bundled database (1024 connections);
+  # the postgres chart allows PostgreSQL's default 100.
+  maxIdleConns: 10
+  maxOpenConns: 50
+
+# The initial password of `admin`, applied only while admin has none: change it in the UI
+# afterwards, and this secret is no longer read.
+admin:
+  passwordSecret: harbor-admin-password
+
+# Harbor's internal secrets, all EXTERNAL Swarm secrets created once (README, Prerequisites).
+secrets:
+  # Shared by core, jobservice and registryctl to authenticate each other.
+  core: harbor-core-secret
+  jobservice: harbor-jobservice-secret
+  # Signs the registry's upload state.
+  registryHttp: harbor-registry-http-secret
+  # Exactly 32 characters, or Harbor refuses every UI request that changes something.
+  csrfKey: harbor-csrf-key
+  # Exactly 16 bytes, no trailing newline; encrypts secrets Harbor stores in the database,
+  # so it must never change.
+  secretKey: harbor-secret-key
+  # RSA private key (PEM) that signs registry tokens.
+  tokenKey: harbor-token-key
+  # How core and jobservice log in to the registry: the password, and the htpasswd line
+  # for user harbor_registry_user that the registry checks it against (bcrypt).
+  registryPassword: harbor-registry-password
+  registryHtpasswd: harbor-registry-htpasswd
+
+# Where the registry keeps image layers.
+#   filesystem - a volume on the data node (persistence.*)
+#   s3         - an S3 bucket: AWS, or rustfs / seaweedfs / MinIO through s3.endpoint
+storage:
+  type: filesystem
+  s3:
+    # "" is AWS; otherwise the endpoint URL, which also switches to path-style addressing,
+    # e.g. http://rustfs-rustfs:9000 on the rustfs chart's overlay.
+    endpoint: ""
+    region: us-east-1
+    bucket: harbor
+    # Key prefix inside the bucket; "" is its root.
+    rootDirectory: ""
+    # EXTERNAL Swarm secrets holding the access key pair.
+    accessKeySecret: harbor-s3-access-key
+    secretKeySecret: harbor-s3-secret-key
+    # true: every layer is served through Harbor. false redirects docker clients to a
+    # presigned URL on the endpoint, which they must then be able to reach themselves.
+    disableRedirect: true
+    # An overlay to join to reach endpoint, e.g. rustfs-net; "" joins none.
+    network: ""
+
+# Volumes for the registry (with storage.type=filesystem) and Valkey, on one data node.
+# enabled:false keeps both in their containers: everything is lost when a task is replaced.
+persistence:
+  enabled: true
+  registryVolume: harbor-registry
+  valkeyVolume: harbor-valkey
+  # Store data under host directories instead. A path set here TAKES PRECEDENCE over the
+  # matching volume: that absolute host directory on the PINNED node is bind-mounted. It
+  # must exist; the registry takes ownership of its own at start, the Valkey one must be
+  # writable by uid 999. Host-filesystem access, acknowledged via swarmcli-charts/allow:
+  # "host-mount" in Chart.yaml. Leave "" to use the named volumes.
+  registryPath: ""
+  valkeyPath: ""
+  # Node label pinning registry, registryctl and Valkey to the node carrying their data.
+  # Rendered as `node.labels.<nodeLabel> == true` while persistence is enabled and dropped
+  # when it is not. Label exactly ONE node first:
+  #   docker node update --label-add harbor-data=true <node>
+  # Set "" to schedule unpinned even with persistence on (e.g. single-node swarm).
+  nodeLabel: harbor-data
+
+# Extra scheduling constraints, applied to every service.
+placement:
+  constraints: []
+
+# Single sign-on. Harbor takes its OIDC settings at start through CONFIG_OVERWRITE_JSON,
+# which also makes EVERY system setting read-only in the UI (README, Single sign-on). Turn
+# it on before anyone but admin has logged in: Harbor refuses to switch the auth mode once
+# other users exist, and core then stops at start.
+oidc:
+  enabled: false
+  # The login button's label.
+  name: OIDC
+  # The provider's issuer URL, e.g. https://keycloak.example.com/realms/main
+  endpoint: ""
+  clientId: harbor
+  # EXTERNAL Swarm secret holding the client secret:
+  #   printf '%s' '<client secret>' | docker secret create harbor-oidc-client-secret -
+  clientSecretSecret: harbor-oidc-client-secret
+  # Comma-separated; openid is required, offline_access keeps `docker login` working
+  # after the ID token expires.
+  scope: openid,profile,email,offline_access
+  # The claim that becomes the Harbor username; "" lets Harbor ask at first login.
+  userClaim: ""
+  # Create the user from userClaim at first login instead of asking.
+  autoOnboard: false
+  # The claim listing the user's groups, and the group whose members are Harbor admins.
+  groupsClaim: groups
+  adminGroup: ""
+  # A regular expression; only matching groups are imported. "" imports all.
+  groupFilter: ""
+  verifyCert: true
+  # Log out of the provider too when logging out of Harbor.
+  logout: false
+
+# Further Harbor system settings applied through CONFIG_OVERWRITE_JSON, keyed as in Harbor's
+# configuration API, e.g. project_creation_restriction: adminonly. Any key here makes every
+# setting read-only in the UI, as oidc.enabled does. auth_mode and the oidc_* keys come
+# from oidc.* and are refused here.
+config: {}
+
+# Prometheus metrics (prometheus-stack chart). On: core, jobservice and the registry serve
+# /metrics on port 8001, a harbor-exporter service adds project, quota and job-queue
+# metrics, and all four join `network` with the discovery labels (README, Metrics).
+metrics:
+  enabled: false
+  network: monitoring
+  # Harbor's own exporter, released with the other components; "" follows image.tag.
+  exporter:
+    image:
+      repository: goharbor/harbor-exporter
+      tag: ""
+
+# Extra deploy labels for nginx, the exposed service (key: value).
+labels: {}
+
+healthcheck:
+  enabled: true
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  # Core migrates the database at every start before it answers; the first start takes
+  # longest.
+  startPeriod: 300s
+  # How long Swarm counts a task failure against the rollout, measured from task creation.
+  # Must cover the worst case above (300s + 30s x 5 = 450s).
+  monitor: 8m

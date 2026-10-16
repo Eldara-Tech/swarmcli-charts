@@ -356,6 +356,19 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   `ci/e2e-check.sh` runs a source-faker connection check, the one request that crosses the
   server, Temporal, the workload launcher, FakeK8s's Postgres-backed dataplane credentials,
   Docker and S3.
+- **harbor** — the ten operator secrets (the secret key at exactly 16 bytes, the CSRF key at
+  32, and the registry's htpasswd line hashed by httpd's `htpasswd` from the same password
+  the registry-password secret holds) + a throwaway PostgreSQL, `harbor-e2e-db`, on an overlay
+  of its own, `harbor-e2e-db-net`, which the e2e fixtures point `database.*` at; for `oidc`,
+  also the client secret and a busybox stub OpenID provider on that overlay, the one network
+  core shares with it. Convergence is a weak signal: every service passes its healthcheck long
+  before it can reach the others, so `ci/e2e-check.sh` first waits for Harbor's health API to
+  report every component healthy. Then `published` pushes an image with docker through nginx,
+  core and the registry, reads it back through the API, pulls it again and has Trivy scan it;
+  `metrics` scrapes core, jobservice, the registry and the exporter from the `monitoring`
+  overlay and runs promtool on `monitoring/`; `oidc` follows a login to the stub provider's
+  authorization endpoint and checks that `CONFIG_OVERWRITE_JSON` applied the settings and made
+  them read-only.
 
 `whoami` and `swarm-cronjob` converge solo and ship no hooks.
 
