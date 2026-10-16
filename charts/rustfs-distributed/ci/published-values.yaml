@@ -1,0 +1,12 @@
+# The S3 API and the console published on each peer's node, in host mode. Render-only
+# (ci/e2e-render-only): four peers cannot bind one node's port.
+exposure:
+  mode: published
+publish:
+  port: 19000
+console:
+  enabled: true
+  exposure:
+    mode: published
+  publish:
+    port: 19001

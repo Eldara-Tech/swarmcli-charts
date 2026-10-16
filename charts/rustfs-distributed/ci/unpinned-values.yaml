@@ -1,0 +1,3 @@
+# Persisted but unpinned, the single-node-swarm shape: named volumes and no node pins.
+persistence:
+  nodeLabelPrefix: ""

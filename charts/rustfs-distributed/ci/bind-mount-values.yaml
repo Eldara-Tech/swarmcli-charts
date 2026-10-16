@@ -1,0 +1,9 @@
+# Host-path persistence: each peer's drive bind-mounted from a host directory of its own on
+# the node carrying that peer's label. ci/e2e-setup.sh creates the directories, owned by
+# 10001, and the labels. Both spellings of an entry: a single path, and a one-path list.
+persistence:
+  volumePaths:
+    - /tmp/rustfs-distributed-e2e/1
+    - [/tmp/rustfs-distributed-e2e/2]
+    - /tmp/rustfs-distributed-e2e/3
+    - [/tmp/rustfs-distributed-e2e/4]
