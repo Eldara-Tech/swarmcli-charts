@@ -300,8 +300,8 @@ The bot maintaining the image pins is our own, run from the
 configured and which updates it holds back.
 
 **Monitoring files** — the prometheus-stack chart ships no application's alert
-rules or dashboards, so a chart offering `metrics.enabled` ships its own, or its
-metrics are scraped and nothing alerts on them. It keeps them under
+rules or dashboards, so a chart offering `metrics.enabled` must ship its own;
+without them its metrics are scraped and nothing alerts on them. It keeps them under
 `charts/<name>/monitoring/` and deploys neither (`charts/mariadb-galera` is the
 reference):
 
