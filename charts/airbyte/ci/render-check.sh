@@ -81,6 +81,12 @@ case "$case" in
       || { echo "  FAIL($case): oauth2-proxy redirect-url is not $scheme://"; fail=1; }
     grep -q -- '--ssl-insecure-skip-verify=false' "$out" \
       || { echo "  FAIL($case): oauth2-proxy skips TLS verification by default"; fail=1; }
+    grep -q -- '--cookie-refresh=1m' "$out" \
+      || { echo "  FAIL($case): oauth2-proxy does not check sessions again at the provider every minute"; fail=1; }
+    # The proxy is on exposure.network too, where another stack's `server` or `oauth2-redis`
+    # would answer a short name: it dials the release's own services by their full names.
+    grep -q -- '--upstream=http://ci_server:8001/' "$out" && grep -q -- '--redis-connection-url=redis://ci_oauth2-redis:6379' "$out" \
+      || { echo "  FAIL($case): oauth2-proxy dials the server or its Redis by a short name another stack can answer"; fail=1; }
     ;;
 esac
 
