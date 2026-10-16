@@ -59,7 +59,7 @@
 {{-   end -}}
 {{- end -}}
 {{- range $k, $v := .Values.config -}}
-{{-   if or (eq $k "auth_mode") (hasPrefix "oidc_" $k) -}}
+{{-   if or (and $oidc (eq $k "auth_mode")) (hasPrefix "oidc_" $k) -}}
 {{-     fail (printf "config.%s is set by the chart from oidc.*; use those values instead" $k) -}}
 {{-   end -}}
 {{- end -}}
@@ -76,6 +76,10 @@
 version: "3.9"
 
 {{- $tag := .Values.image.tag | default .Chart.AppVersion }}
+{{- /* Components dial each other by the stack's full service name, <release>_<service>. The
+       short name is also an alias on every external overlay a service joins, where another
+       stack's service of the same name answers to it too. */}}
+{{- $p := printf "%s_" .Release.Name }}
 {{- $router := .Values.traefik.routerName | default .Release.Name }}
 {{- $externalURL := .Values.externalURL | default (printf "%s://%s" (ternary "https" "http" .Values.ingress.tls) .Values.ingress.host) }}
 {{- $dataPin := list }}
@@ -106,13 +110,14 @@ version: "3.9"
 {{- end }}
 {{- $http := dict "addr" ":5000" }}
 {{- if $metrics }}{{ $_ := set $http "debug" (dict "addr" ":8001" "prometheus" (dict "enabled" true "path" "/metrics")) }}{{ end }}
-{{- $registryConfig := dict "version" "0.1" "log" (dict "level" "info" "fields" (dict "service" "registry")) "storage" $storage "redis" (dict "addr" "valkey:6379" "db" 1 "readtimeout" "10s" "writetimeout" "10s" "dialtimeout" "10s" "pool" (dict "maxidle" 100 "maxactive" 500 "idletimeout" "60s")) "http" $http "auth" (dict "htpasswd" (dict "realm" "harbor-registry-basic-realm" "path" (printf "%s/%s" $secretPath .Values.secrets.registryHtpasswd))) "validation" (dict "disabled" true) "compatibility" (dict "schema1" (dict "enabled" true)) }}
+{{- $registryConfig := dict "version" "0.1" "log" (dict "level" "info" "fields" (dict "service" "registry")) "storage" $storage "redis" (dict "addr" (printf "%svalkey:6379" $p) "db" 1 "readtimeout" "10s" "writetimeout" "10s" "dialtimeout" "10s" "pool" (dict "maxidle" 100 "maxactive" 500 "idletimeout" "60s")) "http" $http "auth" (dict "htpasswd" (dict "realm" "harbor-registry-basic-realm" "path" (printf "%s/%s" $secretPath .Values.secrets.registryHtpasswd))) "validation" (dict "disabled" true) "compatibility" (dict "schema1" (dict "enabled" true)) }}
 
 {{- /* A new volume, or the image's anonymous /storage, is owned by root, and Harbor's images
        run as uid 10000. So registry and registryctl start as root, take ownership of the
        storage root (one directory, not a recursive walk), write the registry configuration,
-       and only then hand over to the image's own entrypoint as uid 10000 through su, which
-       keeps the environment. */}}
+       and run the image's own entrypoint as uid 10000 through su, which keeps the
+       environment. su itself stays behind as a root parent that only waits; the images ship
+       no tool that drops privileges without forking. */}}
 {{- $asHarbor := "" }}
 {{- if not $s3 }}{{ $asHarbor = "mkdir -p /storage; chown 10000:10000 /storage; " }}{{ end }}
 
@@ -144,6 +149,10 @@ services:
     configs:
       - source: nginx
         target: /etc/nginx/nginx.conf
+    # Read by files/nginx/nginx.conf, which Swarm renders with the golang template driver.
+    environment:
+      HARBOR_CORE: "{{ $p }}core"
+      HARBOR_PORTAL: "{{ $p }}portal"
     networks:
       - internal
 {{- if $proxied }}
@@ -243,19 +252,19 @@ services:
       POSTGRESQL_SSLMODE: {{ .Values.database.sslmode | quote }}
       POSTGRESQL_MAX_IDLE_CONNS: {{ .Values.database.maxIdleConns | quote }}
       POSTGRESQL_MAX_OPEN_CONNS: {{ .Values.database.maxOpenConns | quote }}
-      _REDIS_URL_CORE: redis://valkey:6379?idle_timeout_seconds=30
-      _REDIS_URL_REG: redis://valkey:6379/1?idle_timeout_seconds=30
-      CORE_URL: http://core:8080
+      _REDIS_URL_CORE: "redis://{{ $p }}valkey:6379?idle_timeout_seconds=30"
+      _REDIS_URL_REG: "redis://{{ $p }}valkey:6379/1?idle_timeout_seconds=30"
+      CORE_URL: "http://{{ $p }}core:8080"
       CORE_LOCAL_URL: http://127.0.0.1:8080
-      PORTAL_URL: http://portal:8080
-      JOBSERVICE_URL: http://jobservice:8080
-      REGISTRY_URL: http://registry:5000
-      REGISTRY_CONTROLLER_URL: http://registryctl:8080
-      TOKEN_SERVICE_URL: http://core:8080/service/token
+      PORTAL_URL: "http://{{ $p }}portal:8080"
+      JOBSERVICE_URL: "http://{{ $p }}jobservice:8080"
+      REGISTRY_URL: "http://{{ $p }}registry:5000"
+      REGISTRY_CONTROLLER_URL: "http://{{ $p }}registryctl:8080"
+      TOKEN_SERVICE_URL: "http://{{ $p }}core:8080/service/token"
       REGISTRY_STORAGE_PROVIDER_NAME: {{ .Values.storage.type | quote }}
       REGISTRY_CREDENTIAL_USERNAME: harbor_registry_user
       WITH_TRIVY: {{ $trivy | quote }}
-      TRIVY_ADAPTER_URL: http://trivy:8080
+      TRIVY_ADAPTER_URL: "http://{{ $p }}trivy:8080"
       MAX_JOB_WORKERS: {{ .Values.jobservice.workers | quote }}
       READ_ONLY: "false"
       # Read as files rather than through the wrapper: Harbor takes both by path.
@@ -278,10 +287,11 @@ services:
 {{- else if $overwrite }}
       CONFIG_OVERWRITE_JSON: {{ toJson $overwrite | replace "$" "$$" | quote }}
 {{- end }}
-    # The start-up wrapper: exports the secrets, checks the two whose length Harbor depends on,
+    # The start-up wrapper: exports the secrets, checks the three whose shape Harbor depends on,
     # then execs the image's entrypoint. The secret key is read verbatim as an AES key, so a
     # trailing newline is a 17th byte; a CSRF key of the wrong length makes Harbor refuse
-    # every UI request that changes something.
+    # every UI request that changes something; a token key in PKCS#8 (OpenSSL 3's default)
+    # fails every docker login with a 500 while every health check stays green.
     entrypoint:
       - /bin/bash
       - -c
@@ -298,6 +308,8 @@ services:
         if [ "$${#CSRF_KEY}" -ne 32 ]; then echo "secret {{ .Values.secrets.csrfKey }} must be exactly 32 characters (got $${#CSRF_KEY})" >&2; exit 1; fi
         n="$$(wc -c < "$$KEY_PATH")"
         if [ "$$n" -ne 16 ]; then echo "secret {{ .Values.secrets.secretKey }} must be exactly 16 bytes with no trailing newline (got $$n); create it with printf '%s'" >&2; exit 1; fi
+        read -r first < "$$TOKEN_PRIVATE_KEY_PATH" || true
+        if [ "$$first" != "-----BEGIN RSA PRIVATE KEY-----" ]; then echo "secret {{ .Values.secrets.tokenKey }} must be a PKCS#1 RSA key (BEGIN RSA PRIVATE KEY): Harbor signs registry tokens with libtrust, which reads no other format; create it with openssl genrsa -traditional" >&2; exit 1; fi
 {{- if $oidc }}
         rd HARBOR_OIDC_CLIENT_SECRET {{ .Values.oidc.clientSecretSecret }}
         case "$$HARBOR_OIDC_CLIENT_SECRET" in *[\"\\]*) echo "secret {{ .Values.oidc.clientSecretSecret }} contains a double quote or backslash - refusing to start" >&2; exit 1;; esac
@@ -382,19 +394,20 @@ services:
 {{- end }}
     environment:
       LOG_LEVEL: info
-      CORE_URL: http://core:8080
-      REGISTRY_URL: http://registry:5000
-      REGISTRY_CONTROLLER_URL: http://registryctl:8080
+      CORE_URL: "http://{{ $p }}core:8080"
+      REGISTRY_URL: "http://{{ $p }}registry:5000"
+      REGISTRY_CONTROLLER_URL: "http://{{ $p }}registryctl:8080"
       REGISTRY_CREDENTIAL_USERNAME: harbor_registry_user
       JOB_SERVICE_POOL_WORKERS: {{ .Values.jobservice.workers | quote }}
+      JOB_SERVICE_POOL_REDIS_URL: "redis://{{ $p }}valkey:6379/2?idle_timeout_seconds=30"
 {{- if $metrics }}
       METRIC_NAMESPACE: harbor
       METRIC_SUBSYSTEM: jobservice
 {{- end }}
-    # Exports the three secrets it shares with core and the registry, then execs the image's
-    # entrypoint. It reads the rest of its configuration from core at start, the database's
-    # address and password included, and connects to the database itself; until core answers
-    # it exits and Swarm restarts it.
+    # Exports the three secrets it shares with core and the registry, waits for core, then
+    # execs the image's entrypoint. jobservice reads the rest of its configuration from core
+    # at start, the database's address and password included, and connects to the database
+    # itself. Started before core answers it exits, which Swarm counts against a rollout.
     entrypoint:
       - /bin/bash
       - -c
@@ -405,6 +418,7 @@ services:
         rd CORE_SECRET {{ .Values.secrets.core }}
         rd JOBSERVICE_SECRET {{ .Values.secrets.jobservice }}
         rd REGISTRY_CREDENTIAL_PASSWORD {{ .Values.secrets.registryPassword }}
+        until curl -fsS -o /dev/null --max-time 5 "$$CORE_URL/api/v2.0/ping"; do echo "waiting for core at $$CORE_URL" >&2; sleep 5; done
         exec /harbor/entrypoint.sh
 {{- if .Values.healthcheck.enabled }}
     healthcheck:
@@ -446,7 +460,7 @@ services:
       - source: registryctl
         target: /etc/registryctl/config.yml
 {{-   end }}
-    # Root only until the hand-over at the end of the wrapper (see above).
+    # The wrapper runs as root, the registry itself as uid 10000 (see above).
     user: "0:0"
     secrets:
 {{-   if eq $svc "registry" }}
@@ -570,17 +584,16 @@ services:
       - internal
     environment:
       SCANNER_LOG_LEVEL: info
-      SCANNER_REDIS_URL: redis://valkey:6379/5?idle_timeout_seconds=30
-      SCANNER_STORE_REDIS_URL: redis://valkey:6379/5?idle_timeout_seconds=30
+      SCANNER_REDIS_URL: "redis://{{ $p }}valkey:6379/5?idle_timeout_seconds=30"
+      SCANNER_STORE_REDIS_URL: "redis://{{ $p }}valkey:6379/5?idle_timeout_seconds=30"
       SCANNER_STORE_REDIS_NAMESPACE: harbor.scanner.trivy:store
-      SCANNER_JOB_QUEUE_REDIS_URL: redis://valkey:6379/5?idle_timeout_seconds=30
+      SCANNER_JOB_QUEUE_REDIS_URL: "redis://{{ $p }}valkey:6379/5?idle_timeout_seconds=30"
       SCANNER_JOB_QUEUE_REDIS_NAMESPACE: harbor.scanner.trivy:job-queue
       SCANNER_TRIVY_CACHE_DIR: /home/scanner/.cache/trivy
       SCANNER_TRIVY_REPORTS_DIR: /home/scanner/.cache/reports
       SCANNER_TRIVY_VULN_TYPE: os,library
       SCANNER_TRIVY_SEVERITY: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
       SCANNER_TRIVY_IGNORE_UNFIXED: {{ .Values.trivy.ignoreUnfixed | quote }}
-      SCANNER_TRIVY_SKIP_UPDATE: {{ .Values.trivy.skipUpdate | quote }}
       SCANNER_TRIVY_OFFLINE_SCAN: {{ .Values.trivy.offlineScan | quote }}
       SCANNER_TRIVY_TIMEOUT: {{ .Values.trivy.timeout | quote }}
 {{- if .Values.healthcheck.enabled }}
@@ -631,9 +644,9 @@ services:
       HARBOR_METRIC_NAMESPACE: harbor
       HARBOR_METRIC_SUBSYSTEM: exporter
       HARBOR_SERVICE_SCHEME: http
-      HARBOR_SERVICE_HOST: core
+      HARBOR_SERVICE_HOST: "{{ $p }}core"
       HARBOR_SERVICE_PORT: "8080"
-      HARBOR_REDIS_URL: redis://valkey:6379/2
+      HARBOR_REDIS_URL: "redis://{{ $p }}valkey:6379/2"
       HARBOR_REDIS_NAMESPACE: harbor_job_service_namespace
       HARBOR_REDIS_TIMEOUT: "3600"
       HARBOR_DATABASE_HOST: {{ .Values.database.host | quote }}
@@ -672,6 +685,7 @@ configs:
   nginx:
     name: "{{ .Release.Name }}_nginx_{{ .Chart.Version }}"
     file: files/nginx/nginx.conf
+    template_driver: golang
   portal:
     name: "{{ .Release.Name }}_portal_{{ .Chart.Version }}"
     file: files/portal/nginx.conf

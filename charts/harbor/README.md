@@ -44,7 +44,7 @@ openssl rand -hex 8  | tr -d '\n' | docker secret create harbor-jobservice-secre
 openssl rand -hex 8  | tr -d '\n' | docker secret create harbor-registry-http-secret -
 openssl rand -hex 16 | tr -d '\n' | docker secret create harbor-csrf-key -     # exactly 32 characters
 openssl rand -hex 8  | tr -d '\n' | docker secret create harbor-secret-key -   # exactly 16 bytes, never rotate
-openssl genrsa 4096 | docker secret create harbor-token-key -
+openssl genrsa -traditional 4096 | docker secret create harbor-token-key -   # LibreSSL (macOS): no -traditional
 
 # How core and jobservice log in to the registry: a password, and its bcrypt htpasswd line.
 pw="$(openssl rand -hex 16)"
@@ -56,8 +56,11 @@ unset pw
 
 `harbor-secret-key` encrypts the secrets Harbor keeps in the database (OIDC users' CLI
 secrets and tokens, replication credentials), so replacing it locks Harbor out of them.
-The admin password is applied only while `admin` has none: change it in the UI after the
-first login, and the secret is no longer read.
+`harbor-token-key` must be PKCS#1 (`BEGIN RSA PRIVATE KEY`): Harbor signs registry tokens
+with a library that reads no other format, so OpenSSL 3's default PKCS#8 would fail every
+`docker login` with a 500 while every health check stays green. Core refuses to start with
+one. The admin password is applied only while `admin` has none: change it in the UI after
+the first login, and Harbor ignores the secret from then on (core still needs it to exist).
 
 **The data node.** The registry's layers and Valkey's data live on one node:
 
@@ -102,7 +105,10 @@ same change here.
 
 ## Exposure
 
-Only nginx is exposed; core, portal and the rest stay on the stack's own overlay.
+nginx is the only service routed or published; core, portal and the rest sit behind it on
+the stack's own overlay, and core and jobservice also on `database.network`. The components
+reach each other by the stack's full service names (`<release>_core`), never the short
+ones, which are aliases on every overlay a service joins.
 
 | Mode | What it does |
 |------|--------------|
@@ -193,9 +199,9 @@ expires.
 ## Vulnerability scanning
 
 Trivy downloads its database from `mirror.gcr.io` / `ghcr.io` on the first scan and keeps
-it in the container, so a replaced task downloads it again. Without outbound access, set
-`trivy.skipUpdate` and `trivy.offlineScan`, or turn the scanner off with
-`trivy.enabled: false`.
+it in the container, so a replaced task downloads it again. Without outbound access, turn
+the scanner off with `trivy.enabled: false`. `trivy.offlineScan` stops network lookups
+during a scan (Maven Central for Java artifacts) but still downloads the database.
 
 ## Persistence & node pinning
 
@@ -204,9 +210,9 @@ Valkey are pinned to the node labelled `harbor-data=true`, on the `harbor-regist
 `harbor-valkey` volumes. Valkey holds sessions, caches and the job queue, so losing it logs
 everyone out and drops queued jobs, but no images. `persistence.registryPath` and
 `persistence.valkeyPath` bind-mount host directories instead; they must exist on that node.
-The registry takes ownership of its directory at start (it starts as root, `chown`s the
-storage root to uid 10000 and hands over to it); the Valkey one must be writable by uid
-999:
+The registry takes ownership of its directory at start (its wrapper runs as root,
+`chown`s the storage root to uid 10000 and runs the registry as that uid through `su`, which
+stays behind as a root parent); the Valkey one must be writable by uid 999:
 
 ```bash
 install -d -o 999 -g 999 -m 0700 /srv/harbor/valkey
@@ -248,8 +254,9 @@ the registry and registryctl (which shares the registry's configuration): all fo
 
 - **What joins `monitoring`, and what else it can reach there.** core, jobservice, the registry
   and the exporter, on every port they listen on, not just 8001:
-  - core's API on 8080: the same API nginx serves, with the same authentication, but reached
-    without nginx;
+  - core's API on 8080, reached without nginx, so also `/service/notifications`, which nginx
+    answers 404: jobservice's unauthenticated status hooks, which need a job's random id to
+    do anything;
   - jobservice's API on 8080, which requires the shared jobservice secret for everything but
     `/api/v1/stats` (its worker pools);
   - the registry on 5000, behind the htpasswd login core uses;
@@ -336,7 +343,7 @@ defaults with the old release's values, so every key it adds renders `<no value>
 | `portal.image`, `jobservice.image`, `registry.image`, `registryctl.image`, `nginx.image`, `valkey.image`, `trivy.image`, `metrics.exporter.image` | `goharbor/…`, tag `""` | The other components; an empty tag follows `image.tag` |
 | `jobservice.workers` | `10` | Concurrent job workers |
 | `trivy.enabled` | `true` | Run the vulnerability scanner |
-| `trivy.skipUpdate` / `trivy.offlineScan` | `false` | Skip the database download / scan without network access |
+| `trivy.offlineScan` | `false` | No network lookups during a scan |
 | `trivy.ignoreUnfixed` | `false` | Report only vulnerabilities with a fix |
 | `trivy.timeout` | `5m0s` | Scan timeout |
 | `exposure.mode` | `traefik` | `traefik`, `published` or `none` |
@@ -350,7 +357,7 @@ defaults with the old release's values, so every key it adds renders `<no value>
 | `database.passwordSecret` | `harbor-db-password` | Swarm secret with its password |
 | `database.sslmode` | `disable` | `disable`, `require`, `verify-ca` or `verify-full` |
 | `database.network` | `postgres-net` | Overlay PostgreSQL is reachable on |
-| `database.maxIdleConns` / `maxOpenConns` | `10` / `50` | Core's connection pool |
+| `database.maxIdleConns` / `maxOpenConns` | `10` / `40` | Connection pool of core and, separately, of jobservice |
 | `admin.passwordSecret` | `harbor-admin-password` | Initial admin password |
 | `secrets.*` | `harbor-…` | `core`, `jobservice`, `registryHttp`, `csrfKey`, `secretKey`, `tokenKey`, `registryPassword`, `registryHtpasswd` (see Prerequisites) |
 | `storage.type` | `filesystem` | `filesystem` or `s3` |

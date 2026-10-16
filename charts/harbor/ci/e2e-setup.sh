@@ -32,7 +32,11 @@ printf '%s' 'e2ecsrfkey0123456789abcdef012345' | secret harbor-csrf-key
 printf '%s' 'e2esecretkey0016' | secret harbor-secret-key
 printf '%s' "$REGPW" | secret harbor-registry-password
 if ! docker secret inspect harbor-token-key >/dev/null 2>&1; then
-  openssl genrsa 2048 2>/dev/null | secret harbor-token-key
+  # PKCS#1, the only format Harbor's token signer reads: OpenSSL 3 needs -traditional,
+  # LibreSSL (macOS) writes it by default and knows no such flag.
+  key="$(openssl genrsa -traditional 2048 2>/dev/null || openssl genrsa 2048 2>/dev/null)"
+  case "$key" in "-----BEGIN RSA PRIVATE KEY-----"*) ;; *) echo "  FAIL: openssl wrote no PKCS#1 RSA key"; exit 1 ;; esac
+  printf '%s\n' "$key" | secret harbor-token-key
 fi
 if ! docker secret inspect harbor-registry-htpasswd >/dev/null 2>&1; then
   line="$(docker run --rm httpd:2.4-alpine htpasswd -nbB harbor_registry_user "$REGPW" | sed -n 1p)"

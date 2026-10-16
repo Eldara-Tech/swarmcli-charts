@@ -44,7 +44,7 @@ valkey:
     tag: ""
 
 # Vulnerability scanning. It downloads the Trivy database from mirror.gcr.io / ghcr.io on
-# first scan, so it needs outbound access unless skipUpdate and offlineScan are set.
+# first scan, so it needs outbound access; without it, turn it off.
 trivy:
   enabled: true
   image:
@@ -52,14 +52,14 @@ trivy:
     tag: ""
   # Its cache (the vulnerability database) lives in the container, so a replaced task
   # downloads the database again.
-  # Skip the database download (skipUpdate) and scan without network access (offlineScan).
-  skipUpdate: false
+  # No network lookups during a scan (e.g. Maven Central for Java artifacts); the database
+  # is still downloaded.
   offlineScan: false
   # Report only vulnerabilities that already have a fix.
   ignoreUnfixed: false
   timeout: 5m0s
 
-# Exposure. Only nginx is exposed; core and portal stay on the stack's own overlay.
+# Exposure. nginx is the only service routed or published; core and portal sit behind it.
 #   traefik   - Traefik routes ingress.host to nginx (default)
 #   published - nginx publishes publish.port on the routing mesh; set externalURL
 #   none      - nothing exposed; nginx joins exposure.network for a proxy of your own,
@@ -106,13 +106,14 @@ database:
   # disable | require | verify-ca | verify-full
   sslmode: disable
   network: postgres-net
-  # Core's connection pool. Upstream's 900 assumes its bundled database (1024 connections);
-  # the postgres chart allows PostgreSQL's default 100.
+  # The connection pool of core, and separately of jobservice, which takes the same values
+  # from core. Upstream's 900 assumes its bundled database (1024 connections); the postgres
+  # chart allows PostgreSQL's default 100, which 2 x 40 plus the exporter's 5 stays under.
   maxIdleConns: 10
-  maxOpenConns: 50
+  maxOpenConns: 40
 
-# The initial password of `admin`, applied only while admin has none: change it in the UI
-# afterwards, and this secret is no longer read.
+# The initial password of `admin`, applied only while admin has none: after you change it in
+# the UI Harbor ignores this secret, but core still needs it to exist.
 admin:
   passwordSecret: harbor-admin-password
 
@@ -128,7 +129,7 @@ secrets:
   # Exactly 16 bytes, no trailing newline; encrypts secrets Harbor stores in the database,
   # so it must never change.
   secretKey: harbor-secret-key
-  # RSA private key (PEM) that signs registry tokens.
+  # RSA private key that signs registry tokens, in PKCS#1 (BEGIN RSA PRIVATE KEY).
   tokenKey: harbor-token-key
   # How core and jobservice log in to the registry: the password, and the htpasswd line
   # for user harbor_registry_user that the registry checks it against (bcrypt).
@@ -213,8 +214,8 @@ oidc:
 
 # Further Harbor system settings applied through CONFIG_OVERWRITE_JSON, keyed as in Harbor's
 # configuration API, e.g. project_creation_restriction: adminonly. Any key here makes every
-# setting read-only in the UI, as oidc.enabled does. auth_mode and the oidc_* keys come
-# from oidc.* and are refused here.
+# setting read-only in the UI, as oidc.enabled does. The oidc_* keys, and auth_mode while
+# oidc.enabled, come from oidc.* and are refused here.
 config: {}
 
 # Prometheus metrics (prometheus-stack chart). On: core, jobservice and the registry serve

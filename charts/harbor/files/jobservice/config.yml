@@ -10,7 +10,7 @@ worker_pool:
   workers: 10
   backend: "redis"
   redis_pool:
-    redis_url: redis://valkey:6379/2?idle_timeout_seconds=30
+    # redis_url comes from JOB_SERVICE_POOL_REDIS_URL, which names <release>_valkey.
     namespace: "harbor_job_service_namespace"
     idle_timeout_second: 3600
 

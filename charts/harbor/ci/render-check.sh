@@ -60,8 +60,8 @@ for s in core jobservice registry registryctl exporter; do
   [ "$(q ".services.$s.entrypoint | join(\" \")")" = "/bin/bash -c" ] || bad "$s: entrypoint is not [/bin/bash, -c]"
   grep -F 'rd() { f=/run/secrets/$$2; v="$$(cat "$$f" 2>/dev/null || true)"; if [ -z "$$v" ]; then echo' <<<"$script" >/dev/null \
     || bad "$s: the wrapper has no rd() that refuses a missing or empty secret"
-  if grep -E '(^|[^$])\$[({A-Za-z#@]' <<<"$script" >/dev/null; then
-    bad "$s: the start-up script has an unescaped \$ ($(grep -oE '(^|[^$])\$[({A-Za-z#@][^ ]{0,20}' <<<"$script" | sed -n 1p)): Docker would interpolate it at deploy time"
+  if grep -E '(^|[^$])\$[({A-Za-z_#@]' <<<"$script" >/dev/null; then
+    bad "$s: the start-up script has an unescaped \$ ($(grep -oE '(^|[^$])\$[({A-Za-z_#@][^ ]{0,20}' <<<"$script" | sed -n 1p)): Docker would interpolate it at deploy time"
   fi
   for v in POSTGRESQL_PASSWORD HARBOR_ADMIN_PASSWORD CORE_SECRET JOBSERVICE_SECRET CSRF_KEY REGISTRY_CREDENTIAL_PASSWORD \
            REGISTRY_HTTP_SECRET REGISTRY_STORAGE_S3_ACCESSKEY REGISTRY_STORAGE_S3_SECRETKEY HARBOR_DATABASE_PASSWORD \
@@ -70,12 +70,34 @@ for s in core jobservice registry registryctl exporter; do
   done
 done
 core="$(q '.services.core.command[0]')"
-for v in POSTGRESQL_PASSWORD HARBOR_ADMIN_PASSWORD CORE_SECRET JOBSERVICE_SECRET CSRF_KEY REGISTRY_CREDENTIAL_PASSWORD; do
-  grep -E "^rd $v harbor-" <<<"$core" >/dev/null || bad "core: the wrapper does not export $v from a secret"
-done
+# Every secret each component needs, exported from the secret of that name. A missing one does
+# not always fail: the registry picks a random http secret, and registryctl's health check
+# never authenticates, so convergence cannot stand in for this.
+exports() {  # $1 service, then VAR=secret pairs
+  local svc="$1"; shift
+  for pair in "$@"; do
+    grep -Fx "rd ${pair%%=*} ${pair#*=}" <<<"$(q ".services.$svc.command[0]")" >/dev/null \
+      || bad "$svc: the wrapper does not export ${pair%%=*} from secret ${pair#*=}"
+  done
+}
+exports core POSTGRESQL_PASSWORD=harbor-db-password HARBOR_ADMIN_PASSWORD=harbor-admin-password \
+  CORE_SECRET=harbor-core-secret JOBSERVICE_SECRET=harbor-jobservice-secret CSRF_KEY=harbor-csrf-key \
+  REGISTRY_CREDENTIAL_PASSWORD=harbor-registry-password
+exports jobservice CORE_SECRET=harbor-core-secret JOBSERVICE_SECRET=harbor-jobservice-secret \
+  REGISTRY_CREDENTIAL_PASSWORD=harbor-registry-password
+exports registry REGISTRY_HTTP_SECRET=harbor-registry-http-secret
+exports registryctl CORE_SECRET=harbor-core-secret JOBSERVICE_SECRET=harbor-jobservice-secret
+if [ "$case" = "s3" ]; then
+  for s in registry registryctl; do
+    exports "$s" REGISTRY_STORAGE_S3_ACCESSKEY=harbor-s3-access-key REGISTRY_STORAGE_S3_SECRETKEY=harbor-s3-secret-key
+  done
+fi
+[ "$metrics" = 1 ] && exports exporter HARBOR_DATABASE_PASSWORD=harbor-db-password
 grep -F 'if [ "$${#CSRF_KEY}" -ne 32 ]' <<<"$core" >/dev/null || bad "core: the wrapper does not refuse a CSRF key that is not 32 characters"
 grep -F 'n="$$(wc -c < "$$KEY_PATH")"' <<<"$core" >/dev/null && grep -F 'if [ "$$n" -ne 16 ]' <<<"$core" >/dev/null \
   || bad "core: the wrapper does not refuse a secret key that is not exactly 16 bytes"
+grep -F 'if [ "$$first" != "-----BEGIN RSA PRIVATE KEY-----" ]' <<<"$core" >/dev/null \
+  || bad "core: the wrapper does not refuse a token key that is not PKCS#1 (libtrust reads no other; every docker login would 500)"
 [ "$(tail -n1 <<<"$core")" = "exec /harbor/entrypoint.sh" ] || bad "core: the wrapper does not end by exec'ing the image's entrypoint"
 [ "$(env_ core KEY_PATH)" = "/run/secrets/harbor-secret-key" ] && [ "$(env_ core TOKEN_PRIVATE_KEY_PATH)" = "/run/secrets/harbor-token-key" ] \
   || bad "core: KEY_PATH / TOKEN_PRIVATE_KEY_PATH do not point at the mounted secrets"
@@ -101,6 +123,32 @@ for s in $(q '.services | keys | .[]'); do
 done
 [ "$(nets valkey)" = "internal" ] || bad "valkey is on '$(nets valkey)'; it has no password and must stay on internal alone"
 [ "$(q '.networks.internal.external // false')" = "false" ] || bad "the internal overlay is external; it must be the stack's own"
+
+# ── components dial each other by full service name ──────────────────────────────
+# A short name is an alias on every external overlay too, where another stack's service of
+# that name answers.
+for s in $(q '.services | keys | .[]'); do
+  short="$(q ".services.$s.environment // {} | to_entries | .[] | .value" | grep -E '://(core|portal|jobservice|registry|registryctl|valkey|trivy|exporter):' || true)"
+  [ -z "$short" ] || bad "$s dials a short service name: $short"
+done
+[ "$(env_ core CORE_URL)" = "http://ci_core:8080" ] && [ "$(env_ jobservice CORE_URL)" = "http://ci_core:8080" ] \
+  && [ "$(env_ jobservice JOB_SERVICE_POOL_REDIS_URL)" = "redis://ci_valkey:6379/2?idle_timeout_seconds=30" ] \
+  || bad "core/jobservice do not dial ci_core and ci_valkey"
+[ "$(env_ nginx HARBOR_CORE)/$(env_ nginx HARBOR_PORTAL)" = "ci_core/ci_portal" ] \
+  && [ "$(q '.configs.nginx.template_driver')" = "golang" ] \
+  || bad "nginx is not told ci_core / ci_portal through its templated config"
+nginxconf="$(dirname "$0")/../files/nginx/nginx.conf"
+grep -F 'set $core "{{ env "HARBOR_CORE" }}:8080";' "$nginxconf" >/dev/null \
+  && grep -F 'resolver 127.0.0.11' "$nginxconf" >/dev/null \
+  || bad "files/nginx/nginx.conf does not resolve HARBOR_CORE per request through Swarm's DNS"
+if grep -E '^[[:space:]]*(upstream|server [a-z]+:[0-9])' "$nginxconf" >/dev/null; then
+  bad "files/nginx/nginx.conf has an upstream block: nginx resolves it once at start and exits while core has no healthy task"
+fi
+for f in config.yml config-metrics.yml; do
+  if grep -E 'redis_url:' "$(dirname "$0")/../files/jobservice/$f" >/dev/null; then bad "files/jobservice/$f names a redis_url; it comes from JOB_SERVICE_POOL_REDIS_URL"; fi
+done
+grep -F 'until curl -fsS -o /dev/null --max-time 5 "$$CORE_URL/api/v2.0/ping"' <<<"$(q '.services.jobservice.command[0]')" >/dev/null \
+  || bad "jobservice does not wait for core; started first it exits, which pauses a rollout"
 
 # ── exposure ──────────────────────────────────────────────────────────────────────────
 labels="$(q '.services.nginx.deploy.labels // [] | .[]')"
@@ -144,7 +192,7 @@ regcfg="$(env_ registry HARBOR_REGISTRY_CONFIG)"
 [ "$regcfg" = "$(env_ registryctl HARBOR_REGISTRY_CONFIG)" ] || bad "registry and registryctl run different registry configurations"
 rc() { yq -r "$1" <<<"$regcfg"; }
 [ "$(rc '.auth.htpasswd.path')" = "/run/secrets/harbor-registry-htpasswd" ] || bad "the registry does not check logins against the htpasswd secret"
-[ "$(rc '.redis.addr')" = "valkey:6379" ] || bad "the registry's cache is not Valkey"
+[ "$(rc '.redis.addr')" = "ci_valkey:6379" ] || bad "the registry's cache is not ci_valkey"
 for s in registry registryctl; do
   [ "$(q ".services.$s.user")" = "0:0" ] || bad "$s does not start as root, so it cannot take ownership of the storage"
   grep -F "exec su -s /bin/sh harbor -c 'exec /home/harbor/" <<<"$(q ".services.$s.command[0]")" >/dev/null \
@@ -295,7 +343,9 @@ if [ "$case" = "default" ]; then
   refused 'externalURL must be scheme://host[:port]' --set externalURL=https://harbor.example.com/
   refused 'externalURL must be scheme://host[:port]' --set externalURL=harbor.example.com
   refused 'ingress.host is required' --set ingress.host=
-  refused 'config.auth_mode is set by the chart' --set config.auth_mode=db_auth
+  refused 'config.auth_mode is set by the chart' --set oidc.enabled=true --set oidc.endpoint=https://kc.example.com/realms/r --set config.auth_mode=db_auth
+  render --set config.auth_mode=ldap_auth && [ "$(yq -r .services.core.environment.CONFIG_OVERWRITE_JSON "$tmp")" = '{"auth_mode":"ldap_auth"}' ] \
+    || bad "config.auth_mode without OIDC (e.g. LDAP) was refused or not passed on: $(tr '\n' ' ' <"$tmp.err")"
   refused 'config.oidc_client_secret is set by the chart' --set config.oidc_client_secret=x
   refused 'oidc.endpoint must be' --set oidc.enabled=true
   refused 'is not a Docker secret name' --set 'oidc.enabled=true' --set oidc.endpoint=https://kc.example.com/realms/r --set 'oidc.clientSecretSecret=x;id'

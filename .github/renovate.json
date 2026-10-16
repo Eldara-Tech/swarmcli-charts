@@ -53,7 +53,7 @@
     },
 
     {
-      "description": "Services that own a schema or a static config: minor/patch flow as normal PRs, majors are breaking. Keycloak migrates the external DB schema; superset's init service runs `superset db upgrade` irreversibly; traefik v3->v4 breaks static config; redis RDB is forward-only; a Prometheus major drops flags and config options (3.0 did), which prometheus-stack's shipped prometheus.yml depends on; a Grafana major migrates its database irreversibly (13 moved to unified storage); Harbor core migrates its database irreversibly at start.",
+      "description": "Services that own a schema or a static config: minor/patch flow as normal PRs, majors are breaking. Keycloak migrates the external DB schema; superset's init service runs `superset db upgrade` irreversibly; traefik v3->v4 breaks static config; redis RDB is forward-only; a Prometheus major drops flags and config options (3.0 did), which prometheus-stack's shipped prometheus.yml depends on; a Grafana major migrates its database irreversibly (13 moved to unified storage); Harbor core migrates its schema at start, with no way back.",
       "matchDepNames": [
         "quay.io/keycloak/keycloak",
         "apache/superset",
