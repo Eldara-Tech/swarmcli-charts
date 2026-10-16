@@ -361,12 +361,14 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   the registry-password secret holds) + a throwaway PostgreSQL, `harbor-e2e-db`, on an overlay
   of its own, `harbor-e2e-db-net`, which the e2e fixtures point `database.*` at; for `oidc`,
   also the client secret and a busybox stub OpenID provider on that overlay, the one network
-  core shares with it. Convergence is a weak signal: every service passes its healthcheck long
+  core shares with it; for `metrics`, the exporter's read-only role, created with the README's
+  grants before Harbor's first start. Convergence is a weak signal: every service passes its healthcheck long
   before it can reach the others, so `ci/e2e-check.sh` first waits for Harbor's health API to
   report every component healthy. Then `published` pushes an image with docker through nginx,
   core and the registry, reads it back through the API, pulls it again and has Trivy scan it;
   `metrics` scrapes core, jobservice, the registry and the exporter from the `monitoring`
-  overlay and runs promtool on `monitoring/`; `oidc` follows a login to the stub provider's
+  overlay (the exporter's project count proves its role can read core's tables) and runs
+  promtool on `monitoring/`; `oidc` follows a login to the stub provider's
   authorization endpoint and checks that `CONFIG_OVERWRITE_JSON` applied the settings and made
   them read-only.
 

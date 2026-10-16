@@ -92,7 +92,12 @@ if [ "$case" = "s3" ]; then
     exports "$s" REGISTRY_STORAGE_S3_ACCESSKEY=harbor-s3-access-key REGISTRY_STORAGE_S3_SECRETKEY=harbor-s3-secret-key
   done
 fi
-[ "$metrics" = 1 ] && exports exporter HARBOR_DATABASE_PASSWORD=harbor-db-password
+if [ "$metrics" = 1 ]; then
+  exports exporter HARBOR_DATABASE_PASSWORD=harbor-exporter-db-password
+  [ "$(env_ exporter HARBOR_DATABASE_USERNAME)" = "harbor_exporter" ] || bad "the exporter does not log in as its read-only role"
+  [ "$(q '.services.exporter.secrets | join(" ")')" = "harbor-exporter-db-password" ] \
+    || bad "the exporter mounts '$(q '.services.exporter.secrets | join(" ")')'; it must hold only its own role's password, never Harbor's"
+fi
 grep -F 'if [ "$${#CSRF_KEY}" -ne 32 ]' <<<"$core" >/dev/null || bad "core: the wrapper does not refuse a CSRF key that is not 32 characters"
 grep -F 'n="$$(wc -c < "$$KEY_PATH")"' <<<"$core" >/dev/null && grep -F 'if [ "$$n" -ne 16 ]' <<<"$core" >/dev/null \
   || bad "core: the wrapper does not refuse a secret key that is not exactly 16 bytes"

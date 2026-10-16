@@ -229,6 +229,12 @@ metrics:
     image:
       repository: goharbor/harbor-exporter
       tag: ""
+  # The read-only database role the exporter logs in as, never Harbor's own: it sits on
+  # `network`, which Prometheus shares. Create it once (README, Metrics) and its password:
+  #   printf '%s' 'S3cr3t' | docker secret create harbor-exporter-db-password -
+  database:
+    username: harbor_exporter
+    passwordSecret: harbor-exporter-db-password
 
 # Extra deploy labels for nginx, the exposed service (key: value).
 labels: {}
@@ -238,9 +244,12 @@ healthcheck:
   interval: 30s
   timeout: 10s
   retries: 5
-  # Core migrates the database at every start before it answers; the first start takes
-  # longest.
-  startPeriod: 300s
+  # Core and jobservice only (the others start in 30s). Core migrates the database at every
+  # start before it answers, and Swarm killing it mid-migration leaves the schema marked
+  # dirty, which takes a manual fix; upstream's Helm chart allows the same hour. The period
+  # ends at the first passing check, so a normal start is not slowed down.
+  startPeriod: 3600s
   # How long Swarm counts a task failure against the rollout, measured from task creation.
-  # Must cover the worst case above (300s + 30s x 5 = 450s).
+  # It covers every service's normal start and a crashing task; a core that runs but never
+  # becomes healthy is only replaced once startPeriod has passed, after the rollout.
   monitor: 8m

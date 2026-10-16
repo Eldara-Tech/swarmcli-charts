@@ -237,10 +237,18 @@ during garbage collection. It is for trying the chart out.
 Each carries the deploy labels `prometheus.io/scrape=true` and `prometheus.io/port=8001` and joins
 the `monitoring` overlay, which is where the prometheus-stack chart scrapes by default — so
 Prometheus finds all four by itself, with no scrape config. The exporter also joins
-`database.network`: it reads project and quota figures from Harbor's database with Harbor's own
-database user, and the job queue from Valkey.
+`database.network`: it reads project and quota figures from Harbor's database and the job queue
+from Valkey. It logs in as a **read-only role of its own** (`metrics.database.*`), never as
+Harbor's owner role, because it shares an overlay with Prometheus. Create the role once; the
+default privileges cover the tables later Harbor upgrades add:
 
 ```bash
+printf '%s' 'S3cr3t-exporter' | docker secret create harbor-exporter-db-password -
+docker exec -it "$(docker ps -q -f label=com.docker.swarm.service.name=postgres_postgres)" \
+  psql -U postgres -d harbor -c "CREATE ROLE harbor_exporter LOGIN PASSWORD 'S3cr3t-exporter'" \
+  -c "GRANT SELECT ON ALL TABLES IN SCHEMA public TO harbor_exporter" \
+  -c "ALTER DEFAULT PRIVILEGES FOR ROLE harbor IN SCHEMA public GRANT SELECT ON TABLES TO harbor_exporter"
+
 swarmcli charts upgrade harbor swarmcli-charts/harbor -f harbor-values.yaml --set metrics.enabled=true
 ```
 
@@ -271,7 +279,8 @@ the registry and registryctl (which shares the registry's configuration): all fo
   `database.network`, `exposure.network` or `storage.s3.network`.
 - **Turning it off** leaves the exporter service running, because swarmcli deploys without
   `--prune`. Remove it yourself: `docker service rm <release>_exporter`.
-- **swarmcli-cd** additionally needs `monitoring` in `allow.networks`.
+- **swarmcli-cd** additionally needs `monitoring` in `allow.networks` and
+  `harbor-exporter-db-password` in `allow.secrets`.
 
 ### Alerts and a dashboard
 
@@ -329,7 +338,11 @@ target, and the alerts carry it. Another Prometheus needs the same relabelling o
 ## Upgrading
 
 Core migrates the database at every start, with no way back to an older Harbor, so back up
-the database before an upgrade that changes `appVersion`. Keep the same values across
+the database before an upgrade that changes `appVersion`. Core answers its healthcheck only
+after the migration, so core and jobservice get an hour (`healthcheck.startPeriod`) before
+Swarm counts a failed check: a core killed mid-migration leaves the schema marked dirty and
+refuses to start until it is repaired by hand. The rollout itself is judged within
+`healthcheck.monitor` (8m), so a long migration finishes after the upgrade has reported. Keep the same values across
 upgrades with `-f` rather than `--reuse-values`, which replaces a new chart version's
 defaults with the old release's values, so every key it adds renders `<no value>`
 (Eldara-Tech/swarmcli#687).
@@ -381,5 +394,6 @@ defaults with the old release's values, so every key it adds renders `<no value>
 | `config` | `{}` | Further system settings through `CONFIG_OVERWRITE_JSON` |
 | `metrics.enabled` | `false` | Prometheus metrics and the exporter |
 | `metrics.network` | `monitoring` | Overlay shared with Prometheus |
+| `metrics.database.username` / `passwordSecret` | `harbor_exporter` / `harbor-exporter-db-password` | The exporter's read-only database role |
 | `labels` | `{}` | Extra deploy labels on nginx |
-| `healthcheck.*` | on, `30s`/`10s`/`5`, start `300s`, monitor `8m` | Healthchecks and the rollout window |
+| `healthcheck.*` | on, `30s`/`10s`/`5`, start `3600s` (core, jobservice), monitor `8m` | Healthchecks and the rollout window |

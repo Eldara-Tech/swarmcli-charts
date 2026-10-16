@@ -9,7 +9,8 @@
 #   published  pushes an image with docker through nginx -> core -> registry, reads it back
 #              through the API, pulls it again and has Trivy scan it;
 #   metrics    scrapes core, jobservice, the registry and the exporter from the monitoring
-#              overlay, as Prometheus would, and runs promtool on monitoring/;
+#              overlay, as Prometheus would (the exporter's project count proves its
+#              read-only role can read core's tables), and runs promtool on monitoring/;
 #   oidc       follows a login to the stub provider's authorization endpoint and checks that
 #              CONFIG_OVERWRITE_JSON applied the settings and made them read-only.
 # The published port is reached from a container on the host network, i.e. from the swarm
@@ -81,7 +82,7 @@ if [ "$case" = "published" ]; then
 fi
 
 if [ "$case" = "metrics" ]; then
-  for t in core:harbor_core_ jobservice:harbor_jobservice_ registry:registry_ exporter:harbor_up; do
+  for t in core:harbor_core_ jobservice:harbor_jobservice_ registry:registry_ exporter:harbor_up exporter:harbor_project_total; do
     svc="${t%%:*}"; want="${t#*:}"
     body="$(docker run --rm --network monitoring curlimages/curl:latest -fsS --max-time 30 \
       "http://${release}_${svc}:8001/metrics" 2>&1 || true)"

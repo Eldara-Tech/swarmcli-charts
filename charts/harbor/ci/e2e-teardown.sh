@@ -11,6 +11,7 @@ set -uo pipefail
 docker service rm harbor-e2e-db harbor-e2e-idp >/dev/null 2>&1 || true
 docker secret rm harbor-db-password harbor-admin-password harbor-core-secret harbor-jobservice-secret \
   harbor-registry-http-secret harbor-csrf-key harbor-secret-key harbor-token-key \
-  harbor-registry-password harbor-registry-htpasswd harbor-oidc-client-secret >/dev/null 2>&1 || true
+  harbor-registry-password harbor-registry-htpasswd harbor-oidc-client-secret \
+  harbor-exporter-db-password >/dev/null 2>&1 || true
 
 exit 0

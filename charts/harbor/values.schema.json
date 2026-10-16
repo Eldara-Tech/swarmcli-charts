@@ -417,6 +417,19 @@
               "$ref": "#/$defs/image"
             }
           }
+        },
+        "database": {
+          "type": "object",
+          "properties": {
+            "username": {
+              "type": "string",
+              "minLength": 1
+            },
+            "passwordSecret": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
         }
       }
     },

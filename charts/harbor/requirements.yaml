@@ -53,6 +53,8 @@ secrets:
     description: "storage.type=s3 only - the S3 access key id. Pre-create: printf '%s' '<key id>' | docker secret create harbor-s3-access-key -"
   - name: "{{ .Values.storage.s3.secretKeySecret }}"
     description: "storage.type=s3 only - the S3 secret key. Pre-create: printf '%s' '<secret>' | docker secret create harbor-s3-secret-key -"
+  - name: "{{ .Values.metrics.database.passwordSecret }}"
+    description: "metrics.enabled only - password of the exporter's read-only database role (README, Metrics). Pre-create: printf '%s' 'S3cr3t' | docker secret create harbor-exporter-db-password -"
   - name: "{{ .Values.oidc.clientSecretSecret }}"
     description: "oidc.enabled only - the OIDC client secret (Keycloak: the client's Credentials tab). Pre-create: printf '%s' '<client secret>' | docker secret create harbor-oidc-client-secret -"
 configs: []

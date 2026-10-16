@@ -8,6 +8,8 @@
 #     the registry's htpasswd line hashed by httpd's htpasswd from the same password;
 #   * a throwaway PostgreSQL, harbor-e2e-db, on an overlay of its own, waiting until it
 #     accepts TCP connections (the e2e fixtures point database.* at it);
+#   * for `metrics`, the exporter's read-only role, with the README's grants, created before
+#     Harbor's first start so the default privileges are what let it read core's tables;
 #   * for `oidc`, a stub OpenID provider on that overlay, the one network core shares with it:
 #     a discovery document is all Harbor fetches before redirecting a login.
 # ci/e2e-teardown.sh removes everything created here except the overlay.
@@ -46,6 +48,9 @@ fi
 if [ "$case" = "oidc" ]; then
   printf '%s' 'e2e-oidc-client-secret' | secret harbor-oidc-client-secret
 fi
+if [ "$case" = "metrics" ]; then
+  printf '%s' 'e2e-exporter-password' | secret harbor-exporter-db-password
+fi
 
 docker network create --driver overlay --attachable "$dbnet" >/dev/null 2>&1 || true
 
@@ -64,6 +69,14 @@ for _ in $(seq 1 60); do
   sleep 3
 done
 [ "$ready" = 1 ] || { echo "  FAIL: harbor-e2e-db never accepted connections"; docker service ps --no-trunc harbor-e2e-db; exit 1; }
+
+if [ "$case" = "metrics" ]; then
+  docker exec "$cid" psql -v ON_ERROR_STOP=1 -q -U harbor -d harbor \
+    -c "CREATE ROLE harbor_exporter LOGIN PASSWORD 'e2e-exporter-password'" \
+    -c "GRANT SELECT ON ALL TABLES IN SCHEMA public TO harbor_exporter" \
+    -c "ALTER DEFAULT PRIVILEGES FOR ROLE harbor IN SCHEMA public GRANT SELECT ON TABLES TO harbor_exporter" >/dev/null \
+    || { echo "  FAIL: could not create the exporter's role"; exit 1; }
+fi
 
 if [ "$case" = "oidc" ]; then
   iss=http://harbor-e2e-idp:8080/realms/e2e

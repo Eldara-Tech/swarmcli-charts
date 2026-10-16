@@ -25,13 +25,14 @@
 {{- $secretNames := list .Values.database.passwordSecret .Values.admin.passwordSecret .Values.secrets.core .Values.secrets.jobservice .Values.secrets.registryHttp .Values.secrets.csrfKey .Values.secrets.secretKey .Values.secrets.tokenKey .Values.secrets.registryPassword .Values.secrets.registryHtpasswd -}}
 {{- if $s3 }}{{ $secretNames = concat $secretNames (list .Values.storage.s3.accessKeySecret .Values.storage.s3.secretKeySecret) }}{{ end -}}
 {{- if $oidc }}{{ $secretNames = append $secretNames .Values.oidc.clientSecretSecret }}{{ end -}}
+{{- if $metrics }}{{ $secretNames = append $secretNames .Values.metrics.database.passwordSecret }}{{ end -}}
 {{- range $secretNames -}}
 {{-   if not (regexMatch "^[A-Za-z0-9]([A-Za-z0-9_.-]{0,62}[A-Za-z0-9])?$" (toString .)) -}}
 {{-     fail (printf "%q is not a Docker secret name (1-64 characters of letters, digits, '_', '.' and '-', starting and ending with a letter or digit)" (toString .)) -}}
 {{-   end -}}
 {{- end -}}
 {{- if ne (len $secretNames) (len (uniq $secretNames)) -}}
-{{-   fail "every secret value (database.passwordSecret, admin.passwordSecret, secrets.*, storage.s3.*Secret, oidc.clientSecretSecret) must name a different Swarm secret" -}}
+{{-   fail "every secret value (database.passwordSecret, admin.passwordSecret, secrets.*, storage.s3.*Secret, oidc.clientSecretSecret, metrics.database.passwordSecret) must name a different Swarm secret" -}}
 {{- end -}}
 {{- if $s3 -}}
 {{-   if not (regexMatch "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" .Values.storage.s3.bucket) -}}
@@ -623,12 +624,12 @@ services:
 {{- if $metrics }}
 
   # Harbor's exporter: project, quota, artifact and job-queue metrics from the database,
-  # core's health API and the job queue. A small pool of its own: it queries on scrape,
-  # behind a 23 s cache.
+  # core's health API and the job queue. It logs in as a read-only role of its own, with a
+  # small pool: it queries on scrape, behind a 23 s cache.
   exporter:
     image: {{ .Values.metrics.exporter.image.repository }}:{{ .Values.metrics.exporter.image.tag | default $tag }}
     secrets:
-      - {{ .Values.database.passwordSecret }}
+      - {{ .Values.metrics.database.passwordSecret }}
     networks:
       - internal
       - {{ .Values.database.network }}
@@ -651,7 +652,7 @@ services:
       HARBOR_REDIS_TIMEOUT: "3600"
       HARBOR_DATABASE_HOST: {{ .Values.database.host | quote }}
       HARBOR_DATABASE_PORT: {{ .Values.database.port | quote }}
-      HARBOR_DATABASE_USERNAME: {{ .Values.database.username | quote }}
+      HARBOR_DATABASE_USERNAME: {{ .Values.metrics.database.username | quote }}
       HARBOR_DATABASE_DBNAME: {{ .Values.database.name | quote }}
       HARBOR_DATABASE_SSLMODE: {{ .Values.database.sslmode | quote }}
       HARBOR_DATABASE_MAX_IDLE_CONNS: "2"
@@ -663,7 +664,7 @@ services:
       - |-
         set -eu
         {{ $rd }}
-        rd HARBOR_DATABASE_PASSWORD {{ .Values.database.passwordSecret }}
+        rd HARBOR_DATABASE_PASSWORD {{ .Values.metrics.database.passwordSecret }}
         exec /harbor/entrypoint.sh
     deploy:
       replicas: 1
