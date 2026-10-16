@@ -3,7 +3,7 @@
 # does not deploy them: hand the file to your Prometheus, e.g. the prometheus-stack chart's
 # prometheus.extraRules (README § Alerts and a dashboard).
 #
-# Adapted from the rustfs chart's rules for a cluster, against the metrics RustFS 1.0.1
+# Adapted from the rustfs chart's rules for a cluster, against the metrics the pinned RustFS
 # pushes. Every expression selects job=~".+_rustfs-distributed-metrics", the collector's
 # service, so these never evaluate a single-node rustfs release's series, whose one drive
 # always sits at its own write quorum. A down collector is prometheus-stack's TargetDown,
@@ -111,7 +111,7 @@ groups:
         annotations:
           summary: 'RustFS {{ $labels.stack }} is running out of space'
           description: 'RustFS {{ $labels.stack }} has {{ $value | humanizePercentage }} of its usable capacity free.'
-      # I/O errors and timeouts on a peer's drives. RustFS 1.0.1 counts both here.
+      # I/O errors and timeouts on a peer's drives; RustFS counts both here.
       - alert: RustFSDriveIOErrors
         expr: sum by (stack, job, server) (increase(rustfs_system_drive_availability_errors_total{job=~".+_rustfs-distributed-metrics"}[15m])) > 0
         labels:

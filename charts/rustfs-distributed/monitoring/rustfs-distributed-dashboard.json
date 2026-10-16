@@ -195,7 +195,7 @@
       "id": 3,
       "type": "stat",
       "title": "Free space",
-      "description": "Free space on the cluster, as RustFS sees it (rustfs_cluster_capacity_free_bytes).",
+      "description": "Free space on the cluster, as the peer that sees the least reports it (rustfs_cluster_capacity_free_bytes).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -244,7 +244,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max(rustfs_cluster_capacity_free_bytes{stack=\"$stack\"})",
+          "expr": "min(rustfs_cluster_capacity_free_bytes{stack=\"$stack\"})",
           "refId": "A",
           "instant": true,
           "range": false
@@ -788,7 +788,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max(rustfs_cluster_capacity_free_bytes{stack=\"$stack\"})",
+          "expr": "min(rustfs_cluster_capacity_free_bytes{stack=\"$stack\"})",
           "refId": "C",
           "legendFormat": "free",
           "range": true

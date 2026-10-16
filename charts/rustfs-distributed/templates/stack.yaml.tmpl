@@ -109,12 +109,21 @@
        charts/rustfs, byte for byte except its single-volume persistence guard, and
        ci/render-check.sh fails when the two drift apart: a guard fixed in one chart is a
        guard missing from the other. ── */ -}}
-{{- /* The cluster wiring is the chart's: every peer must start with the same volume list and
-       erasure set width, name itself in it, and wait in orchestrated mode. RustFS copies a
-       MINIO_<x> into an unset RUSTFS_<x>, so both spellings are refused. */ -}}
+{{- /* The cluster wiring is the chart's: every peer must start with the same volume list, name
+       itself in it, and wait in orchestrated mode, and the erasure set width is the one the
+       render checks below. RustFS reads MINIO_VOLUMES and MINIO_ERASURE_SET_DRIVE_COUNT as
+       aliases; the other MINIO_ spellings are refused too, which costs nothing. The internode
+       RPC secret is a credential: RustFS derives it from the root key pair, and a value here
+       would land in the manifest and docker inspect. */ -}}
 {{- range $k, $v := .Values.extraEnv }}
-{{-   if regexMatch "^(RUSTFS|MINIO)_(VOLUMES|LOCAL_ENDPOINT_HOST|STARTUP_TOPOLOGY_WAIT_MODE|ERASURE_SET_DRIVE_COUNT)$" $k }}
+{{-   if regexMatch "^(RUSTFS|MINIO)_(VOLUMES|LOCAL_ENDPOINT_HOST|STARTUP_TOPOLOGY_WAIT_MODE)$" $k }}
 {{-     fail (printf "extraEnv: %s is set by the chart from cluster.* and s3.port, the same for every peer; use those values instead" $k) }}
+{{-   end }}
+{{-   if regexMatch "^(RUSTFS|MINIO)_ERASURE_SET_DRIVE_COUNT$" $k }}
+{{-     fail (printf "extraEnv: %s would override the erasure set width RustFS derives from cluster.peers and cluster.drivesPerPeer, which the render checks; change those instead" $k) }}
+{{-   end }}
+{{-   if regexMatch "^(RUSTFS|MINIO)_RPC_SECRET$" $k }}
+{{-     fail (printf "extraEnv: %s is a credential, the peers' internode secret; RustFS derives it from the key pair in s3.accessKeySecret / s3.secretKeySecret" $k) }}
 {{-   end }}
 {{-   if or (regexMatch "^(RUSTFS|MINIO)_UNSAFE_BYPASS_DISK_CHECK$" $k) (eq $k "MINIO_CI") }}
 {{-     fail (printf "extraEnv: %s turns off RustFS's refusal of two drives on one disk, which is for tests only; give each drive a disk of its own through persistence.volumePaths" $k) }}
@@ -139,7 +148,9 @@
 {{-     fail (printf "persistence.volumePaths has %d entries but cluster.peers is %d. Give one entry per peer, in peer order, or leave it [] to use named volumes." (len $paths) $peers) -}}
 {{-   end -}}
 {{-   range $i, $e := $paths -}}
-{{-     $l := ternary (list $e) $e (kindIs "string" $e) -}}
+{{-     $raw := ternary (list $e) $e (kindIs "string" $e) -}}
+{{-     $l := list -}}
+{{-     range $raw }}{{ $l = append $l (clean .) }}{{ end -}}
 {{-     if ne (len $l) $drives -}}
 {{-       fail (printf "persistence.volumePaths entry %d (peer %d) has %d paths but cluster.drivesPerPeer is %d" $i (add1 $i) (len $l) $drives) -}}
 {{-     end -}}
@@ -155,7 +166,7 @@
 {{-   end -}}
 {{- end -}}
 {{- /* The erasure set width RustFS will pick, by its own rule (crates/ecstore/src/layout/
-       disks_layout.rs at 1.0.1): the largest of 2..16 that divides peers x drives and also
+       disks_layout.rs): the largest of 2..16 that divides peers x drives and also
        divides the peer count, or is a multiple of it. With none, every peer refuses to start. */ -}}
 {{- $total := mul $peers $drives -}}
 {{- $setSize := 0 -}}
@@ -410,11 +421,11 @@ services:
       # vip (the default, stated explicitly because it is load-bearing): it is what keeps
       # network aliases working, and the peers dial each other by alias. dnsrr drops them.
       endpoint_mode: vip
+      # monitor is rendered with the healthcheck off too: swarmcli waits it out on each peer
+      # before it rolls the next one.
       update_config:
         order: stop-first
-{{- if $.Values.healthcheck.enabled }}
         monitor: {{ $.Values.healthcheck.monitor }}
-{{- end }}
 {{- /* Each peer is pinned to the node holding ITS drives, so the pins differ per peer. The
        pin travels with persistence, so the ephemeral mode never strands a task Pending on
        a missing node label. placement.constraints adds extras and applies in every mode. */}}
@@ -509,8 +520,8 @@ services:
   # limit.
   #
   # Named rustfs-distributed-metrics, not rustfs-metrics as in the rustfs chart: Prometheus
-  # takes the job label from the service name, and monitoring/'s rules select on it, so the
-  # two charts' alerts never evaluate each other's series.
+  # takes the job label from the service name, and monitoring/'s rules select on it, so they
+  # never evaluate a single-node release's series.
   rustfs-distributed-metrics:
     image: {{ .Values.metrics.image.repository }}:{{ .Values.metrics.image.tag }}
     command:

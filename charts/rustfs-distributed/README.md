@@ -4,7 +4,7 @@
 S3-compatible object store whose objects are erasure-coded across several peers, one per
 node. With the default 4 peers of one drive each, every object is split into 2 data and 2
 parity shards, so reads survive 2 peers down and writes survive 1. It is RustFS's
-multi-node, multi-drive (MNMD) deployment, the shape its own Helm chart installs by default.
+multi-node, multi-drive (MNMD) deployment, the mode its own Helm chart installs by default.
 
 Each peer is a Swarm service of its own (`rustfs-1` … `rustfs-<peers>`) with exactly one
 replica, its own volume and its own node label, because a Swarm volume is node-local. What
@@ -18,7 +18,8 @@ with single sign-on, buckets created for you, logs on `docker service logs` — 
   so swarmcli ≥ 2.2.0 updates the next peer only once the one before runs and has outlived
   its monitor window ([Upgrading](#upgrading)).
 - **Shapes RustFS would refuse are refused at render**: a peer count and drive count with no
-  valid erasure set, more than one drive per peer on one disk ([Sizing](#sizing)).
+  valid erasure set, more than one drive per peer on named volumes, one host path named
+  twice ([Sizing](#sizing)).
 
 It is not a mode of the `rustfs` chart: a single-drive store cannot become a distributed one
 in place ([Moving from the rustfs chart](#moving-from-the-rustfs-chart)).
@@ -53,10 +54,12 @@ If `swarmcli charts repo list` does not show `swarmcli-charts`, add it first:
 swarmcli charts install s3 swarmcli-charts/rustfs-distributed --set 'buckets={backups}' --wait
 ```
 
-The chart needs swarmcli 2.2.0 or later, the first to roll services one at a time. All
-peers start together on install, find each other within seconds, and `--wait` returns once
-each has run for its monitor window (90 seconds). The shape — `cluster.peers` and
-`cluster.drivesPerPeer` — is fixed from then on: RustFS records it on every drive.
+The chart needs swarmcli 2.2.0 or later, the first to roll services one at a time; among
+its release candidates that is v2.2.0-rc4, while rc1 to rc3 pass the floor but update every
+peer at once. All peers start together on install, find each other within seconds, and
+`--wait` returns once each peer's task runs and is 90 seconds old (its monitor window). The
+shape — `cluster.peers` and `cluster.drivesPerPeer` — is fixed from then on: RustFS records
+it on every drive.
 
 ### Deploying with swarmcli-cd
 
@@ -87,7 +90,8 @@ alias, so it resolves to every peer, and any peer serves every object. `_` and `
 release name become `-`, because Java clients reject a host name with `_`.
 
 - **The alias is not readiness-aware.** Swarm resolves it to every peer whose healthcheck
-  passes, which is liveness: a peer that just started may answer 503 for a moment, and a
+  passes, which is liveness: on a first install, or after every peer stopped, the peers pass
+  theirs some 10 seconds before the cluster serves and answer 503 meanwhile, and a
   connection already on its way to a peer that stops fails. Clients must retry, as S3
   clients do by default.
 - Each peer also answers on `http://<release>-rustfs-<n>:9000`, the name the other peers
@@ -120,7 +124,7 @@ console listener is the whole server: the console host also serves the full sign
 admin API.
 
 Routed through Traefik, the console carries a **sticky cookie**, so a browser stays on one
-peer: each peer keeps a sign-in's state in its own memory.
+peer: each peer keeps a single sign-on login's state in its own memory.
 
 ## Single sign-on
 
@@ -149,16 +153,17 @@ across the drives of one set into data and parity shards.
   the render fails, because every peer would refuse to start.
 - **Parity** defaults to 2 for a set of 4 or 5 drives, 3 for 6 or 7, and 4 from 8 on.
   Reads need as many drives as there are data shards, writes one more when parity is half
-  the set. Set another with `extraEnv.RUSTFS_STORAGE_CLASS_STANDARD` (e.g. `EC:3`) at
-  install.
+  the set, and parity can be at most half the set. Set another with
+  `extraEnv.RUSTFS_STORAGE_CLASS_STANDARD` at install (e.g. `EC:1` on a set of 4, `EC:3` on
+  a set of 8).
 - **Usable capacity** is the drives' total times data ÷ (data + parity): half of it with
   the default 4 peers.
 - **More than one drive per peer** needs `persistence.volumePaths`, one host path per drive,
   each on a disk of its own. RustFS refuses two drives on one physical disk ("local erasure
   endpoints must use distinct physical disks"), and a peer's named volumes all share its
   node's Docker disk. The render refuses `drivesPerPeer > 1` without host paths.
-- **The shape is fixed at install.** RustFS records the volume list on every drive and
-  refuses to start on a different one. RustFS grows by adding a server pool, which this
+- **The shape is fixed at install.** RustFS records the drive count and set width on every
+  drive and refuses to start with others. RustFS grows by adding a server pool, which this
   chart does not support yet. The volume list is written in RustFS's ellipsis form
   (`http://s3-rustfs-{1...4}:9000/data/rustfs0`) so that a later version can append a pool
   without renaming this one.
@@ -191,7 +196,8 @@ on RustFS's pinned version, a peer restarted into a running cluster answers `/he
 swarmcli charts upgrade s3 swarmcli-charts/rustfs-distributed -f s3-values.yaml --wait
 ```
 
-swarmcli updates the peers one at a time, in name order: it stops a peer, starts its new
+swarmcli updates the peers one at a time, in lexical name order (`rustfs-10` before
+`rustfs-2`): it stops a peer, starts its new
 task, waits until that task runs and has outlived `healthcheck.monitor` (90 seconds), and
 only then moves to the next. With the default 4 peers the cluster keeps serving reads and
 writes throughout, one peer short. An upgrade whose peer fails to start stops there, with
@@ -224,13 +230,30 @@ As in the [rustfs chart](../rustfs/README.md#security), on every peer: RustFS re
 from `/run/secrets`, anonymous requests and the default `rustfsadmin` pair are refused, and
 `extraEnv` refuses the credential variables in both spellings.
 
-- Everything on `network.name` reaches every peer's S3 port (and console port when
-  enabled), which also carries the peers' internode RPC. That is the intent; the key pair
-  is what protects the data.
-- `extraEnv` also refuses the cluster wiring the chart sets — `RUSTFS_VOLUMES`,
-  `RUSTFS_LOCAL_ENDPOINT_HOST`, `RUSTFS_STARTUP_TOPOLOGY_WAIT_MODE` and
-  `RUSTFS_ERASURE_SET_DRIVE_COUNT`, in both spellings — and RustFS's test-only switch off its
+- Everything on `network.name`, and while either listener is traefik-routed everything on
+  `exposure.network`, reaches every peer's S3 port (and console port when enabled), which
+  also carries the peers' internode RPC. That is the intent; the key pair is what protects
+  the data, and RustFS signs the internode requests with a secret derived from it.
+- `extraEnv` also refuses the cluster wiring the chart sets (`RUSTFS_VOLUMES`,
+  `RUSTFS_LOCAL_ENDPOINT_HOST`, `RUSTFS_STARTUP_TOPOLOGY_WAIT_MODE`), an erasure set width
+  (`RUSTFS_ERASURE_SET_DRIVE_COUNT`, which would override the one the render checks), the
+  internode secret (`RUSTFS_RPC_SECRET`, a credential), and RustFS's test-only switch off its
   one-drive-per-disk check (`RUSTFS_UNSAFE_BYPASS_DISK_CHECK`, `MINIO_CI`).
+- **Rotating the key pair takes a full stop.** Every peer derives the internode secret from
+  the pair, so peers on the old pair and peers on the new one cannot reach each other: an
+  upgrade rolling one peer at a time would split the cluster. Create the new secrets, stop
+  every peer, then upgrade; swarmcli holds back only peers that are running, so all of them
+  start together on the new pair:
+
+  ```bash
+  printf '%s' 'new-access-key' | docker secret create rustfs-access-key-2 -
+  openssl rand -base64 30 | tr -d '\n' | docker secret create rustfs-secret-key-2 -
+  for n in 1 2 3 4; do docker service scale --detach "s3_rustfs-$n=0"; done
+  swarmcli charts upgrade s3 swarmcli-charts/rustfs-distributed -f s3-values.yaml --wait \
+    --set s3.accessKeySecret=rustfs-access-key-2 --set s3.secretKeySecret=rustfs-secret-key-2
+  ```
+
+  The data and buckets survive; clients need the new pair.
 - **No call home.** `RUSTFS_CHECK_UPDATE` is off on every peer.
 
 ## Buckets
@@ -238,8 +261,10 @@ from `/run/secrets`, anonymous requests and the default `rustfsadmin` pair are r
 Peer 1 creates each entry in `buckets` with a signed S3 `CreateBucket` once the cluster
 accepts writes, as the rustfs chart's single service does ([Buckets](../rustfs/README.md#buckets));
 the other peers see them through the cluster. A restart of peer 1 is harmless, removing a
-name does not delete the bucket, and a bucket that cannot be created after five minutes is
-logged on `docker service logs <release>_rustfs-1`.
+name does not delete the bucket. The loop gives up five minutes after peer 1 starts, which on
+a cluster includes waiting for the others (a missing node label, a slow image pull): a
+bucket not created by then is logged on `docker service logs <release>_rustfs-1`, and
+`docker service update --force <release>_rustfs-1` runs the loop again.
 
 ## Persistence & node pinning
 
@@ -270,9 +295,9 @@ persistence:
 With `persistence.nodeLabelPrefix: ""` nothing keeps the peers on different nodes, so then
 the render refuses a path given to two peers.
 
-`persistence.enabled: false` stores every drive in its container: a replaced task starts
-empty and the cluster heals it from the others, but losing more peers at once than the
-parity covers loses data. For tests only. Each peer is always one replica, and its updates
+`persistence.enabled: false` stores every drive in its container: a peer whose task is
+replaced starts on an empty drive, which RustFS formats at start and heals from the others,
+but losing more peers at once than the parity covers loses data. For tests only. Each peer is always one replica, and its updates
 stop the old task before starting the new one.
 
 The chart raises the open-file limit to `nofile` (65536), as the rustfs chart does.
@@ -297,7 +322,9 @@ cluster:
   collector running (swarmcli deploys without `--prune`), so remove it in the same step:
   `docker service rm <release>_rustfs-distributed-metrics`.
 - The collector is named `rustfs-distributed-metrics`, not `rustfs-metrics` as in the rustfs
-  chart, so the two charts' alert rules select their own releases by `job`.
+  chart, and this chart's rules select it by `job`, so they never evaluate a single-node
+  release. The rustfs chart's rules do not filter by `job` yet: loaded beside these, its
+  `RustFSDriveOffline` also fires, at critical, for a distributed release's offline drive.
 
 ### Alerts and a dashboard
 

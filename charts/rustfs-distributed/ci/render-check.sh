@@ -200,7 +200,7 @@ done
 if [ -z "$console" ] && grep -F 'console' <<<"$labels1" >/dev/null; then bad "case $case: a console router is rendered although the console is off"; fi
 
 # ── exposure: the same on every peer ──────────────────────────────────────────────────
-for n in 2 3 4; do
+for n in $(seq 2 "$peers"); do
   [ "$(q "$(p "$n").deploy.labels | join(\" \")")" = "$(q "$(p 1).deploy.labels | join(\" \")")" ] \
     || bad "case $case: peer $n's deploy labels differ from peer 1's; Traefik would not merge their routers"
   [ "$(q "$(p "$n").ports")" = "$(q "$(p 1).ports")" ] || bad "case $case: peer $n's ports differ from peer 1's"
@@ -444,6 +444,11 @@ if [ "$case" = "default" ]; then
   refused 'persistence.volumePaths entry 1 (peer 2) names one path twice' -f "$tmp.values"
   printf '%s\n' 'persistence:' '  nodeLabelPrefix: ""' '  volumePaths: [/a, /b, /a, /d]' >"$tmp.values"
   refused 'persistence.volumePaths names one host path for two peers while persistence.nodeLabelPrefix is ""' -f "$tmp.values"
+  # Compared as paths, not strings.
+  printf '%s\n' 'persistence:' '  nodeLabelPrefix: ""' '  volumePaths: [/srv/a, /srv/a/, /srv/./a, /srv/b]' >"$tmp.values"
+  refused 'persistence.volumePaths names one host path for two peers while persistence.nodeLabelPrefix is ""' -f "$tmp.values"
+  printf '%s\n' 'cluster:' '  drivesPerPeer: 2' 'persistence:' '  volumePaths:' '    - [/a1, /a1/]' '    - [/b1, /b2]' '    - [/c1, /c2]' '    - [/d1, /d2]' >"$tmp.values"
+  refused 'persistence.volumePaths entry 0 (peer 1) names one path twice' -f "$tmp.values"
   # ...which pinned peers may do: each is on a node of its own.
   printf '%s\n' 'persistence:' '  volumePaths: [/srv/rustfs, /srv/rustfs, /srv/rustfs, /srv/rustfs]' >"$tmp.values"
   render -f "$tmp.values" || bad "pinned peers with the same host path were refused: $(tr '\n' ' ' <"$tmp.err")"
@@ -451,10 +456,14 @@ if [ "$case" = "default" ]; then
   refused '/persistence/volumePrefix' --set persistence.volumePrefix=a/b
   refused '/publish/mode' --set exposure.mode=published --set publish.mode=ingress
   refused '/console/publish/mode' --set console.enabled=true --set console.exposure.mode=published --set console.publish.mode=ingress
-  for k in RUSTFS_VOLUMES MINIO_VOLUMES RUSTFS_LOCAL_ENDPOINT_HOST RUSTFS_STARTUP_TOPOLOGY_WAIT_MODE MINIO_STARTUP_TOPOLOGY_WAIT_MODE \
-           RUSTFS_ERASURE_SET_DRIVE_COUNT MINIO_ERASURE_SET_DRIVE_COUNT; do
+  for k in RUSTFS_VOLUMES MINIO_VOLUMES RUSTFS_LOCAL_ENDPOINT_HOST RUSTFS_STARTUP_TOPOLOGY_WAIT_MODE MINIO_STARTUP_TOPOLOGY_WAIT_MODE; do
     refused "extraEnv: $k is set by the chart from cluster.* and s3.port" --set "extraEnv.$k=x"
   done
+  for k in RUSTFS_ERASURE_SET_DRIVE_COUNT MINIO_ERASURE_SET_DRIVE_COUNT; do
+    refused "extraEnv: $k would override the erasure set width RustFS derives" --set "extraEnv.$k=4"
+  done
+  # The peers' internode secret, which RustFS derives from the key pair: a value would be in the manifest.
+  refused 'extraEnv: RUSTFS_RPC_SECRET is a credential' --set extraEnv.RUSTFS_RPC_SECRET=x
   for k in RUSTFS_UNSAFE_BYPASS_DISK_CHECK MINIO_UNSAFE_BYPASS_DISK_CHECK MINIO_CI; do
     refused "extraEnv: $k turns off RustFS's refusal of two drives on one disk" --set "extraEnv.$k=true"
   done
@@ -490,10 +499,10 @@ if [ "$case" = "default" ]; then
       bad "console.exposure.mode=$mode with the console off was refused: $(tr '\n' ' ' <"$tmp.err")"
     fi
   done
-  # The healthcheck off: no monitor window, still stop-first.
+  # The healthcheck off: still stop-first, and still the monitor window that spaces the rollout.
   render --set healthcheck.enabled=false && [ "$(y '.services."rustfs-1".healthcheck')" = "null" ] \
-    && [ "$(y '.services."rustfs-1".deploy.update_config | .order + " " + (.monitor // "none")')" = "stop-first none" ] \
-    || bad "healthcheck.enabled=false does not drop the healthcheck and the monitor window alone"
+    && [ "$(y '.services."rustfs-1".deploy.update_config | .order + " " + (.monitor // "none")')" = "stop-first 90s" ] \
+    || bad "healthcheck.enabled=false does not drop the healthcheck alone, keeping stop-first and the 90s monitor window"
 fi
 
 exit "$fail"

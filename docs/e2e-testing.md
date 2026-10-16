@@ -316,7 +316,7 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   (`edge`, and `console-edge`, which routes only the console), and for `oidc` the client
   secret plus a stub OpenID provider. `ci/e2e-check.sh` asserts one cluster rather than four
   stores (every peer's admin API reports one erasure set of 4 drives, all 4 peers online),
-  an object written through one peer read back through every other, and for `edge` that
+  an object written through the shared alias read back through every peer, and for `edge` that
   Traefik balanced over all four peers, from its access log. The `lifecycle` fixture runs as
   a job of its own: an upgrade rolling every peer one at a time while a client keeps writing,
   then every peer stopped together and started again.

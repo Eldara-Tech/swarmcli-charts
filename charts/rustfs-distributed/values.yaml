@@ -7,10 +7,10 @@
 # down, writes survive 1.
 #
 # Peers dial each other at a per-peer network alias, <release>-rustfs-<n>, and every peer
-# names itself by that alias (RUSTFS_LOCAL_ENDPOINT_HOST). Swarm publishes a task in DNS only
-# once its healthcheck passes, and RustFS resolves its peers before it opens a port, so the
-# healthcheck is /health/live, which answers without any peer (README § How the peers find
-# each other).
+# names itself by that alias (RUSTFS_LOCAL_ENDPOINT_HOST), so it opens its port without
+# resolving the others. Swarm publishes a task in DNS only once its healthcheck passes, so
+# the healthcheck is /health/live, which answers without any peer (README § How the peers
+# find each other).
 #
 # Not a mode of the `rustfs` chart: a single-drive store cannot be turned into a distributed
 # one in place (README § Moving from the rustfs chart).
@@ -23,12 +23,12 @@ image:
   repository: rustfs/rustfs
   tag: ""  # defaults to appVersion from Chart.yaml
 
-# The shape of the cluster, fixed at install: RustFS records it on every drive and refuses
-# to start on a different one. More capacity later means a second server pool, which this
+# The shape of the cluster, fixed at install: RustFS records the drive count and set width
+# on every drive and refuses to start with others. More capacity later means a second server pool, which this
 # chart does not support yet (README § Sizing).
 cluster:
-  # Number of peers, one Swarm service each (rustfs-1 … rustfs-<peers>). At least 4, as
-  # RustFS's multi-node guide requires.
+  # Number of peers, one Swarm service each (rustfs-1 … rustfs-<peers>). At least 4, the
+  # minimum RustFS's multi-node guide gives (its code accepts fewer).
   peers: 4
   # Drives per peer. RustFS refuses two drives on one physical disk, and every Docker named
   # volume on a node shares its disk, so more than 1 needs persistence.volumePaths with one
@@ -110,9 +110,9 @@ console:
 buckets: []
 
 # Persistence. One named volume per peer, <volumePrefix>-<n>, mounted at /data; the drive is
-# /data/rustfs0 inside it. enabled:false => ephemeral: every peer starts empty when its task
-# is replaced and the cluster heals it from the others, and losing more peers at once than
-# the parity covers loses data. For a smoke test and nothing else.
+# /data/rustfs0 inside it. enabled:false => ephemeral: a peer whose task is replaced starts
+# on an empty drive, which RustFS formats at start and heals from the others, and losing
+# more peers at once than the parity covers loses data. For a smoke test and nothing else.
 persistence:
   enabled: true
   volumePrefix: rustfs-data
@@ -214,8 +214,10 @@ nofile: 65536
 # RUSTFS_HTTP1_HEADER_READ_TIMEOUT and RUSTFS_OUTBOUND_ALLOW_ORIGINS here override the chart's
 # own settings. The render fails on credentials (they belong in the secrets above, and RustFS
 # reads MINIO_* names as well), on the listener addresses (set s3.port / console.* instead),
-# on the cluster wiring the chart sets (the volumes, each peer's endpoint, the start-up wait
-# mode, the erasure set width and the disk-check bypass), on every RUSTFS_IDENTITY_OPENID_*
+# on the cluster wiring the chart sets (the volume list, each peer's endpoint, the start-up
+# wait mode), on an erasure set width (it would override the one the render checks), on
+# RustFS's test-only disk-check bypass and on the internode RPC secret (a credential RustFS
+# derives from the key pair), on every RUSTFS_IDENTITY_OPENID_*
 # setting except the tuning keys README "Single sign-on" lists, allowed with
 # console.oidc.enabled, and, while metrics.enabled, on the OTLP endpoints and export settings
 # the chart sets and on the three that would break its push (RUSTFS_OBS_USE_STDOUT,
@@ -258,8 +260,8 @@ healthcheck:
   retries: 3
   startPeriod: 30s
   # Swarm's rollout monitor window, which swarmcli also waits out on each peer before it
-  # rolls the next one. Must outlast the worst-case first failure (startPeriod + retries x
-  # interval = 1m here), or a broken deploy reports success.
+  # rolls the next one, with the healthcheck off too. Must outlast the worst-case first
+  # failure (startPeriod + retries x interval = 1m here), or a broken deploy reports success.
   monitor: 90s
 
 # Time Swarm waits after SIGTERM before SIGKILL.

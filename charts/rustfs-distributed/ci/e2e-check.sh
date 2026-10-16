@@ -15,8 +15,8 @@
 #     admin API), answers /health/ready, and reports the cluster healthy (/minio/health/cluster);
 #   * an anonymous request is refused, and so are requests signed with the wrong secret
 #     and with the public default rustfsadmin pair;
-#   * an object written through one peer reads back byte-for-byte through every other peer,
-#     and an anonymous GET of it is refused;
+#   * an object written through the client path (the shared alias, or the edge) reads back
+#     byte-for-byte through every peer, and an anonymous GET of it is refused;
 #   * every bucket the fixture lists was created by peer 1's bootstrap and is seen by every
 #     peer;
 #   * the console listener exists exactly when console.enabled;
@@ -211,9 +211,9 @@ else
   m=""; missing="$want"; servers=""
   for _ in $(seq 1 60); do
     m="$(docker run --rm --network monitoring "$CURL_IMAGE" -sSf --max-time 10 "http://${msvc}:${mport}/metrics" 2>&1 || true)"
-    have="$(grep -oE '^rustfs_[a-z0-9_]+' <<<"$m" | sed -E 's/_(bucket|sum|count)$//' | sort -u)"
+    have="$(grep -oE '^rustfs_[a-z0-9_]+' <<<"$m" | sed -E 's/_(bucket|sum|count)$//' | sort -u || true)"
     missing="$(comm -23 <(printf '%s\n' "$want") <(printf '%s\n' "$have"))"
-    servers="$(grep -E '^rustfs_system_process_uptime_seconds\{' <<<"$m" | grep -oE 'server="[^"]*"' | sort -u | tr '\n' ' ')"
+    servers="$(grep -E '^rustfs_system_process_uptime_seconds\{' <<<"$m" | grep -oE 'server="[^"]*"' | sort -u | tr '\n' ' ' || true)"
     [ -z "$missing" ] && [ "$servers" = "server=\"${alias}-1:9000\" server=\"${alias}-2:9000\" server=\"${alias}-3:9000\" server=\"${alias}-4:9000\" " ] && break
     sleep 5
   done
@@ -267,7 +267,7 @@ if [ -n "$console" ]; then echo "  ok: console UI served on :9001 by every peer"
 upstreams() {
   sleep 3
   docker service logs --raw "$EDGE_TARGET" 2>&1 | grep -F "$2" | grep -F "\"$1@swarm\"" \
-    | grep -oE '"http://[0-9.]+:[0-9]+"' | sort -u | wc -l | tr -d ' '
+    | grep -oE '"http://[0-9.]+:[0-9]+"' | sort -u | wc -l | tr -d ' ' || true
 }
 
 # ── edge: one Traefik service over every peer ─────────────────────────────────────────

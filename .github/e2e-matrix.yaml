@@ -177,8 +177,8 @@ include:
   # rustfs-distributed: rustfs's checks on four peers, on ONE node — ci/e2e-setup.sh labels it
   # with every peer label, so the pinned default shape schedules there: not HA, but one real
   # erasure-coded cluster. Four converged peers prove nothing about that, so ci/e2e-check.sh
-  # asserts every peer formed one distributed set of 4 drives, and that an object written
-  # through one peer reads back through every other. `edge` proves from Traefik's access log
+  # asserts every peer reports one erasure set of 4 drives with all 4 peers online, and that
+  # an object written through the shared alias reads back through every peer. `edge` proves from Traefik's access log
   # that the peers' identical routers merged into one service balancing over all four;
   # `console-edge` that its sticky cookie keeps a browser on one peer, which single sign-on
   # needs. published and multi-drive are ci/e2e-render-only (four peers cannot bind one
