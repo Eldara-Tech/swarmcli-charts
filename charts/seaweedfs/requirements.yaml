@@ -10,12 +10,13 @@ networks:
     attachable: true
     autoCreate: true
     description: "Overlay S3 clients join to reach <release>-seaweedfs (network.name)"
-  # Attached in traefik mode only.
+  # Attached only while the S3 API or the admin UI is traefik-routed; with admin.oauth2 by
+  # oauth2-proxy, which then carries the UI's routers.
   - name: "{{ .Values.exposure.network }}"
     driver: overlay
     attachable: true
     autoCreate: false
-    description: "exposure.mode=traefik only - the edge proxy's ingress overlay; provided by the proxy stack/operator"
+    description: "exposure.mode=traefik or admin.exposure.mode=traefik only - the edge proxy's ingress overlay; provided by the proxy stack/operator"
   # Attached while metrics.enabled. autoCreate:true, like the prometheus-stack chart's
   # own declaration of it: whichever stack installs first creates it.
   - name: "{{ .Values.metrics.network }}"
@@ -28,4 +29,17 @@ secrets:
     description: "S3 access key id of the admin identity. Pre-create: printf '%s' '<key-id>' | docker secret create seaweedfs-s3-access-key -"
   - name: "{{ .Values.s3.secretKeySecret }}"
     description: "S3 secret access key of the admin identity. Pre-create: openssl rand -base64 30 | tr -d '\\n' | docker secret create seaweedfs-s3-secret-key -"
+  # Mounted only while admin.enabled.
+  - name: "{{ .Values.admin.passwordSecret }}"
+    description: "admin.enabled only - the web UI's admin password. Pre-create: printf '%s' '<password>' | docker secret create seaweedfs-admin-password -"
+  # Mounted only while admin.enabled and admin.oidc.enabled.
+  - name: "{{ .Values.admin.oidc.clientSecretSecret }}"
+    description: "admin.oidc.enabled only - the web UI's OIDC client secret. Pre-create: printf '%s' '<client secret>' | docker secret create seaweedfs-admin-oidc-client-secret -"
+  # Mounted by the oauth2-proxy service only while admin.enabled and admin.oauth2.enabled.
+  - name: "{{ .Values.admin.oauth2.clientSecretSecret }}"
+    description: "admin.oauth2.enabled only - oauth2-proxy's OIDC client secret. Pre-create: printf '%s' '<client secret>' | docker secret create seaweedfs-admin-oauth2-client-secret -"
+  - name: "{{ .Values.admin.oauth2.cookieSecretSecret }}"
+    description: "admin.oauth2.enabled only - oauth2-proxy's cookie secret, 16, 24 or 32 bytes. Pre-create: head -c 32 /dev/urandom | docker secret create seaweedfs-admin-oauth2-cookie-secret -"
+  - name: "{{ .Values.admin.oauth2.caSecret | default `seaweedfs-admin-oauth2-ca` }}"
+    description: "admin.oauth2.caSecret only - the PEM CA bundle that signed the identity provider's certificate. Pre-create: docker secret create seaweedfs-admin-oauth2-ca ./ca.pem"
 configs: []

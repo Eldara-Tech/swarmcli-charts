@@ -14,8 +14,195 @@
 {{-     fail (printf "buckets: %q is not a valid S3 bucket name (3-63 characters of a-z, 0-9, '.' and '-', starting and ending with a letter or digit)" .) }}
 {{-   end }}
 {{- end -}}
+{{- /* OIDC grants become IAM policy, so they are validated here as well as by the schema.
+       A group is matched by SeaweedFS's role mapping as a case-insensitive wildcard and by
+       the trust and grant conditions as an exact string with ${...} variables expanded, so
+       `*`, `?` and `$` would make the three disagree. */}}
+{{- if .Values.s3.oidc.enabled -}}
+{{-   if not (regexMatch "^https?://" .Values.s3.oidc.issuer) -}}
+{{-     fail "s3.oidc.issuer must be the identity provider's issuer URL (http:// or https://), exactly as the token's iss claim carries it" -}}
+{{-   end -}}
+{{-   if not .Values.s3.oidc.clientId -}}
+{{-     fail "s3.oidc.clientId is required: a token is accepted only when its aud or azp claim equals it" -}}
+{{-   end -}}
+{{-   if not .Values.s3.oidc.grants -}}
+{{-     fail "s3.oidc.grants needs at least one grant: access comes only from grants, so with none OIDC would admit nobody" -}}
+{{-   end -}}
+{{-   range .Values.s3.oidc.grants -}}
+{{-     if or (not .group) (regexMatch "[*?$]" .group) -}}
+{{-       fail (printf "s3.oidc.grants: group %q must be a non-empty groups-claim value without '*', '?' or '$'" (.group | default "")) -}}
+{{-     end -}}
+{{-     if not (has .access (list "readonly" "readwrite")) -}}
+{{-       fail (printf "s3.oidc.grants: group %q has access %q; it must be readonly or readwrite" .group (.access | default "")) -}}
+{{-     end -}}
+{{- /* A forgotten buckets key must not quietly mean every bucket: [] has to be said. */}}
+{{-     if not (kindIs "slice" .buckets) -}}
+{{-       fail (printf "s3.oidc.grants: group %q has no buckets list; name its buckets, or [] for every bucket" .group) -}}
+{{-     end -}}
+{{-     range .buckets -}}
+{{-       if not (regexMatch "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" .) -}}
+{{-         fail (printf "s3.oidc.grants: %q is not a valid S3 bucket name" .) -}}
+{{-       end -}}
+{{-     end -}}
+{{-   end -}}
+{{- end -}}
 {{- if and (eq .Values.exposure.mode "traefik") (not .Values.ingress.host) -}}
 {{-   fail "ingress.host is required when exposure.mode=traefik" -}}
+{{- end -}}
+{{- /* The web UI. Its login name is spliced into the start-up shell like the bucket names,
+       so it is validated rather than trusted; its ports must not take one weed server
+       binds, or one of the two would fail to start. The Enterprise image's weed admin binds
+       its unauthenticated worker gRPC port wherever it binds the UI, so there it stays on
+       127.0.0.1, on admin.port + 1, behind a forwarder on admin.port. */}}
+{{- $ent := regexMatch "(^|/)seaweedfs-enterprise$" .Values.image.repository -}}
+{{- if .Values.admin.enabled -}}
+{{-   if not .Values.admin.passwordSecret -}}
+{{-     fail "admin.passwordSecret is required when admin.enabled: the web UI gives full control of the store and never runs without a password" -}}
+{{-   end -}}
+{{-   if or (eq .Values.admin.passwordSecret .Values.s3.accessKeySecret) (eq .Values.admin.passwordSecret .Values.s3.secretKeySecret) -}}
+{{-     fail "admin.passwordSecret must name a secret of its own, not s3.accessKeySecret or s3.secretKeySecret" -}}
+{{-   end -}}
+{{-   if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._@-]*$" .Values.admin.user) -}}
+{{-     fail (printf "admin.user: %q is not a valid login name (letters, digits, '.', '_', '@' and '-', starting with a letter or digit)" .Values.admin.user) -}}
+{{-   end -}}
+{{-   $s3p := .Values.s3.port | int -}}
+{{-   $ap := .Values.admin.port | int -}}
+{{-   $taken := list $s3p (add $s3p 10000 | int) 9333 19333 8080 18080 8888 18888 -}}
+{{-   if or (has $ap $taken) (has (add $ap 10000 | int) $taken) -}}
+{{-     fail (printf "admin.port %d collides with weed server: the UI binds %d and its worker gRPC %d, and weed server already binds %s (S3, master, volume server, filer and their gRPC ports)" $ap $ap (add $ap 10000) (join ", " $taken)) -}}
+{{-   end -}}
+{{-   if and $ent (has (add $ap 1 | int) $taken) -}}
+{{-     fail (printf "admin.port %d collides with weed server: on the Enterprise image weed admin listens on 127.0.0.1:%d behind the forwarder on %d, and weed server already binds %s" $ap (add $ap 1) $ap (join ", " $taken)) -}}
+{{-   end -}}
+{{- /* OIDC login to the UI (an Enterprise feature). The groups become comma-separated
+       environment lists that SeaweedFS matches ignoring case and with `*` as a wildcard, so
+       a `*` (or a `?`) would admit groups nobody listed; and SeaweedFS refuses a plain-http
+       issuer or
+       callback except on localhost. All of it is checked here rather than left to a
+       warning in the log. */}}
+{{-   $oidc := .Values.admin.oidc -}}
+{{-   if and $oidc.enabled .Values.admin.oauth2.enabled -}}
+{{-     fail "admin.oidc and admin.oauth2 cannot both be enabled: pick one way to sign in to the web UI" -}}
+{{-   end -}}
+{{-   if $oidc.enabled -}}
+{{-     if not $ent -}}
+{{-       fail "admin.oidc needs the SeaweedFS Enterprise image: set image.repository to chrislusf/seaweedfs-enterprise (the free weed admin has no OIDC login)" -}}
+{{-     end -}}
+{{-     if not (or (regexMatch `^https://[^/?#]` $oidc.issuer) (regexMatch `^http://(localhost|127\.0\.0\.1)([:/]|$)` $oidc.issuer)) -}}
+{{-       fail "admin.oidc.issuer must be the provider's https:// issuer URL: SeaweedFS refuses plain http except on localhost" -}}
+{{-     end -}}
+{{-     if not $oidc.clientId -}}
+{{-       fail "admin.oidc.clientId is required" -}}
+{{-     end -}}
+{{-     if or (not $oidc.clientSecretSecret) (has $oidc.clientSecretSecret (list .Values.s3.accessKeySecret .Values.s3.secretKeySecret .Values.admin.passwordSecret)) -}}
+{{-       fail "admin.oidc.clientSecretSecret must name a secret of its own, not the S3 key pair's or admin.passwordSecret" -}}
+{{-     end -}}
+{{-     $groups := concat ($oidc.adminGroups | default list) ($oidc.readonlyGroups | default list) -}}
+{{-     if not $groups -}}
+{{-       fail "admin.oidc needs adminGroups or readonlyGroups: a login is accepted only from a member of one of them" -}}
+{{-     end -}}
+{{-     range $groups -}}
+{{-       if or (not .) (regexMatch "[,*?]" .) -}}
+{{-         fail (printf "admin.oidc: group %q must be a non-empty groups-claim value without ',', '*' or '?'" (. | default "")) -}}
+{{-       end -}}
+{{-     end -}}
+{{-     if $oidc.browserUrl -}}
+{{-       if not (regexMatch `^https?://[^/?#]+/?$` $oidc.browserUrl) -}}
+{{-         fail "admin.oidc.browserUrl must be the UI's public base URL, scheme://host[:port] with no path" -}}
+{{-       end -}}
+{{-     else if ne .Values.admin.exposure.mode "traefik" -}}
+{{-       fail "admin.oidc.browserUrl is required unless admin.exposure.mode=traefik: it is the public URL the provider sends the browser back to" -}}
+{{-     end -}}
+{{-     $bu := $oidc.browserUrl | default (printf "%s://%s" (ternary "https" "http" .Values.admin.ingress.tls) .Values.admin.ingress.host) -}}
+{{-     if not (regexMatch `^(https://|http://(localhost|127\.0\.0\.1)([:/]|$))` $bu) -}}
+{{-       fail (printf "admin.oidc needs an https callback, and %s is not: SeaweedFS refuses a plain-http redirect URL except on localhost. Keep admin.ingress.tls on, or set an https admin.oidc.browserUrl" $bu) -}}
+{{-     end -}}
+{{-   end -}}
+{{- /* oauth2-proxy in front of the UI. It sets a secure cookie and carries the UI's routers,
+       so it needs them routed with TLS; its groups become repeated --allowed-group flags,
+       which oauth2-proxy splits on commas. */}}
+{{-   $o2 := .Values.admin.oauth2 -}}
+{{-   if $o2.enabled -}}
+{{-     if not (and (eq .Values.admin.exposure.mode "traefik") .Values.admin.ingress.tls) -}}
+{{-       fail "admin.oauth2 needs admin.exposure.mode=traefik with admin.ingress.tls: oauth2-proxy carries the UI's routers and sets a secure cookie" -}}
+{{-     end -}}
+{{-     if not (regexMatch `^https://[^/?#]` $o2.issuer) -}}
+{{-       fail "admin.oauth2.issuer must be the provider's https:// issuer URL" -}}
+{{-     end -}}
+{{-     if not $o2.clientId -}}
+{{-       fail "admin.oauth2.clientId is required" -}}
+{{-     end -}}
+{{-     $mine := list .Values.s3.accessKeySecret .Values.s3.secretKeySecret .Values.admin.passwordSecret -}}
+{{-     if or (not $o2.clientSecretSecret) (has $o2.clientSecretSecret $mine) -}}
+{{-       fail "admin.oauth2.clientSecretSecret must name a secret of its own, not the S3 key pair's or admin.passwordSecret" -}}
+{{-     end -}}
+{{-     if or (not $o2.cookieSecretSecret) (has $o2.cookieSecretSecret (append $mine $o2.clientSecretSecret)) -}}
+{{-       fail "admin.oauth2.cookieSecretSecret must name a secret of its own, not the S3 key pair's, admin.passwordSecret or the client secret" -}}
+{{-     end -}}
+{{-     if and $o2.caSecret (has $o2.caSecret (concat $mine (list $o2.clientSecretSecret $o2.cookieSecretSecret))) -}}
+{{-       fail "admin.oauth2.caSecret must name a secret of its own, not one of the other secrets the chart mounts" -}}
+{{-     end -}}
+{{-     if not $o2.allowedGroups -}}
+{{-       fail "admin.oauth2.allowedGroups needs at least one group: without one oauth2-proxy admits every user of the provider" -}}
+{{-     end -}}
+{{-     range $o2.allowedGroups -}}
+{{-       if or (not .) (contains "," .) -}}
+{{-         fail (printf "admin.oauth2.allowedGroups: group %q must be a non-empty groups-claim value without ','" (. | default "")) -}}
+{{-       end -}}
+{{-     end -}}
+{{-   end -}}
+{{-   if eq .Values.admin.exposure.mode "traefik" -}}
+{{-     if not .Values.admin.ingress.host -}}
+{{-       fail "admin.ingress.host is required when admin.exposure.mode=traefik" -}}
+{{-     end -}}
+{{-     if and (eq .Values.exposure.mode "traefik") (eq .Values.admin.ingress.host .Values.ingress.host) -}}
+{{-       fail "admin.ingress.host must differ from ingress.host: the S3 API is served at the root of its host" -}}
+{{-     end -}}
+{{-   end -}}
+{{-   if and (eq .Values.admin.exposure.mode "published") (eq .Values.exposure.mode "published") (eq (.Values.admin.publish.port | int) (.Values.publish.port | int)) -}}
+{{-     fail "admin.publish.port must differ from publish.port: both are published on the swarm" -}}
+{{-   end -}}
+{{- end -}}
+{{- /* Traefik deploy labels for one routed listener: the S3 API or the admin UI. With both
+       routed the Swarm service carries two Traefik services, and Traefik links a router to
+       neither unless it names one, so every router names its own: `service`, or one of its
+       own name on `port`. `middlewares` go on whichever router serves (HTTPS with tls). */ -}}
+{{- define "seaweedfs.traefik-routers" }}
+{{- $svc := .service | default .router }}
+        - "traefik.http.routers.{{ .router }}-http.rule={{ .rule }}"
+        - "traefik.http.routers.{{ .router }}-http.entrypoints={{ .traefik.entrypoints.http }}"
+        - "traefik.http.routers.{{ .router }}-http.service={{ $svc }}"
+{{- if .tls }}
+        - "traefik.http.routers.{{ .router }}-http.middlewares={{ .traefik.redirectMiddleware }}"
+        - "traefik.http.routers.{{ .router }}-https.rule={{ .rule }}"
+        - "traefik.http.routers.{{ .router }}-https.entrypoints={{ .traefik.entrypoints.https }}"
+        - "traefik.http.routers.{{ .router }}-https.tls=true"
+        - "traefik.http.routers.{{ .router }}-https.tls.certresolver={{ .traefik.certResolver }}"
+        - "traefik.http.routers.{{ .router }}-https.service={{ $svc }}"
+{{- end }}
+{{- with .middlewares }}
+        - "traefik.http.routers.{{ $.router }}-{{ ternary "https" "http" $.tls }}.middlewares={{ . }}"
+{{- end }}
+{{- with .port }}
+        - "traefik.http.services.{{ $.router }}.loadbalancer.server.port={{ . }}"
+{{- end }}
+{{- end -}}
+{{- /* The admin UI's routers, on whichever service serves it: seaweedfs, or oauth2-proxy
+       with admin.oauth2. /metrics answers without a login, so the edge does not serve it.
+       Any method but GET/HEAD that a browser marks as sent from another site, same-site
+       included, is refused. The three routes that return stored files or their metadata get
+       a router of their own — its rule is longer, so Traefik ranks it first — whose
+       responses carry `Content-Security-Policy: sandbox` and nosniff. Traefik matches paths
+       still escaped, so an encoded slash is refused on every admin router: no request
+       reaches those routes around their router (the UI passes file paths in the query
+       string, never the path). */ -}}
+{{- define "seaweedfs.admin-routers" }}
+{{- $r := .router }}
+{{- $adminRule := printf "Host(`%s`) && !PathPrefix(`/metrics`) && !PathRegexp(`(?i)%%2f`) && (Method(`GET`) || Method(`HEAD`) || !HeaderRegexp(`Sec-Fetch-Site`, `^(cross|same)-site`))" .admin.ingress.host }}
+{{- template "seaweedfs.traefik-routers" (dict "router" (printf "%s-admin" $r) "rule" $adminRule "tls" .admin.ingress.tls "traefik" .traefik "port" .port) }}
+        - "traefik.http.middlewares.{{ $r }}-admin-sandbox.headers.contentSecurityPolicy=sandbox"
+        - "traefik.http.middlewares.{{ $r }}-admin-sandbox.headers.contentTypeNosniff=true"
+{{- template "seaweedfs.traefik-routers" (dict "router" (printf "%s-admin-content" $r) "rule" (printf "%s && (Path(`/api/files/download`) || Path(`/api/files/view`) || Path(`/api/files/metadata`))" $adminRule) "tls" .admin.ingress.tls "traefik" .traefik "service" (printf "%s-admin" $r) "middlewares" (printf "%s-admin-sandbox" $r)) }}
 {{- end -}}
 {{- if .Values.metrics.enabled -}}
 {{-   $mp := .Values.metrics.port | int -}}
@@ -25,6 +212,16 @@
        and filer ports and theirs on loopback. */}}
 {{-   if has $mp (list $sp (add $sp 10000 | int) 9333 19333 8080 18080 8888 18888) -}}
 {{-     fail (printf "metrics.port %d is already taken inside the container: weed binds the S3 port %d and its gRPC port %d, and the master, volume and filer ports 9333, 8080 and 8888 and their gRPC ports 19333, 18080 and 18888. Pick another port." $mp $sp (add $sp 10000)) -}}
+{{-   end -}}
+{{- /* With the web UI on, weed admin binds its port and its worker gRPC port, and on the
+       Enterprise image the UI one port up behind the forwarder. */}}
+{{-   if .Values.admin.enabled -}}
+{{-     $ap := .Values.admin.port | int -}}
+{{-     $ui := list $ap (add $ap 10000 | int) -}}
+{{-     if $ent }}{{ $ui = append $ui (add $ap 1 | int) }}{{ end -}}
+{{-     if has $mp $ui -}}
+{{-       fail (printf "metrics.port %d collides with the web UI: weed admin binds %s (admin.port, its worker gRPC port%s). Pick another port." $mp (join ", " $ui) (ternary " and, on the Enterprise image, the UI behind the forwarder" "" $ent)) -}}
+{{-     end -}}
 {{-   end -}}
 {{- /* Once a service opts in to discovery, every deploy label it carries is readable
        through Prometheus's targets API, so credential material must not ride along. */}}
@@ -41,11 +238,28 @@ version: "3.9"
 {{- $port := .Values.s3.port | int }}
 {{- $access := .Values.s3.accessKeySecret }}
 {{- $secret := .Values.s3.secretKeySecret }}
+{{- $admin := .Values.admin }}
+{{- $adminPort := $admin.port | int }}
+{{- $pw := $admin.passwordSecret }}
+{{- $adminInt := ternary (add $adminPort 1 | int) $adminPort $ent }}
+{{- $adminOidc := and $admin.enabled $admin.oidc.enabled }}
+{{- $cs := $admin.oidc.clientSecretSecret }}
+{{- $browser := trimSuffix "/" $admin.oidc.browserUrl }}
+{{- if and $adminOidc (not $browser) }}{{ $browser = printf "%s://%s" (ternary "https" "http" $admin.ingress.tls) $admin.ingress.host }}{{- end }}
+{{- $adminMode := "none" }}
+{{- if $admin.enabled }}{{ $adminMode = $admin.exposure.mode }}{{- end }}
+{{- /* With admin.oauth2 the UI's routers are oauth2-proxy's, so seaweedfs joins the edge's
+       overlay only for the S3 API, and meets the proxy on admin-oauth2, this stack's own. */}}
+{{- $o2 := and $admin.enabled $admin.oauth2.enabled }}
+{{- $adminRouted := and (eq $adminMode "traefik") (not $o2) }}
+{{- $routed := or (eq $mode "traefik") $adminRouted }}
 
 {{- $nets := list .Values.network.name }}
-{{- if eq $mode "traefik" }}{{ $nets = append $nets .Values.exposure.network }}{{- end }}
+{{- if $routed }}{{ $nets = append $nets .Values.exposure.network }}{{- end }}
 {{- if .Values.metrics.enabled }}{{ $nets = append $nets .Values.metrics.network }}{{- end }}
 {{- $nets = $nets | uniq }}
+{{- $extNets := $nets }}
+{{- if $o2 }}{{ $extNets = append $extNets .Values.exposure.network | uniq }}{{- end }}
 {{- /* The name clients dial on network.name. A stack's own <release>_seaweedfs has a '_', which is
        not valid in a host name: java.net.URI, and so every AWS SDK for Java client, rejects it. */}}
 {{- $alias := printf "%s-seaweedfs" (.Release.Name | replace "_" "-" | replace "." "-") }}
@@ -58,6 +272,56 @@ version: "3.9"
        chart serves S3 and nothing else. -master.telemetry is on by default and reports
        cluster statistics to telemetry.seaweedfs.com; the chart does not call home. */}}
 {{- $args := list "server" "-ip=127.0.0.1" "-ip.bind=127.0.0.1" "-s3" "-s3.ip.bind=0.0.0.0" (printf "-s3.port=%d" $port) "-s3.port.iceberg=0" "-s3.port.lance=0" "-master.telemetry=false" }}
+
+{{- /* OIDC: the advanced IAM file `-s3.iam.config` loads, built here and written by the
+       container at start (a Swarm config can carry no rendered value). Everything in it is
+       chart-owned, because each piece closes a hole SeaweedFS leaves open:
+         * defaultEffect Deny. It is also what a trust policy returns when no statement
+           matches, so Allow would let any token assume the role.
+         * ONE role, whose trust policy requires the issuer AND a granted group. STS lets
+           the caller name the role, and the trust policy is all that stands in the way.
+           There is no oidc:aud condition: SeaweedFS sets it only for a string aud, and the
+           provider already checks aud/azp against clientId on every path.
+         * Each grant is a statement conditioned on jwt:groups, so a token in several
+           granted groups gets all of their grants, through Bearer and STS alike.
+         * Explicit actions only. s3:Put* would include s3:PutBucketPolicy, and a bucket
+           policy's Allow bypasses this policy entirely.
+         * roleMapping always present: without it SeaweedFS maps hard-coded group names.
+         * -s3.iam=false. The embedded IAM API, on by default, answers ListAccessKeys
+           without a UserName as self-service and returns every identity's access key id,
+           so any granted token would learn the admin's. Nothing here needs it: STS has
+           routes of its own.
+       No policyClaim (it skips the trust policy), no client secret (never used), no STS
+       signing key (it falls back to the per-start filer key below). */}}
+{{- $iamFile := "/tmp/seaweedfs-iam.json" }}
+{{- $iam := dict }}
+{{- if .Values.s3.oidc.enabled }}
+{{-   $roleArn := "arn:aws:iam::role/oidc" }}
+{{-   $groups := list }}
+{{-   $statements := list }}
+{{-   range .Values.s3.oidc.grants }}
+{{-     $groups = append $groups .group }}
+{{-     $actions := list "s3:GetObject" "s3:ListBucket" "s3:GetBucketLocation" }}
+{{-     if eq .access "readwrite" }}{{ $actions = concat $actions (list "s3:PutObject" "s3:DeleteObject") }}{{ end }}
+{{-     $resources := list "arn:aws:s3:::*" }}
+{{-     if .buckets }}
+{{-       $resources = list }}
+{{-       range .buckets }}{{ $resources = append $resources (printf "arn:aws:s3:::%s" .) }}{{ $resources = append $resources (printf "arn:aws:s3:::%s/*" .) }}{{ end }}
+{{-     end }}
+{{-     $condition := dict "ForAnyValue:StringEquals" (dict "jwt:groups" (list .group)) }}
+{{-     $statements = append $statements (dict "Effect" "Allow" "Action" $actions "Resource" $resources "Condition" $condition) }}
+{{-   end }}
+{{-   $rules := list }}
+{{-   range $groups }}{{ $rules = append $rules (dict "claim" "groups" "value" . "role" $roleArn) }}{{ end }}
+{{-   $provider := dict "issuer" .Values.s3.oidc.issuer "clientId" .Values.s3.oidc.clientId "jwksUri" .Values.s3.oidc.jwksUri "roleMapping" (dict "rules" $rules) }}
+{{-   $trustCondition := dict "StringEquals" (dict "oidc:iss" .Values.s3.oidc.issuer) "ForAnyValue:StringEquals" (dict "oidc:groups" $groups) }}
+{{-   $trust := dict "Effect" "Allow" "Principal" (dict "Federated" "*") "Action" (list "sts:AssumeRoleWithWebIdentity") "Condition" $trustCondition }}
+{{-   $role := dict "roleName" "oidc" "roleArn" $roleArn "attachedPolicies" (list "oidc") "trustPolicy" (dict "Version" "2012-10-17" "Statement" (list $trust)) }}
+{{-   $policy := dict "name" "oidc" "document" (dict "Version" "2012-10-17" "Statement" $statements) }}
+{{-   $iam = dict "policy" (dict "defaultEffect" "Deny") "providers" (list (dict "name" "oidc" "type" "oidc" "config" $provider)) "policies" (list $policy) "roles" (list $role) }}
+{{-   $args = append $args (printf "-s3.iam.config=%s" $iamFile) }}
+{{-   $args = append $args "-s3.iam=false" }}
+{{- end }}
 {{- /* One metrics listener serves the registry of every role in the process. Its address
        defaults to -ip.bind, i.e. loopback, so it is bound to every interface explicitly. */}}
 {{- if .Values.metrics.enabled }}
@@ -82,9 +346,31 @@ services:
     #    accepts identity updates; without a signing key it accepts them from anyone on
     #    the overlay, so a neighbour could add itself as an admin. Everything that needs
     #    the key lives in this one process, so it never has to be shared or persisted.
+{{- if .Values.s3.oidc.enabled }}
+    #    With OIDC on it also signs STS credentials, which therefore end at a restart.
+    #  * SEAWEEDFS_IAM_CONFIG is written to the file -s3.iam.config names, on every start.
+{{- end }}
     #  * Buckets are created by a background loop over the authenticated S3 API once the
     #    gateway answers. 409 (already exists) counts as done, so a restart is a no-op,
     #    and a failure is logged rather than taking the server down with it.
+    #  * admin.enabled: the web UI (`weed admin`) is started by another background loop
+    #    once the master answers on 127.0.0.1, and restarted if it exits; S3 and its
+    #    healthcheck never depend on it. Its password is exported in its own subshell only,
+    #    so weed server never holds it and no argv shows it. It inherits the filer signing
+    #    key, without which it cannot manage users. No -ip: with a password it binds the UI
+    #    to 0.0.0.0 itself and keeps its unauthenticated worker gRPC port on 127.0.0.1.
+    #    -logtostderr and GODEBUG=fips140=on, as the image's entrypoint gives weed server
+    #    (no log files in /tmp). Its session key is deleted once per container start, not per
+    #    restart of the UI, so a redeploy (a password change included) logs everyone out.
+{{- if $ent }}
+    #    The Enterprise weed admin binds its worker gRPC port wherever the UI binds, so
+    #    both stay on 127.0.0.1 (the UI on admin.port + 1) and busybox nc forwards
+    #    admin.port to the UI, one child per connection, restarted if it exits.
+{{- end }}
+{{- if $adminOidc }}
+    #    admin.oidc: the client secret is exported in the admin's subshell only, like the
+    #    password; the rest of the OIDC settings are plain environment below.
+{{- end }}
     #  * `exec` hands PID 1 to the image's entrypoint, which fixes /data ownership and
     #    drops to the seaweed user, so SIGTERM reaches weed itself.
     entrypoint:
@@ -96,9 +382,40 @@ services:
         for s in {{ $access }} {{ $secret }}; do
         test -s "/run/secrets/$$s" || { echo "secret $$s is missing or empty - refusing to start an S3 store without credentials" >&2; exit 1; };
         done;
+{{- if $admin.enabled }}
+        test -s "/run/secrets/{{ $pw }}" || { echo "secret {{ $pw }} is missing or empty - refusing to start the admin UI without a password" >&2; exit 1; };
+{{- end }}
+{{- if $adminOidc }}
+        test -s "/run/secrets/{{ $cs }}" || { echo "secret {{ $cs }} is missing or empty - refusing to start the admin UI's OIDC login without its client secret" >&2; exit 1; };
+{{- end }}
         export AWS_ACCESS_KEY_ID="$$(cat /run/secrets/{{ $access }})";
         export AWS_SECRET_ACCESS_KEY="$$(cat /run/secrets/{{ $secret }})";
         export WEED_JWT_FILER_SIGNING_KEY="$$(head -c 32 /dev/urandom | base64)";
+{{- if .Values.s3.oidc.enabled }}
+        printf '%s' "$$SEAWEEDFS_IAM_CONFIG" > {{ $iamFile }};
+{{- end }}
+{{- if $admin.enabled }}
+        rm -f /data/admin/.session_key;
+{{- if $ent }}
+        (
+        while :; do
+        rc=0;
+        su-exec seaweed nc -lk -p {{ $adminPort }} -e nc 127.0.0.1 {{ $adminInt }} || rc=$$?;
+        echo "admin forwarder exited (status $$rc) - restarting in 5s" >&2;
+        sleep 5;
+        done
+        ) &
+{{- end }}
+        (
+        until curl -fs -o /dev/null --max-time 5 http://127.0.0.1:9333/cluster/status; do sleep 2; done;
+        while :; do
+        rc=0;
+        ( export WEED_ADMIN_PASSWORD="$$(cat /run/secrets/{{ $pw }})"{{ if $adminOidc }} WEED_ADMIN_OIDC_CLIENT_SECRET="$$(cat /run/secrets/{{ $cs }})"{{ end }} GODEBUG=fips140=on; exec su-exec seaweed weed -logtostderr=true admin{{ if $ent }} -ip=127.0.0.1{{ end }} -master=127.0.0.1:9333 -port={{ $adminInt }}{{ if $ent }} -port.grpc={{ add $adminPort 10000 }}{{ end }} -dataDir=/data/admin -adminUser={{ $admin.user }} ) || rc=$$?;
+        echo "weed admin exited (status $$rc) - restarting in 5s" >&2;
+        sleep 5;
+        done
+        ) &
+{{- end }}
 {{- if .Values.buckets }}
         (
         for b in {{ join " " .Values.buckets }}; do
@@ -134,10 +451,40 @@ services:
       start_period: {{ .Values.healthcheck.startPeriod }}
 {{- end }}
     stop_grace_period: {{ .Values.stopGracePeriod }}
+{{- if or .Values.s3.oidc.enabled $adminOidc }}
+
+    environment:
+{{- if .Values.s3.oidc.enabled }}
+      # The OIDC IAM file, as JSON. It holds no secret (issuer, client id, groups, buckets),
+      # so being visible in the manifest and `docker inspect` is fine. `$$` keeps Docker
+      # from interpolating a `$` in a value.
+      SEAWEEDFS_IAM_CONFIG: {{ $iam | toJson | replace "$" "$$" | quote }}
+{{- end }}
+{{- if $adminOidc }}
+      # The web UI's OIDC login, read by weed admin alone. None of it is secret; `$$` as
+      # above. Only a member of a listed group gets in: no default role is set.
+      WEED_ADMIN_OIDC_ENABLED: "true"
+      WEED_ADMIN_OIDC_ISSUER: {{ $admin.oidc.issuer | replace "$" "$$" | quote }}
+      WEED_ADMIN_OIDC_CLIENT_ID: {{ $admin.oidc.clientId | replace "$" "$$" | quote }}
+      WEED_ADMIN_OIDC_REDIRECT_URL: {{ printf "%s/login/oidc/callback" $browser | replace "$" "$$" | quote }}
+{{- with $admin.oidc.adminGroups }}
+      WEED_ADMIN_OIDC_ADMIN_GROUPS: {{ join "," . | replace "$" "$$" | quote }}
+{{- end }}
+{{- with $admin.oidc.readonlyGroups }}
+      WEED_ADMIN_OIDC_READONLY_GROUPS: {{ join "," . | replace "$" "$$" | quote }}
+{{- end }}
+{{- end }}
+{{- end }}
 
     secrets:
       - {{ $access }}
       - {{ $secret }}
+{{- if $admin.enabled }}
+      - {{ $pw }}
+{{- end }}
+{{- if $adminOidc }}
+      - {{ $cs }}
+{{- end }}
 
     networks:
 {{- range $nets }}
@@ -147,13 +494,24 @@ services:
           - {{ $alias }}
 {{- end }}
 {{- end }}
+{{- if $o2 }}
+      admin-oauth2:
+{{- end }}
 
-{{- if eq $mode "published" }}
+{{- if or (eq $mode "published") (eq $adminMode "published") }}
     ports:
+{{- if eq $mode "published" }}
       - target: {{ $port }}
         published: {{ .Values.publish.port }}
         protocol: tcp
         mode: {{ .Values.publish.mode }}
+{{- end }}
+{{- if eq $adminMode "published" }}
+      - target: {{ $adminPort }}
+        published: {{ $admin.publish.port }}
+        protocol: tcp
+        mode: {{ $admin.publish.mode }}
+{{- end }}
 {{- end }}
 
 {{- if .Values.persistence.enabled }}
@@ -199,31 +557,89 @@ services:
 {{- end }}
       restart_policy:
         condition: any
-{{- if or (eq $mode "traefik") .Values.metrics.enabled .Values.labels }}
+{{- if or $routed .Values.metrics.enabled .Values.labels }}
       labels:
 {{- if .Values.metrics.enabled }}
         # Docker Swarm service discovery (the prometheus-stack chart's swarm-tasks job).
         - "prometheus.io/scrape=true"
         - "prometheus.io/port={{ .Values.metrics.port }}"
 {{- end }}
-{{- if eq $mode "traefik" }}
+{{- if $routed }}
         - "traefik.enable=true"
         - "traefik.swarm.network={{ .Values.exposure.network }}"
         - "traefik.constraint-label={{ .Values.traefik.constraintLabel }}"
-        - "traefik.http.routers.{{ $router }}-http.rule=Host(`{{ .Values.ingress.host }}`)"
-        - "traefik.http.routers.{{ $router }}-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
-{{- if .Values.ingress.tls }}
-        - "traefik.http.routers.{{ $router }}-http.middlewares={{ .Values.traefik.redirectMiddleware }}"
-        - "traefik.http.routers.{{ $router }}-https.rule=Host(`{{ .Values.ingress.host }}`)"
-        - "traefik.http.routers.{{ $router }}-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
-        - "traefik.http.routers.{{ $router }}-https.tls=true"
-        - "traefik.http.routers.{{ $router }}-https.tls.certresolver={{ .Values.traefik.certResolver }}"
 {{- end }}
-        - "traefik.http.services.{{ $router }}.loadbalancer.server.port={{ $port }}"
+{{- if eq $mode "traefik" }}
+{{-   template "seaweedfs.traefik-routers" (dict "router" $router "rule" (printf "Host(`%s`)" .Values.ingress.host) "tls" .Values.ingress.tls "traefik" .Values.traefik "port" $port) }}
+{{- end }}
+{{- if $adminRouted }}
+{{-   template "seaweedfs.admin-routers" (dict "router" $router "admin" $admin "traefik" .Values.traefik "port" $adminPort) }}
 {{- end }}
 {{- range $key, $val := .Values.labels }}
         - "{{ $key }}={{ $val }}"
 {{- end }}
+{{- end }}
+{{- if $o2 }}
+{{-   $o2v := $admin.oauth2 }}
+
+  # admin.oauth2: oauth2-proxy signs a user in at the provider and admits only allowedGroups,
+  # then proxies to the UI over admin-oauth2, by the full service name: the proxy is on the
+  # edge's overlay too, where another stack's `seaweedfs` would answer to the short one. The
+  # UI still asks for its password: the
+  # UI also answers on every overlay seaweedfs joins, where nothing stands in front of it.
+  # The proxy carries the UI's routers and their edge rules. Both secrets are read from
+  # their files. The cookie is secure, SameSite=Lax and host-only; no identity header goes
+  # upstream, and a bearer token does not skip the sign-in.
+  oauth2-proxy:
+    image: "{{ $o2v.image.repository }}:{{ $o2v.image.tag }}"
+    command:
+      - --http-address=0.0.0.0:4180
+      - --provider=oidc
+      - {{ printf "--oidc-issuer-url=%s" $o2v.issuer | replace "$" "$$" | quote }}
+      - {{ printf "--client-id=%s" $o2v.clientId | replace "$" "$$" | quote }}
+      - --client-secret-file=/run/secrets/{{ $o2v.clientSecretSecret }}
+      - --cookie-secret-file=/run/secrets/{{ $o2v.cookieSecretSecret }}
+{{-   with $o2v.caSecret }}
+      - --provider-ca-file=/run/secrets/{{ . }}
+{{-   end }}
+      - --cookie-secure=true
+      - --cookie-samesite=lax
+      - {{ printf "--cookie-refresh=%s" $o2v.cookieRefresh | quote }}
+      - --redirect-url=https://{{ $admin.ingress.host }}/oauth2/callback
+      - --email-domain=*
+{{-   range $o2v.allowedGroups }}
+      - {{ printf "--allowed-group=%s" . | replace "$" "$$" | quote }}
+{{-   end }}
+      - {{ printf "--scope=%s" $o2v.scope | replace "$" "$$" | quote }}
+      - --code-challenge-method=S256
+      - --reverse-proxy=true
+      - {{ printf "--trusted-proxy-ip=%s" $o2v.trustedProxyIp | replace "$" "$$" | quote }}
+      - {{ printf "--upstream=http://%s_seaweedfs:%d/" .Release.Name $adminPort | quote }}
+      - --proxy-prefix=/oauth2
+      - --pass-basic-auth=false
+      - --pass-user-headers=false
+      - --pass-access-token=false
+      - --pass-authorization-header=false
+      - --set-xauthrequest=false
+      - --skip-jwt-bearer-tokens=false
+    secrets:
+      - {{ $o2v.clientSecretSecret }}
+      - {{ $o2v.cookieSecretSecret }}
+{{-   with $o2v.caSecret }}
+      - {{ . }}
+{{-   end }}
+    networks:
+      - {{ .Values.exposure.network }}
+      - admin-oauth2
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+      labels:
+        - "traefik.enable=true"
+        - "traefik.swarm.network={{ .Values.exposure.network }}"
+        - "traefik.constraint-label={{ .Values.traefik.constraintLabel }}"
+{{-   template "seaweedfs.admin-routers" (dict "router" $router "admin" $admin "traefik" .Values.traefik "port" 4180) }}
 {{- end }}
 
 secrets:
@@ -231,11 +647,33 @@ secrets:
     external: true
   {{ $secret }}:
     external: true
-
-networks:
-{{- range $nets }}
+{{- if $admin.enabled }}
+  {{ $pw }}:
+    external: true
+{{- end }}
+{{- if $adminOidc }}
+  {{ $cs }}:
+    external: true
+{{- end }}
+{{- if $o2 }}
+  {{ $admin.oauth2.clientSecretSecret }}:
+    external: true
+  {{ $admin.oauth2.cookieSecretSecret }}:
+    external: true
+{{- with $admin.oauth2.caSecret }}
   {{ . }}:
     external: true
+{{- end }}
+{{- end }}
+
+networks:
+{{- range $extNets }}
+  {{ . }}:
+    external: true
+{{- end }}
+{{- if $o2 }}
+  # Only oauth2-proxy and seaweedfs join it; no standalone container can attach to it.
+  admin-oauth2: {}
 {{- end }}
 
 {{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) }}

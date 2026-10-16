@@ -309,13 +309,34 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   empty key set on `rustfs-net`), up before install because RustFS discovers it only at
   start. `ci/e2e-check.sh` signs its requests with the same key pair and also proves the
   public default `rustfsadmin` pair is refused, because RustFS converges just as well on it.
-- **seaweedfs** — the two S3 credential secrets (the secret key carries a `/` and a `+`) + the
-  `seaweedfs-data` node label + the `seaweedfs-net` client overlay for every fixture; per
-  fixture, the bind-mount host dir and its node label, and a real Traefik edge (`edge`).
-  `ci/e2e-check.sh` signs its requests with the same key pair, from a throwaway client on the
-  overlay, because a store with no identity converges just as well while serving everyone.
+- **seaweedfs** — the two S3 credential secrets (the secret key carries a `/` and a `+`), the
+  admin UI's password secret + the `seaweedfs-data` node label + the `seaweedfs-net` client
+  overlay for every fixture; per fixture, the bind-mount host dir and its node label, and a real
+  Traefik edge (`edge`, `admin-edge`). `ci/e2e-check.sh` signs its requests with the same key
+  pair, from a throwaway client on the overlay, because a store with no identity converges just
+  as well while serving everyone. The `admin-*` fixtures log in to the web UI with the same
+  password (through the edge for `admin-edge`, which also proves the S3 host, `/metrics` and a
+  write marked `Sec-Fetch-Site: same-site` are not routed), then stop `weed admin` in the task
+  and assert it comes back with its session while S3 serves on, and read `/proc/<pid>/environ`
+  (as `seaweed`: root in `docker exec` may not) and `ps` to prove the password reached
+  `weed admin` alone. `admin-published` also restarts the task and asserts the old session is
+  sent back to `/login`.
+  The `oidc` fixture needs no extra setup: the check makes an RSA key per run, uploads a
+  discovery document and its JWKS into the chart-created `idp` bucket (the filer serves them
+  on the loopback address the fixture names as issuer, and `jwksUri: ""` makes SeaweedFS
+  find the keys through discovery) and mints the tokens itself with `openssl`.
+  `admin-oidc` runs the SeaweedFS Enterprise image and needs only the OIDC client secret,
+  which setup creates for every fixture: the check uploads a discovery document the same
+  way, restarts `weed admin` so it reads it, and follows the login button to the stub.
+  `admin-oauth2` gets oauth2-proxy's client and cookie secrets and a stub identity provider,
+  `ci/oauth2-stub-oidc.js` on `node:22-alpine` as the `seaweedfs-e2e-oidc` service on
+  `traefik-public`: setup makes a throwaway CA and a certificate for the service name with the
+  runner's `openssl`, the fixture names the CA as `admin.oauth2.caSecret`, and the stub issues
+  RS256 ID tokens for the codes it hands out, redeeming them only with the client secret setup
+  created. The check signs in as a member of the allowed group and as an outsider.
   The `metrics` fixture scrapes `/metrics` from the `monitoring` overlay, where Prometheus
-  would, and repeats the anonymous-S3 and closed-internal-port probes there.
+  would, repeats the anonymous-S3 and closed-internal-port probes there, and runs
+  `promtool test rules` on the alert rules under `monitoring/`.
 - **gitlab-runner** — the runner authentication-token secret + the `gitlab-runner-data` node
   label, plus the two S3 cache secrets for the `cache` fixture (their values deliberately
   contain the `/` and `+` of a real base64 key, so the TOML quoting is exercised). The mock

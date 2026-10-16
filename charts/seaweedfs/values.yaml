@@ -10,10 +10,12 @@
 #   1. S3 authentication is ON, always. SeaweedFS serves every request anonymously when
 #      it knows no identity, so the chart refuses to start unless both credential
 #      secrets exist and are non-empty — an empty secret must never become an open store.
-#   2. Only the S3 port leaves the container. The master, volume and filer APIs carry no
-#      authentication at all and are bound to 127.0.0.1; see the chart README.
+#   2. Only the S3 port leaves the container, plus the password-protected web UI when
+#      admin.enabled. The master, volume and filer APIs carry no authentication at all
+#      and are bound to 127.0.0.1; see the chart README.
 
 image:
+  # chrislusf/seaweedfs-enterprise for admin.oidc.
   repository: chrislusf/seaweedfs
   tag: ""  # defaults to appVersion from Chart.yaml
 
@@ -27,6 +29,28 @@ s3:
   #   openssl rand -base64 30 | tr -d '\n' | docker secret create seaweedfs-s3-secret-key -
   accessKeySecret: seaweedfs-s3-access-key
   secretKeySecret: seaweedfs-s3-secret-key
+  # OpenID Connect sign-in to the S3 API (off by default), e.g. against the keycloak chart in
+  # this repository. The admin key pair above keeps working unchanged. A client either sends
+  # its identity provider's token as `Authorization: Bearer <token>` or exchanges it for
+  # temporary keys with STS AssumeRoleWithWebIdentity (RoleArn arn:aws:iam::role/oidc) on the
+  # S3 port. Access comes only from grants: a token whose `groups` claim names no granted
+  # group is refused. See the chart README for the provider setup.
+  oidc:
+    enabled: false
+    # The provider's issuer URL, exactly as the token's `iss` claim carries it, e.g.
+    # https://sso.example.com/realms/infra. It must be reachable from the container.
+    issuer: ""
+    # The client the tokens are issued for: their `aud` or `azp` claim must equal it.
+    clientId: ""
+    # Where the signing keys are fetched. "" discovers them from the issuer.
+    jwksUri: ""
+    # Who may do what. group is a value of the token's `groups` claim, matched in exact case;
+    # access is readonly or readwrite; buckets (required) limits the grant to those buckets,
+    # and only an explicit [] means every bucket. A token in several granted groups gets all
+    # of their grants, e.g.:
+    #   - { group: ci-cache, access: readwrite, buckets: [runner-cache] }
+    #   - { group: auditors, access: readonly, buckets: [] }
+    grants: []
 
 # Buckets created once the server is up, if they do not exist yet (an existing bucket
 # is left alone, so restarts are safe). Clients such as the GitLab Runner cache never
@@ -65,20 +89,25 @@ placement:
 network:
   name: seaweedfs-net
 
-# How the S3 API is exposed beyond network.name:
-#   none      - (default) nowhere else; only services on network.name reach it.
+# How the S3 API is exposed beyond network.name (the admin UI has its own
+# admin.exposure):
+#   none      - (default) no route or port of its own: services on network.name reach
+#               it, and while the admin UI is traefik-routed (not through admin.oauth2) so
+#               does everything on exposure.network (the service joins it, and S3 listens
+#               on all interfaces).
 #   traefik   - Traefik deploy labels on exposure.network, routing ingress.host to the
 #               S3 port. Path-style addressing (https://<host>/<bucket>/<key>), which is
 #               what non-AWS S3 clients use, including the GitLab Runner cache.
 #   published - publish s3.port on the Swarm as publish.port.
 exposure:
   mode: none
-  # The edge proxy's overlay (traefik mode only). Provisioned by the proxy
-  # chart/operator (requirements.yaml, autoCreate:false).
+  # The edge proxy's overlay, joined when the S3 API or the admin UI is traefik-routed.
+  # Once joined, everything on it reaches BOTH listeners directly, past the routers.
+  # Provisioned by the proxy chart/operator (requirements.yaml, autoCreate:false).
   network: traefik-public
 
-# Public-facing address for traefik mode. host drives the Traefik Host() rule; tls
-# selects whether an HTTPS router terminates TLS (and HTTP redirects to it).
+# Public-facing address of the S3 API in traefik mode. host drives the Traefik Host()
+# rule; tls selects whether an HTTPS router terminates TLS (and HTTP redirects to it).
 ingress:
   host: s3.example.com
   tls: true
@@ -90,8 +119,11 @@ traefik:
   entrypoints:
     http: http
     https: https
-  # Base name for this chart's router/service objects (`<name>-http` / `<name>-https`
-  # routers + the `<name>` service). Empty => the release name.
+  # Base name for this chart's router/service objects: `<name>-http` / `<name>-https`
+  # routers + the `<name>` service for S3, `<name>-admin-http` / `<name>-admin-https`
+  # + `<name>-admin` for the admin UI, and `<name>-admin-content-http` / `-https` with
+  # the `<name>-admin-sandbox` middleware for its stored-file routes. Empty => the
+  # release name.
   routerName: ""
   # Swarm-provider constraint label. The traefik chart runs with
   # --providers.swarm.exposedByDefault=false and a constraint on this label, so a
@@ -101,11 +133,114 @@ traefik:
   # traefik chart always defines https-redirect in the swarm provider.
   redirectMiddleware: https-redirect
 
-# published-mode port publish. mode: ingress (routing mesh, every node) or host (only
-# the node running the task).
+# S3 API published-mode port publish. mode: ingress (routing mesh, every node) or host
+# (only the node running the task).
 publish:
   port: 8333
   mode: ingress
+
+# The web UI: `weed admin`, run beside the server in the same container once the master
+# answers, and restarted if it exits; S3 keeps serving either way. One password gives
+# full control of the store: users and their keys, buckets, every file, maintenance.
+# The master's own UI on 9333 is NOT exposed, and cannot be: it is the same
+# unauthenticated listener that deletes data (see the README's Web UI section).
+admin:
+  enabled: false
+  # Port the UI listens on inside the container. Its worker gRPC port, port + 10000,
+  # stays on 127.0.0.1. Neither may collide with a port weed server binds.
+  port: 23646
+  # The login name. The password comes from passwordSecret.
+  user: admin
+  # EXTERNAL Swarm secret holding the admin password. Swarm never shows a secret again,
+  # so keep the password you put in:
+  #   printf '%s' '<password>' | docker secret create seaweedfs-admin-password -
+  passwordSecret: seaweedfs-admin-password
+  # How the UI is exposed beyond network.name:
+  #   none      - (default) no route or port of its own: services on network.name reach
+  #               it, and while the S3 API is traefik-routed so does everything on
+  #               exposure.network — directly, with none of the router's protections.
+  #   traefik   - Traefik deploy labels on exposure.network, routing admin.ingress.host
+  #               to the UI, except /metrics (which needs no login) and any write a
+  #               browser marks as sent from another site, with the stored-file
+  #               routes under `Content-Security-Policy: sandbox`.
+  #   published - publish admin.port on the Swarm as admin.publish.port. Plain HTTP,
+  #               with neither edge guard: for a trusted network only (README).
+  exposure:
+    mode: none
+  # Public-facing address for traefik mode, as ingress above; must differ from
+  # ingress.host when both are routed.
+  ingress:
+    host: ""
+    tls: true
+  # published-mode port publish; must differ from publish.port when both are published.
+  publish:
+    port: 23646
+    mode: ingress
+  # OpenID Connect login to the UI, beside the password login (off by default). An
+  # Enterprise feature: it needs image.repository chrislusf/seaweedfs-enterprise, under
+  # SeaweedFS's licence terms (README). On that image the UI listens on 127.0.0.1, on
+  # admin.port + 1, behind a forwarder on admin.port.
+  oidc:
+    enabled: false
+    # The provider's issuer URL, e.g. https://sso.example.com/realms/infra. https only
+    # (SeaweedFS refuses plain http except on localhost), and reachable from the container
+    # when weed admin starts: it reads the discovery document once.
+    issuer: ""
+    clientId: seaweedfs-admin
+    # EXTERNAL Swarm secret holding the client secret. Pre-create it:
+    #   printf '%s' '<client secret>' | docker secret create seaweedfs-admin-oidc-client-secret -
+    clientSecretSecret: seaweedfs-admin-oidc-client-secret
+    # The UI's public base URL (https://host[:port], no path); the provider sends the
+    # browser back to <browserUrl>/login/oidc/callback, which SeaweedFS requires to be https.
+    # "" => https://<admin.ingress.host> while the UI is traefik-routed with admin.ingress.tls;
+    # required otherwise.
+    browserUrl: ""
+    # Values of the ID token's `groups` claim, which SeaweedFS compares ignoring case;
+    # `*`, `?` and `,` are refused. A member of an adminGroups entry gets full control, of
+    # a readonlyGroups entry read-only access; anyone else is refused. At least one is
+    # required.
+    adminGroups: []
+    readonlyGroups: []
+  # Single sign-on in front of the UI through oauth2-proxy, on the free image too (off by
+  # default). Not together with admin.oidc. A user signs in at the identity provider, must
+  # be in one of allowedGroups, and then logs in to the UI with its password as before:
+  # the UI also answers on every overlay the store joins, where the proxy is not in the
+  # way, so the password stays. Needs admin.exposure.mode traefik with admin.ingress.tls;
+  # the proxy then carries the UI's routers and reaches the UI over an overlay of this
+  # stack's own that only the two join.
+  oauth2:
+    enabled: false
+    image:
+      repository: quay.io/oauth2-proxy/oauth2-proxy
+      tag: "v7.15.4"
+    # The provider's https:// issuer URL, e.g. https://sso.example.com/realms/infra. The
+    # proxy reads its discovery document at start, so it must be reachable from the proxy.
+    issuer: ""
+    clientId: seaweedfs-admin
+    # EXTERNAL Swarm secrets. Pre-create both; the cookie secret must be 16, 24 or 32 bytes:
+    #   printf '%s' '<client secret>' | docker secret create seaweedfs-admin-oauth2-client-secret -
+    #   head -c 32 /dev/urandom | docker secret create seaweedfs-admin-oauth2-cookie-secret -
+    clientSecretSecret: seaweedfs-admin-oauth2-client-secret
+    cookieSecretSecret: seaweedfs-admin-oauth2-cookie-secret
+    # EXTERNAL Swarm secret holding the PEM CA bundle that signed the provider's
+    # certificate, for a provider on a private CA, e.g.
+    #   docker secret create seaweedfs-admin-oauth2-ca ./ca.pem
+    # "" => the image's public roots. The provider's certificate is always verified.
+    caSecret: ""
+    # Values of the ID token's `groups` claim, matched exactly; a user in none of them is
+    # refused. At least one is required, and `,` is refused.
+    allowedGroups: []
+    # Scopes requested at sign-in. Some providers (Dex, Authentik) send `groups` only when
+    # it is asked for: add it there.
+    scope: "openid email profile"
+    # How often an active session is checked again at the provider, with its refresh token:
+    # a user removed from allowedGroups, or disabled there, loses the session at the next
+    # check. Keep it under the cookie's 7 days; 0s checks only at sign-in, so a session
+    # then lasts those 7 days.
+    cookieRefresh: 1m
+    # The proxy believes X-Forwarded-* headers only from these addresses, which must cover
+    # the edge proxy's on exposure.network. 10.0.0.0/8 is Swarm's default overlay pool.
+    trustedProxyIp: 10.0.0.0/8
 
 # Extra `weed server` flags, appended verbatim after the chart's own, e.g.
 # ["-master.volumeSizeLimitMB=512"]. Run `docker run --rm chrislusf/seaweedfs weed

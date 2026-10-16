@@ -1,0 +1,9 @@
+# The #254 shape: the S3 API stays overlay-only (exposure.mode none) and the web UI is
+# Traefik-routed with TLS. Labels only — ci/e2e-check.sh logs in to the UI on the overlay;
+# admin-edge routes it through a real edge.
+admin:
+  enabled: true
+  exposure:
+    mode: traefik
+  ingress:
+    host: seaweedfs-admin.example.com
