@@ -68,7 +68,8 @@ There is **no** `.Capabilities` or other Helm context.
 
 The existing charts share deliberate patterns — new charts must follow them.
 Reference implementations: keycloak (routed, pluggable exposure), mariadb
-(stateful), openclaw (both). `make new-chart` scaffolds all of this correctly and
+(stateful), openclaw (both). `make new-chart` scaffolds a passing skeleton only —
+copy exposure, persistence, secrets and metrics from the references — and
 `make test` enforces most of it.
 
 **Traefik-routed charts** — anything exposing HTTP via the traefik chart:
@@ -253,13 +254,13 @@ command/entrypoint wrapper (`$$` compose-escapes the `$`) so the plaintext never
 lands in the compose file or `docker inspect`. Document the
 `docker secret create` pre-step in the chart README.
 
-**Metrics** — a chart whose software can serve Prometheus metrics offers
-`metrics.enabled` (off by default, and nothing renders while it is off), found by
-Docker Swarm service discovery rather than by a scrape config: the service that
-serves `/metrics` carries the deploy labels `prometheus.io/scrape=true` and
-`prometheus.io/port` (plus `prometheus.io/path` when it is not `/metrics`) and joins
-`metrics.network`, default `monitoring`, the overlay the prometheus-stack chart
-scrapes on. Declare that network `autoCreate: true` in `requirements.yaml`.
+**Metrics** — a chart whose software can serve Prometheus metrics, or push OTLP
+ones, offers `metrics.enabled` (off by default, and nothing renders while it is
+off), found by Docker Swarm service discovery rather than by a scrape config: the
+service that serves `/metrics` carries the deploy labels `prometheus.io/scrape=true`
+and `prometheus.io/port` (plus `prometheus.io/path` when it is not `/metrics`) and
+joins `metrics.network`, default `monitoring`, the overlay the prometheus-stack
+chart scrapes on. Declare that network `autoCreate: true` in `requirements.yaml`.
 `charts/mariadb-galera` and `charts/mariadb` are the references.
 
 - **Once a service opts in, every one of its deploy labels is readable through
@@ -276,6 +277,12 @@ scrapes on. Declare that network `autoCreate: true` in `requirements.yaml`.
 - An exporter logs in as a **least-privilege user of its own**, created by a
   one-shot (`restart_policy: on-failure`) that holds the admin credential and stays
   off `metrics.network`; its password is an external secret like any other.
+- **Software that only pushes OTLP** gets an OpenTelemetry Collector as a service of
+  its own (`charts/rustfs` is the reference): it receives on the app's overlay and
+  serves the Prometheus endpoint on `metrics.network` with only the two discovery
+  labels, so the app itself never joins. Anything on either overlay can push to it
+  unauthenticated, so a `memory_limiter` comes first in its pipeline, below the
+  service's memory limit.
 - Pin the exporter image as a concrete `metrics.image.tag` in `values.yaml`, where
   Renovate's helm-values manager maintains it.
 - Ship a `ci/metrics-values.yaml` fixture, assert the above in `ci/render-check.sh`,
@@ -284,8 +291,8 @@ scrapes on. Declare that network `autoCreate: true` in `requirements.yaml`.
   across a chart-version change: that flag replaces the new chart version's
   defaults with the old release's values, so every `metrics.*` key renders as
   `<no value>`, and `--dry-run` still exits 0 (Eldara-Tech/swarmcli#687).
-- Alert rules and dashboards are not deployed by the chart; see *Monitoring files*
-  below.
+- The chart also ships alert rules and a dashboard, but does not deploy them; see
+  *Monitoring files* below.
 
 The bot maintaining the image pins is our own, run from the
 [`renovate`](charts/renovate) chart — see
@@ -293,7 +300,8 @@ The bot maintaining the image pins is our own, run from the
 configured and which updates it holds back.
 
 **Monitoring files** — the prometheus-stack chart ships no application's alert
-rules or dashboards. A chart that has them keeps them under
+rules or dashboards, so a chart offering `metrics.enabled` must ship its own;
+without them its metrics are scraped and nothing alerts on them. It keeps them under
 `charts/<name>/monitoring/` and deploys neither (`charts/mariadb-galera` is the
 reference):
 

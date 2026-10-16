@@ -52,6 +52,16 @@ body:
         - placement: any node
     validations:
       required: false
+  - type: input
+    id: metrics
+    attributes:
+      label: Metrics
+      description: >
+        Does the software serve Prometheus metrics (which port and path?) or push
+        OTLP? The chart then offers `metrics.enabled` (see CONTRIBUTING.md § Metrics).
+      placeholder: e.g. /metrics on :9090, OTLP push only, or none
+    validations:
+      required: false
   - type: checkboxes
     id: contribute
     attributes:
