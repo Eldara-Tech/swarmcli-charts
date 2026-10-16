@@ -6,8 +6,11 @@ version: 0.1.0
 # renovate: image=rustfs/rustfs
 appVersion: "1.0.1"
 # Oldest swarmcli whose chart engine renders this chart; verified by
-# scripts/floor-check.sh against a real binary of that version.
-swarmcliVersion: ">= 1.11.0"
+# scripts/floor-check.sh against a real binary of that version. v1.13.0 brought
+# list values in --set (swarmcli #458): the README installs with
+# --set 'buckets={…}', which v1.12.0 refuses with "at '/buckets': got string,
+# want array".
+swarmcliVersion: ">= 1.13.0"
 maintainers:
   - name: Eldara
     url: https://github.com/Eldara-Tech
