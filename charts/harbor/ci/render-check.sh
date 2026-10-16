@@ -139,6 +139,7 @@ done
 [ "$(env_ core CORE_URL)" = "http://ci_core:8080" ] && [ "$(env_ jobservice CORE_URL)" = "http://ci_core:8080" ] \
   && [ "$(env_ jobservice JOB_SERVICE_POOL_REDIS_URL)" = "redis://ci_valkey:6379/2?idle_timeout_seconds=30" ] \
   || bad "core/jobservice do not dial ci_core and ci_valkey"
+[ "$metrics" = 0 ] || [ "$(env_ exporter HARBOR_SERVICE_HOST)" = "ci_core" ] || bad "the exporter does not dial ci_core"
 [ "$(env_ nginx HARBOR_CORE)/$(env_ nginx HARBOR_PORTAL)" = "ci_core/ci_portal" ] \
   && [ "$(q '.configs.nginx.template_driver')" = "golang" ] \
   || bad "nginx is not told ci_core / ci_portal through its templated config"
@@ -152,6 +153,12 @@ grep -F 'server {{ env "HARBOR_CORE" }}:8080 resolve;' "$nginxconf" >/dev/null \
 if grep -E 'proxy_pass[[:space:]]+[^;]*\$' "$nginxconf" >/dev/null; then
   bad "files/nginx/nginx.conf has a variable in proxy_pass; keep upstream's static targets"
 fi
+# Every route goes through the two upstream blocks (a host name here would be resolved once,
+# at start), and the job hooks stay unreachable from outside.
+other="$(grep -E '^[[:space:]]*proxy_pass' "$nginxconf" | grep -v -E 'proxy_pass http://(core|portal)/[a-z0-9/]*;$' || true)"
+[ -z "$other" ] || bad "files/nginx/nginx.conf proxies around the upstream blocks: $other"
+tr '\n' ' ' <"$nginxconf" | grep -E 'location /service/notifications \{[[:space:]]*return 404;' >/dev/null \
+  || bad "files/nginx/nginx.conf no longer answers /service/notifications with 404; core's job hooks there are unauthenticated"
 for f in config.yml config-metrics.yml; do
   if grep -E 'redis_url:' "$(dirname "$0")/../files/jobservice/$f" >/dev/null; then bad "files/jobservice/$f names a redis_url; it comes from JOB_SERVICE_POOL_REDIS_URL"; fi
 done
@@ -356,6 +363,15 @@ if [ "$case" = "default" ]; then
     || bad "config.auth_mode without OIDC (e.g. LDAP) was refused or not passed on: $(tr '\n' ' ' <"$tmp.err")"
   refused 'config.oidc_client_secret is set by the chart' --set config.oidc_client_secret=x
   refused 'config.ldap_search_password is a credential' --set config.ldap_search_password=x
+  # healthcheck.enabled=false disables the images' own checks rather than falling back to
+  # them: core's has no start period and would kill a migration after about 90 seconds.
+  if render --set healthcheck.enabled=false; then
+    for s in nginx core portal jobservice registry registryctl valkey trivy; do
+      [ "$(yq -r ".services.$s.healthcheck.disable" "$tmp")" = "true" ] || bad "healthcheck.enabled=false leaves $s on its image's healthcheck"
+    done
+  else
+    bad "healthcheck.enabled=false was refused: $(tr '\n' ' ' <"$tmp.err")"
+  fi
   refused 'oidc.endpoint must be' --set oidc.enabled=true
   refused 'is not a Docker secret name' --set 'oidc.enabled=true' --set oidc.endpoint=https://kc.example.com/realms/r --set 'oidc.clientSecretSecret=x;id'
   refused 'is not a Docker secret name' --set 'secrets.core=a b'

@@ -39,6 +39,12 @@ for _ in $(seq 1 60); do
 done
 if healthy "$health"; then echo "  health: all components healthy"; else echo "  FAIL: Harbor never reported healthy: $health"; exit 1; fi
 [ "$(hcurl -o /dev/null -w '%{http_code}' "$base/v1/")" = "404" ] || bad "nginx does not answer /v1/ with 404; it is not running the chart's config"
+# core's job hooks are unauthenticated: nginx answers them 404, also when a '#' tries to carry
+# the path past that location (a variable in proxy_pass would forward it raw).
+for t in /service/notifications/tasks/1 '/api/x#/../../service/notifications/tasks/1'; do
+  code="$(hcurl -o /dev/null -w '%{http_code}' -X POST --request-target "$t" "$base/")"
+  [ "$code" = "404" ] || bad "POST $t answered $code; the job hooks must stay unreachable through nginx"
+done
 
 if [ "$case" = "published" ]; then
   code="$(hcurl -o /dev/null -w '%{http_code}' -u "$admin" -H 'Content-Type: application/json' \

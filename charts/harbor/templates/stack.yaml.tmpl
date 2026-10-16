@@ -177,13 +177,16 @@ services:
       timeout: {{ .Values.healthcheck.timeout }}
       retries: {{ .Values.healthcheck.retries }}
       start_period: 30s
+{{- else }}
+    # Off, not absent: each image ships a healthcheck of its own, without a start period.
+    healthcheck:
+      disable: true
 {{- end }}
     deploy:
       replicas: 1
 {{- if .Values.healthcheck.enabled }}
-      {{- /* Swarm watches a task for `monitor` after CREATING it, and only counts a
-             failure inside that window against the rollout. Shorter than the
-             healthcheck needs to fail and a broken deploy reports success. */}}
+      {{- /* Swarm counts every failure of an updated task until it is healthy, and
+             keeps watching it for `monitor` after that. */}}
       update_config:
         monitor: {{ .Values.healthcheck.monitor }}
 {{- end }}
@@ -328,6 +331,9 @@ services:
       timeout: {{ .Values.healthcheck.timeout }}
       retries: {{ .Values.healthcheck.retries }}
       start_period: {{ .Values.healthcheck.startPeriod }}
+{{- else }}
+    healthcheck:
+      disable: true
 {{- end }}
     deploy:
       replicas: 1
@@ -364,6 +370,9 @@ services:
       timeout: {{ .Values.healthcheck.timeout }}
       retries: {{ .Values.healthcheck.retries }}
       start_period: 30s
+{{- else }}
+    healthcheck:
+      disable: true
 {{- end }}
     deploy:
       replicas: 1
@@ -431,6 +440,9 @@ services:
       timeout: {{ .Values.healthcheck.timeout }}
       retries: {{ .Values.healthcheck.retries }}
       start_period: {{ .Values.healthcheck.startPeriod }}
+{{- else }}
+    healthcheck:
+      disable: true
 {{- end }}
     deploy:
       replicas: 1
@@ -520,6 +532,9 @@ services:
       timeout: {{ $.Values.healthcheck.timeout }}
       retries: {{ $.Values.healthcheck.retries }}
       start_period: 30s
+{{-   else }}
+    healthcheck:
+      disable: true
 {{-   end }}
     deploy:
       replicas: 1
@@ -561,6 +576,9 @@ services:
       timeout: {{ .Values.healthcheck.timeout }}
       retries: {{ .Values.healthcheck.retries }}
       start_period: 30s
+{{- else }}
+    healthcheck:
+      disable: true
 {{- end }}
     deploy:
       replicas: 1
@@ -607,6 +625,9 @@ services:
       timeout: {{ .Values.healthcheck.timeout }}
       retries: {{ .Values.healthcheck.retries }}
       start_period: 30s
+{{- else }}
+    healthcheck:
+      disable: true
 {{- end }}
     deploy:
       replicas: 1

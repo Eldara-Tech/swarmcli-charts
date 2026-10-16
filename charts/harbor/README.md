@@ -107,7 +107,10 @@ same change here.
 
 nginx is the only service routed or published; core, portal and the rest sit behind it on
 the stack's own overlay, and core and jobservice (and the exporter, with metrics) also on
-`database.network`. The components
+`database.network`. Everything else on that overlay (with the postgres chart, every stack
+sharing `postgres-net`) can reach core's API on 8080 without nginx, including the
+unauthenticated job hooks under `/service/notifications` that nginx answers 404, and
+jobservice's API; acting on a hook takes a job's random id. The components
 reach each other by the stack's full service names (`<release>_core`), never the short
 ones, which are aliases on every overlay a service joins.
 
@@ -203,8 +206,10 @@ expires.
 
 Trivy downloads its database from `mirror.gcr.io` / `ghcr.io` on the first scan and keeps
 it in the container, so a replaced task downloads it again. Without outbound access, turn
-the scanner off with `trivy.enabled: false`. `trivy.offlineScan` stops network lookups
-during a scan (Maven Central for Java artifacts) but still downloads the database.
+the scanner off with `trivy.enabled: false`; on an installed release that leaves the
+`trivy` service running, because swarmcli deploys without `--prune`, so remove it with
+`docker service rm <release>_trivy`. `trivy.offlineScan` stops network lookups during a scan
+(Maven Central for Java artifacts) but still downloads the database.
 
 ## Persistence & node pinning
 
