@@ -1,0 +1,12 @@
+# Lifecycle: the operations a long-lived cluster goes through, driven by ci/e2e-check.sh in a
+# CI job of its own (.github/e2e-matrix.yaml): an upgrade rolling every peer one at a time
+# while a client keeps writing, then every peer stopped together and started again. Shorter
+# health windows than the defaults, so each peer's monitor window costs 20 seconds rather
+# than 90.
+buckets:
+  - lifecycle
+healthcheck:
+  interval: 5s
+  retries: 2
+  startPeriod: 10s
+  monitor: 20s

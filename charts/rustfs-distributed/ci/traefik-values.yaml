@@ -1,0 +1,17 @@
+# Traefik-routed with TLS, the production shape: HTTP routers redirecting to HTTPS routers
+# with the ACME resolver, for the S3 API and the console, declared alike on every peer.
+# Labels only — a local swarm has no certificate to route through.
+exposure:
+  mode: traefik
+ingress:
+  host: s3-cluster.example.com
+  tls: true
+console:
+  enabled: true
+  exposure:
+    mode: traefik
+  ingress:
+    host: rustfs-console.example.com
+    tls: true
+buckets:
+  - runner-cache

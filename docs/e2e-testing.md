@@ -309,6 +309,17 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   empty key set on `rustfs-net`), up before install because RustFS discovers it only at
   start. `ci/e2e-check.sh` signs its requests with the same key pair and also proves the
   public default `rustfsadmin` pair is refused, because RustFS converges just as well on it.
+- **rustfs-distributed** — the two S3 credential secrets + a node label for EVERY peer
+  (`rustfs-1` … `-6`) on the single CI node, so the pinned default fixture schedules all four
+  peers there: not HA, but one real erasure-coded cluster. Plus the `rustfs-net` client
+  overlay for every fixture, the bind-mount host dirs owned by uid 10001, a real Traefik edge
+  (`edge`, and `console-edge`, which routes only the console), and for `oidc` the client
+  secret plus a stub OpenID provider. `ci/e2e-check.sh` asserts one cluster rather than four
+  stores (every peer's admin API reports one erasure set of 4 drives, all 4 peers online),
+  an object written through one peer read back through every other, and for `edge` that
+  Traefik balanced over all four peers, from its access log. The `lifecycle` fixture runs as
+  a job of its own: an upgrade rolling every peer one at a time while a client keeps writing,
+  then every peer stopped together and started again.
 - **seaweedfs** — the two S3 credential secrets (the secret key carries a `/` and a `+`) + the
   `seaweedfs-data` node label + the `seaweedfs-net` client overlay for every fixture; per
   fixture, the bind-mount host dir and its node label, and a real Traefik edge (`edge`).

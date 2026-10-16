@@ -1,0 +1,32 @@
+name: rustfs-distributed
+description: RustFS distributed (erasure-coded) S3 object store for Docker Swarm — one pinned peer per node, credentials from Swarm secrets, rolled one peer at a time
+# version is a placeholder — the git tag (rustfs-distributed/vX.Y.Z) sets the real version at release.
+version: 0.1.0
+# appVersion is the default image tag for rustfs/rustfs.
+# renovate: image=rustfs/rustfs
+appVersion: "1.0.1"
+# Oldest swarmcli whose chart engine renders this chart; verified by
+# scripts/floor-check.sh against a real binary of that version. 2.2.0 is the first
+# to roll the peers one at a time (com.swarmcli.rollout on each peer).
+swarmcliVersion: ">= 2.2.0"
+maintainers:
+  - name: Eldara
+    url: https://github.com/Eldara-Tech
+keywords:
+  - rustfs
+  - s3
+  - object-storage
+  - minio
+  - erasure-coding
+  - distributed
+  - cluster
+  - high-availability
+  - stateful
+home: https://github.com/rustfs/rustfs
+sources:
+  - https://github.com/rustfs/rustfs
+  - https://github.com/Eldara-Tech/swarmcli-charts
+# host-mount covers the opt-in persistence.volumePaths bind mounts only; the default render
+# uses one named volume per peer and needs no acknowledgment.
+annotations:
+  swarmcli-charts/allow: "host-mount"
