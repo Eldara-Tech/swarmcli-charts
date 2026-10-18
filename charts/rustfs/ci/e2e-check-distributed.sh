@@ -111,16 +111,22 @@ done
 [ "$got" = "403" ] || die "anonymous GET $base/ returned '$got', expected 403 (auth must be enforced)"
 echo "  ok: anonymous ListBuckets refused (403)"
 
-# Peers pass their liveness check before the cluster has write quorum, and a write meanwhile
-# is answered 503 (README § Connecting: clients retry). With short health windows, as in
-# `lifecycle`, the checks below can start in that gap, so wait it out first.
-got=""
+# Peers pass their liveness check before the cluster serves: before write quorum, and before
+# each peer has loaded IAM, a request is answered 503 (README § Connecting: clients retry).
+# With short health windows, as in `lifecycle`, the checks below can start in that gap, so
+# wait for write quorum and for every peer's /health/ready, which covers IAM, first.
+ready=""; last=""
 for _ in $(seq 1 40); do
-  got="$(code "$base/minio/health/cluster")"
-  [ "$got" = "200" ] && break
+  ready=1; last="$(code "$base/minio/health/cluster")"
+  [ "$last" = "200" ] || ready=""
+  for n in $PEERS; do
+    r="$(cr_code "http://${alias}-$n:9000/health/ready")"
+    [ "$r" = "200" ] || { ready=""; last="$last, peer $n ready $r"; }
+  done
+  [ -n "$ready" ] && break
   sleep 3
 done
-[ "$got" = "200" ] || die "$base/minio/health/cluster returned '$got' for 2 minutes, expected 200 (write quorum)"
+[ -n "$ready" ] || die "the cluster did not serve within 2 minutes: health/cluster and per-peer health/ready answered '$last'"
 
 got="$(code -X PUT "$base/anonymous-bucket")"
 [ "$got" = "403" ] || die "anonymous CreateBucket returned '$got', expected 403"
