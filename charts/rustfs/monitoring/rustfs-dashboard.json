@@ -1,7 +1,7 @@
 {
   "title": "RustFS",
   "uid": "rustfs",
-  "description": "RustFS S3 requests, capacity, drive and process from the metrics RustFS pushes to the chart's OpenTelemetry Collector, one release per stack. Ships with the rustfs chart; trimmed from RustFS's .docker/observability/grafana/dashboards/rustfs.json (Apache-2.0).",
+  "description": "RustFS S3 requests, capacity, drives and process (each peer's, in distributed mode) from the metrics RustFS pushes to the chart's OpenTelemetry Collector, one release per stack. Ships with the rustfs chart; trimmed from RustFS's .docker/observability/grafana/dashboards/rustfs.json (Apache-2.0).",
   "tags": [
     "rustfs"
   ],
@@ -52,8 +52,8 @@
     {
       "id": 1,
       "type": "stat",
-      "title": "Uptime",
-      "description": "Seconds since the RustFS process started (rustfs_system_process_uptime_seconds).",
+      "title": "Peers reporting",
+      "description": "Peers whose metrics reach the collector, 1 for a standalone store: distinct server labels on rustfs_system_process_uptime_seconds. A stopped peer drops out 5 minutes after its last push.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -66,7 +66,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
+          "unit": "none",
           "color": {
             "mode": "thresholds"
           },
@@ -102,7 +102,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max(rustfs_system_process_uptime_seconds{stack=\"$stack\"})",
+          "expr": "count(max by (server) (rustfs_system_process_uptime_seconds{stack=\"$stack\"}))",
           "refId": "A",
           "instant": true,
           "range": false
@@ -112,8 +112,8 @@
     {
       "id": 2,
       "type": "stat",
-      "title": "Drive offline",
-      "description": "Drives RustFS reports offline (rustfs_cluster_health_drives_offline_count). The chart runs one; offline, every read and write gets 503.",
+      "title": "Drives offline",
+      "description": "Drives offline, as the peer that sees the most reports it (rustfs_cluster_health_drives_offline_count). Within the parity the cluster still serves; the rules' quorum alerts say when it stops.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -195,7 +195,7 @@
       "id": 3,
       "type": "stat",
       "title": "Free space",
-      "description": "Free space on the drive, as RustFS sees it (rustfs_cluster_capacity_free_bytes).",
+      "description": "Free space on the cluster, as the peer that sees the least reports it (rustfs_cluster_capacity_free_bytes).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -244,7 +244,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max(rustfs_cluster_capacity_free_bytes{stack=\"$stack\"})",
+          "expr": "min(rustfs_cluster_capacity_free_bytes{stack=\"$stack\"})",
           "refId": "A",
           "instant": true,
           "range": false
@@ -255,7 +255,7 @@
       "id": 4,
       "type": "stat",
       "title": "Space used",
-      "description": "Used share of the drive's usable capacity.",
+      "description": "Used share of the cluster's usable capacity.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -788,7 +788,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max(rustfs_cluster_capacity_free_bytes{stack=\"$stack\"})",
+          "expr": "min(rustfs_cluster_capacity_free_bytes{stack=\"$stack\"})",
           "refId": "C",
           "legendFormat": "free",
           "range": true
@@ -996,7 +996,7 @@
       "id": 18,
       "type": "timeseries",
       "title": "Memory",
-      "description": "Resident memory of the RustFS process.",
+      "description": "Resident memory of each peer's RustFS process.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1043,9 +1043,9 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max(rustfs_system_process_resident_memory_bytes{stack=\"$stack\"})",
+          "expr": "max by (server) (rustfs_system_process_resident_memory_bytes{stack=\"$stack\"})",
           "refId": "A",
-          "legendFormat": "resident",
+          "legendFormat": "{{server}}",
           "range": true
         }
       ]
@@ -1054,7 +1054,7 @@
       "id": 19,
       "type": "timeseries",
       "title": "CPU",
-      "description": "CPU in use by the RustFS process, in percent as RustFS reports it (rustfs_system_process_cpu_usage).",
+      "description": "CPU in use by each peer's RustFS process, in percent as RustFS reports it (rustfs_system_process_cpu_usage).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1101,9 +1101,9 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max(rustfs_system_process_cpu_usage{stack=\"$stack\"})",
+          "expr": "max by (server) (rustfs_system_process_cpu_usage{stack=\"$stack\"})",
           "refId": "A",
-          "legendFormat": "cpu",
+          "legendFormat": "{{server}}",
           "range": true
         }
       ]
@@ -1112,7 +1112,7 @@
       "id": 20,
       "type": "timeseries",
       "title": "Open files",
-      "description": "File descriptors the process holds, against its limit.",
+      "description": "File descriptors each peer's process holds, against the limit.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1159,9 +1159,9 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max(rustfs_system_process_file_descriptor_open_total{stack=\"$stack\"})",
+          "expr": "max by (server) (rustfs_system_process_file_descriptor_open_total{stack=\"$stack\"})",
           "refId": "A",
-          "legendFormat": "open",
+          "legendFormat": "{{server}}",
           "range": true
         },
         {

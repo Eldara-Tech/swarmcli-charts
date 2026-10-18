@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# Render assertions for the rustfs-distributed chart. scripts/test-charts.sh runs this after
-# a successful render:
-#   $1 = the rendered stack file   $2 = the fixture case name
+# Render assertions for the rustfs chart in distributed mode. ci/render-check.sh hands every
+# distributed-* case here:
+#   $1 = the rendered stack file   $2 = the fixture case name, without the prefix
 # Exit 0 = OK. Data-only (no deploy), so it rides charts.yml / make test.
 #
 # What it guards is mostly what a deploy cannot see: every one of these mistakes still
@@ -14,13 +14,11 @@
 #   * A peer's healthcheck must answer without the other peers (/health/live), or no peer
 #     ever enters DNS; the peers must keep endpoint_mode vip, which network aliases need, and
 #     carry the sequential-rollout label, or an upgrade stops every peer at once.
-#   * Everything the rustfs chart guards on its one service holds on every peer here: the
-#     credentials reach RustFS as *_FILE paths and the wrapper refuses an empty or default
-#     key; the console exists and is exposed only when asked for; no single `$` reaches
-#     Docker; the OIDC client secret never reaches environment:; metrics go through a
-#     collector of their own that no peer shares an overlay with. The guard prelude and the
-#     wrapper are checked byte for byte against the rustfs chart's, so a fix to one chart
-#     cannot silently miss the other.
+#   * Everything ci/render-check.sh guards on the standalone service holds on every peer
+#     here: the credentials reach RustFS as *_FILE paths and the wrapper refuses an empty or
+#     default key; the console exists and is exposed only when asked for; no single `$`
+#     reaches Docker; the OIDC client secret never reaches environment:; metrics go through
+#     a collector of their own that no peer shares an overlay with.
 #
 # No check pipes into `grep -q` (scripts/lint.sh enforces it): match with `grep … >/dev/null`
 # or a here-string.
@@ -40,7 +38,7 @@ bad() { echo "    FAIL: $*" >&2; fail=1; }
 q() { yq -r "$1" "$rendered"; }
 case "$case" in multi-drive) peers=6; drives=2 ;; *) peers=4; drives=1 ;; esac
 PEERS="$(seq 1 "$peers" | tr '\n' ' ')"
-monitor=90s; [ "$case" = "lifecycle" ] && monitor=20s
+monitor=2m; [ "$case" = "lifecycle" ] && monitor=20s
 p() { echo ".services.\"rustfs-$1\""; }
 env_() { q "$(p "$1").environment.$2"; }
 
@@ -278,12 +276,12 @@ esac
 for n in $PEERS; do
   script="$(q "$(p "$n").command[0]")"
   if [ "$case" = "oidc" ]; then
-    [ "$(env_ "$n" RUSTFS_IDENTITY_OPENID_CONFIG_URL)" = "http://rustfs-distributed-e2e-idp:8080/realms/e2e/.well-known/openid-configuration" ] \
+    [ "$(env_ "$n" RUSTFS_IDENTITY_OPENID_CONFIG_URL)" = "http://rustfs-e2e-idp:8080/realms/e2e/.well-known/openid-configuration" ] \
       && [ "$(env_ "$n" RUSTFS_IDENTITY_OPENID_CLIENT_ID)" = "rustfs-e2e" ] \
       && [ "$(env_ "$n" RUSTFS_IDENTITY_OPENID_DISPLAY_NAME)" = "SSO" ] \
       && [ "$(env_ "$n" RUSTFS_BROWSER_REDIRECT_URL)" = "https://rustfs-cluster-console.e2e.test" ] \
       && [ "$(env_ "$n" RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC)" = "off" ] \
-      && [ "$(env_ "$n" RUSTFS_OUTBOUND_ALLOW_ORIGINS)" = "http://rustfs-distributed-e2e-idp:8080" ] \
+      && [ "$(env_ "$n" RUSTFS_OUTBOUND_ALLOW_ORIGINS)" = "http://rustfs-e2e-idp:8080" ] \
       || bad "case $case: peer $n's OIDC settings are not console.oidc.* (config URL, client id, label, callback base, no dynamic redirect, the provider's origin allow-listed)"
     [ "$(q "$(p "$n").secrets[2]")" = "rustfs-oidc-client-secret" ] || bad "case $case: peer $n does not mount the OIDC client secret"
     grep -F 'done; f=/run/secrets/rustfs-oidc-client-secret; RUSTFS_IDENTITY_OPENID_CLIENT_SECRET="$$(cat "$$f" 2>/dev/null || true)"; if [ -z "$$RUSTFS_IDENTITY_OPENID_CLIENT_SECRET" ]; then echo' <<<"$script" >/dev/null \
@@ -354,14 +352,13 @@ else
   [ "$(q "$m.ports // [] | length")" = "0" ] || bad "the collector publishes a port; neither of its listeners authenticates"
 fi
 
-# ── refusals, one-off renders, and the rustfs chart's twin (from the default fixture only) ─
+# ── refusals and one-off renders (from the default fixture only) ────────────────────────
 if [ "$case" = "default" ]; then
   chart="$(cd "$(dirname "$0")/.." && pwd)"
-  rustfs="$chart/../rustfs"
   tmp="$(mktemp)"
-  trap 'rm -f "$tmp" "$tmp.err" "$tmp.values" "$tmp.twin"' EXIT
+  trap 'rm -f "$tmp" "$tmp.err" "$tmp.values"' EXIT
   sc="${SWARMCLI:?render-check needs SWARMCLI to render the refusals}"
-  render() { "$sc" charts template ci "$chart" "$@" >"$tmp" 2>"$tmp.err"; }
+  render() { "$sc" charts template ci "$chart" --set mode=distributed "$@" >"$tmp" 2>"$tmp.err"; }
   refused() {
     local want="$1"; shift
     if render "$@"; then
@@ -372,39 +369,11 @@ if [ "$case" = "default" ]; then
   }
   y() { yq -r "$1" "$tmp"; }
 
-  # The guard prelude is the rustfs chart's, byte for byte, except that chart's single-volume
-  # persistence guard: everything before its `version:` line against everything before this
-  # chart's marker comment.
-  awk '/^version: "3.9"$/ { exit } /^\{\{- if and \.Values\.persistence\.enabled \(not \.Values\.persistence\.volumePath\)/ { skip = 3 } skip > 0 { skip--; next } { print }' \
-    "$rustfs/templates/stack.yaml.tmpl" >"$tmp.twin"
-  if ! awk '/rustfs-distributed only below/ { exit } { print }' "$chart/templates/stack.yaml.tmpl" | diff "$tmp.twin" - >"$tmp.err"; then
-    bad "the guard prelude differs from charts/rustfs's: $(head -c 600 "$tmp.err" | tr '\n' ' ')"
-  fi
-  [ "$(wc -l <"$tmp.twin" | tr -d ' ')" -ge 90 ] || bad "only $(wc -l <"$tmp.twin" | tr -d ' ') lines of charts/rustfs's prelude were compared; the extraction is broken"
-  # The wrapper is the rustfs chart's too: peer 1's with the buckets, the others' without,
-  # with single sign-on and without.
   kc=https://kc.example.com/realms/r/.well-known/openid-configuration
   kco=(--set console.enabled=true --set console.oidc.enabled=true --set "console.oidc.configUrl=$kc" --set console.oidc.browserUrl=https://c.example.com)
-  # Each pair: the flags, then the same without the buckets.
-  for pair in "|" "--set buckets={bkt1,bkt2.x}|" "${kco[*]}|${kco[*]}" "${kco[*]} --set buckets={bkt1}|${kco[*]}"; do
-    args="${pair%%|*}"; nobuckets="${pair#*|}"
-    # shellcheck disable=SC2086 # word-split on purpose: $args is a list of flags
-    if render $args && "$sc" charts template ci "$rustfs" $args >"$tmp.twin" 2>>"$tmp.err"; then
-      [ "$(y '.services."rustfs-1".command[0]')" = "$(yq -r '.services.rustfs.command[0]' "$tmp.twin")" ] \
-        || bad "peer 1's wrapper differs from charts/rustfs's with ${args:-the defaults}"
-      # shellcheck disable=SC2086
-      "$sc" charts template ci "$rustfs" $nobuckets >"$tmp.twin" 2>>"$tmp.err" || bad "charts/rustfs with ${nobuckets:-the defaults} was refused"
-      for n in 2 3 4; do
-        [ "$(y ".services.\"rustfs-$n\".command[0]")" = "$(yq -r '.services.rustfs.command[0]' "$tmp.twin")" ] \
-          || bad "peer $n's wrapper differs from charts/rustfs's without buckets, with ${args:-the defaults}"
-      done
-    else
-      bad "rendering both charts with ${args:-the defaults} failed: $(tr '\n' ' ' <"$tmp.err")"
-    fi
-  done
 
   # A release name with '_' and '.' gets aliases, and a volume list, without them.
-  if "$sc" charts template my_s3.x "$chart" >"$tmp" 2>"$tmp.err"; then
+  if "$sc" charts template my_s3.x "$chart" --set mode=distributed >"$tmp" 2>"$tmp.err"; then
     [ "$(y '.services."rustfs-2".networks."rustfs-net".aliases | join(" ")')" = "my-s3-x-rustfs-2 my-s3-x-rustfs" ] \
       && [ "$(y '.services."rustfs-2".environment.RUSTFS_VOLUMES')" = "http://my-s3-x-rustfs-{1...4}:9000/data/rustfs0" ] \
       && [ "$(y '.services."rustfs-2".environment.RUSTFS_LOCAL_ENDPOINT_HOST')" = "my-s3-x-rustfs-2" ] \
@@ -454,8 +423,10 @@ if [ "$case" = "default" ]; then
   render -f "$tmp.values" || bad "pinned peers with the same host path were refused: $(tr '\n' ' ' <"$tmp.err")"
   refused '/persistence/volumePaths/0' --set 'persistence.volumePaths[0]=relative/path'
   refused '/persistence/volumePrefix' --set persistence.volumePrefix=a/b
-  refused '/publish/mode' --set exposure.mode=published --set publish.mode=ingress
-  refused '/console/publish/mode' --set console.enabled=true --set console.exposure.mode=published --set console.publish.mode=ingress
+  refused 'publish.mode must be host in distributed mode' --set exposure.mode=published --set publish.mode=ingress
+  refused 'console.publish.mode must be host in distributed mode' --set console.enabled=true --set console.exposure.mode=published --set console.publish.mode=ingress
+  # The standalone store's host path is refused rather than ignored.
+  refused 'persistence.volumePath is the standalone store' --set persistence.volumePath=/srv/rustfs
   for k in RUSTFS_VOLUMES MINIO_VOLUMES RUSTFS_LOCAL_ENDPOINT_HOST RUSTFS_STARTUP_TOPOLOGY_WAIT_MODE MINIO_STARTUP_TOPOLOGY_WAIT_MODE; do
     refused "extraEnv: $k is set by the chart from cluster.* and s3.port" --set "extraEnv.$k=x"
   done
@@ -472,7 +443,7 @@ if [ "$case" = "default" ]; then
     && [ "$(y '.services."rustfs-4".environment.RUSTFS_STORAGE_CLASS_STANDARD')" = "EC:1" ] \
     || bad "extraEnv RUSTFS_STARTUP_TOPOLOGY_WAIT_TIMEOUT / RUSTFS_STORAGE_CLASS_STANDARD were refused or not passed on to every peer: $(tr '\n' ' ' <"$tmp.err")"
 
-  # The rustfs chart's own refusals, which the shared prelude makes this chart's too.
+  # The standalone store's refusals, which hold in distributed mode too.
   refused 'metrics.network must differ from network.name and exposure.network' --set metrics.enabled=true --set metrics.network=rustfs-net
   for k in RUSTFS_OBS_ENDPOINT RUSTFS_OBS_LOG_STDOUT_ENABLED; do
     refused "extraEnv: $k is set by the chart while metrics.enabled" --set metrics.enabled=true --set "extraEnv.$k=x"
@@ -501,8 +472,8 @@ if [ "$case" = "default" ]; then
   done
   # The healthcheck off: still stop-first, and still the monitor window that spaces the rollout.
   render --set healthcheck.enabled=false && [ "$(y '.services."rustfs-1".healthcheck')" = "null" ] \
-    && [ "$(y '.services."rustfs-1".deploy.update_config | .order + " " + (.monitor // "none")')" = "stop-first 90s" ] \
-    || bad "healthcheck.enabled=false does not drop the healthcheck alone, keeping stop-first and the 90s monitor window"
+    && [ "$(y '.services."rustfs-1".deploy.update_config | .order + " " + (.monitor // "none")')" = "stop-first 2m" ] \
+    || bad "healthcheck.enabled=false does not drop the healthcheck alone, keeping stop-first and the 2m monitor window"
 fi
 
 exit "$fail"

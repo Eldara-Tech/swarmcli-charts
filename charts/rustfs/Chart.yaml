@@ -1,16 +1,16 @@
 name: rustfs
-description: RustFS S3-compatible object store for Docker Swarm — single node, credentials from Swarm secrets, buckets created at start, optional web console, Traefik-routed or overlay-only
+description: RustFS S3-compatible object store for Docker Swarm — a single node or a distributed, erasure-coded cluster of pinned peers rolled one at a time, credentials from Swarm secrets, buckets created at start, optional web console, Traefik-routed or overlay-only
 # version is a placeholder — the git tag (rustfs/vX.Y.Z) sets the real version at release.
 version: 0.1.0
 # appVersion is the default image tag for rustfs/rustfs.
 # renovate: image=rustfs/rustfs
 appVersion: "1.0.1"
 # Oldest swarmcli whose chart engine renders this chart; verified by
-# scripts/floor-check.sh against a real binary of that version. v1.13.0 brought
-# list values in --set (swarmcli #458): the README installs with
-# --set 'buckets={…}', which v1.12.0 refuses with "at '/buckets': got string,
-# want array".
-swarmcliVersion: ">= 1.13.0"
+# scripts/floor-check.sh against a real binary of that version. 2.2.0 is the first
+# to roll a distributed cluster's peers one at a time (com.swarmcli.rollout on each
+# peer); without it an upgrade restarts every peer at once. The chart has one floor
+# for both modes, because a template cannot see which swarmcli renders it.
+swarmcliVersion: ">= 2.2.0"
 maintainers:
   - name: Eldara
     url: https://github.com/Eldara-Tech
@@ -19,12 +19,16 @@ keywords:
   - s3
   - object-storage
   - minio
+  - erasure-coding
+  - distributed
+  - cluster
+  - high-availability
   - stateful
 home: https://github.com/rustfs/rustfs
 sources:
   - https://github.com/rustfs/rustfs
   - https://github.com/Eldara-Tech/swarmcli-charts
-# host-mount covers the opt-in persistence.volumePath bind mount only; the default render
-# uses a named volume and needs no acknowledgment.
+# host-mount covers the opt-in persistence.volumePath / volumePaths bind mounts only; the
+# default render uses named volumes and needs no acknowledgment.
 annotations:
   swarmcli-charts/allow: "host-mount"

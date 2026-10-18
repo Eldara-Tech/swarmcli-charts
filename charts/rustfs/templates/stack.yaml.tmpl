@@ -6,10 +6,15 @@
 {{- $consolePublished := and $console (eq .Values.console.exposure.mode "published") -}}
 {{- $oidc := .Values.console.oidc.enabled -}}
 {{- $metrics := .Values.metrics.enabled -}}
+{{- /* mode: standalone renders one service, distributed one per peer. Only "distributed" is
+       ever tested for: a release upgraded with --reuse-values from a chart version without
+       mode keeps values that have none, and must render as the standalone store it is. */ -}}
+{{- $distributed := eq .Values.mode "distributed" -}}
+{{- $persist := .Values.persistence.enabled -}}
 {{- if and $metrics (has .Values.metrics.network (list .Values.network.name .Values.exposure.network)) -}}
 {{-   fail "metrics.network must differ from network.name and exposure.network: the collector joins network.name, and the point of a separate metrics overlay is that Prometheus never shares one with the S3 port" -}}
 {{- end -}}
-{{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) (contains "/" .Values.persistence.volumeName) -}}
+{{- if and (not $distributed) $persist (not .Values.persistence.volumePath) (contains "/" .Values.persistence.volumeName) -}}
 {{-   fail "persistence.volumeName is a Docker named-volume name and cannot contain '/'. To store data under a host directory, set persistence.volumePath instead." -}}
 {{- end -}}
 {{- if or (not .Values.s3.accessKeySecret) (not .Values.s3.secretKeySecret) -}}
@@ -108,6 +113,95 @@
 {{-     fail (printf "extraEnv: %s cannot be set while metrics.enabled: the chart's collector, and the alerts written for it, rely on RustFS's defaults" $k) }}
 {{-   end }}
 {{- end -}}
+{{- /* Each mode refuses the other's persistence keys rather than ignoring them: a host path
+       meant for the data would otherwise silently become a named volume. */ -}}
+{{- if and $distributed .Values.persistence.volumePath -}}
+{{-   fail "persistence.volumePath is the standalone store's host path; in distributed mode give one entry per peer in persistence.volumePaths" -}}
+{{- end -}}
+{{- if and (not $distributed) .Values.persistence.volumePaths -}}
+{{-   fail "persistence.volumePaths is for mode: distributed; the standalone store takes one host path in persistence.volumePath" -}}
+{{- end -}}
+{{- $peers := 1 -}}
+{{- $drives := 1 -}}
+{{- $paths := list -}}
+{{- $peerPaths := list -}}
+{{- if $distributed -}}
+{{- /* The cluster wiring is the chart's: every peer must start with the same volume list, name
+       itself in it, and wait in orchestrated mode, and the erasure set width is the one the
+       render checks below. RustFS reads MINIO_VOLUMES and MINIO_ERASURE_SET_DRIVE_COUNT as
+       aliases; the other MINIO_ spellings are refused too, which costs nothing. The internode
+       RPC secret is a credential: RustFS derives it from the root key pair, and a value here
+       would land in the manifest and docker inspect. */ -}}
+{{- range $k, $v := .Values.extraEnv }}
+{{-   if regexMatch "^(RUSTFS|MINIO)_(VOLUMES|LOCAL_ENDPOINT_HOST|STARTUP_TOPOLOGY_WAIT_MODE)$" $k }}
+{{-     fail (printf "extraEnv: %s is set by the chart from cluster.* and s3.port, the same for every peer; use those values instead" $k) }}
+{{-   end }}
+{{-   if regexMatch "^(RUSTFS|MINIO)_ERASURE_SET_DRIVE_COUNT$" $k }}
+{{-     fail (printf "extraEnv: %s would override the erasure set width RustFS derives from cluster.peers and cluster.drivesPerPeer, which the render checks; change those instead" $k) }}
+{{-   end }}
+{{-   if regexMatch "^(RUSTFS|MINIO)_RPC_SECRET$" $k }}
+{{-     fail (printf "extraEnv: %s is a credential, the peers' internode secret; RustFS derives it from the key pair in s3.accessKeySecret / s3.secretKeySecret" $k) }}
+{{-   end }}
+{{-   if or (regexMatch "^(RUSTFS|MINIO)_UNSAFE_BYPASS_DISK_CHECK$" $k) (eq $k "MINIO_CI") }}
+{{-     fail (printf "extraEnv: %s turns off RustFS's refusal of two drives on one disk, which is for tests only; give each drive a disk of its own through persistence.volumePaths" $k) }}
+{{-   end }}
+{{- end -}}
+{{- /* Every peer publishes the same port on its own node, which the routing mesh cannot give
+       several services. */ -}}
+{{- if and (eq .Values.exposure.mode "published") (ne .Values.publish.mode "host") -}}
+{{-   fail "publish.mode must be host in distributed mode: every peer publishes publish.port on its own node, and the routing mesh cannot give one port to several services" -}}
+{{- end -}}
+{{- if and $consolePublished (ne .Values.console.publish.mode "host") -}}
+{{-   fail "console.publish.mode must be host in distributed mode: every peer publishes console.publish.port on its own node, and the routing mesh cannot give one port to several services" -}}
+{{- end -}}
+{{- $peers = int .Values.cluster.peers -}}
+{{- $drives = int .Values.cluster.drivesPerPeer -}}
+{{- $paths = .Values.persistence.volumePaths -}}
+{{- /* RustFS refuses two drives on one physical disk (RUSTFS_UNSAFE_BYPASS_DISK_CHECK aside,
+       which is for tests), and a peer's named volumes all live on its node's Docker disk,
+       as does its container filesystem. Only host paths can put the drives on disks of
+       their own. */ -}}
+{{- if and (gt $drives 1) (not (and $persist $paths)) -}}
+{{-   fail (printf "cluster.drivesPerPeer is %d, but more than one drive per peer needs persistence.volumePaths, one host path per drive on a disk of its own: RustFS refuses two drives on one physical disk, and a peer's named volumes all share its node's Docker disk" $drives) -}}
+{{- end -}}
+{{- /* Drive k of peer n is mounted at /data/rustfs<k>, from the k-th path of entry n. */ -}}
+{{- $allPaths := list -}}
+{{- if and $persist $paths -}}
+{{-   if ne (len $paths) $peers -}}
+{{-     fail (printf "persistence.volumePaths has %d entries but cluster.peers is %d. Give one entry per peer, in peer order, or leave it [] to use named volumes." (len $paths) $peers) -}}
+{{-   end -}}
+{{-   range $i, $e := $paths -}}
+{{-     $raw := ternary (list $e) $e (kindIs "string" $e) -}}
+{{-     $l := list -}}
+{{-     range $raw }}{{ $l = append $l (clean .) }}{{ end -}}
+{{-     if ne (len $l) $drives -}}
+{{-       fail (printf "persistence.volumePaths entry %d (peer %d) has %d paths but cluster.drivesPerPeer is %d" $i (add1 $i) (len $l) $drives) -}}
+{{-     end -}}
+{{-     if ne (len (uniq $l)) (len $l) -}}
+{{-       fail (printf "persistence.volumePaths entry %d (peer %d) names one path twice: two drives in one directory would share a disk" $i (add1 $i)) -}}
+{{-     end -}}
+{{-     $peerPaths = append $peerPaths $l -}}
+{{-     $allPaths = concat $allPaths $l -}}
+{{-   end -}}
+{{- /* Nothing keeps unpinned peers on different nodes, so then no path may repeat at all. */ -}}
+{{-   if and (not .Values.persistence.nodeLabelPrefix) (ne (len (uniq $allPaths)) (len $allPaths)) -}}
+{{-     fail "persistence.volumePaths names one host path for two peers while persistence.nodeLabelPrefix is \"\": unpinned peers may share a node, and two peers on one directory would corrupt it" -}}
+{{-   end -}}
+{{- end -}}
+{{- /* The erasure set width RustFS will pick, by its own rule (crates/ecstore/src/layout/
+       disks_layout.rs): the largest of 2..16 that divides peers x drives and also
+       divides the peer count, or is a multiple of it. With none, every peer refuses to start. */ -}}
+{{- $total := mul $peers $drives -}}
+{{- $setSize := 0 -}}
+{{- range $s := untilStep 2 17 1 -}}
+{{-   if and (eq (mod $total $s) 0) (or (and (gt $peers $s) (eq (mod $peers $s) 0)) (and (le $peers $s) (eq (mod $s $peers) 0))) -}}
+{{-     $setSize = $s -}}
+{{-   end -}}
+{{- end -}}
+{{- if eq $setSize 0 -}}
+{{-   fail (printf "cluster.peers %d x cluster.drivesPerPeer %d = %d drives cannot form an erasure set: RustFS needs a set of 2 to 16 drives that divides the total and divides, or is a multiple of, the number of peers" $peers $drives $total) -}}
+{{- end -}}
+{{- end -}}
 version: "3.9"
 
 {{- $mode := .Values.exposure.mode }}
@@ -123,19 +217,39 @@ version: "3.9"
 {{- $nets := list .Values.network.name }}
 {{- if or $s3Routed $consoleRouted }}{{ $nets = append $nets .Values.exposure.network }}{{- end }}
 {{- $nets = $nets | uniq }}
-{{- /* The name clients dial on network.name. A stack's own <release>_rustfs has a '_', which is
-       not valid in a host name: java.net.URI, and so every AWS SDK for Java client, rejects it. */}}
+{{- /* The name clients dial on network.name, which every peer carries. A stack's own
+       <release>_rustfs has a '_', which is not valid in a host name: java.net.URI, and so
+       every AWS SDK for Java client, rejects it. In distributed mode each peer also carries
+       <alias>-<n>, the name the other peers dial it by and the one it names itself by
+       (RUSTFS_LOCAL_ENDPOINT_HOST). */}}
 {{- $alias := printf "%s-rustfs" (.Release.Name | replace "_" "-" | replace "." "-") }}
 {{- /* The collector's name on network.name, where RustFS dials it, without the '_' and '.'. */}}
 {{- $metricsAlias := printf "%s-metrics" $alias }}
+{{- /* The one volume list every peer starts with, in ellipsis form: RustFS expands
+       {1...N} itself, and a layout written out without ellipses is a legacy one that can
+       never take a second pool or be decommissioned. */}}
+{{- $drivePath := ternary (printf "/data/rustfs{0...%d}" (sub $drives 1)) "/data/rustfs0" (gt $drives 1) }}
+{{- $volumes := printf "http://%s-{1...%d}:%d%s" $alias $peers $port $drivePath }}
 
 services:
+{{- range $i := until $peers }}
+{{- $n := add1 $i }}
+{{- $peerAlias := printf "%s-%d" $alias $n }}
+{{- if $distributed }}
+
+  rustfs-{{ $n }}:
+{{- else }}
 
   rustfs:
-    image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
+{{- end }}
+    image: {{ $.Values.image.repository }}:{{ if $.Values.image.tag }}{{ $.Values.image.tag }}{{ else }}{{ $.Chart.AppVersion }}{{ end }}
+    # No hostname: in distributed mode one equal to the peer alias would make the alias
+    # resolve to the task IP as well as the VIP, and the VIP is the address that survives a
+    # reschedule.
 
-    # The start-up wrapper. `$$` escapes the `$` for compose, so every expansion happens
-    # inside the container and no secret is resolved into the manifest or `docker inspect`.
+    # The start-up wrapper, the same on every peer. `$$` escapes the `$` for compose, so
+    # every expansion happens inside the container and no secret is resolved into the
+    # manifest or `docker inspect`.
     #
     #  * RustFS reads both keys itself through RUSTFS_ACCESS_KEY_FILE / _SECRET_KEY_FILE,
     #    trimming surrounding whitespace. Its entrypoint refuses a missing or empty file,
@@ -147,11 +261,13 @@ services:
     #    and refuses to start when that is missing or empty. RustFS has no _FILE form for it
     #    (it would read RUSTFS_IDENTITY_OPENID_CLIENT_SECRET_FILE as a provider named FILE),
     #    so the value lives only in the server's own environment.
-    #  * Buckets are created by a background loop over the signed S3 API once the server
-    #    answers. RustFS answers an existing bucket with 200, as S3 does in us-east-1, or
-    #    409; both count as done, so a restart is a no-op, and a failure is logged rather
-    #    than taking the server down with it. curl reads the key pair from a config on
-    #    stdin (`-K -`, written by the printf builtin), so it never appears in an argv.
+    #  * Buckets are created by a background loop over the signed S3 API once the store
+    #    accepts writes, on the standalone service or on peer 1 only (the others see them
+    #    through the cluster). RustFS answers an existing bucket with 200, as S3 does in
+    #    us-east-1, or 409; both count as done, so a restart is a no-op, and a failure is
+    #    logged rather than taking the server down with it. curl reads the key pair from a
+    #    config on stdin (`-K -`, written by the printf builtin), so it never appears in an
+    #    argv.
     #  * `exec` hands PID 1 to the image's entrypoint, which execs rustfs, so SIGTERM
     #    reaches the server itself.
     entrypoint:
@@ -171,11 +287,11 @@ services:
         if [ -z "$$RUSTFS_IDENTITY_OPENID_CLIENT_SECRET" ]; then echo "$$f is missing or empty - refusing to start" >&2; exit 1; fi;
         export RUSTFS_IDENTITY_OPENID_CLIENT_SECRET;
 {{- end }}
-{{- if .Values.buckets }}
+{{- if and (eq $n 1) $.Values.buckets }}
         (
         key="$$(tr -d '[:space:]' < "$$RUSTFS_ACCESS_KEY_FILE" | sed 's/[\\"]/\\&/g')";
         sec="$$(tr -d '[:space:]' < "$$RUSTFS_SECRET_KEY_FILE" | sed 's/[\\"]/\\&/g')";
-        for b in {{ join " " .Values.buckets }}; do
+        for b in {{ join " " $.Values.buckets }}; do
         n=0; code=000;
         until [ "$$code" = 200 ] || [ "$$code" = 409 ]; do
         n=$$((n + 1));
@@ -193,16 +309,27 @@ services:
       RUSTFS_ACCESS_KEY_FILE: /run/secrets/{{ $access }}
       RUSTFS_SECRET_KEY_FILE: /run/secrets/{{ $secret }}
       RUSTFS_ADDRESS: ":{{ $port }}"
+{{- if $distributed }}
+      # The cluster. Every peer starts with the same volume list and finds itself in it by
+      # name, never through DNS: without RUSTFS_LOCAL_ENDPOINT_HOST, RustFS resolves every
+      # host in the list, its own included, before it opens a port, and Swarm resolves no
+      # peer before its healthcheck passes, so no peer would ever start. RustFS accepts the
+      # explicit host only in orchestrated mode, which also waits for the other peers
+      # without a time limit instead of exiting after 180 seconds.
+      RUSTFS_VOLUMES: {{ $volumes | quote }}
+      RUSTFS_LOCAL_ENDPOINT_HOST: {{ $peerAlias }}
+      RUSTFS_STARTUP_TOPOLOGY_WAIT_MODE: orchestrated
+{{- end }}
       RUSTFS_CONSOLE_ENABLE: {{ $console | quote }}
 {{- if $console }}
       RUSTFS_CONSOLE_ADDRESS: ":{{ $cport }}"
 {{- end }}
 {{- if $oidc }}
       # Single sign-on; the wrapper above exports the client secret.
-      RUSTFS_IDENTITY_OPENID_CONFIG_URL: {{ .Values.console.oidc.configUrl | quote }}
-      RUSTFS_IDENTITY_OPENID_CLIENT_ID: {{ .Values.console.oidc.clientId | quote }}
+      RUSTFS_IDENTITY_OPENID_CONFIG_URL: {{ $.Values.console.oidc.configUrl | quote }}
+      RUSTFS_IDENTITY_OPENID_CLIENT_ID: {{ $.Values.console.oidc.clientId | quote }}
       # The login button's label; without it RustFS shows the provider id, "default".
-      RUSTFS_IDENTITY_OPENID_DISPLAY_NAME: {{ .Values.console.oidc.displayName | quote }}
+      RUSTFS_IDENTITY_OPENID_DISPLAY_NAME: {{ $.Values.console.oidc.displayName | quote }}
       # A backstop: RustFS takes the login callback from RUSTFS_BROWSER_REDIRECT_URL below,
       # and with this off it never falls back to the request's X-Forwarded-Proto and Host,
       # which the client controls, on either listener.
@@ -211,24 +338,24 @@ services:
       RUSTFS_BROWSER_REDIRECT_URL: {{ $browserUrl | quote }}
 {{- end }}
 {{- /* The next four are defaults extraEnv may override. */}}
-{{- if not (hasKey .Values.extraEnv "RUSTFS_OBS_LOG_DIRECTORY") }}
+{{- if not (hasKey $.Values.extraEnv "RUSTFS_OBS_LOG_DIRECTORY") }}
       # Empty sends the server log to stdout (docker service logs) instead of a file
       # inside the container, the image's default.
       RUSTFS_OBS_LOG_DIRECTORY: ""
 {{- end }}
-{{- if not (hasKey .Values.extraEnv "RUSTFS_CHECK_UPDATE") }}
+{{- if not (hasKey $.Values.extraEnv "RUSTFS_CHECK_UPDATE") }}
       # The image is pinned and Renovate moves the pin; no call home for updates.
       RUSTFS_CHECK_UPDATE: "false"
 {{- end }}
-{{- if and (or $s3Routed $consoleRouted) (not (hasKey .Values.extraEnv "RUSTFS_HTTP1_HEADER_READ_TIMEOUT")) }}
-      RUSTFS_HTTP1_HEADER_READ_TIMEOUT: {{ .Values.traefik.idleTimeoutSeconds | quote }}
+{{- if and (or $s3Routed $consoleRouted) (not (hasKey $.Values.extraEnv "RUSTFS_HTTP1_HEADER_READ_TIMEOUT")) }}
+      RUSTFS_HTTP1_HEADER_READ_TIMEOUT: {{ $.Values.traefik.idleTimeoutSeconds | quote }}
 {{- end }}
-{{- if and $oidc .Values.console.oidc.allowPrivateIdp (not (hasKey .Values.extraEnv "RUSTFS_OUTBOUND_ALLOW_ORIGINS")) }}
+{{- if and $oidc $.Values.console.oidc.allowPrivateIdp (not (hasKey $.Values.extraEnv "RUSTFS_OUTBOUND_ALLOW_ORIGINS")) }}
       # console.oidc.allowPrivateIdp: RustFS contacts a provider on a private address (an
       # overlay, a LAN) only when its origin is listed here. It is RustFS's one allow-list
       # for every outbound connection it polices, so webhook and Object Lambda targets may
       # reach this origin too.
-      RUSTFS_OUTBOUND_ALLOW_ORIGINS: {{ regexFind "^https?://[^/]+" .Values.console.oidc.configUrl | quote }}
+      RUSTFS_OUTBOUND_ALLOW_ORIGINS: {{ regexFind "^https?://[^/]+" $.Values.console.oidc.configUrl | quote }}
 {{- end }}
 {{- if $metrics }}
       # metrics.enabled: OTLP/HTTP to the collector below; RustFS appends /v1/metrics. Traces
@@ -239,11 +366,17 @@ services:
       RUSTFS_OBS_LOGS_EXPORT_ENABLED: "false"
       RUSTFS_OBS_LOG_STDOUT_ENABLED: "true"
 {{- end }}
-{{- range $k, $v := .Values.extraEnv }}
+{{- range $k, $v := $.Values.extraEnv }}
       {{ $k }}: {{ $v | quote }}
 {{- end }}
 
-{{- if .Values.healthcheck.enabled }}
+{{- if $.Values.healthcheck.enabled }}
+    # Standalone: readiness, 503 until storage and IAM are up. Distributed: liveness, which a
+    # peer answers on its own. /health/ready there needs storage, IAM and lock quorum across
+    # the peers, and a peer that is not healthy is not in DNS, so on a first install, or
+    # after every peer stopped, a readiness check would keep every peer out of DNS for good.
+    # Whether the cluster serves is what ci/e2e-check-distributed.sh and the README's upgrade
+    # steps check, through /minio/health/cluster.
     healthcheck:
       test:
         - CMD
@@ -251,19 +384,19 @@ services:
         - -fsS
         - -o
         - /dev/null
-        - http://127.0.0.1:{{ $port }}/health/ready
-      interval: {{ .Values.healthcheck.interval }}
-      timeout: {{ .Values.healthcheck.timeout }}
-      retries: {{ .Values.healthcheck.retries }}
-      start_period: {{ .Values.healthcheck.startPeriod }}
+        - http://127.0.0.1:{{ $port }}/health/{{ ternary "live" "ready" $distributed }}
+      interval: {{ $.Values.healthcheck.interval }}
+      timeout: {{ $.Values.healthcheck.timeout }}
+      retries: {{ $.Values.healthcheck.retries }}
+      start_period: {{ $.Values.healthcheck.startPeriod }}
 {{- end }}
-    stop_grace_period: {{ .Values.stopGracePeriod }}
+    stop_grace_period: {{ $.Values.stopGracePeriod }}
 
-{{- if .Values.nofile }}
+{{- if $.Values.nofile }}
     ulimits:
       nofile:
-        soft: {{ .Values.nofile }}
-        hard: {{ .Values.nofile }}
+        soft: {{ $.Values.nofile }}
+        hard: {{ $.Values.nofile }}
 {{- end }}
 
     secrets:
@@ -278,6 +411,9 @@ services:
       {{ . }}:
 {{- if eq . $.Values.network.name }}
         aliases:
+{{- if $distributed }}
+          - {{ $peerAlias }}
+{{- end }}
           - {{ $alias }}
 {{- end }}
 {{- end }}
@@ -286,37 +422,62 @@ services:
     ports:
 {{- if eq $mode "published" }}
       - target: {{ $port }}
-        published: {{ .Values.publish.port }}
+        published: {{ $.Values.publish.port }}
         protocol: tcp
-        mode: {{ .Values.publish.mode }}
+        mode: {{ $.Values.publish.mode }}
 {{- end }}
 {{- if $consolePublished }}
       - target: {{ $cport }}
-        published: {{ .Values.console.publish.port }}
+        published: {{ $.Values.console.publish.port }}
         protocol: tcp
-        mode: {{ .Values.console.publish.mode }}
+        mode: {{ $.Values.console.publish.mode }}
 {{- end }}
 {{- end }}
 
-{{- if .Values.persistence.enabled }}
+{{- if $persist }}
     volumes:
-      - {{ .Values.persistence.volumePath | default .Values.persistence.volumeName }}:/data
+{{- if not $distributed }}
+      - {{ $.Values.persistence.volumePath | default $.Values.persistence.volumeName }}:/data
+{{- else if $peerPaths }}
+{{- range $k, $p := index $peerPaths $i }}
+      - {{ $p }}:/data/rustfs{{ $k }}
+{{- end }}
+{{- else }}
+      # The drive, /data/rustfs0, is a directory inside the volume that the image's
+      # entrypoint creates: a volume mounted there directly would be owned by root, and
+      # RustFS runs as 10001.
+      - {{ printf "%s-%d" $.Values.persistence.volumePrefix $n }}:/data
+{{- end }}
 {{- end }}
 
     deploy:
-      # One process owns /data: a second task on the same volume would corrupt it, so
-      # there is exactly one replica and an update stops the old task first.
+      # One process owns the drives: a second task on them would corrupt them, so there is
+      # exactly one replica and an update stops the old task first. Scale a cluster with
+      # cluster.peers at install, never with replicas.
       replicas: 1
+{{- if $distributed }}
+      # vip (the default, stated explicitly because it is load-bearing): it is what keeps
+      # network aliases working, and the peers dial each other by alias. dnsrr drops them.
+      endpoint_mode: vip
+{{- end }}
       update_config:
         order: stop-first
-{{- if .Values.healthcheck.enabled }}
-        monitor: {{ .Values.healthcheck.monitor }}
+{{- /* In distributed mode monitor is rendered with the healthcheck off too: swarmcli waits
+       it out on each peer before it rolls the next one. */}}
+{{- if or $distributed $.Values.healthcheck.enabled }}
+        monitor: {{ $.Values.healthcheck.monitor }}
 {{- end }}
+{{- /* The pin to the node holding the data travels with persistence, so the ephemeral mode
+       never strands a task Pending on a missing node label. Each peer has a pin of its own.
+       placement.constraints adds extras and applies in every mode. */}}
 {{- $constraints := list }}
-{{- if and .Values.persistence.enabled .Values.persistence.nodeLabel }}
-{{-   $constraints = append $constraints (printf "node.labels.%s == true" .Values.persistence.nodeLabel) }}
+{{- if and $persist (not $distributed) $.Values.persistence.nodeLabel }}
+{{-   $constraints = append $constraints (printf "node.labels.%s == true" $.Values.persistence.nodeLabel) }}
 {{- end }}
-{{- range .Values.placement.constraints }}
+{{- if and $persist $distributed $.Values.persistence.nodeLabelPrefix }}
+{{-   $constraints = append $constraints (printf "node.labels.%s-%d == true" $.Values.persistence.nodeLabelPrefix $n) }}
+{{- end }}
+{{- range $.Values.placement.constraints }}
 {{-   $constraints = append $constraints . }}
 {{- end }}
 {{- if $constraints }}
@@ -326,8 +487,8 @@ services:
           - {{ . }}
 {{- end }}
 {{- end }}
-{{- $limitMem := .Values.resources.limits.memory }}
-{{- $resMem := .Values.resources.reservations.memory }}
+{{- $limitMem := $.Values.resources.limits.memory }}
+{{- $resMem := $.Values.resources.reservations.memory }}
 {{- if or $limitMem $resMem }}
       resources:
 {{-   with $limitMem }}
@@ -341,57 +502,76 @@ services:
 {{- end }}
       restart_policy:
         condition: any
-{{- if or $s3Routed $consoleRouted .Values.labels }}
+{{- if or $distributed $s3Routed $consoleRouted $.Values.labels }}
       labels:
+{{- if $distributed }}
+        # swarmcli >= 2.2.0 updates services carrying this label one at a time, each running
+        # and past its monitor window before the next, so an upgrade never takes down more
+        # than one peer.
+        - "com.swarmcli.rollout=sequential"
+{{- end }}
 {{- if or $s3Routed $consoleRouted }}
+        # The same routers and services on every peer: Traefik merges them into one and
+        # balances across the peers.
         - "traefik.enable=true"
-        - "traefik.swarm.network={{ .Values.exposure.network }}"
-        - "traefik.constraint-label={{ .Values.traefik.constraintLabel }}"
+        - "traefik.swarm.network={{ $.Values.exposure.network }}"
+        - "traefik.constraint-label={{ $.Values.traefik.constraintLabel }}"
 {{- end }}
 {{- if $s3Routed }}
-        - "traefik.http.routers.{{ $router }}-http.rule=Host(`{{ .Values.ingress.host }}`)"
-        - "traefik.http.routers.{{ $router }}-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
+        - "traefik.http.routers.{{ $router }}-http.rule=Host(`{{ $.Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ $router }}-http.entrypoints={{ $.Values.traefik.entrypoints.http }}"
         - "traefik.http.routers.{{ $router }}-http.service={{ $router }}"
-{{- if .Values.ingress.tls }}
-        - "traefik.http.routers.{{ $router }}-http.middlewares={{ .Values.traefik.redirectMiddleware }}"
-        - "traefik.http.routers.{{ $router }}-https.rule=Host(`{{ .Values.ingress.host }}`)"
-        - "traefik.http.routers.{{ $router }}-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
+{{- if $.Values.ingress.tls }}
+        - "traefik.http.routers.{{ $router }}-http.middlewares={{ $.Values.traefik.redirectMiddleware }}"
+        - "traefik.http.routers.{{ $router }}-https.rule=Host(`{{ $.Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ $router }}-https.entrypoints={{ $.Values.traefik.entrypoints.https }}"
         - "traefik.http.routers.{{ $router }}-https.service={{ $router }}"
         - "traefik.http.routers.{{ $router }}-https.tls=true"
-        - "traefik.http.routers.{{ $router }}-https.tls.certresolver={{ .Values.traefik.certResolver }}"
+        - "traefik.http.routers.{{ $router }}-https.tls.certresolver={{ $.Values.traefik.certResolver }}"
 {{- end }}
         - "traefik.http.services.{{ $router }}.loadbalancer.server.port={{ $port }}"
 {{- end }}
 {{- if $consoleRouted }}
-        - "traefik.http.routers.{{ $router }}-console-http.rule=Host(`{{ .Values.console.ingress.host }}`)"
-        - "traefik.http.routers.{{ $router }}-console-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
+        - "traefik.http.routers.{{ $router }}-console-http.rule=Host(`{{ $.Values.console.ingress.host }}`)"
+        - "traefik.http.routers.{{ $router }}-console-http.entrypoints={{ $.Values.traefik.entrypoints.http }}"
         - "traefik.http.routers.{{ $router }}-console-http.service={{ $router }}-console"
-{{- if .Values.console.ingress.tls }}
-        - "traefik.http.routers.{{ $router }}-console-http.middlewares={{ .Values.traefik.redirectMiddleware }}"
-        - "traefik.http.routers.{{ $router }}-console-https.rule=Host(`{{ .Values.console.ingress.host }}`)"
-        - "traefik.http.routers.{{ $router }}-console-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
+{{- if $.Values.console.ingress.tls }}
+        - "traefik.http.routers.{{ $router }}-console-http.middlewares={{ $.Values.traefik.redirectMiddleware }}"
+        - "traefik.http.routers.{{ $router }}-console-https.rule=Host(`{{ $.Values.console.ingress.host }}`)"
+        - "traefik.http.routers.{{ $router }}-console-https.entrypoints={{ $.Values.traefik.entrypoints.https }}"
         - "traefik.http.routers.{{ $router }}-console-https.service={{ $router }}-console"
         - "traefik.http.routers.{{ $router }}-console-https.tls=true"
-        - "traefik.http.routers.{{ $router }}-console-https.tls.certresolver={{ .Values.traefik.certResolver }}"
+        - "traefik.http.routers.{{ $router }}-console-https.tls.certresolver={{ $.Values.traefik.certResolver }}"
 {{- end }}
         - "traefik.http.services.{{ $router }}-console.loadbalancer.server.port={{ $cport }}"
+{{- if $distributed }}
+        # A browser stays on one peer: each peer keeps a single sign-on's state (its PKCE
+        # verifier and nonce) in its own memory, so a callback reaching another peer fails.
+        - "traefik.http.services.{{ $router }}-console.loadbalancer.sticky.cookie=true"
+        - "traefik.http.services.{{ $router }}-console.loadbalancer.sticky.cookie.httponly=true"
 {{- end }}
-{{- range $key, $val := .Values.labels }}
+{{- end }}
+{{- range $key, $val := $.Values.labels }}
         - "{{ $key }}={{ $val }}"
+{{- end }}
 {{- end }}
 {{- end }}
 
 {{- if $metrics }}
 
-  # An OpenTelemetry Collector: RustFS pushes OTLP/HTTP to it on network.name (port 4318),
-  # and Prometheus scrapes the same metrics from it on metrics.network (port 8889). RustFS
+  # An OpenTelemetry Collector: RustFS, every peer of it, pushes OTLP/HTTP to it on
+  # network.name (port 4318), and Prometheus scrapes the same metrics from it on
+  # metrics.network (port 8889), each peer's series under its own `server` label. RustFS
   # itself never joins metrics.network. The image has no shell, so there is no healthcheck;
   # a collector that stops answering is prometheus-stack's TargetDown. Its configuration is
   # an environment variable, read by the collector's env provider. Anything on either
   # network can push to it unauthenticated, so the memory_limiter, first in the pipeline,
   # refuses pushes from 150 MiB (limit_mib - spike_limit_mib) and forces a GC at 200 MiB,
   # below the service's memory limit.
-  rustfs-metrics:
+  #
+  # Named rustfs-distributed-metrics in distributed mode: Prometheus takes the job label from
+  # the service name, and each group in monitoring/rustfs-rules.yml selects one mode's job.
+  {{ ternary "rustfs-distributed-metrics" "rustfs-metrics" $distributed }}:
     image: {{ .Values.metrics.image.repository }}:{{ .Values.metrics.image.tag }}
     command:
       - --config=env:COLLECTOR_CONFIG
@@ -455,8 +635,15 @@ networks:
     external: true
 {{- end }}
 
-{{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) }}
+{{- if and $persist (not $distributed) (not .Values.persistence.volumePath) }}
 
 volumes:
   {{ .Values.persistence.volumeName }}: {}
+{{- end }}
+{{- if and $persist $distributed (not $paths) }}
+
+volumes:
+{{- range $i := until $peers }}
+  {{ printf "%s-%d" $.Values.persistence.volumePrefix (add1 $i) }}: {}
+{{- end }}
 {{- end }}

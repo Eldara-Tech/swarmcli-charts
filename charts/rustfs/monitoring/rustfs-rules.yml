@@ -2,19 +2,29 @@
 # OTLP to the chart's OpenTelemetry Collector, which Prometheus scrapes. The chart does not
 # deploy them: hand the file to your Prometheus, e.g. the prometheus-stack chart's
 # prometheus.extraRules (README § Alerts and a dashboard).
-# RustFS ships no alert rules that fit a single-drive store (its own are GET-path and KMS
+#
+# One group per mode, each selecting its own collector's job, the service prometheus-stack's
+# discovery takes the `job` label from: <release>_rustfs-metrics for a standalone store,
+# <release>_rustfs-distributed-metrics for a cluster. The groups share alert names where
+# they mean the same thing, so a routing rule on alertname covers both modes, and differ in
+# severity where the redundancy does: one drive offline loses a standalone store, and costs
+# a cluster nothing it cannot heal. A down collector is prometheus-stack's TargetDown, not
+# repeated here. Each alert groups by the `stack` and `job` labels the discovery adds.
+#
+# RustFS ships no alert rules that fit these shapes (its own are GET-path and KMS
 # regression alerts against a day-old baseline), so these are this chart's, written against
-# the metrics RustFS 1.0.1 pushes. A down collector is prometheus-stack's TargetDown, not
-# repeated here. Each alert groups by the `stack` and `job` labels prometheus-stack's
-# discovery adds, `job` being the collector's service, <release>_rustfs-metrics. Critical
-# only while users lose service, writes or data now: RustFS not reporting, its drive
-# offline, and S3 answering 5xx. Low free space and drive errors warn.
+# the metrics RustFS 1.0.1 pushes.
 #
 # Validate (from the repo root):
-#   docker run --rm --entrypoint promtool -v "$PWD/charts/rustfs:/chart:ro" \
-#     "prom/prometheus:$(sed -n 's/^appVersion: *"\(.*\)"$/\1/p' charts/prometheus-stack/Chart.yaml)" \
-#     test rules /chart/ci/rustfs-rules-test.yml
+#   for t in rustfs-rules-test rustfs-distributed-rules-test; do
+#     docker run --rm --entrypoint promtool -v "$PWD/charts/rustfs:/chart:ro" \
+#       "prom/prometheus:$(sed -n 's/^appVersion: *"\(.*\)"$/\1/p' charts/prometheus-stack/Chart.yaml)" \
+#       test rules "/chart/ci/$t.yml"
+#   done
 groups:
+  # Standalone: one drive. Critical only while users lose service, writes or data now:
+  # RustFS not reporting, its drive offline, and S3 answering 5xx. Low free space and drive
+  # errors warn.
   - name: rustfs
     rules:
       # The collector answers but serves no RustFS series: RustFS pushes every 30 seconds, and
@@ -26,17 +36,17 @@ groups:
       - alert: RustFSNotReporting
         expr: |
           max by (stack, job) (up{job=~".+_rustfs-metrics"}) == 1
-            unless on (stack, job) max by (stack, job) (rustfs_system_process_uptime_seconds)
+            unless on (stack, job) max by (stack, job) (rustfs_system_process_uptime_seconds{job=~".+_rustfs-metrics"})
         for: 10m
         labels:
           severity: critical
         annotations:
           summary: 'RustFS {{ $labels.stack }} has stopped reporting metrics'
           description: '{{ $labels.job }} is up but has received no metrics from RustFS for 15 minutes: the RustFS task is down or restarting, or its OTLP export failed (docker service logs {{ $labels.stack }}_rustfs).'
-      # The chart runs one drive. Offline, RustFS answers every read and write with 503 while
+      # One drive. Offline, RustFS answers every read and write with 503 while
       # /health/ready still says 200, so the healthcheck does not restart it.
       - alert: RustFSDriveOffline
-        expr: max by (stack, job) (rustfs_cluster_health_drives_offline_count) > 0
+        expr: max by (stack, job) (rustfs_cluster_health_drives_offline_count{job=~".+_rustfs-metrics"}) > 0
         for: 5m
         labels:
           severity: critical
@@ -44,14 +54,14 @@ groups:
           summary: 'RustFS {{ $labels.stack }} has lost its drive'
           description: 'RustFS {{ $labels.stack }} has reported its drive offline for 5 minutes; it refuses every read and write until the drive is back.'
       # Every request either listener answered, by status class, health checks and console
-      # included. The chart's healthcheck probes /health/ready every 15 seconds, so an idle
+      # included. The healthcheck probes /health/ready every 15 seconds, so an idle
       # store still answers some 20 requests per 5 minutes, all 2xx once it is up. Probes it
       # answers 503 while starting count as 5xx, and leave the window before `for` runs out.
       # No traffic floor: two failures in every 5 minutes, for 10 minutes, are enough.
       - alert: RustFSS3ServerErrors
         expr: |
-          sum by (stack, job) (rate(rustfs_http_server_request_duration_seconds_count{status_class="5xx"}[5m]))
-            / sum by (stack, job) (rate(rustfs_http_server_request_duration_seconds_count[5m]))
+          sum by (stack, job) (rate(rustfs_http_server_request_duration_seconds_count{job=~".+_rustfs-metrics",status_class="5xx"}[5m]))
+            / sum by (stack, job) (rate(rustfs_http_server_request_duration_seconds_count{job=~".+_rustfs-metrics"}[5m]))
             > 0.05
         for: 10m
         labels:
@@ -64,8 +74,8 @@ groups:
       # A usable total of 0 makes the ratio NaN or +Inf, which compares false.
       - alert: RustFSCapacityLow
         expr: |
-          max by (stack, job) (rustfs_cluster_capacity_free_bytes)
-            / max by (stack, job) (rustfs_cluster_capacity_usable_total_bytes)
+          max by (stack, job) (rustfs_cluster_capacity_free_bytes{job=~".+_rustfs-metrics"})
+            / max by (stack, job) (rustfs_cluster_capacity_usable_total_bytes{job=~".+_rustfs-metrics"})
             < 0.1
         for: 15m
         labels:
@@ -76,9 +86,111 @@ groups:
       # I/O errors and timeouts on the drive. RustFS 1.0.1 counts both here; its
       # rustfs_system_drive_io_errors_total is never emitted for a local drive.
       - alert: RustFSDriveIOErrors
-        expr: sum by (stack, job) (increase(rustfs_system_drive_availability_errors_total[15m])) > 0
+        expr: sum by (stack, job) (increase(rustfs_system_drive_availability_errors_total{job=~".+_rustfs-metrics"}[15m])) > 0
         labels:
           severity: warning
         annotations:
           summary: 'RustFS {{ $labels.stack }} is getting errors from its drive'
           description: 'RustFS {{ $labels.stack }} counted {{ $value | printf "%.0f" }} I/O errors or timeouts on its drive in the last 15 minutes.'
+
+  # Distributed. The cluster-wide series come from every peer, each labelled with the peer
+  # that reports it (`observer`), and a peer that stops keeps its last values in the
+  # collector for 5 minutes. Those stale values are the healthy view it had, so quorum is
+  # read as the WORST view any peer reports (min), never the best. Critical only while users
+  # lose service, writes or data now, or the next failure loses them: no peer reporting, a
+  # set past its write or read quorum or one drive from its write quorum, and S3 answering
+  # 5xx. A drive offline within the parity, low free space and drive errors warn.
+  - name: rustfs-distributed
+    rules:
+      # The collector answers but serves no RustFS series from any peer: they push every 30
+      # seconds, and the collector drops a series 5 minutes after its last update. The process
+      # gauges are pushed whether or not anyone uses the store, so their absence means every
+      # peer stopped pushing. A single peer that stops shows up as a drive offline instead.
+      - alert: RustFSNotReporting
+        expr: |
+          max by (stack, job) (up{job=~".+_rustfs-distributed-metrics"}) == 1
+            unless on (stack, job) max by (stack, job) (rustfs_system_process_uptime_seconds{job=~".+_rustfs-distributed-metrics"})
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'RustFS {{ $labels.stack }} has stopped reporting metrics'
+          description: '{{ $labels.job }} is up but has received no metrics from any RustFS peer for 15 minutes: every peer is down or restarting, or their OTLP export failed (docker service logs {{ $labels.stack }}_rustfs-1).'
+      # An erasure set has fewer drives online than its write quorum: RustFS refuses every
+      # write to it, while reads may still succeed.
+      - alert: RustFSWriteQuorumLost
+        expr: min by (stack, job, pool_id, set_id) (rustfs_cluster_erasure_set_write_health{job=~".+_rustfs-distributed-metrics"}) == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'RustFS {{ $labels.stack }} refuses writes'
+          description: 'Erasure set {{ $labels.set_id }} of pool {{ $labels.pool_id }} in RustFS {{ $labels.stack }} has had fewer drives online than its write quorum for 2 minutes; every write to it fails until enough peers are back.'
+      - alert: RustFSReadQuorumLost
+        expr: min by (stack, job, pool_id, set_id) (rustfs_cluster_erasure_set_read_health{job=~".+_rustfs-distributed-metrics"}) == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'RustFS {{ $labels.stack }} cannot serve reads'
+          description: 'Erasure set {{ $labels.set_id }} of pool {{ $labels.pool_id }} in RustFS {{ $labels.stack }} has had fewer drives online than its read quorum for 2 minutes; objects in it cannot be read until enough peers are back.'
+      # Online drives equal to the write quorum: writes still succeed, and the next drive or
+      # peer lost stops them. With the default 4 peers of one drive each, that is one peer down.
+      - alert: RustFSWriteQuorumAtRisk
+        expr: |
+          min by (stack, job, pool_id, set_id) (
+              rustfs_cluster_erasure_set_online_drives_count{job=~".+_rustfs-distributed-metrics"}
+            - rustfs_cluster_erasure_set_write_quorum{job=~".+_rustfs-distributed-metrics"}
+          ) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'RustFS {{ $labels.stack }} is one failure from refusing writes'
+          description: 'Erasure set {{ $labels.set_id }} of pool {{ $labels.pool_id }} in RustFS {{ $labels.stack }} has had exactly its write quorum of drives online for 5 minutes: losing one more drive or peer stops every write to it.'
+      # A drive or a whole peer offline, as the peer that sees the most reports it. Within the
+      # parity the cluster still serves, healing what was written meanwhile once it is back.
+      - alert: RustFSDriveOffline
+        expr: max by (stack, job) (rustfs_cluster_health_drives_offline_count{job=~".+_rustfs-distributed-metrics"}) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'RustFS {{ $labels.stack }} has drives offline'
+          description: 'RustFS {{ $labels.stack }} has had drives offline for 5 minutes, {{ $value | printf "%.0f" }} at the last count: a peer is down or a drive has failed (docker stack ps {{ $labels.stack }}).'
+      # Every request any peer's listeners answered, by status class, health checks and
+      # console included. The healthcheck probes /health/live every 15 seconds on each peer,
+      # so an idle cluster still answers some 80 requests per 5 minutes, all 2xx. No traffic
+      # floor: a 5% failure share, for 10 minutes, is enough.
+      - alert: RustFSS3ServerErrors
+        expr: |
+          sum by (stack, job) (rate(rustfs_http_server_request_duration_seconds_count{job=~".+_rustfs-distributed-metrics",status_class="5xx"}[5m]))
+            / sum by (stack, job) (rate(rustfs_http_server_request_duration_seconds_count{job=~".+_rustfs-distributed-metrics"}[5m]))
+            > 0.05
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'RustFS {{ $labels.stack }} is failing requests'
+          description: '{{ $value | humanizePercentage }} of the requests RustFS {{ $labels.stack }} answered in the last 5 minutes, health checks and console included, were 5xx.'
+      # Free space in the cluster, as the peers see it. A usable total of 0 makes the ratio NaN
+      # or +Inf, which compares false.
+      - alert: RustFSCapacityLow
+        expr: |
+          min by (stack, job) (rustfs_cluster_capacity_free_bytes{job=~".+_rustfs-distributed-metrics"})
+            / max by (stack, job) (rustfs_cluster_capacity_usable_total_bytes{job=~".+_rustfs-distributed-metrics"})
+            < 0.1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'RustFS {{ $labels.stack }} is running out of space'
+          description: 'RustFS {{ $labels.stack }} has {{ $value | humanizePercentage }} of its usable capacity free.'
+      # I/O errors and timeouts on a peer's drives; RustFS counts both here.
+      - alert: RustFSDriveIOErrors
+        expr: sum by (stack, job, server) (increase(rustfs_system_drive_availability_errors_total{job=~".+_rustfs-distributed-metrics"}[15m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: 'RustFS {{ $labels.stack }} peer {{ $labels.server }} is getting errors from its drives'
+          description: 'Peer {{ $labels.server }} of RustFS {{ $labels.stack }} counted {{ $value | printf "%.0f" }} I/O errors or timeouts on its drives in the last 15 minutes.'

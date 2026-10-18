@@ -143,7 +143,7 @@ peer needs.
 - **Software that dials its peers by a configured name may use the alias instead.**
   The real address matters to a protocol that binds to it and advertises it, as Galera
   does. RustFS does neither: every peer starts with the same list of peer URLs and finds
-  itself in it, so `charts/rustfs-distributed` gives each peer a release-scoped alias
+  itself in it, so `charts/rustfs`'s distributed mode gives each peer a release-scoped alias
   (`<release>-rustfs-<n>`, without the `_` a host name cannot hold) and the peers dial its
   VIP, which also survives a reschedule. Either way, Swarm puts no name of a task in DNS —
   not `tasks.*`, not an alias, not the service name — and routes nothing to its VIP until

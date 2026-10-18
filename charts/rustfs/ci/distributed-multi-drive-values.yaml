@@ -1,5 +1,6 @@
 # Six peers of two drives each, on host paths: one erasure set of 12 drives. Render-only
 # (ci/e2e-render-only): on one node every path shares a disk, which RustFS refuses.
+mode: distributed
 cluster:
   peers: 6
   drivesPerPeer: 2

@@ -1,6 +1,7 @@
 # Traefik-routed on the in-repo traefik chart as a real edge (ci/e2e-setup.sh stands it up).
-# Plain HTTP (tls:false): CI cannot issue an ACME certificate. ci/e2e-check.sh proves Traefik
+# Plain HTTP (tls:false): CI cannot issue an ACME certificate. ci/e2e-check-distributed.sh proves Traefik
 # merged the four peers' identical routers into one service balancing over all of them.
+mode: distributed
 exposure:
   mode: traefik
   network: traefik-public

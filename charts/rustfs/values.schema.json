@@ -10,6 +10,24 @@
       },
       "required": ["repository"]
     },
+    "mode": {
+      "description": "standalone (one service, one drive) or distributed (cluster.peers services, erasure-coded). Chosen at install: changing it on an existing release does not convert the data.",
+      "type": "string", "enum": ["standalone", "distributed"]
+    },
+    "cluster": {
+      "description": "Distributed mode only.",
+      "type": "object",
+      "properties": {
+        "peers": {
+          "description": "Peers, one Swarm service each; RustFS's multi-node guide requires at least 4. Fixed at install.",
+          "type": "integer", "minimum": 4
+        },
+        "drivesPerPeer": {
+          "description": "Drives per peer. More than 1 needs persistence.volumePaths, one host path per drive on a disk of its own. Fixed at install.",
+          "type": "integer", "minimum": 1
+        }
+      }
+    },
     "s3": {
       "type": "object",
       "properties": {
@@ -68,7 +86,19 @@
         "enabled": { "type": "boolean" },
         "volumeName": { "type": "string", "pattern": "^[^/]+$" },
         "volumePath": { "type": "string" },
-        "nodeLabel": { "type": "string" }
+        "nodeLabel": { "type": "string" },
+        "volumePrefix": { "type": "string", "minLength": 1, "pattern": "^[^/]+$" },
+        "volumePaths": {
+          "description": "Distributed mode: one entry per peer, in peer order, each a list of cluster.drivesPerPeer absolute host paths (a single path may be a string), or [] for named volumes.",
+          "type": "array",
+          "items": {
+            "oneOf": [
+              { "type": "string", "pattern": "^/" },
+              { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^/" } }
+            ]
+          }
+        },
+        "nodeLabelPrefix": { "type": "string" }
       }
     },
     "placement": {
@@ -127,7 +157,7 @@
       "additionalProperties": { "type": ["string", "number", "boolean"] }
     },
     "metrics": {
-      "description": "An OpenTelemetry Collector RustFS pushes its metrics to, labelled for Docker Swarm service discovery.",
+      "description": "An OpenTelemetry Collector RustFS, every peer of it, pushes its metrics to, labelled for Docker Swarm service discovery.",
       "type": "object",
       "properties": {
         "enabled": { "type": "boolean" },

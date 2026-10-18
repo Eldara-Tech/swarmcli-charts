@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
-# Render assertions for the rustfs chart. scripts/test-charts.sh runs this after a
-# successful render:
+# Render assertions for the rustfs chart in standalone mode; a distributed-* case goes to
+# ci/render-check-distributed.sh. scripts/test-charts.sh runs this after a successful
+# render:
 #   $1 = the rendered stack file   $2 = the fixture case name
 # Exit 0 = OK. Data-only (no deploy), so it rides charts.yml / make test.
 #
@@ -30,6 +31,8 @@ set -euo pipefail
 
 rendered="${1:?rendered stack file}"
 case="${2:-}"
+# mode: distributed has checks of its own, for the same case names without the prefix.
+case "$case" in distributed-*) exec "$(dirname "$0")/render-check-distributed.sh" "$rendered" "${case#distributed-}" ;; esac
 
 if ! command -v yq >/dev/null 2>&1 || ! yq --version 2>&1 | grep -F mikefarah >/dev/null; then
   echo "    ERROR: mikefarah yq v4 is required by render-check.sh (a skipped check reads exactly like a passing one)" >&2
@@ -114,6 +117,11 @@ grep -Fx rustfs-net <<<"$nets" >/dev/null || bad "the service is not on network.
 # ── the console: a second listener with the full API, only when asked for ─────────────
 case "$case" in traefik|published|console-edge|oidc) console=1 ;; *) console="" ;; esac
 labels="$(q "$svc.deploy.labels[]")"
+# Distributed mode's deploy labels never reach the standalone service: the rollout label
+# spaces peers, and the sticky cookie keeps a browser on one of several.
+if grep -E 'com\.swarmcli\.rollout|\.sticky\.' <<<"$labels" >/dev/null; then
+  bad "case $case: the standalone service carries distributed mode's rollout label or sticky cookie"
+fi
 if [ -n "$console" ]; then
   [ "$(env_ RUSTFS_CONSOLE_ENABLE)" = "true" ] || bad "case $case: console.enabled but RUSTFS_CONSOLE_ENABLE is not true"
   [ "$(env_ RUSTFS_CONSOLE_ADDRESS)" = ":9001" ] || bad "case $case: the console does not listen on :9001"
@@ -351,6 +359,13 @@ if [ "$case" = "default" ]; then
   fi
   refused 'metrics.network must differ from network.name and exposure.network' --set metrics.enabled=true --set metrics.network=rustfs-net
   refused 'metrics.network must differ from network.name and exposure.network' --set metrics.enabled=true --set metrics.network=traefik-public
+  # Distributed mode's host paths are refused rather than ignored, and so is an unknown mode.
+  refused 'persistence.volumePaths is for mode: distributed' --set 'persistence.volumePaths[0]=/srv/rustfs'
+  refused '/mode' --set mode=cluster
+  # Standalone carries none of distributed mode's wiring.
+  render && [ "$(yq -r "$svc.environment | has(\"RUSTFS_VOLUMES\") or has(\"RUSTFS_LOCAL_ENDPOINT_HOST\")" "$tmp")" = "false" ] \
+    && [ "$(yq -r "$svc.deploy | has(\"endpoint_mode\") or has(\"labels\")" "$tmp")" = "false" ] \
+    || bad "the standalone render carries distributed mode's volume list, endpoint_mode or rollout label: $(tr '\n' ' ' <"$tmp.err")"
   # While metrics are on, the chart owns RustFS's OTLP wiring; while they are off, extraEnv may set it.
   for k in RUSTFS_OBS_ENDPOINT RUSTFS_OBS_METRIC_ENDPOINT RUSTFS_OBS_TRACE_ENDPOINT RUSTFS_OBS_LOG_ENDPOINT \
            RUSTFS_OBS_TRACES_EXPORT_ENABLED RUSTFS_OBS_LOGS_EXPORT_ENABLED RUSTFS_OBS_LOG_STDOUT_ENABLED; do

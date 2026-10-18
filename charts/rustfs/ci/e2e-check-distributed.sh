@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# e2e smoke check for the rustfs-distributed chart. scripts/e2e-test.sh runs this after the
+# e2e smoke check for the rustfs chart in distributed mode. ci/e2e-check.sh hands every
+# distributed-* case here, as $3 without the prefix. scripts/e2e-test.sh runs it after the
 # release converges:
 #   $1 = release name (== Docker stack name)   $2 = chart directory   $3 = fixture case
 # Exit 0 = healthy, non-zero = failure.
@@ -205,7 +206,8 @@ else
   mport="$(docker service inspect "$msvc" --format '{{index .Spec.Labels "prometheus.io/port"}}')"
   [ "$mport" = "8889" ] || die "$msvc carries prometheus.io/port='$mport', expected 8889"
   mon="$dir/monitoring"
-  want="$( { grep -v -E '^[[:space:]]*(#|summary:|description:)' "$mon/rustfs-distributed-rules.yml"; grep -F '"expr"' "$mon/rustfs-distributed-dashboard.json"; } \
+  # The distributed group of the rules only.
+  want="$( { awk '/^  - name: /{ g = $3 } g == "rustfs-distributed"' "$mon/rustfs-rules.yml" | grep -v -E '^[[:space:]]*(#|summary:|description:)'; grep -F '"expr"' "$mon/rustfs-dashboard.json"; } \
     | grep -oE 'rustfs_[a-z0-9_]+' | sed -E 's/_(bucket|sum|count)$//' | sort -u)"
   [ "$(wc -l <<<"$want")" -ge 15 ] || die "found only $(wc -l <<<"$want") metric names in monitoring/; the extraction is broken"
   m=""; missing="$want"; servers=""
@@ -245,7 +247,7 @@ else
   promtool_image="${RUSTFS_E2E_PROMTOOL_IMAGE:-prom/prometheus:${prom_tag:?no appVersion in charts/prometheus-stack/Chart.yaml}}"
   out="$(docker run --rm --entrypoint promtool -v "$chart:/chart:ro" "$promtool_image" \
     test rules /chart/ci/rustfs-distributed-rules-test.yml 2>&1)" \
-    || die "promtool test rules fails on monitoring/rustfs-distributed-rules.yml: $out"
+    || die "promtool test rules fails on monitoring/rustfs-rules.yml's distributed group: $out"
   echo "  ok: the alert rules pass promtool"
   metrics_ok="$metrics_ok, alert rules pass promtool"
 fi
@@ -309,7 +311,7 @@ if [ "$case" = "oidc" ]; then
   done
   echo "  ok: every peer discovered the provider at start, labelled SSO"
   api="http://${alias}-1:9001/rustfs/admin/v3/oidc"
-  auth='http://rustfs-distributed-e2e-idp:8080/realms/e2e/protocol/openid-connect/auth?'
+  auth='http://rustfs-e2e-idp:8080/realms/e2e/protocol/openid-connect/auth?'
   cb='redirect_uri=https%3A%2F%2Frustfs-cluster-console.e2e.test%2Frustfs%2Fadmin%2Fv3%2Foidc%2Fcallback%2Fdefault'
   for host in "${alias}-1:9001" evil.example; do
     loc="$(cr -o /dev/null -w '%{redirect_url}' -H "Host: $host" -H 'X-Forwarded-Proto: http' "$api/authorize/default" 2>/dev/null || true)"
@@ -414,7 +416,7 @@ if [ "$case" = "lifecycle" ]; then
   before_tasks="$(for n in $PEERS; do task_of "$n"; done)"
   extra="$tmp/roll.yaml"
   printf 'extraEnv:\n  E2E_ROLL: "%s"\n' "$(date +%s)" >"$extra"
-  "$SWARMCLI" charts upgrade "$release" "$chart" -f "$chart/ci/lifecycle-values.yaml" -f "$extra" --wait --timeout 10m >/dev/null \
+  "$SWARMCLI" charts upgrade "$release" "$chart" -f "$chart/ci/distributed-lifecycle-values.yaml" -f "$extra" --wait --timeout 10m >/dev/null \
     || die "the all-peer upgrade did not roll out"
   now_tasks="$(for n in $PEERS; do task_of "$n"; done)"
   [ "$(printf '%s\n' $now_tasks | wc -l | tr -d ' ')" = "4" ] \
@@ -473,4 +475,4 @@ if [ "$case" = "lifecycle" ]; then
   echo "  ok: after every peer stopped together and started again, the cluster formed by itself and every peer serves the object"
 fi
 
-echo "  rustfs-distributed [$case]: all checks passed${metrics_ok}"
+echo "  rustfs distributed [$case]: all checks passed${metrics_ok}"
