@@ -7,7 +7,8 @@
 # discovery takes the `job` label from: <release>_rustfs-metrics for a standalone store,
 # <release>_rustfs-distributed-metrics for a cluster. The groups share alert names where
 # they mean the same thing, so a routing rule on alertname covers both modes, and differ in
-# severity where the redundancy does: one drive offline loses a standalone store, and costs
+# severity where the redundancy does; the distributed group's alerts also carry the label
+# mode="distributed", which tells them apart (and keeps promtool's duplicate-rule lint quiet): one drive offline loses a standalone store, and costs
 # a cluster nothing it cannot heal. A down collector is prometheus-stack's TargetDown, not
 # repeated here. Each alert groups by the `stack` and `job` labels the discovery adds.
 #
@@ -112,6 +113,7 @@ groups:
             unless on (stack, job) max by (stack, job) (rustfs_system_process_uptime_seconds{job=~".+_rustfs-distributed-metrics"})
         for: 10m
         labels:
+          mode: distributed
           severity: critical
         annotations:
           summary: 'RustFS {{ $labels.stack }} has stopped reporting metrics'
@@ -122,6 +124,7 @@ groups:
         expr: min by (stack, job, pool_id, set_id) (rustfs_cluster_erasure_set_write_health{job=~".+_rustfs-distributed-metrics"}) == 0
         for: 2m
         labels:
+          mode: distributed
           severity: critical
         annotations:
           summary: 'RustFS {{ $labels.stack }} refuses writes'
@@ -130,6 +133,7 @@ groups:
         expr: min by (stack, job, pool_id, set_id) (rustfs_cluster_erasure_set_read_health{job=~".+_rustfs-distributed-metrics"}) == 0
         for: 2m
         labels:
+          mode: distributed
           severity: critical
         annotations:
           summary: 'RustFS {{ $labels.stack }} cannot serve reads'
@@ -144,6 +148,7 @@ groups:
           ) == 0
         for: 5m
         labels:
+          mode: distributed
           severity: critical
         annotations:
           summary: 'RustFS {{ $labels.stack }} is one failure from refusing writes'
@@ -154,6 +159,7 @@ groups:
         expr: max by (stack, job) (rustfs_cluster_health_drives_offline_count{job=~".+_rustfs-distributed-metrics"}) > 0
         for: 5m
         labels:
+          mode: distributed
           severity: warning
         annotations:
           summary: 'RustFS {{ $labels.stack }} has drives offline'
@@ -169,6 +175,7 @@ groups:
             > 0.05
         for: 10m
         labels:
+          mode: distributed
           severity: critical
         annotations:
           summary: 'RustFS {{ $labels.stack }} is failing requests'
@@ -182,6 +189,7 @@ groups:
             < 0.1
         for: 15m
         labels:
+          mode: distributed
           severity: warning
         annotations:
           summary: 'RustFS {{ $labels.stack }} is running out of space'
@@ -190,6 +198,7 @@ groups:
       - alert: RustFSDriveIOErrors
         expr: sum by (stack, job, server) (increase(rustfs_system_drive_availability_errors_total{job=~".+_rustfs-distributed-metrics"}[15m])) > 0
         labels:
+          mode: distributed
           severity: warning
         annotations:
           summary: 'RustFS {{ $labels.stack }} peer {{ $labels.server }} is getting errors from its drives'

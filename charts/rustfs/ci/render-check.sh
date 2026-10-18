@@ -361,6 +361,9 @@ if [ "$case" = "default" ]; then
   refused 'metrics.network must differ from network.name and exposure.network' --set metrics.enabled=true --set metrics.network=traefik-public
   # Distributed mode's host paths are refused rather than ignored, and so is an unknown mode.
   refused 'persistence.volumePaths is for mode: distributed' --set 'persistence.volumePaths[0]=/srv/rustfs'
+  # A line break in the host path would start keys of the service itself.
+  printf '%s\n' 'persistence:' '  volumePath: "/srv/x:/data\n    cap_add: [SYS_ADMIN]\n    z"' >"$tmp.values"
+  refused 'persistence.volumePath must be one line' -f "$tmp.values"
   refused '/mode' --set mode=cluster
   # Standalone carries none of distributed mode's wiring.
   render && [ "$(yq -r "$svc.environment | has(\"RUSTFS_VOLUMES\") or has(\"RUSTFS_LOCAL_ENDPOINT_HOST\")" "$tmp")" = "false" ] \

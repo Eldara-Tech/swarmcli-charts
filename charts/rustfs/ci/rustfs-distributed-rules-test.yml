@@ -384,6 +384,7 @@ tests:
         alertname: RustFSWriteQuorumLost
         exp_alerts:
           - exp_labels:
+              mode: distributed
               severity: critical
               job: twodown_rustfs-distributed-metrics
               stack: twodown
@@ -393,6 +394,7 @@ tests:
               summary: 'RustFS twodown refuses writes'
               description: 'Erasure set 0 of pool 0 in RustFS twodown has had fewer drives online than its write quorum for 2 minutes; every write to it fails until enough peers are back.'
           - exp_labels:
+              mode: distributed
               severity: critical
               job: threedown_rustfs-distributed-metrics
               stack: threedown
@@ -406,6 +408,7 @@ tests:
         alertname: RustFSReadQuorumLost
         exp_alerts:
           - exp_labels:
+              mode: distributed
               severity: critical
               job: threedown_rustfs-distributed-metrics
               stack: threedown
@@ -420,6 +423,7 @@ tests:
         alertname: RustFSWriteQuorumAtRisk
         exp_alerts:
           - exp_labels:
+              mode: distributed
               severity: critical
               job: onedown_rustfs-distributed-metrics
               stack: onedown
@@ -432,6 +436,7 @@ tests:
         alertname: RustFSWriteQuorumAtRisk
         exp_alerts:
           - exp_labels:
+              mode: distributed
               severity: critical
               job: onedown_rustfs-distributed-metrics
               stack: onedown
@@ -453,6 +458,7 @@ tests:
               summary: 'RustFS single has lost its drive'
               description: 'RustFS single has reported its drive offline for 5 minutes; it refuses every read and write until the drive is back.'
           - exp_labels:
+              mode: distributed
               severity: warning
               job: onedown_rustfs-distributed-metrics
               stack: onedown
@@ -460,6 +466,7 @@ tests:
               summary: 'RustFS onedown has drives offline'
               description: 'RustFS onedown has had drives offline for 5 minutes, 1 at the last count: a peer is down or a drive has failed (docker stack ps onedown).'
           - exp_labels:
+              mode: distributed
               severity: warning
               job: twodown_rustfs-distributed-metrics
               stack: twodown
@@ -467,6 +474,7 @@ tests:
               summary: 'RustFS twodown has drives offline'
               description: 'RustFS twodown has had drives offline for 5 minutes, 2 at the last count: a peer is down or a drive has failed (docker stack ps twodown).'
           - exp_labels:
+              mode: distributed
               severity: warning
               job: threedown_rustfs-distributed-metrics
               stack: threedown
@@ -498,6 +506,7 @@ tests:
               summary: 'RustFS single has stopped reporting metrics'
               description: 'single_rustfs-metrics is up but has received no metrics from RustFS for 15 minutes: the RustFS task is down or restarting, or its OTLP export failed (docker service logs single_rustfs).'
           - exp_labels:
+              mode: distributed
               severity: critical
               job: silent_rustfs-distributed-metrics
               stack: silent
@@ -509,6 +518,7 @@ tests:
         alertname: RustFSS3ServerErrors
         exp_alerts:
           - exp_labels:
+              mode: distributed
               severity: critical
               job: errors_rustfs-distributed-metrics
               stack: errors
@@ -519,6 +529,7 @@ tests:
         alertname: RustFSCapacityLow
         exp_alerts:
           - exp_labels:
+              mode: distributed
               severity: warning
               job: full_rustfs-distributed-metrics
               stack: full
@@ -530,6 +541,7 @@ tests:
         alertname: RustFSDriveIOErrors
         exp_alerts:
           - exp_labels:
+              mode: distributed
               severity: warning
               job: ioerr_rustfs-distributed-metrics
               stack: ioerr

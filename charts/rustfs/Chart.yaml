@@ -8,8 +8,10 @@ appVersion: "1.0.1"
 # Oldest swarmcli whose chart engine renders this chart; verified by
 # scripts/floor-check.sh against a real binary of that version. 2.2.0 is the first
 # to roll a distributed cluster's peers one at a time (com.swarmcli.rollout on each
-# peer); without it an upgrade restarts every peer at once. The chart has one floor
-# for both modes, because a template cannot see which swarmcli renders it.
+# peer); without it an upgrade restarts every peer at once. Among its prereleases only
+# rc4 has it, and the floor admits rc1-rc3 too (a constraint ignores the prerelease
+# part). The chart has one floor for both modes, because a template cannot see which
+# swarmcli renders it.
 swarmcliVersion: ">= 2.2.0"
 maintainers:
   - name: Eldara

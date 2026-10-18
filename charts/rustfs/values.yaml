@@ -31,8 +31,9 @@ image:
   tag: ""  # defaults to appVersion from Chart.yaml
 
 # standalone or distributed, chosen at install. A single-drive store cannot become a
-# distributed one in place, so changing mode on an existing release does not convert it:
-# it starts an empty cluster beside the old service (README § Moving from standalone).
+# distributed one in place, so changing mode on an existing release does not convert it: the
+# new mode's services start empty beside the old mode's, which keep running (README §
+# Moving from standalone).
 mode: standalone
 
 # Distributed mode only: the shape of the cluster, fixed at install. RustFS records the
@@ -247,23 +248,24 @@ nofile: 65536
 # RUSTFS_OBS_LOG_DIRECTORY, RUSTFS_CHECK_UPDATE, RUSTFS_HTTP1_HEADER_READ_TIMEOUT and
 # RUSTFS_OUTBOUND_ALLOW_ORIGINS here override the chart's own settings. The render fails on
 # credentials (they belong in the secrets above, and RustFS reads MINIO_* names as well),
-# on the listener addresses (set s3.port / console.* instead), in distributed mode on the
-# cluster wiring the chart sets (the volume list, each peer's endpoint, the start-up wait
-# mode), on an erasure set width (it would override the one the render checks), on RustFS's
-# test-only disk-check bypass and on the internode RPC secret (a credential RustFS derives
-# from the key pair), on every RUSTFS_IDENTITY_OPENID_* setting except the tuning keys README "Single sign-on" lists,
+# on the listener addresses (set s3.port / console.* instead), on every
+# RUSTFS_IDENTITY_OPENID_* setting except the tuning keys README "Single sign-on" lists,
 # allowed with console.oidc.enabled, and, while metrics.enabled, on the OTLP endpoints and
 # export settings the chart sets and on the three that would break its push
 # (RUSTFS_OBS_USE_STDOUT, RUSTFS_OBS_METRICS_EXPORT_ENABLED, RUSTFS_OBS_METER_INTERVAL).
+# In distributed mode it also fails on the cluster wiring the chart sets (the volume list,
+# each peer's endpoint, the start-up wait mode), an erasure set width (it would override
+# the one the render checks), RustFS's test-only disk-check bypass and the internode RPC
+# secret (a credential RustFS derives from the key pair).
 extraEnv: {}
 
 # Metrics. RustFS serves no Prometheus endpoint; it pushes OpenTelemetry (OTLP) metrics.
 # enabled adds an OpenTelemetry Collector service, <release>_rustfs-metrics
 # (<release>_rustfs-distributed-metrics in distributed mode), that RustFS pushes to over
 # network.name and that serves them as Prometheus metrics on port 8889, labelled for Docker
-# Swarm service discovery. In distributed mode each peer's own series carry its name in a
-# `server` label, and the cluster-wide ones the name of the peer reporting them in an
-# `observer` label. RustFS's trace and log export stay off, and its log stays on docker
+# Swarm service discovery. In distributed mode each peer's process and drive series carry
+# its name in a `server` label, and the cluster-wide ones the name of the peer reporting
+# them in an `observer` label. RustFS's trace and log export stay off, and its log stays on docker
 # service logs. Turning it on or off restarts RustFS once (each peer, one at a time).
 metrics:
   enabled: false

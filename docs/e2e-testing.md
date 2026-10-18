@@ -309,8 +309,8 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   empty key set on `rustfs-net`), up before install because RustFS discovers it only at
   start. `ci/e2e-check.sh` signs its requests with the same key pair and also proves the
   public default `rustfsadmin` pair is refused, because RustFS converges just as well on it.
-  The `distributed-*` fixtures (`mode: distributed`) get the same, with a node label for
-  EVERY peer (`rustfs-1` … `-6`) on the single CI node, so the pinned default fixture
+  The `distributed-*` fixtures (`mode: distributed`) get the same, but instead of
+  `rustfs-data` a node label for EVERY peer (`rustfs-1` … `-6`) on the single CI node, so the pinned default fixture
   schedules all four peers there: not HA, but one real erasure-coded cluster.
   `ci/e2e-check-distributed.sh` asserts one cluster rather than four stores (every peer's
   admin API reports one erasure set of 4 drives, all 4 peers online), an object written

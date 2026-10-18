@@ -180,6 +180,7 @@ tests:
               description: 'RustFS driveoff has reported its drive offline for 5 minutes; it refuses every read and write until the drive is back.'
           # cluster's is the distributed group's warning, and only that.
           - exp_labels:
+              mode: distributed
               severity: warning
               job: cluster_rustfs-distributed-metrics
               stack: cluster
@@ -209,6 +210,7 @@ tests:
               summary: 'RustFS full is running out of space'
               description: 'RustFS full has 5% of its drive free.'
           - exp_labels:
+              mode: distributed
               severity: warning
               job: cluster_rustfs-distributed-metrics
               stack: cluster
@@ -227,6 +229,7 @@ tests:
               summary: 'RustFS ioerr is getting errors from its drive'
               description: 'RustFS ioerr counted 4 I/O errors or timeouts on its drive in the last 15 minutes.'
           - exp_labels:
+              mode: distributed
               severity: warning
               job: cluster_rustfs-distributed-metrics
               stack: cluster

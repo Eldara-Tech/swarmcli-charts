@@ -427,6 +427,20 @@ if [ "$case" = "default" ]; then
   refused 'console.publish.mode must be host in distributed mode' --set console.enabled=true --set console.exposure.mode=published --set console.publish.mode=ingress
   # The standalone store's host path is refused rather than ignored.
   refused 'persistence.volumePath is the standalone store' --set persistence.volumePath=/srv/rustfs
+  # A line break in a host path would start keys of the service itself.
+  printf '%s\n' 'persistence:' '  volumePaths:' '    - /a' '    - "/b:/data\n    cap_add: [SYS_ADMIN]\n    z"' '    - /c' '    - /d' >"$tmp.values"
+  refused 'persistence.volumePaths entry 1 (peer 2) must hold one-line paths' -f "$tmp.values"
+  # Values stored by a chart version without distributed mode have no cluster.* at all, which
+  # is what --reuse-values renders with: a copy of the chart without them, switched to it.
+  old="$(mktemp -d)"
+  cp -R "$chart/." "$old/"
+  yq -i 'del(.cluster)' "$old/values.yaml"
+  if "$sc" charts template ci "$old" --set mode=distributed >"$tmp" 2>"$tmp.err"; then
+    bad "a chart's values without cluster.* rendered in distributed mode — it must be refused"
+  elif ! grep -F 'cluster.peers (0) must be at least 4' "$tmp.err" >/dev/null; then
+    bad "values without cluster.* failed, but not with the cluster.peers refusal: $(tr '\n' ' ' <"$tmp.err")"
+  fi
+  rm -rf "$old"
   for k in RUSTFS_VOLUMES MINIO_VOLUMES RUSTFS_LOCAL_ENDPOINT_HOST RUSTFS_STARTUP_TOPOLOGY_WAIT_MODE MINIO_STARTUP_TOPOLOGY_WAIT_MODE; do
     refused "extraEnv: $k is set by the chart from cluster.* and s3.port" --set "extraEnv.$k=x"
   done

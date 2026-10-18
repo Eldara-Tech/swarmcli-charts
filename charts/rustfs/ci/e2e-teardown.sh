@@ -27,15 +27,25 @@ docker secret rm rustfs-access-key rustfs-secret-key >/dev/null 2>&1 || true
 node="$(docker node ls --format '{{.ID}} {{.Self}}' 2>/dev/null | awk '$2=="true"{print $1; exit}')"
 [ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | sed -n 1p)"
 if [ -n "$node" ]; then
-  # One label at a time: --label-rm fails as a whole when any one label is already gone.
-  for l in rustfs-data rustfs-e2e-node rustfs-1 rustfs-2 rustfs-3 rustfs-4 rustfs-5 rustfs-6; do
+  # The labels this mode's setup added, one at a time: --label-rm fails as a whole when any
+  # one label is already gone.
+  case "$case" in
+    distributed-*) labels="rustfs-1 rustfs-2 rustfs-3 rustfs-4 rustfs-5 rustfs-6" ;;
+    bind-mount) labels="rustfs-data rustfs-e2e-node" ;;
+    *) labels="rustfs-data" ;;
+  esac
+  for l in $labels; do
     docker node update --label-rm "$l" "$node" >/dev/null 2>&1 || true
   done
 fi
 
-if [ "$c" = "bind-mount" ]; then
+if [ "$case" = "bind-mount" ]; then
   docker run --rm --user 0:0 -v /tmp:/host-tmp --entrypoint sh curlimages/curl:latest \
-    -c 'rm -rf /host-tmp/rustfs-e2e /host-tmp/rustfs-distributed-e2e' >/dev/null 2>&1 || true
+    -c 'rm -rf /host-tmp/rustfs-e2e' >/dev/null 2>&1 || true
+fi
+if [ "$case" = "distributed-bind-mount" ]; then
+  docker run --rm --user 0:0 -v /tmp:/host-tmp --entrypoint sh curlimages/curl:latest \
+    -c 'rm -rf /host-tmp/rustfs-distributed-e2e' >/dev/null 2>&1 || true
 fi
 
 exit 0

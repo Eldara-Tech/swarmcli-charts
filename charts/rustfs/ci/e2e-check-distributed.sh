@@ -111,6 +111,17 @@ done
 [ "$got" = "403" ] || die "anonymous GET $base/ returned '$got', expected 403 (auth must be enforced)"
 echo "  ok: anonymous ListBuckets refused (403)"
 
+# Peers pass their liveness check before the cluster has write quorum, and a write meanwhile
+# is answered 503 (README § Connecting: clients retry). With short health windows, as in
+# `lifecycle`, the checks below can start in that gap, so wait it out first.
+got=""
+for _ in $(seq 1 40); do
+  got="$(code "$base/minio/health/cluster")"
+  [ "$got" = "200" ] && break
+  sleep 3
+done
+[ "$got" = "200" ] || die "$base/minio/health/cluster returned '$got' for 2 minutes, expected 200 (write quorum)"
+
 got="$(code -X PUT "$base/anonymous-bucket")"
 [ "$got" = "403" ] || die "anonymous CreateBucket returned '$got', expected 403"
 got="$(code --aws-sigv4 "$SIG" --user "$KEY:wrong-secret" "$base/")"
@@ -206,8 +217,10 @@ else
   mport="$(docker service inspect "$msvc" --format '{{index .Spec.Labels "prometheus.io/port"}}')"
   [ "$mport" = "8889" ] || die "$msvc carries prometheus.io/port='$mport', expected 8889"
   mon="$dir/monitoring"
-  # The distributed group of the rules only.
-  want="$( { awk '/^  - name: /{ g = $3 } g == "rustfs-distributed"' "$mon/rustfs-rules.yml" | grep -v -E '^[[:space:]]*(#|summary:|description:)'; grep -F '"expr"' "$mon/rustfs-dashboard.json"; } \
+  # The distributed group of the rules only, which alone reads the erasure-set series.
+  group="$(awk '/^  - name: /{ g = $3 } g == "rustfs-distributed"' "$mon/rustfs-rules.yml" | grep -v -E '^[[:space:]]*(#|summary:|description:)' || true)"
+  grep -F 'rustfs_cluster_erasure_set_' <<<"$group" >/dev/null || die "monitoring/rustfs-rules.yml has no group 'rustfs-distributed' reading the erasure-set series; the extraction is broken"
+  want="$( { printf '%s\n' "$group"; grep -F '"expr"' "$mon/rustfs-dashboard.json"; } \
     | grep -oE 'rustfs_[a-z0-9_]+' | sed -E 's/_(bucket|sum|count)$//' | sort -u)"
   [ "$(wc -l <<<"$want")" -ge 15 ] || die "found only $(wc -l <<<"$want") metric names in monitoring/; the extraction is broken"
   m=""; missing="$want"; servers=""

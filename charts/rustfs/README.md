@@ -9,14 +9,14 @@ Docker Swarm, in one of two modes, chosen with `mode` at install:
   is a Swarm service of its own (`rustfs-1` … `rustfs-<peers>`) with exactly one replica,
   its own volume and its own node label, because a Swarm volume is node-local. With the
   default 4 peers of one drive each, every object is split into 2 data and 2 parity
-  shards, so reads survive 2 peers down and writes survive 1. It is RustFS's multi-node,
-  multi-drive (MNMD) deployment, the mode its own Helm chart installs by default.
+  shards, so reads survive 2 peers down and writes survive 1. It is RustFS's multi-node
+  deployment, the mode its own Helm chart installs by default.
 
 **Which mode.** Standalone fits a build cache (the GitLab Runner distributed cache), a
 backup target or an application's blob store on a small swarm. Distributed is for data
 that must survive losing a node: it needs a node per peer, at least 4 of them, and stores
-half the drives' total at the default size ([Sizing](#sizing)). A release keeps the mode
-it was installed with ([Installing](#installing)).
+half the drives' total at the default size ([Sizing](#sizing)). Choose the mode at install:
+changing it later does not convert the data ([Installing](#installing)).
 
 What the chart adds on top of the image, in either mode:
 
@@ -40,8 +40,8 @@ Distributed mode adds:
   so swarmcli updates the next peer only once the one before runs and has outlived its
   monitor window ([Upgrading](#upgrading)).
 - **Shapes RustFS would refuse are refused at render**: a peer count and drive count with no
-  valid erasure set, more than one drive per peer on named volumes, one host path named
-  twice ([Sizing](#sizing)).
+  valid erasure set, more than one drive per peer on named volumes ([Sizing](#sizing)), one
+  host path named twice ([Persistence & node pinning](#persistence--node-pinning)).
 
 ## Prerequisites
 
@@ -87,7 +87,9 @@ swarmcli charts install s3 swarmcli-charts/rustfs --set mode=distributed --set '
 The chart needs swarmcli 2.2.0 or later in both modes; an older swarmcli refuses to install
 or upgrade it, or asks first when run interactively. 2.2.0 is the first to roll a
 distributed cluster's peers one at a time, and the chart declares one floor for both modes,
-because a template cannot see which swarmcli renders it.
+because a template cannot see which swarmcli renders it. The floor also admits the
+prereleases 2.2.0-rc1 to -rc3, which predate the rollout: with those, an upgrade restarts
+every peer at once.
 
 In distributed mode all peers start together on install, find each other within seconds,
 and `--wait` returns once each peer's task runs and has outlived its monitor window
@@ -484,8 +486,9 @@ persistence:
     - [/mnt/disk1/rustfs, /mnt/disk2/rustfs]
 ```
 
-With `persistence.nodeLabelPrefix: ""` nothing keeps the peers on different nodes, so then
-the render refuses a path given to two peers. Each mode refuses the other's host-path key
+The render refuses a path named twice in one peer's entry, since two drives in one
+directory would share a disk. With `persistence.nodeLabelPrefix: ""` nothing keeps the peers
+on different nodes, so then it also refuses a path given to two peers. Each mode refuses the other's host-path key
 rather than ignoring it: `persistence.volumePath` in distributed mode, and
 `persistence.volumePaths` in standalone.
 
@@ -603,7 +606,7 @@ itself with no scrape config. Any Prometheus using Docker Swarm service discover
 labels works the same way. RustFS itself never joins `monitoring`.
 
 ```bash
-swarmcli charts upgrade s3 swarmcli-charts/rustfs -f rustfs-values.yaml --set metrics.enabled=true
+swarmcli charts upgrade s3 swarmcli-charts/rustfs -f s3-values.yaml --set metrics.enabled=true
 ```
 
 Pass the values you installed with (`-f`, or the same `--set`s), not `--reuse-values`.
@@ -620,8 +623,9 @@ version's defaults, so every `metrics.*` key would render empty
   `instance` labels (`RustFS` and the task's address) arrive as `exported_job` and
   `exported_instance`, beside the `job` and `stack` that discovery gives the collector.
   The collector drops a series 5 minutes after RustFS last pushed it.
-- **In distributed mode** each peer's own series (process, requests, drives) carry its name
-  in a `server` label, `<release>-rustfs-<n>:9000`. The cluster-wide series (capacity,
+- **In distributed mode** each peer's process and drive series carry its name in a `server`
+  label, `<release>-rustfs-<n>:9000`; its request series differ from the other peers' only
+  by `exported_instance`. The cluster-wide series (capacity,
   erasure sets, drives offline) come from every peer, each with an `observer` label naming
   the peer that reports it. A peer that stops keeps its last series in the collector for 5
   minutes, showing the cluster as it last saw it, so read quorum as the worst view any peer
@@ -653,7 +657,7 @@ version's defaults, so every `metrics.*` key would render empty
   in distributed mode):
 
   ```bash
-  swarmcli charts upgrade s3 swarmcli-charts/rustfs -f rustfs-values.yaml --set metrics.enabled=false
+  swarmcli charts upgrade s3 swarmcli-charts/rustfs -f s3-values.yaml --set metrics.enabled=false
   docker service rm s3_rustfs-metrics
   ```
 - With swarmcli-cd, add `monitoring` to `allow.networks`.

@@ -153,7 +153,9 @@ else
   [ "$mport" = "8889" ] || die "$msvc carries prometheus.io/port='$mport', expected 8889"
   mon="$dir/monitoring"
   # The standalone group of the rules only: the distributed group reads erasure-set series.
-  want="$( { awk '/^  - name: /{ g = $3 } g == "rustfs"' "$mon/rustfs-rules.yml" | grep -v -E '^[[:space:]]*(#|summary:|description:)'; grep -F '"expr"' "$mon/rustfs-dashboard.json"; } \
+  group="$(awk '/^  - name: /{ g = $3 } g == "rustfs"' "$mon/rustfs-rules.yml" | grep -v -E '^[[:space:]]*(#|summary:|description:)' || true)"
+  grep -E 'rustfs_[a-z0-9_]+' <<<"$group" >/dev/null || die "monitoring/rustfs-rules.yml has no group 'rustfs' with metrics in it; the extraction is broken"
+  want="$( { printf '%s\n' "$group"; grep -F '"expr"' "$mon/rustfs-dashboard.json"; } \
     | grep -oE 'rustfs_[a-z0-9_]+' | sed -E 's/_(bucket|sum|count)$//' | sort -u)"
   [ "$(wc -l <<<"$want")" -ge 15 ] || die "found only $(wc -l <<<"$want") metric names in monitoring/; the extraction is broken"
   m=""; missing="$want"

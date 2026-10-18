@@ -14,6 +14,11 @@
 {{- if and $metrics (has .Values.metrics.network (list .Values.network.name .Values.exposure.network)) -}}
 {{-   fail "metrics.network must differ from network.name and exposure.network: the collector joins network.name, and the point of a separate metrics overlay is that Prometheus never shares one with the S3 port" -}}
 {{- end -}}
+{{- /* A host path is spliced into the service's volumes unquoted, so a line break in one
+       would start keys of the service itself. */ -}}
+{{- if regexMatch "[\\r\\n]" (toString .Values.persistence.volumePath) -}}
+{{-   fail "persistence.volumePath must be one line: a line break would add keys to the service" -}}
+{{- end -}}
 {{- if and (not $distributed) $persist (not .Values.persistence.volumePath) (contains "/" .Values.persistence.volumeName) -}}
 {{-   fail "persistence.volumeName is a Docker named-volume name and cannot contain '/'. To store data under a host directory, set persistence.volumePath instead." -}}
 {{- end -}}
@@ -156,6 +161,11 @@
 {{- end -}}
 {{- $peers = int .Values.cluster.peers -}}
 {{- $drives = int .Values.cluster.drivesPerPeer -}}
+{{- /* The schema's minimums hold only for keys that are there: values stored by a chart
+       version without distributed mode, reused with --reuse-values, have no cluster.* at all. */ -}}
+{{- if or (lt $peers 4) (lt $drives 1) -}}
+{{-   fail (printf "cluster.peers (%d) must be at least 4 and cluster.drivesPerPeer (%d) at least 1; a release upgraded with --reuse-values from a chart version without distributed mode has neither, so pass the chart's values (-f) instead" $peers $drives) -}}
+{{- end -}}
 {{- $paths = .Values.persistence.volumePaths -}}
 {{- /* RustFS refuses two drives on one physical disk (RUSTFS_UNSAFE_BYPASS_DISK_CHECK aside,
        which is for tests), and a peer's named volumes all live on its node's Docker disk,
@@ -173,7 +183,10 @@
 {{-   range $i, $e := $paths -}}
 {{-     $raw := ternary (list $e) $e (kindIs "string" $e) -}}
 {{-     $l := list -}}
-{{-     range $raw }}{{ $l = append $l (clean .) }}{{ end -}}
+{{-     range $raw }}
+{{-       if regexMatch "[\\r\\n]" . }}{{ fail (printf "persistence.volumePaths entry %d (peer %d) must hold one-line paths: a line break would add keys to the service" $i (add1 $i)) }}{{ end }}
+{{-       $l = append $l (clean .) }}
+{{-     end -}}
 {{-     if ne (len $l) $drives -}}
 {{-       fail (printf "persistence.volumePaths entry %d (peer %d) has %d paths but cluster.drivesPerPeer is %d" $i (add1 $i) (len $l) $drives) -}}
 {{-     end -}}
@@ -561,7 +574,8 @@ services:
 
   # An OpenTelemetry Collector: RustFS, every peer of it, pushes OTLP/HTTP to it on
   # network.name (port 4318), and Prometheus scrapes the same metrics from it on
-  # metrics.network (port 8889), each peer's series under its own `server` label. RustFS
+  # metrics.network (port 8889), each peer's process and drive series under its own `server`
+  # label. RustFS
   # itself never joins metrics.network. The image has no shell, so there is no healthcheck;
   # a collector that stops answering is prometheus-stack's TargetDown. Its configuration is
   # an environment variable, read by the collector's env provider. Anything on either
