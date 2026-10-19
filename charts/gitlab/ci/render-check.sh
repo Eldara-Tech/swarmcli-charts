@@ -11,7 +11,8 @@
 #      silently mangle GitLab's configuration;
 #   2. the settings that make GitLab boot at all behind a proxy are present in EVERY render
 #      (letsencrypt off above all: left on, its ACME challenge fails and reconfigure with it);
-#   3. external_url matches the exposure mode, including the published port;
+#   3. external_url matches the exposure mode, including the published port, and its host is
+#      not the container hostname (which Docker maps to the task's own IP in /etc/hosts);
 #   4. exposure.mode / ssh.mode render the edge surface they promise, and the SSH port GitLab
 #      ADVERTISES tracks the port actually routed;
 #   5. persistence toggles the three volumes and the node pin together;
@@ -74,6 +75,11 @@ case "$case" in
   *)
     [ "$url" = "https://gitlab.example.com" ] || note "$case: external_url is '$url', expected https://gitlab.example.com" ;;
 esac
+# Docker writes the hostname into the container's /etc/hosts against the task's own IP, so
+# GitLab's calls to its own URL (KAS, webhooks) would hit a port nginx does not serve (#297).
+urlhost="$(sed -E 's#^[a-z]+://##; s#:[0-9]+$##' <<<"$url")"
+[ "$(yq -r '.services.gitlab.hostname // ""' "$out")" != "$urlhost" ] \
+  || note "the container hostname is external_url's host '$urlhost' — inside the container it resolves to the task itself"
 
 # 4a. exposure.mode: Traefik labels XOR a published HTTP port XOR neither.
 http_ports="$(yq -r '[.services.gitlab.ports // [] | .[] | select(.target == 80)] | length' "$out")"

@@ -1,0 +1,554 @@
+# promtool unit tests for the rustfs-distributed group of monitoring/rustfs-rules.yml, which
+# the chart ships for operators to load into their Prometheus but does not deploy itself.
+# ci/e2e-check-distributed.sh runs them with a pinned prom/prometheus image's promtool in the
+# metrics case; ci/rustfs-rules-test.yml covers the standalone group. Generated once by a
+# script and edited by hand since; the series are what four 1-drive peers push, with the
+# labels the collector and prometheus-stack's discovery give them.
+#
+# One release per failure. Three must raise nothing: `ok` is a healthy cluster under load;
+# `start` is a cluster forming, whose peers first report 2, then 3, then 4 drives online and
+# one write-health 0 before the set is writable. `single` is a standalone release, whose one
+# drive sits at its own write quorum and is offline, under the standalone job: the
+# distributed group selects none of its series, and only the standalone group's alerts fire
+# for it (its drive offline, critical, and not reporting, since it pushes no uptime here).
+#
+# A peer that stops (`onedown`, `twodown`, `threedown` stop peers at 5m) keeps its last
+# healthy values in the collector for 5 minutes: the rules must read the worst view.
+rule_files:
+  - ../monitoring/rustfs-rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      # Every release's collector answers throughout.
+      - series: 'up{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok"}'
+        values: '1x34'
+      - series: 'up{job="start_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="start"}'
+        values: '1x34'
+      - series: 'up{job="onedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="onedown"}'
+        values: '1x34'
+      - series: 'up{job="twodown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="twodown"}'
+        values: '1x34'
+      - series: 'up{job="threedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="threedown"}'
+        values: '1x34'
+      - series: 'up{job="silent_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="silent"}'
+        values: '1x34'
+      - series: 'up{job="errors_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="errors"}'
+        values: '1x34'
+      - series: 'up{job="full_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="full"}'
+        values: '1x34'
+      - series: 'up{job="ioerr_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ioerr"}'
+        values: '1x34'
+      - series: 'up{job="single_rustfs-metrics",instance="10.0.9.5:8889",stack="single"}'
+        values: '1x34'
+
+      # ok: healthy under load, 1% of it 5xx.
+      - series: 'rustfs_cluster_erasure_set_online_drives_count{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="ok-rustfs-1:9000",pool_id="0",set_id="0"}'
+        values: '4x34'
+      - series: 'rustfs_cluster_erasure_set_write_quorum{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="ok-rustfs-1:9000",pool_id="0",set_id="0"}'
+        values: '3x34'
+      - series: 'rustfs_cluster_erasure_set_write_health{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="ok-rustfs-1:9000",pool_id="0",set_id="0"}'
+        values: '1x34'
+      - series: 'rustfs_cluster_erasure_set_read_health{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="ok-rustfs-1:9000",pool_id="0",set_id="0"}'
+        values: '1x34'
+      - series: 'rustfs_cluster_health_drives_offline_count{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="ok-rustfs-1:9000"}'
+        values: '0x34'
+      - series: 'rustfs_system_process_uptime_seconds{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.3",server="ok-rustfs-1:9000"}'
+        values: '600+60x34'
+      - series: 'rustfs_cluster_erasure_set_online_drives_count{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.4",collection_scope="cluster",observer="ok-rustfs-2:9000",pool_id="0",set_id="0"}'
+        values: '4x34'
+      - series: 'rustfs_cluster_erasure_set_write_quorum{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.4",collection_scope="cluster",observer="ok-rustfs-2:9000",pool_id="0",set_id="0"}'
+        values: '3x34'
+      - series: 'rustfs_cluster_erasure_set_write_health{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.4",collection_scope="cluster",observer="ok-rustfs-2:9000",pool_id="0",set_id="0"}'
+        values: '1x34'
+      - series: 'rustfs_cluster_erasure_set_read_health{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.4",collection_scope="cluster",observer="ok-rustfs-2:9000",pool_id="0",set_id="0"}'
+        values: '1x34'
+      - series: 'rustfs_cluster_health_drives_offline_count{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.4",collection_scope="cluster",observer="ok-rustfs-2:9000"}'
+        values: '0x34'
+      - series: 'rustfs_system_process_uptime_seconds{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.4",server="ok-rustfs-2:9000"}'
+        values: '600+60x34'
+      - series: 'rustfs_cluster_erasure_set_online_drives_count{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.5",collection_scope="cluster",observer="ok-rustfs-3:9000",pool_id="0",set_id="0"}'
+        values: '4x34'
+      - series: 'rustfs_cluster_erasure_set_write_quorum{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.5",collection_scope="cluster",observer="ok-rustfs-3:9000",pool_id="0",set_id="0"}'
+        values: '3x34'
+      - series: 'rustfs_cluster_erasure_set_write_health{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.5",collection_scope="cluster",observer="ok-rustfs-3:9000",pool_id="0",set_id="0"}'
+        values: '1x34'
+      - series: 'rustfs_cluster_erasure_set_read_health{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.5",collection_scope="cluster",observer="ok-rustfs-3:9000",pool_id="0",set_id="0"}'
+        values: '1x34'
+      - series: 'rustfs_cluster_health_drives_offline_count{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.5",collection_scope="cluster",observer="ok-rustfs-3:9000"}'
+        values: '0x34'
+      - series: 'rustfs_system_process_uptime_seconds{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.5",server="ok-rustfs-3:9000"}'
+        values: '600+60x34'
+      - series: 'rustfs_cluster_erasure_set_online_drives_count{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.6",collection_scope="cluster",observer="ok-rustfs-4:9000",pool_id="0",set_id="0"}'
+        values: '4x34'
+      - series: 'rustfs_cluster_erasure_set_write_quorum{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.6",collection_scope="cluster",observer="ok-rustfs-4:9000",pool_id="0",set_id="0"}'
+        values: '3x34'
+      - series: 'rustfs_cluster_erasure_set_write_health{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.6",collection_scope="cluster",observer="ok-rustfs-4:9000",pool_id="0",set_id="0"}'
+        values: '1x34'
+      - series: 'rustfs_cluster_erasure_set_read_health{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.6",collection_scope="cluster",observer="ok-rustfs-4:9000",pool_id="0",set_id="0"}'
+        values: '1x34'
+      - series: 'rustfs_cluster_health_drives_offline_count{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.6",collection_scope="cluster",observer="ok-rustfs-4:9000"}'
+        values: '0x34'
+      - series: 'rustfs_system_process_uptime_seconds{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.6",server="ok-rustfs-4:9000"}'
+        values: '600+60x34'
+      - series: 'rustfs_http_server_request_duration_seconds_count{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.3",status_class="2xx"}'
+        values: '0+90x34'
+      - series: 'rustfs_http_server_request_duration_seconds_count{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.3",status_class="4xx"}'
+        values: '0+9x34'
+      - series: 'rustfs_http_server_request_duration_seconds_count{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.3",status_class="5xx"}'
+        values: '0+1x34'
+      - series: 'rustfs_cluster_capacity_free_bytes{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="ok-rustfs-1:9000"}'
+        values: '50000000000x34'
+      - series: 'rustfs_cluster_capacity_usable_total_bytes{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="ok-rustfs-1:9000"}'
+        values: '100000000000x34'
+      - series: 'rustfs_system_drive_availability_errors_total{job="ok_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ok",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="local",drive="/data/rustfs0",observer="ok-rustfs-1:9000",server="ok-rustfs-1:9000"}'
+        values: '3x34'
+
+      # start: nothing for 2 minutes, then the set forming: 2, 3, then 4 drives online, the
+      # first write-health sample 0.
+      - series: 'rustfs_cluster_erasure_set_online_drives_count{job="start_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="start",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="start-rustfs-1:9000",pool_id="0",set_id="0"}'
+        values: '_x2 2 3 4x31'
+      - series: 'rustfs_cluster_erasure_set_write_quorum{job="start_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="start",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="start-rustfs-1:9000",pool_id="0",set_id="0"}'
+        values: '_x2 3x32'
+      - series: 'rustfs_cluster_erasure_set_write_health{job="start_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="start",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="start-rustfs-1:9000",pool_id="0",set_id="0"}'
+        values: '_x2 0 1x31'
+      - series: 'rustfs_cluster_erasure_set_read_health{job="start_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="start",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="start-rustfs-1:9000",pool_id="0",set_id="0"}'
+        values: '_x2 1x32'
+      - series: 'rustfs_cluster_health_drives_offline_count{job="start_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="start",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="start-rustfs-1:9000"}'
+        values: '_x2 2 1 0x31'
+      - series: 'rustfs_system_process_uptime_seconds{job="start_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="start",exported_job="RustFS",exported_instance="172.18.0.3",server="start-rustfs-1:9000"}'
+        values: '_x2 1+60x32'
+      - series: 'rustfs_cluster_erasure_set_online_drives_count{job="start_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="start",exported_job="RustFS",exported_instance="172.18.0.4",collection_scope="cluster",observer="start-rustfs-2:9000",pool_id="0",set_id="0"}'
+        values: '_x2 2 3 4x31'
+      - series: 'rustfs_cluster_erasure_set_write_quorum{job="start_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="start",exported_job="RustFS",exported_instance="172.18.0.4",collection_scope="cluster",observer="start-rustfs-2:9000",pool_id="0",set_id="0"}'
+        values: '_x2 3x32'
+      - series: 'rustfs_cluster_erasure_set_write_health{job="start_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="start",exported_job="RustFS",exported_instance="172.18.0.4",collection_scope="cluster",observer="start-rustfs-2:9000",pool_id="0",set_id="0"}'
+        values: '_x2 0 1x31'
+      - series: 'rustfs_cluster_erasure_set_read_health{job="start_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="start",exported_job="RustFS",exported_instance="172.18.0.4",collection_scope="cluster",observer="start-rustfs-2:9000",pool_id="0",set_id="0"}'
+        values: '_x2 1x32'
+      - series: 'rustfs_cluster_health_drives_offline_count{job="start_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="start",exported_job="RustFS",exported_instance="172.18.0.4",collection_scope="cluster",observer="start-rustfs-2:9000"}'
+        values: '_x2 2 1 0x31'
+      - series: 'rustfs_system_process_uptime_seconds{job="start_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="start",exported_job="RustFS",exported_instance="172.18.0.4",server="start-rustfs-2:9000"}'
+        values: '_x2 1+60x32'
+      - series: 'rustfs_cluster_erasure_set_online_drives_count{job="start_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="start",exported_job="RustFS",exported_instance="172.18.0.5",collection_scope="cluster",observer="start-rustfs-3:9000",pool_id="0",set_id="0"}'
+        values: '_x2 2 3 4x31'
+      - series: 'rustfs_cluster_erasure_set_write_quorum{job="start_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="start",exported_job="RustFS",exported_instance="172.18.0.5",collection_scope="cluster",observer="start-rustfs-3:9000",pool_id="0",set_id="0"}'
+        values: '_x2 3x32'
+      - series: 'rustfs_cluster_erasure_set_write_health{job="start_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="start",exported_job="RustFS",exported_instance="172.18.0.5",collection_scope="cluster",observer="start-rustfs-3:9000",pool_id="0",set_id="0"}'
+        values: '_x2 0 1x31'
+      - series: 'rustfs_cluster_erasure_set_read_health{job="start_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="start",exported_job="RustFS",exported_instance="172.18.0.5",collection_scope="cluster",observer="start-rustfs-3:9000",pool_id="0",set_id="0"}'
+        values: '_x2 1x32'
+      - series: 'rustfs_cluster_health_drives_offline_count{job="start_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="start",exported_job="RustFS",exported_instance="172.18.0.5",collection_scope="cluster",observer="start-rustfs-3:9000"}'
+        values: '_x2 2 1 0x31'
+      - series: 'rustfs_system_process_uptime_seconds{job="start_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="start",exported_job="RustFS",exported_instance="172.18.0.5",server="start-rustfs-3:9000"}'
+        values: '_x2 1+60x32'
+      - series: 'rustfs_cluster_erasure_set_online_drives_count{job="start_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="start",exported_job="RustFS",exported_instance="172.18.0.6",collection_scope="cluster",observer="start-rustfs-4:9000",pool_id="0",set_id="0"}'
+        values: '_x2 2 3 4x31'
+      - series: 'rustfs_cluster_erasure_set_write_quorum{job="start_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="start",exported_job="RustFS",exported_instance="172.18.0.6",collection_scope="cluster",observer="start-rustfs-4:9000",pool_id="0",set_id="0"}'
+        values: '_x2 3x32'
+      - series: 'rustfs_cluster_erasure_set_write_health{job="start_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="start",exported_job="RustFS",exported_instance="172.18.0.6",collection_scope="cluster",observer="start-rustfs-4:9000",pool_id="0",set_id="0"}'
+        values: '_x2 0 1x31'
+      - series: 'rustfs_cluster_erasure_set_read_health{job="start_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="start",exported_job="RustFS",exported_instance="172.18.0.6",collection_scope="cluster",observer="start-rustfs-4:9000",pool_id="0",set_id="0"}'
+        values: '_x2 1x32'
+      - series: 'rustfs_cluster_health_drives_offline_count{job="start_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="start",exported_job="RustFS",exported_instance="172.18.0.6",collection_scope="cluster",observer="start-rustfs-4:9000"}'
+        values: '_x2 2 1 0x31'
+      - series: 'rustfs_system_process_uptime_seconds{job="start_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="start",exported_job="RustFS",exported_instance="172.18.0.6",server="start-rustfs-4:9000"}'
+        values: '_x2 1+60x32'
+
+      # single: a single-node rustfs release under its own chart's job. Its one drive is its
+      # whole set, at its own write quorum, and offline.
+      - series: 'rustfs_cluster_erasure_set_online_drives_count{job="single_rustfs-metrics",instance="10.0.9.5:8889",stack="single",exported_job="RustFS",collection_scope="cluster",observer=":::9000",pool_id="0",set_id="0"}'
+        values: '1x34'
+      - series: 'rustfs_cluster_erasure_set_write_quorum{job="single_rustfs-metrics",instance="10.0.9.5:8889",stack="single",exported_job="RustFS",collection_scope="cluster",observer=":::9000",pool_id="0",set_id="0"}'
+        values: '1x34'
+      - series: 'rustfs_cluster_health_drives_offline_count{job="single_rustfs-metrics",instance="10.0.9.5:8889",stack="single",exported_job="RustFS",collection_scope="cluster",observer=":::9000"}'
+        values: '1x34'
+
+      # onedown: peer 2 stops at 5m. The other three see 3 drives online from 6m: exactly the
+      # write quorum.
+      - series: 'rustfs_cluster_erasure_set_online_drives_count{job="onedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="onedown",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="onedown-rustfs-1:9000",pool_id="0",set_id="0"}'
+        values: '4x5 3x28'
+      - series: 'rustfs_cluster_erasure_set_write_quorum{job="onedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="onedown",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="onedown-rustfs-1:9000",pool_id="0",set_id="0"}'
+        values: '3x34'
+      - series: 'rustfs_cluster_erasure_set_write_health{job="onedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="onedown",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="onedown-rustfs-1:9000",pool_id="0",set_id="0"}'
+        values: '1x34'
+      - series: 'rustfs_cluster_erasure_set_read_health{job="onedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="onedown",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="onedown-rustfs-1:9000",pool_id="0",set_id="0"}'
+        values: '1x34'
+      - series: 'rustfs_cluster_health_drives_offline_count{job="onedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="onedown",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="onedown-rustfs-1:9000"}'
+        values: '0x5 1x28'
+      - series: 'rustfs_system_process_uptime_seconds{job="onedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="onedown",exported_job="RustFS",exported_instance="172.18.0.3",server="onedown-rustfs-1:9000"}'
+        values: '600+60x34'
+      - series: 'rustfs_cluster_erasure_set_online_drives_count{job="onedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="onedown",exported_job="RustFS",exported_instance="172.18.0.5",collection_scope="cluster",observer="onedown-rustfs-3:9000",pool_id="0",set_id="0"}'
+        values: '4x5 3x28'
+      - series: 'rustfs_cluster_erasure_set_write_quorum{job="onedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="onedown",exported_job="RustFS",exported_instance="172.18.0.5",collection_scope="cluster",observer="onedown-rustfs-3:9000",pool_id="0",set_id="0"}'
+        values: '3x34'
+      - series: 'rustfs_cluster_erasure_set_write_health{job="onedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="onedown",exported_job="RustFS",exported_instance="172.18.0.5",collection_scope="cluster",observer="onedown-rustfs-3:9000",pool_id="0",set_id="0"}'
+        values: '1x34'
+      - series: 'rustfs_cluster_erasure_set_read_health{job="onedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="onedown",exported_job="RustFS",exported_instance="172.18.0.5",collection_scope="cluster",observer="onedown-rustfs-3:9000",pool_id="0",set_id="0"}'
+        values: '1x34'
+      - series: 'rustfs_cluster_health_drives_offline_count{job="onedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="onedown",exported_job="RustFS",exported_instance="172.18.0.5",collection_scope="cluster",observer="onedown-rustfs-3:9000"}'
+        values: '0x5 1x28'
+      - series: 'rustfs_system_process_uptime_seconds{job="onedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="onedown",exported_job="RustFS",exported_instance="172.18.0.5",server="onedown-rustfs-3:9000"}'
+        values: '600+60x34'
+      - series: 'rustfs_cluster_erasure_set_online_drives_count{job="onedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="onedown",exported_job="RustFS",exported_instance="172.18.0.6",collection_scope="cluster",observer="onedown-rustfs-4:9000",pool_id="0",set_id="0"}'
+        values: '4x5 3x28'
+      - series: 'rustfs_cluster_erasure_set_write_quorum{job="onedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="onedown",exported_job="RustFS",exported_instance="172.18.0.6",collection_scope="cluster",observer="onedown-rustfs-4:9000",pool_id="0",set_id="0"}'
+        values: '3x34'
+      - series: 'rustfs_cluster_erasure_set_write_health{job="onedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="onedown",exported_job="RustFS",exported_instance="172.18.0.6",collection_scope="cluster",observer="onedown-rustfs-4:9000",pool_id="0",set_id="0"}'
+        values: '1x34'
+      - series: 'rustfs_cluster_erasure_set_read_health{job="onedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="onedown",exported_job="RustFS",exported_instance="172.18.0.6",collection_scope="cluster",observer="onedown-rustfs-4:9000",pool_id="0",set_id="0"}'
+        values: '1x34'
+      - series: 'rustfs_cluster_health_drives_offline_count{job="onedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="onedown",exported_job="RustFS",exported_instance="172.18.0.6",collection_scope="cluster",observer="onedown-rustfs-4:9000"}'
+        values: '0x5 1x28'
+      - series: 'rustfs_system_process_uptime_seconds{job="onedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="onedown",exported_job="RustFS",exported_instance="172.18.0.6",server="onedown-rustfs-4:9000"}'
+        values: '600+60x34'
+      - series: 'rustfs_cluster_erasure_set_online_drives_count{job="onedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="onedown",exported_job="RustFS",exported_instance="172.18.0.4",collection_scope="cluster",observer="onedown-rustfs-2:9000",pool_id="0",set_id="0"}'
+        values: '4x10 _x24'
+      - series: 'rustfs_cluster_erasure_set_write_quorum{job="onedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="onedown",exported_job="RustFS",exported_instance="172.18.0.4",collection_scope="cluster",observer="onedown-rustfs-2:9000",pool_id="0",set_id="0"}'
+        values: '3x10 _x24'
+      - series: 'rustfs_cluster_erasure_set_write_health{job="onedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="onedown",exported_job="RustFS",exported_instance="172.18.0.4",collection_scope="cluster",observer="onedown-rustfs-2:9000",pool_id="0",set_id="0"}'
+        values: '1x10 _x24'
+      - series: 'rustfs_cluster_erasure_set_read_health{job="onedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="onedown",exported_job="RustFS",exported_instance="172.18.0.4",collection_scope="cluster",observer="onedown-rustfs-2:9000",pool_id="0",set_id="0"}'
+        values: '1x10 _x24'
+      - series: 'rustfs_cluster_health_drives_offline_count{job="onedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="onedown",exported_job="RustFS",exported_instance="172.18.0.4",collection_scope="cluster",observer="onedown-rustfs-2:9000"}'
+        values: '0x10 _x24'
+      - series: 'rustfs_system_process_uptime_seconds{job="onedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="onedown",exported_job="RustFS",exported_instance="172.18.0.4",server="onedown-rustfs-2:9000"}'
+        values: '600+60x10 _x24'
+
+      # twodown: peers 2 and 3 stop at 5m. Peers 1 and 4 see 2 drives online: below the write
+      # quorum, at the read quorum.
+      - series: 'rustfs_cluster_erasure_set_online_drives_count{job="twodown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="twodown",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="twodown-rustfs-1:9000",pool_id="0",set_id="0"}'
+        values: '4x5 2x28'
+      - series: 'rustfs_cluster_erasure_set_write_quorum{job="twodown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="twodown",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="twodown-rustfs-1:9000",pool_id="0",set_id="0"}'
+        values: '3x34'
+      - series: 'rustfs_cluster_erasure_set_write_health{job="twodown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="twodown",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="twodown-rustfs-1:9000",pool_id="0",set_id="0"}'
+        values: '1x5 0x28'
+      - series: 'rustfs_cluster_erasure_set_read_health{job="twodown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="twodown",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="twodown-rustfs-1:9000",pool_id="0",set_id="0"}'
+        values: '1x34'
+      - series: 'rustfs_cluster_health_drives_offline_count{job="twodown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="twodown",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="twodown-rustfs-1:9000"}'
+        values: '0x5 2x28'
+      - series: 'rustfs_system_process_uptime_seconds{job="twodown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="twodown",exported_job="RustFS",exported_instance="172.18.0.3",server="twodown-rustfs-1:9000"}'
+        values: '600+60x34'
+      - series: 'rustfs_cluster_erasure_set_online_drives_count{job="twodown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="twodown",exported_job="RustFS",exported_instance="172.18.0.6",collection_scope="cluster",observer="twodown-rustfs-4:9000",pool_id="0",set_id="0"}'
+        values: '4x5 2x28'
+      - series: 'rustfs_cluster_erasure_set_write_quorum{job="twodown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="twodown",exported_job="RustFS",exported_instance="172.18.0.6",collection_scope="cluster",observer="twodown-rustfs-4:9000",pool_id="0",set_id="0"}'
+        values: '3x34'
+      - series: 'rustfs_cluster_erasure_set_write_health{job="twodown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="twodown",exported_job="RustFS",exported_instance="172.18.0.6",collection_scope="cluster",observer="twodown-rustfs-4:9000",pool_id="0",set_id="0"}'
+        values: '1x5 0x28'
+      - series: 'rustfs_cluster_erasure_set_read_health{job="twodown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="twodown",exported_job="RustFS",exported_instance="172.18.0.6",collection_scope="cluster",observer="twodown-rustfs-4:9000",pool_id="0",set_id="0"}'
+        values: '1x34'
+      - series: 'rustfs_cluster_health_drives_offline_count{job="twodown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="twodown",exported_job="RustFS",exported_instance="172.18.0.6",collection_scope="cluster",observer="twodown-rustfs-4:9000"}'
+        values: '0x5 2x28'
+      - series: 'rustfs_system_process_uptime_seconds{job="twodown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="twodown",exported_job="RustFS",exported_instance="172.18.0.6",server="twodown-rustfs-4:9000"}'
+        values: '600+60x34'
+      - series: 'rustfs_cluster_erasure_set_online_drives_count{job="twodown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="twodown",exported_job="RustFS",exported_instance="172.18.0.4",collection_scope="cluster",observer="twodown-rustfs-2:9000",pool_id="0",set_id="0"}'
+        values: '4x10 _x24'
+      - series: 'rustfs_cluster_erasure_set_write_quorum{job="twodown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="twodown",exported_job="RustFS",exported_instance="172.18.0.4",collection_scope="cluster",observer="twodown-rustfs-2:9000",pool_id="0",set_id="0"}'
+        values: '3x10 _x24'
+      - series: 'rustfs_cluster_erasure_set_write_health{job="twodown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="twodown",exported_job="RustFS",exported_instance="172.18.0.4",collection_scope="cluster",observer="twodown-rustfs-2:9000",pool_id="0",set_id="0"}'
+        values: '1x10 _x24'
+      - series: 'rustfs_cluster_erasure_set_read_health{job="twodown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="twodown",exported_job="RustFS",exported_instance="172.18.0.4",collection_scope="cluster",observer="twodown-rustfs-2:9000",pool_id="0",set_id="0"}'
+        values: '1x10 _x24'
+      - series: 'rustfs_cluster_health_drives_offline_count{job="twodown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="twodown",exported_job="RustFS",exported_instance="172.18.0.4",collection_scope="cluster",observer="twodown-rustfs-2:9000"}'
+        values: '0x10 _x24'
+      - series: 'rustfs_system_process_uptime_seconds{job="twodown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="twodown",exported_job="RustFS",exported_instance="172.18.0.4",server="twodown-rustfs-2:9000"}'
+        values: '600+60x10 _x24'
+      - series: 'rustfs_cluster_erasure_set_online_drives_count{job="twodown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="twodown",exported_job="RustFS",exported_instance="172.18.0.5",collection_scope="cluster",observer="twodown-rustfs-3:9000",pool_id="0",set_id="0"}'
+        values: '4x10 _x24'
+      - series: 'rustfs_cluster_erasure_set_write_quorum{job="twodown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="twodown",exported_job="RustFS",exported_instance="172.18.0.5",collection_scope="cluster",observer="twodown-rustfs-3:9000",pool_id="0",set_id="0"}'
+        values: '3x10 _x24'
+      - series: 'rustfs_cluster_erasure_set_write_health{job="twodown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="twodown",exported_job="RustFS",exported_instance="172.18.0.5",collection_scope="cluster",observer="twodown-rustfs-3:9000",pool_id="0",set_id="0"}'
+        values: '1x10 _x24'
+      - series: 'rustfs_cluster_erasure_set_read_health{job="twodown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="twodown",exported_job="RustFS",exported_instance="172.18.0.5",collection_scope="cluster",observer="twodown-rustfs-3:9000",pool_id="0",set_id="0"}'
+        values: '1x10 _x24'
+      - series: 'rustfs_cluster_health_drives_offline_count{job="twodown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="twodown",exported_job="RustFS",exported_instance="172.18.0.5",collection_scope="cluster",observer="twodown-rustfs-3:9000"}'
+        values: '0x10 _x24'
+      - series: 'rustfs_system_process_uptime_seconds{job="twodown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="twodown",exported_job="RustFS",exported_instance="172.18.0.5",server="twodown-rustfs-3:9000"}'
+        values: '600+60x10 _x24'
+
+      # threedown: peers 2, 3 and 4 stop at 5m. Peer 1 sees its own drive alone.
+      - series: 'rustfs_cluster_erasure_set_online_drives_count{job="threedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="threedown",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="threedown-rustfs-1:9000",pool_id="0",set_id="0"}'
+        values: '4x5 1x28'
+      - series: 'rustfs_cluster_erasure_set_write_quorum{job="threedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="threedown",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="threedown-rustfs-1:9000",pool_id="0",set_id="0"}'
+        values: '3x34'
+      - series: 'rustfs_cluster_erasure_set_write_health{job="threedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="threedown",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="threedown-rustfs-1:9000",pool_id="0",set_id="0"}'
+        values: '1x5 0x28'
+      - series: 'rustfs_cluster_erasure_set_read_health{job="threedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="threedown",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="threedown-rustfs-1:9000",pool_id="0",set_id="0"}'
+        values: '1x5 0x28'
+      - series: 'rustfs_cluster_health_drives_offline_count{job="threedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="threedown",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="threedown-rustfs-1:9000"}'
+        values: '0x5 3x28'
+      - series: 'rustfs_system_process_uptime_seconds{job="threedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="threedown",exported_job="RustFS",exported_instance="172.18.0.3",server="threedown-rustfs-1:9000"}'
+        values: '600+60x34'
+      - series: 'rustfs_cluster_erasure_set_online_drives_count{job="threedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="threedown",exported_job="RustFS",exported_instance="172.18.0.4",collection_scope="cluster",observer="threedown-rustfs-2:9000",pool_id="0",set_id="0"}'
+        values: '4x10 _x24'
+      - series: 'rustfs_cluster_erasure_set_write_quorum{job="threedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="threedown",exported_job="RustFS",exported_instance="172.18.0.4",collection_scope="cluster",observer="threedown-rustfs-2:9000",pool_id="0",set_id="0"}'
+        values: '3x10 _x24'
+      - series: 'rustfs_cluster_erasure_set_write_health{job="threedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="threedown",exported_job="RustFS",exported_instance="172.18.0.4",collection_scope="cluster",observer="threedown-rustfs-2:9000",pool_id="0",set_id="0"}'
+        values: '1x10 _x24'
+      - series: 'rustfs_cluster_erasure_set_read_health{job="threedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="threedown",exported_job="RustFS",exported_instance="172.18.0.4",collection_scope="cluster",observer="threedown-rustfs-2:9000",pool_id="0",set_id="0"}'
+        values: '1x10 _x24'
+      - series: 'rustfs_cluster_health_drives_offline_count{job="threedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="threedown",exported_job="RustFS",exported_instance="172.18.0.4",collection_scope="cluster",observer="threedown-rustfs-2:9000"}'
+        values: '0x10 _x24'
+      - series: 'rustfs_system_process_uptime_seconds{job="threedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="threedown",exported_job="RustFS",exported_instance="172.18.0.4",server="threedown-rustfs-2:9000"}'
+        values: '600+60x10 _x24'
+      - series: 'rustfs_cluster_erasure_set_online_drives_count{job="threedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="threedown",exported_job="RustFS",exported_instance="172.18.0.5",collection_scope="cluster",observer="threedown-rustfs-3:9000",pool_id="0",set_id="0"}'
+        values: '4x10 _x24'
+      - series: 'rustfs_cluster_erasure_set_write_quorum{job="threedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="threedown",exported_job="RustFS",exported_instance="172.18.0.5",collection_scope="cluster",observer="threedown-rustfs-3:9000",pool_id="0",set_id="0"}'
+        values: '3x10 _x24'
+      - series: 'rustfs_cluster_erasure_set_write_health{job="threedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="threedown",exported_job="RustFS",exported_instance="172.18.0.5",collection_scope="cluster",observer="threedown-rustfs-3:9000",pool_id="0",set_id="0"}'
+        values: '1x10 _x24'
+      - series: 'rustfs_cluster_erasure_set_read_health{job="threedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="threedown",exported_job="RustFS",exported_instance="172.18.0.5",collection_scope="cluster",observer="threedown-rustfs-3:9000",pool_id="0",set_id="0"}'
+        values: '1x10 _x24'
+      - series: 'rustfs_cluster_health_drives_offline_count{job="threedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="threedown",exported_job="RustFS",exported_instance="172.18.0.5",collection_scope="cluster",observer="threedown-rustfs-3:9000"}'
+        values: '0x10 _x24'
+      - series: 'rustfs_system_process_uptime_seconds{job="threedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="threedown",exported_job="RustFS",exported_instance="172.18.0.5",server="threedown-rustfs-3:9000"}'
+        values: '600+60x10 _x24'
+      - series: 'rustfs_cluster_erasure_set_online_drives_count{job="threedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="threedown",exported_job="RustFS",exported_instance="172.18.0.6",collection_scope="cluster",observer="threedown-rustfs-4:9000",pool_id="0",set_id="0"}'
+        values: '4x10 _x24'
+      - series: 'rustfs_cluster_erasure_set_write_quorum{job="threedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="threedown",exported_job="RustFS",exported_instance="172.18.0.6",collection_scope="cluster",observer="threedown-rustfs-4:9000",pool_id="0",set_id="0"}'
+        values: '3x10 _x24'
+      - series: 'rustfs_cluster_erasure_set_write_health{job="threedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="threedown",exported_job="RustFS",exported_instance="172.18.0.6",collection_scope="cluster",observer="threedown-rustfs-4:9000",pool_id="0",set_id="0"}'
+        values: '1x10 _x24'
+      - series: 'rustfs_cluster_erasure_set_read_health{job="threedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="threedown",exported_job="RustFS",exported_instance="172.18.0.6",collection_scope="cluster",observer="threedown-rustfs-4:9000",pool_id="0",set_id="0"}'
+        values: '1x10 _x24'
+      - series: 'rustfs_cluster_health_drives_offline_count{job="threedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="threedown",exported_job="RustFS",exported_instance="172.18.0.6",collection_scope="cluster",observer="threedown-rustfs-4:9000"}'
+        values: '0x10 _x24'
+      - series: 'rustfs_system_process_uptime_seconds{job="threedown_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="threedown",exported_job="RustFS",exported_instance="172.18.0.6",server="threedown-rustfs-4:9000"}'
+        values: '600+60x10 _x24'
+
+      # silent: every peer stops pushing at 5m, the collector keeps answering.
+      - series: 'rustfs_system_process_uptime_seconds{job="silent_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="silent",exported_job="RustFS",exported_instance="172.18.0.3",server="silent-rustfs-1:9000"}'
+        values: '600+60x5'
+      - series: 'rustfs_system_process_uptime_seconds{job="silent_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="silent",exported_job="RustFS",exported_instance="172.18.0.4",server="silent-rustfs-2:9000"}'
+        values: '600+60x5'
+      - series: 'rustfs_system_process_uptime_seconds{job="silent_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="silent",exported_job="RustFS",exported_instance="172.18.0.5",server="silent-rustfs-3:9000"}'
+        values: '600+60x5'
+      - series: 'rustfs_system_process_uptime_seconds{job="silent_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="silent",exported_job="RustFS",exported_instance="172.18.0.6",server="silent-rustfs-4:9000"}'
+        values: '600+60x5'
+
+      # errors: 10% of what the peers answer is 5xx.
+      - series: 'rustfs_system_process_uptime_seconds{job="errors_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="errors",exported_job="RustFS",exported_instance="172.18.0.3",server="errors-rustfs-1:9000"}'
+        values: '600+60x34'
+      - series: 'rustfs_http_server_request_duration_seconds_count{job="errors_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="errors",exported_job="RustFS",exported_instance="172.18.0.3",status_class="2xx"}'
+        values: '0+90x34'
+      - series: 'rustfs_http_server_request_duration_seconds_count{job="errors_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="errors",exported_job="RustFS",exported_instance="172.18.0.3",status_class="5xx"}'
+        values: '0+10x34'
+
+      # full: 5% free, as the peer that sees the least free space reports it.
+      - series: 'rustfs_system_process_uptime_seconds{job="full_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="full",exported_job="RustFS",exported_instance="172.18.0.3",server="full-rustfs-1:9000"}'
+        values: '600+60x34'
+      - series: 'rustfs_cluster_capacity_free_bytes{job="full_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="full",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="full-rustfs-1:9000"}'
+        values: '5000000000x34'
+      - series: 'rustfs_cluster_capacity_free_bytes{job="full_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="full",exported_job="RustFS",exported_instance="172.18.0.4",collection_scope="cluster",observer="full-rustfs-2:9000"}'
+        values: '6000000000x34'
+      - series: 'rustfs_cluster_capacity_usable_total_bytes{job="full_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="full",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="cluster",observer="full-rustfs-1:9000"}'
+        values: '100000000000x34'
+      - series: 'rustfs_cluster_capacity_usable_total_bytes{job="full_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="full",exported_job="RustFS",exported_instance="172.18.0.4",collection_scope="cluster",observer="full-rustfs-2:9000"}'
+        values: '100000000000x34'
+
+      # ioerr: peer 3 counts four drive errors at 15m; peer 1 none.
+      - series: 'rustfs_system_process_uptime_seconds{job="ioerr_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ioerr",exported_job="RustFS",exported_instance="172.18.0.3",server="ioerr-rustfs-1:9000"}'
+        values: '600+60x34'
+      - series: 'rustfs_system_drive_availability_errors_total{job="ioerr_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ioerr",exported_job="RustFS",exported_instance="172.18.0.5",collection_scope="local",drive="/data/rustfs0",observer="ioerr-rustfs-3:9000",server="ioerr-rustfs-3:9000"}'
+        values: '0x14 4x19'
+      - series: 'rustfs_system_drive_availability_errors_total{job="ioerr_rustfs-distributed-metrics",instance="10.0.9.5:8889",stack="ioerr",exported_job="RustFS",exported_instance="172.18.0.3",collection_scope="local",drive="/data/rustfs0",observer="ioerr-rustfs-1:9000",server="ioerr-rustfs-1:9000"}'
+        values: '0x34'
+
+    alert_rule_test:
+      # Before any `for` has run out, nothing fires: start's forming set included.
+      - eval_time: 7m
+        alertname: RustFSWriteQuorumLost
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: RustFSReadQuorumLost
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: RustFSWriteQuorumAtRisk
+        exp_alerts: []
+      # single's offline drive is the standalone group's critical, from 5m.
+      - eval_time: 10m
+        alertname: RustFSDriveOffline
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: single_rustfs-metrics
+              stack: single
+            exp_annotations:
+              summary: 'RustFS single has lost its drive'
+              description: 'RustFS single has reported its drive offline for 5 minutes; it refuses every read and write until the drive is back.'
+
+      # twodown and threedown below the write quorum, not onedown at it.
+      - eval_time: 9m
+        alertname: RustFSWriteQuorumLost
+        exp_alerts:
+          - exp_labels:
+              mode: distributed
+              severity: critical
+              job: twodown_rustfs-distributed-metrics
+              stack: twodown
+              pool_id: "0"
+              set_id: "0"
+            exp_annotations:
+              summary: 'RustFS twodown refuses writes'
+              description: 'Erasure set 0 of pool 0 in RustFS twodown has had fewer drives online than its write quorum for 2 minutes; every write to it fails until enough peers are back.'
+          - exp_labels:
+              mode: distributed
+              severity: critical
+              job: threedown_rustfs-distributed-metrics
+              stack: threedown
+              pool_id: "0"
+              set_id: "0"
+            exp_annotations:
+              summary: 'RustFS threedown refuses writes'
+              description: 'Erasure set 0 of pool 0 in RustFS threedown has had fewer drives online than its write quorum for 2 minutes; every write to it fails until enough peers are back.'
+      # Only threedown below the read quorum.
+      - eval_time: 9m
+        alertname: RustFSReadQuorumLost
+        exp_alerts:
+          - exp_labels:
+              mode: distributed
+              severity: critical
+              job: threedown_rustfs-distributed-metrics
+              stack: threedown
+              pool_id: "0"
+              set_id: "0"
+            exp_annotations:
+              summary: 'RustFS threedown cannot serve reads'
+              description: 'Erasure set 0 of pool 0 in RustFS threedown has had fewer drives online than its read quorum for 2 minutes; objects in it cannot be read until enough peers are back.'
+      # Only onedown at the write quorum, while its stopped peer's stale healthy view is still
+      # in the collector (until 10m) and after; not single's one drive, under the other job.
+      - eval_time: 12m
+        alertname: RustFSWriteQuorumAtRisk
+        exp_alerts:
+          - exp_labels:
+              mode: distributed
+              severity: critical
+              job: onedown_rustfs-distributed-metrics
+              stack: onedown
+              pool_id: "0"
+              set_id: "0"
+            exp_annotations:
+              summary: 'RustFS onedown is one failure from refusing writes'
+              description: 'Erasure set 0 of pool 0 in RustFS onedown has had exactly its write quorum of drives online for 5 minutes: losing one more drive or peer stops every write to it.'
+      - eval_time: 20m
+        alertname: RustFSWriteQuorumAtRisk
+        exp_alerts:
+          - exp_labels:
+              mode: distributed
+              severity: critical
+              job: onedown_rustfs-distributed-metrics
+              stack: onedown
+              pool_id: "0"
+              set_id: "0"
+            exp_annotations:
+              summary: 'RustFS onedown is one failure from refusing writes'
+              description: 'Erasure set 0 of pool 0 in RustFS onedown has had exactly its write quorum of drives online for 5 minutes: losing one more drive or peer stops every write to it.'
+      # Every release with a peer down, as a warning; single's offline drive only as the
+      # standalone group's critical.
+      - eval_time: 12m
+        alertname: RustFSDriveOffline
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: single_rustfs-metrics
+              stack: single
+            exp_annotations:
+              summary: 'RustFS single has lost its drive'
+              description: 'RustFS single has reported its drive offline for 5 minutes; it refuses every read and write until the drive is back.'
+          - exp_labels:
+              mode: distributed
+              severity: warning
+              job: onedown_rustfs-distributed-metrics
+              stack: onedown
+            exp_annotations:
+              summary: 'RustFS onedown has drives offline'
+              description: 'RustFS onedown has had drives offline for 5 minutes, 1 at the last count: a peer is down or a drive has failed (docker stack ps onedown).'
+          - exp_labels:
+              mode: distributed
+              severity: warning
+              job: twodown_rustfs-distributed-metrics
+              stack: twodown
+            exp_annotations:
+              summary: 'RustFS twodown has drives offline'
+              description: 'RustFS twodown has had drives offline for 5 minutes, 2 at the last count: a peer is down or a drive has failed (docker stack ps twodown).'
+          - exp_labels:
+              mode: distributed
+              severity: warning
+              job: threedown_rustfs-distributed-metrics
+              stack: threedown
+            exp_annotations:
+              summary: 'RustFS threedown has drives offline'
+              description: 'RustFS threedown has had drives offline for 5 minutes, 3 at the last count: a peer is down or a drive has failed (docker stack ps threedown).'
+
+      # Only silent, and not before its series have been gone for 10 minutes: the last
+      # sample at 5m is still in the 5-minute lookback until 10m. single is the standalone
+      # group's, which sees no uptime from it at all.
+      - eval_time: 19m
+        alertname: RustFSNotReporting
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: single_rustfs-metrics
+              stack: single
+            exp_annotations:
+              summary: 'RustFS single has stopped reporting metrics'
+              description: 'single_rustfs-metrics is up but has received no metrics from RustFS for 15 minutes: the RustFS task is down or restarting, or its OTLP export failed (docker service logs single_rustfs).'
+      - eval_time: 21m
+        alertname: RustFSNotReporting
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: single_rustfs-metrics
+              stack: single
+            exp_annotations:
+              summary: 'RustFS single has stopped reporting metrics'
+              description: 'single_rustfs-metrics is up but has received no metrics from RustFS for 15 minutes: the RustFS task is down or restarting, or its OTLP export failed (docker service logs single_rustfs).'
+          - exp_labels:
+              mode: distributed
+              severity: critical
+              job: silent_rustfs-distributed-metrics
+              stack: silent
+            exp_annotations:
+              summary: 'RustFS silent has stopped reporting metrics'
+              description: 'silent_rustfs-distributed-metrics is up but has received no metrics from any RustFS peer for 15 minutes: every peer is down or restarting, or their OTLP export failed (docker service logs silent_rustfs-1).'
+      # Not ok's 1%.
+      - eval_time: 12m
+        alertname: RustFSS3ServerErrors
+        exp_alerts:
+          - exp_labels:
+              mode: distributed
+              severity: critical
+              job: errors_rustfs-distributed-metrics
+              stack: errors
+            exp_annotations:
+              summary: 'RustFS errors is failing requests'
+              description: '10% of the requests RustFS errors answered in the last 5 minutes, health checks and console included, were 5xx.'
+      - eval_time: 17m
+        alertname: RustFSCapacityLow
+        exp_alerts:
+          - exp_labels:
+              mode: distributed
+              severity: warning
+              job: full_rustfs-distributed-metrics
+              stack: full
+            exp_annotations:
+              summary: 'RustFS full is running out of space'
+              description: 'RustFS full has 5% of its usable capacity free.'
+      # Peer 3 only, and not ok's errors from long ago; they stop counting once out of the window.
+      - eval_time: 20m
+        alertname: RustFSDriveIOErrors
+        exp_alerts:
+          - exp_labels:
+              mode: distributed
+              severity: warning
+              job: ioerr_rustfs-distributed-metrics
+              stack: ioerr
+              server: ioerr-rustfs-3:9000
+            exp_annotations:
+              summary: 'RustFS ioerr peer ioerr-rustfs-3:9000 is getting errors from its drives'
+              description: 'Peer ioerr-rustfs-3:9000 of RustFS ioerr counted 4 I/O errors or timeouts on its drives in the last 15 minutes.'
+      - eval_time: 31m
+        alertname: RustFSDriveIOErrors
+        exp_alerts: []

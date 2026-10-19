@@ -1,28 +1,60 @@
 # rustfs chart default values.
 #
-# RustFS as an S3-compatible object store: ONE service, one node, one drive (/data on a
-# node-local volume). That is the shape for a build cache, a backup target or an
-# application's blob store on a small swarm. A single drive has no erasure-coding
-# redundancy, and this chart does not run RustFS's distributed mode.
+# RustFS as an S3-compatible object store, in one of two modes:
 #
-# Two things drive the defaults:
+#   standalone  - (default) ONE service, one node, one drive (/data on a node-local
+#                 volume). That is the shape for a build cache, a backup target or an
+#                 application's blob store on a small swarm. A single drive has no
+#                 erasure-coding redundancy.
+#   distributed - objects erasure-coded across cluster.peers peers, each its own Swarm
+#                 service with one replica, its own node label and its own volume. With
+#                 the default 4 peers of one drive each, every object is split into 2 data
+#                 and 2 parity shards: reads survive 2 peers down, writes survive 1. The
+#                 peers roll one at a time on upgrade (swarmcli >= 2.2.0).
+#
+# Three things drive the defaults:
 #
 #   1. Credentials come from two external Swarm secrets, read by RustFS itself through
 #      RUSTFS_ACCESS_KEY_FILE / RUSTFS_SECRET_KEY_FILE. The container refuses to start
 #      when either is missing, empty, or RustFS's public default `rustfsadmin`.
 #   2. Only the S3 API listens by default. The web console is a second listener that
 #      serves the S3 and admin API as well, so it is opt-in (console.enabled).
+#   3. In distributed mode the peers dial each other at a per-peer network alias,
+#      <release>-rustfs-<n>, and every peer names itself by that alias
+#      (RUSTFS_LOCAL_ENDPOINT_HOST), so it opens its port without resolving the others.
+#      Swarm publishes a task in DNS only once its healthcheck passes, so a peer's
+#      healthcheck is /health/live, which answers without any peer (README § How the peers
+#      find each other).
 
 image:
   repository: rustfs/rustfs
   tag: ""  # defaults to appVersion from Chart.yaml
 
+# standalone or distributed, chosen at install. A single-drive store cannot become a
+# distributed one in place, so changing mode on an existing release does not convert it: the
+# new mode's services start empty beside the old mode's, which keep running (README §
+# Moving from standalone).
+mode: standalone
+
+# Distributed mode only: the shape of the cluster, fixed at install. RustFS records the
+# drive count and set width on every drive and refuses to start with others. More capacity
+# later means a second server pool, which this chart does not support yet (README § Sizing).
+cluster:
+  # Number of peers, one Swarm service each (rustfs-1 … rustfs-<peers>). At least 4, the
+  # minimum RustFS's multi-node guide gives (its code accepts fewer).
+  peers: 4
+  # Drives per peer. RustFS refuses two drives on one physical disk, and every Docker named
+  # volume on a node shares its disk, so more than 1 needs persistence.volumePaths with one
+  # host path per drive, each on a disk of its own.
+  drivesPerPeer: 1
+
 s3:
   # Port the S3 API listens on inside the container — the port other stacks dial on
-  # network.name, the Traefik load-balancer target and the published target.
+  # network.name, the port the peers dial each other on, the Traefik load-balancer target
+  # and the published target.
   port: 9000
-  # EXTERNAL Swarm secrets holding the root access key and secret key. Pre-create them;
-  # the chart never creates secrets:
+  # EXTERNAL Swarm secrets holding the root access key and secret key, shared by every
+  # peer. Pre-create them; the chart never creates secrets:
   #   printf '%s' 'cache-access-key' | docker secret create rustfs-access-key -
   #   openssl rand -base64 30 | tr -d '\n' | docker secret create rustfs-secret-key -
   accessKeySecret: rustfs-access-key
@@ -40,7 +72,7 @@ console:
   #   none      - (default) nowhere else: network.name, and exposure.network while the
   #               S3 API is traefik-routed.
   #   traefik   - Traefik deploy labels on exposure.network, routing console.ingress.host
-  #               to console.port.
+  #               to console.port (on every peer, in distributed mode).
   #   published - publish console.port on the Swarm as console.publish.port.
   exposure:
     mode: none
@@ -51,6 +83,8 @@ console:
     host: ""
     tls: true
   # Console published mode. mode: ingress (routing mesh) or host (the task's node only).
+  # Distributed mode needs host: every peer publishes the same number on its own node, and
+  # several services cannot each claim it on the routing mesh.
   publish:
     port: 9001
     mode: ingress
@@ -63,7 +97,7 @@ console:
     enabled: false
     # The provider's discovery document, e.g.
     # https://keycloak.example.com/realms/<realm>/.well-known/openid-configuration.
-    # RustFS reads it once, at start.
+    # RustFS reads it once, at start (every peer, in distributed mode).
     configUrl: ""
     # RustFS refuses to contact a provider that resolves to a private address (one on an
     # overlay such as network.name, or on a LAN) unless its origin is allow-listed. true
@@ -83,18 +117,25 @@ console:
     # The login button's label: "Login with <displayName>".
     displayName: SSO
 
-# Buckets created once the server is up, if they do not exist yet (an existing bucket
-# is left alone, so restarts are safe). Clients such as the GitLab Runner cache never
-# create their own bucket. S3 naming rules apply: 3-63 characters of a-z, 0-9, '.'
-# and '-', starting and ending with a letter or digit.
+# Buckets created once the store accepts writes, if they do not exist yet (an existing
+# bucket is left alone, so restarts are safe). Clients such as the GitLab Runner cache
+# never create their own bucket. In distributed mode peer 1 creates them and the cluster
+# has them on every peer. S3 naming rules apply: 3-63 characters of a-z, 0-9, '.' and
+# '-', starting and ending with a letter or digit.
 buckets: []
 
-# Persistence. Named volume at /data. enabled:false => ephemeral: every object is lost
-# when the task is replaced, which is useful for a smoke test and nothing else.
+# Persistence. Standalone: a named volume at /data. Distributed: one named volume per
+# peer, <volumePrefix>-<n>, mounted at /data, the drive /data/rustfs0 inside it.
+# enabled:false => ephemeral: standalone loses every object when the task is replaced; a
+# distributed peer whose task is replaced starts on an empty drive, which RustFS formats at
+# start and heals from the others, and losing more peers at once than the parity covers
+# loses data. For a smoke test and nothing else.
 persistence:
   enabled: true
+  # Standalone: the named volume.
   volumeName: rustfs-data
-  # Store the data under a host directory instead of Docker's managed volume storage.
+  # Standalone: store the data under a host directory instead of Docker's managed volume
+  # storage.
   # When set it TAKES PRECEDENCE over volumeName: /data is bind-mounted from this
   # absolute host path on the pinned node. It must already exist there and be owned by
   # uid/gid 10001 (RustFS runs as that user and cannot fix ownership itself):
@@ -102,21 +143,42 @@ persistence:
   # This is host-filesystem access, acknowledged via swarmcli-charts/allow:
   # "host-mount" in Chart.yaml; the default named-volume render needs no acknowledgment.
   volumePath: ""
-  # Node label pinning the service to the node carrying the data (Swarm volumes are
-  # node-local). Rendered as `node.labels.<nodeLabel> == true` while persistence is
-  # enabled, and dropped with it. Label exactly ONE node first:
+  # Standalone: the node label pinning the service to the node carrying the data (Swarm
+  # volumes are node-local). Rendered as `node.labels.<nodeLabel> == true` while
+  # persistence is enabled, and dropped with it. Label exactly ONE node first:
   #   docker node update --label-add rustfs-data=true <node>
   # Set "" to schedule unpinned even with persistence on (single-node swarm).
   nodeLabel: rustfs-data
+  # Distributed: the named volumes' prefix, <volumePrefix>-1 … <volumePrefix>-<peers>.
+  volumePrefix: rustfs-data
+  # Distributed: store the drives under host directories instead. When set it TAKES
+  # PRECEDENCE over volumePrefix: one entry per peer, in peer order, each entry a list of
+  # cluster.drivesPerPeer absolute host paths (a single path may be given as a string).
+  # Drive k of peer n is bind-mounted at /data/rustfs<k> from entry n's k-th path, on peer
+  # n's pinned node. Each directory must already exist there, on a disk no other drive of
+  # that peer uses, and be owned by uid/gid 10001, as above.
+  volumePaths: []
+  # Distributed: the node-label prefix pinning each peer to the node carrying its data.
+  # Peer n renders `node.labels.<nodeLabelPrefix>-<n> == true` while persistence is
+  # enabled, and the pin is dropped with it. Label one node per peer first, each peer on a
+  # node of its own:
+  #   docker node update --label-add rustfs-1=true <node-a>
+  #   docker node update --label-add rustfs-2=true <node-b>   … and so on to rustfs-<peers>
+  # Set "" to schedule every peer unpinned even with persistence on. That is only correct
+  # on a single-node swarm, and it buys no availability: every peer shares that node's fate.
+  nodeLabelPrefix: rustfs
 
-# Extra scheduling constraints, always applied (independent of the persistence pin
-# above), e.g. ["node.hostname == node-29"].
+# Extra scheduling constraints, always applied, to every peer in distributed mode
+# (independent of the persistence pins above), e.g. ["node.role == worker"].
 placement:
   constraints: []
 
-# The overlay S3 clients reach the store on, in every exposure mode. Other stacks join
-# it as an external network and dial http://<release>-rustfs:<s3.port>, an alias the
-# chart adds there ('_' and '.' in the release name become '-').
+# The overlay S3 clients reach the store on, in every exposure mode, and the peers reach
+# each other on in distributed mode. Other stacks join it as an external network and dial
+# http://<release>-rustfs:<s3.port>, an alias the chart adds there ('_' and '.' in the
+# release name become '-'). In distributed mode every peer carries it, and Swarm resolves
+# it to every peer with a passing healthcheck, which is liveness, not readiness, so
+# clients must retry (README § Connecting).
 # requirements.yaml declares it autoCreate:true, so it is created on first install.
 network:
   name: rustfs-net
@@ -126,7 +188,7 @@ network:
 #   none      - (default) nowhere else; only services on network.name reach it, and
 #               those on exposure.network while the console is traefik-routed.
 #   traefik   - Traefik deploy labels on exposure.network, routing ingress.host to
-#               s3.port. Path-style addressing (https://<host>/<bucket>/<key>), which is
+#               s3.port (on every peer). Path-style addressing (https://<host>/<bucket>/<key>), which is
 #               what non-AWS S3 clients use.
 #   published - publish s3.port on the Swarm as publish.port.
 exposure:
@@ -149,7 +211,8 @@ traefik:
     http: http
     https: https
   # Base name for this chart's router/service objects (`<name>-http` / `<name>-https`
-  # routers + the `<name>` service, and `<name>-console*` for the console). Empty =>
+  # routers + the `<name>` service, and `<name>-console*` for the console). In distributed
+  # mode every peer declares the same ones, and Traefik balances across them. Empty =>
   # the release name.
   routerName: ""
   # Swarm-provider constraint label. The traefik chart runs with
@@ -166,7 +229,8 @@ traefik:
   idleTimeoutSeconds: 120
 
 # S3 published mode. mode: ingress (routing mesh, every node) or host (only the node
-# running the task).
+# running the task). Distributed mode needs host: every peer publishes the same port on its
+# own node, so port publish.port on a node reaches the peer running there.
 publish:
   port: 9000
   mode: ingress
@@ -176,8 +240,9 @@ publish:
 # Applied by `docker stack deploy` from Docker 23 on.
 nofile: 65536
 
-# Extra environment variables, e.g. RUSTFS_SERVER_DOMAINS for virtual-hosted-style
-# addressing, RUSTFS_REGION, or (with metrics off) RUSTFS_OBS_ENDPOINT to push
+# Extra environment variables (for every peer), e.g. RUSTFS_SERVER_DOMAINS for
+# virtual-hosted-style addressing, RUSTFS_REGION, RUSTFS_STORAGE_CLASS_STANDARD for a parity
+# other than the default in distributed mode, or (with metrics off) RUSTFS_OBS_ENDPOINT to push
 # OpenTelemetry data to a collector of your own, together with
 # RUSTFS_OBS_LOG_STDOUT_ENABLED: "true" to keep the log on stdout (README "Metrics").
 # RUSTFS_OBS_LOG_DIRECTORY, RUSTFS_CHECK_UPDATE, RUSTFS_HTTP1_HEADER_READ_TIMEOUT and
@@ -188,13 +253,20 @@ nofile: 65536
 # allowed with console.oidc.enabled, and, while metrics.enabled, on the OTLP endpoints and
 # export settings the chart sets and on the three that would break its push
 # (RUSTFS_OBS_USE_STDOUT, RUSTFS_OBS_METRICS_EXPORT_ENABLED, RUSTFS_OBS_METER_INTERVAL).
+# In distributed mode it also fails on the cluster wiring the chart sets (the volume list,
+# each peer's endpoint, the start-up wait mode), an erasure set width (it would override
+# the one the render checks), RustFS's test-only disk-check bypass and the internode RPC
+# secret (a credential RustFS derives from the key pair).
 extraEnv: {}
 
 # Metrics. RustFS serves no Prometheus endpoint; it pushes OpenTelemetry (OTLP) metrics.
-# enabled adds an OpenTelemetry Collector service, <release>_rustfs-metrics, that RustFS
-# pushes to over network.name and that serves them as Prometheus metrics on port 8889,
-# labelled for Docker Swarm service discovery. RustFS's trace and log export stay off, and
-# its log stays on docker service logs. Turning it on or off restarts RustFS once.
+# enabled adds an OpenTelemetry Collector service, <release>_rustfs-metrics
+# (<release>_rustfs-distributed-metrics in distributed mode), that RustFS pushes to over
+# network.name and that serves them as Prometheus metrics on port 8889, labelled for Docker
+# Swarm service discovery. In distributed mode each peer's process and drive series carry
+# its name in a `server` label, and the cluster-wide ones the name of the peer reporting
+# them in an `observer` label. RustFS's trace and log export stay off, and its log stays on docker
+# service logs. Turning it on or off restarts RustFS once (each peer, one at a time).
 metrics:
   enabled: false
   image:
@@ -213,27 +285,33 @@ metrics:
     limits:
       memory: "256M"
 
-# Probes /health/ready on the S3 port with the image's curl: 503 until storage and IAM
-# are up, 200 after.
+# Standalone probes /health/ready on the S3 port with the image's curl: 503 until storage
+# and IAM are up, 200 after. Distributed probes /health/live, which answers as soon as the
+# peer serves HTTP, without any other peer: /health/ready needs the other peers, which Swarm
+# does not put in DNS until their own healthcheck passes, so on a first install no peer
+# would ever pass it (README § How the peers find each other).
 healthcheck:
   enabled: true
   interval: 15s
   timeout: 5s
   retries: 4
   startPeriod: 30s
-  # Swarm's rollout monitor window. Must outlast the worst-case first failure
-  # (startPeriod + retries x interval = 1m30s here), or a broken deploy reports success.
+  # Swarm's rollout monitor window, which in distributed mode swarmcli also waits out on
+  # each peer before it rolls the next one, with the healthcheck off too. Must outlast the
+  # worst-case first failure (startPeriod + retries x interval = 1m30s here), or a broken
+  # deploy reports success.
   monitor: 2m
 
 # Time Swarm waits after SIGTERM before SIGKILL.
 stopGracePeriod: 30s
 
-# Swarm deploy resources (optional; each rendered only when set).
+# Swarm deploy resources, per peer in distributed mode (optional; each rendered only when
+# set).
 resources:
   limits:
     memory: ""
   reservations:
     memory: ""
 
-# Extra deploy labels (key: value), merged after the Traefik labels.
+# Extra deploy labels (key: value), for every peer, merged after the Traefik labels.
 labels: {}
