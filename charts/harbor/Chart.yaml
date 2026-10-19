@@ -1,0 +1,30 @@
+name: harbor
+description: Harbor container registry for Docker Swarm — core, portal, jobservice, registry and Trivy scanning on an external PostgreSQL, OIDC sign-in from values, Traefik-routed through Harbor's own nginx
+# version is a placeholder — the git tag (harbor/vX.Y.Z) sets the real version at release.
+version: 0.1.0
+# appVersion is the default image tag for goharbor/harbor-core, and every other Harbor
+# component image follows it: Harbor releases them together under one tag.
+# renovate: image=goharbor/harbor-core
+appVersion: "v2.15.4"
+# Oldest swarmcli whose chart engine renders this chart; verified by
+# scripts/floor-check.sh against a real binary of that version. v1.13.0 brought files/,
+# which carries Harbor's nginx, portal, core, registryctl and jobservice configs.
+swarmcliVersion: ">= 1.13.0"
+maintainers:
+  - name: Eldara
+    url: https://github.com/Eldara-Tech
+keywords:
+  - harbor
+  - registry
+  - container-registry
+  - oci
+  - trivy
+  - stateful
+home: https://goharbor.io
+sources:
+  - https://github.com/goharbor/harbor
+  - https://github.com/Eldara-Tech/swarmcli-charts
+# host-mount covers the opt-in persistence.registryPath / valkeyPath bind mounts only; the
+# default render uses named volumes and needs no acknowledgment.
+annotations:
+  swarmcli-charts/allow: "host-mount"

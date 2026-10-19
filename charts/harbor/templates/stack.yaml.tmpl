@@ -1,0 +1,760 @@
+{{- $mode := .Values.exposure.mode -}}
+{{- $proxied := or (eq $mode "traefik") (eq $mode "none") -}}
+{{- $s3 := eq .Values.storage.type "s3" -}}
+{{- $oidc := .Values.oidc.enabled -}}
+{{- $metrics := .Values.metrics.enabled -}}
+{{- $trivy := .Values.trivy.enabled -}}
+{{- $pv := .Values.persistence -}}
+{{- if not (has $mode (list "traefik" "published" "none")) -}}
+{{-   fail (printf "exposure.mode must be traefik, published or none (got %q)" $mode) -}}
+{{- end -}}
+{{- if not (has .Values.storage.type (list "filesystem" "s3")) -}}
+{{-   fail (printf "storage.type must be filesystem or s3 (got %q)" .Values.storage.type) -}}
+{{- end -}}
+{{- if and (eq $mode "traefik") (not .Values.ingress.host) -}}
+{{-   fail "ingress.host is required when exposure.mode=traefik" -}}
+{{- end -}}
+{{- if and (ne $mode "traefik") (not .Values.externalURL) -}}
+{{-   fail (printf "externalURL is required when exposure.mode=%s: Harbor builds the token realm, the push URLs and the OIDC callback from it, so it must be the address clients use (e.g. http://registry.lan:%v)" $mode .Values.publish.port) -}}
+{{- end -}}
+{{- if and .Values.externalURL (not (regexMatch `^https?://[^/?#@\s]+$` .Values.externalURL)) -}}
+{{-   fail (printf "externalURL must be scheme://host[:port], without a path or a trailing slash (got %q)" .Values.externalURL) -}}
+{{- end -}}
+{{- /* Every secret name below is spliced into a start-up shell as /run/secrets/<name>, so it
+       must be a Docker secret name and nothing a shell would interpret. */ -}}
+{{- $secretNames := list .Values.database.passwordSecret .Values.admin.passwordSecret .Values.secrets.core .Values.secrets.jobservice .Values.secrets.registryHttp .Values.secrets.csrfKey .Values.secrets.secretKey .Values.secrets.tokenKey .Values.secrets.registryPassword .Values.secrets.registryHtpasswd -}}
+{{- if $s3 }}{{ $secretNames = concat $secretNames (list .Values.storage.s3.accessKeySecret .Values.storage.s3.secretKeySecret) }}{{ end -}}
+{{- if $oidc }}{{ $secretNames = append $secretNames .Values.oidc.clientSecretSecret }}{{ end -}}
+{{- if $metrics }}{{ $secretNames = append $secretNames .Values.metrics.database.passwordSecret }}{{ end -}}
+{{- range $secretNames -}}
+{{-   if not (regexMatch "^[A-Za-z0-9]([A-Za-z0-9_.-]{0,62}[A-Za-z0-9])?$" (toString .)) -}}
+{{-     fail (printf "%q is not a Docker secret name (1-64 characters of letters, digits, '_', '.' and '-', starting and ending with a letter or digit)" (toString .)) -}}
+{{-   end -}}
+{{- end -}}
+{{- if ne (len $secretNames) (len (uniq $secretNames)) -}}
+{{-   fail "every secret value (database.passwordSecret, admin.passwordSecret, secrets.*, storage.s3.*Secret, oidc.clientSecretSecret, metrics.database.passwordSecret) must name a different Swarm secret" -}}
+{{- end -}}
+{{- if $s3 -}}
+{{-   if not (regexMatch "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" .Values.storage.s3.bucket) -}}
+{{-     fail (printf "storage.s3.bucket: %q is not a valid S3 bucket name" .Values.storage.s3.bucket) -}}
+{{-   end -}}
+{{-   if and .Values.storage.s3.endpoint (not (regexMatch `^https?://[^/?#@\s]+/?$` .Values.storage.s3.endpoint)) -}}
+{{-     fail (printf "storage.s3.endpoint must be scheme://host[:port] (got %q)" .Values.storage.s3.endpoint) -}}
+{{-   end -}}
+{{-   if not (regexMatch `^[A-Za-z0-9._/-]*$` .Values.storage.s3.rootDirectory) -}}
+{{-     fail (printf "storage.s3.rootDirectory may hold only letters, digits, '.', '_', '-' and '/' (got %q)" .Values.storage.s3.rootDirectory) -}}
+{{-   end -}}
+{{- end -}}
+{{- if and $pv.enabled (not $s3) (not $pv.registryPath) (contains "/" $pv.registryVolume) -}}
+{{-   fail "persistence.registryVolume is a Docker named-volume name and cannot contain '/'. To store data under a host directory, set persistence.registryPath instead." -}}
+{{- end -}}
+{{- if and $pv.enabled (not $pv.valkeyPath) (contains "/" $pv.valkeyVolume) -}}
+{{-   fail "persistence.valkeyVolume is a Docker named-volume name and cannot contain '/'. To store data under a host directory, set persistence.valkeyPath instead." -}}
+{{- end -}}
+{{- if $oidc -}}
+{{-   if not (regexMatch `^https?://[^?#@\s]+$` .Values.oidc.endpoint) -}}
+{{-     fail (printf "oidc.endpoint must be the provider's issuer URL when oidc.enabled (got %q)" .Values.oidc.endpoint) -}}
+{{-   end -}}
+{{-   if not .Values.oidc.clientId -}}
+{{-     fail "oidc.clientId is required when oidc.enabled" -}}
+{{-   end -}}
+{{- end -}}
+{{- range $k, $v := .Values.config -}}
+{{-   if or (and $oidc (eq $k "auth_mode")) (hasPrefix "oidc_" $k) -}}
+{{-     fail (printf "config.%s is set by the chart from oidc.*; use those values instead" $k) -}}
+{{-   end -}}
+{{-   if regexMatch "(?i)(password|secret)$" $k -}}
+{{-     fail (printf "config.%s is a credential, and config lands verbatim in the service spec and the release record; set it in Harbor's UI, with config left empty so the UI stays editable" $k) -}}
+{{-   end -}}
+{{- end -}}
+{{- /* An overlay the exporter or a scraped component shares with Prometheus must not be one
+       it shares with the database, the edge or the object store. */ -}}
+{{- if $metrics -}}
+{{-   $others := list .Values.database.network -}}
+{{-   if $proxied }}{{ $others = append $others .Values.exposure.network }}{{ end -}}
+{{-   if and $s3 .Values.storage.s3.network }}{{ $others = append $others .Values.storage.s3.network }}{{ end -}}
+{{-   if has .Values.metrics.network $others -}}
+{{-     fail "metrics.network must differ from database.network, exposure.network and storage.s3.network: Prometheus would share an overlay with the database, the edge or the object store" -}}
+{{-   end -}}
+{{- end -}}
+version: "3.9"
+
+{{- $tag := .Values.image.tag | default .Chart.AppVersion }}
+{{- /* Components dial each other by the stack's full service name, <release>_<service>. The
+       short name is also an alias on every external overlay a service joins, where another
+       stack's service of the same name answers to it too. */}}
+{{- $p := printf "%s_" .Release.Name }}
+{{- $router := .Values.traefik.routerName | default .Release.Name }}
+{{- $externalURL := .Values.externalURL | default (printf "%s://%s" (ternary "https" "http" .Values.ingress.tls) .Values.ingress.host) }}
+{{- $dataPin := list }}
+{{- if and $pv.enabled $pv.nodeLabel }}{{ $dataPin = append $dataPin (printf "node.labels.%s == true" $pv.nodeLabel) }}{{ end }}
+{{- $constraints := .Values.placement.constraints }}
+{{- $dataConstraints := concat $dataPin .Values.placement.constraints }}
+{{- $secretPath := "/run/secrets" }}
+{{- /* Harbor reads none of its secrets from a *_FILE variable. Each start-up wrapper exports
+       the ones its component needs with `rd VAR <secret>`, which refuses a missing or empty
+       file. `$$` escapes the `$` for compose, so the values are resolved inside the container
+       and never reach the manifest or `docker inspect`. */}}
+{{- $rd := `rd() { f=/run/secrets/$$2; v="$$(cat "$$f" 2>/dev/null || true)"; if [ -z "$$v" ]; then echo "$$f is missing or empty - refusing to start" >&2; exit 1; fi; export "$$1=$$v"; }` }}
+
+{{- /* The registry's configuration, shared by registry and registryctl (which deletes blobs
+       through the same storage driver). It reaches both as an environment variable, and their
+       wrappers write it to /etc/registry/config.yml: it depends on the values, which a file
+       under files/ cannot. Secrets come from the environment the wrappers export:
+       REGISTRY_HTTP_SECRET and, for S3, REGISTRY_STORAGE_S3_ACCESSKEY / _SECRETKEY. */}}
+{{- $storage := dict "cache" (dict "layerinfo" "redis") "delete" (dict "enabled" true) "maintenance" (dict "uploadpurging" (dict "enabled" true "age" "168h" "interval" "24h" "dryrun" false)) }}
+{{- if $s3 }}
+{{-   $s3cfg := dict "region" .Values.storage.s3.region "bucket" .Values.storage.s3.bucket }}
+{{-   with .Values.storage.s3.endpoint }}{{ $_ := set $s3cfg "regionendpoint" . }}{{ end }}
+{{-   with .Values.storage.s3.rootDirectory }}{{ $_ := set $s3cfg "rootdirectory" . }}{{ end }}
+{{-   $_ := set $storage "s3" $s3cfg }}
+{{-   if .Values.storage.s3.disableRedirect }}{{ $_ := set $storage "redirect" (dict "disable" true) }}{{ end }}
+{{- else }}
+{{-   $_ := set $storage "filesystem" (dict "rootdirectory" "/storage") }}
+{{- end }}
+{{- $http := dict "addr" ":5000" }}
+{{- if $metrics }}{{ $_ := set $http "debug" (dict "addr" ":8001" "prometheus" (dict "enabled" true "path" "/metrics")) }}{{ end }}
+{{- $registryConfig := dict "version" "0.1" "log" (dict "level" "info" "fields" (dict "service" "registry")) "storage" $storage "redis" (dict "addr" (printf "%svalkey:6379" $p) "db" 1 "readtimeout" "10s" "writetimeout" "10s" "dialtimeout" "10s" "pool" (dict "maxidle" 100 "maxactive" 500 "idletimeout" "60s")) "http" $http "auth" (dict "htpasswd" (dict "realm" "harbor-registry-basic-realm" "path" (printf "%s/%s" $secretPath .Values.secrets.registryHtpasswd))) "validation" (dict "disabled" true) "compatibility" (dict "schema1" (dict "enabled" true)) }}
+
+{{- /* A new volume, or the image's anonymous /storage, is owned by root, and Harbor's images
+       run as uid 10000. So registry and registryctl start as root, take ownership of the
+       storage root (one directory, not a recursive walk), write the registry configuration,
+       and run the image's own entrypoint as uid 10000 through su, which keeps the
+       environment. su itself stays behind as a root parent that only waits; the images ship
+       no tool that drops privileges without forking. */}}
+{{- $asHarbor := "" }}
+{{- if not $s3 }}{{ $asHarbor = "mkdir -p /storage; chown 10000:10000 /storage; " }}{{ end }}
+
+{{- /* Harbor's system settings at start: oidc.* plus config. The client secret is spliced in
+       by core's wrapper, so the manifest carries only a placeholder. */}}
+{{- $overwrite := dict }}
+{{- range $k, $v := .Values.config }}{{ $_ := set $overwrite $k $v }}{{ end }}
+{{- if $oidc }}
+{{-   $o := .Values.oidc }}
+{{-   $_ := set $overwrite "auth_mode" "oidc_auth" }}
+{{-   $_ := set $overwrite "oidc_name" $o.name }}
+{{-   $_ := set $overwrite "oidc_endpoint" $o.endpoint }}
+{{-   $_ := set $overwrite "oidc_client_id" $o.clientId }}
+{{-   $_ := set $overwrite "oidc_client_secret" "__HARBOR_OIDC_CLIENT_SECRET__" }}
+{{-   $_ := set $overwrite "oidc_scope" $o.scope }}
+{{-   $_ := set $overwrite "oidc_user_claim" $o.userClaim }}
+{{-   $_ := set $overwrite "oidc_auto_onboard" $o.autoOnboard }}
+{{-   $_ := set $overwrite "oidc_groups_claim" $o.groupsClaim }}
+{{-   $_ := set $overwrite "oidc_admin_group" $o.adminGroup }}
+{{-   $_ := set $overwrite "oidc_group_filter" $o.groupFilter }}
+{{-   $_ := set $overwrite "oidc_verify_cert" $o.verifyCert }}
+{{-   $_ := set $overwrite "oidc_logout" $o.logout }}
+{{- end }}
+
+services:
+
+  nginx:
+    image: {{ .Values.nginx.image.repository }}:{{ .Values.nginx.image.tag | default $tag }}
+    configs:
+      - source: nginx
+        target: /etc/nginx/nginx.conf
+    # Read by files/nginx/nginx.conf, which Swarm renders with the golang template driver.
+    environment:
+      HARBOR_CORE: "{{ $p }}core"
+      HARBOR_PORTAL: "{{ $p }}portal"
+    networks:
+      - internal
+{{- if $proxied }}
+      - {{ .Values.exposure.network }}
+{{- end }}
+{{- if eq $mode "published" }}
+    ports:
+      - target: 8080
+        published: {{ .Values.publish.port }}
+        protocol: tcp
+        mode: {{ .Values.publish.mode }}
+{{- end }}
+{{- if .Values.healthcheck.enabled }}
+    # /v1/ is answered 404 by nginx itself, so the check does not depend on portal or core.
+    healthcheck:
+      test: ["CMD-SHELL", "[ \"$$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/v1/)\" = 404 ]"]
+      interval: {{ .Values.healthcheck.interval }}
+      timeout: {{ .Values.healthcheck.timeout }}
+      retries: {{ .Values.healthcheck.retries }}
+      start_period: 30s
+{{- else }}
+    # Off, not absent: each image ships a healthcheck of its own, without a start period.
+    healthcheck:
+      disable: true
+{{- end }}
+    deploy:
+      replicas: 1
+{{- if .Values.healthcheck.enabled }}
+      {{- /* Swarm counts every failure of an updated task until it is healthy, and
+             keeps watching it for `monitor` after that. */}}
+      update_config:
+        monitor: {{ .Values.healthcheck.monitor }}
+{{- end }}
+{{- if $constraints }}
+      placement:
+        constraints:
+{{- range $constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- if or (eq $mode "traefik") .Values.labels }}
+      labels:
+{{- if eq $mode "traefik" }}
+        - "traefik.enable=true"
+        - "traefik.swarm.network={{ .Values.exposure.network }}"
+        - "traefik.constraint-label={{ .Values.traefik.constraintLabel }}"
+        # HTTP router
+        - "traefik.http.routers.{{ $router }}-http.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ $router }}-http.entrypoints={{ .Values.traefik.entrypoints.http }}"
+{{- if .Values.ingress.tls }}
+        # Redirect plain HTTP to HTTPS, then terminate TLS on the HTTPS router.
+        - "traefik.http.routers.{{ $router }}-http.middlewares={{ .Values.traefik.redirectMiddleware }}"
+        - "traefik.http.routers.{{ $router }}-https.rule=Host(`{{ .Values.ingress.host }}`)"
+        - "traefik.http.routers.{{ $router }}-https.entrypoints={{ .Values.traefik.entrypoints.https }}"
+        - "traefik.http.routers.{{ $router }}-https.tls=true"
+        - "traefik.http.routers.{{ $router }}-https.tls.certresolver={{ .Values.traefik.certResolver }}"
+{{- end }}
+        - "traefik.http.services.{{ $router }}.loadbalancer.server.port=8080"
+{{- end }}
+{{- range $key, $val := .Values.labels }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+{{- end }}
+
+  core:
+    image: {{ .Values.image.repository }}:{{ $tag }}
+    configs:
+      - source: core
+        target: /etc/core/app.conf
+    secrets:
+      - {{ .Values.database.passwordSecret }}
+      - {{ .Values.admin.passwordSecret }}
+      - {{ .Values.secrets.core }}
+      - {{ .Values.secrets.jobservice }}
+      - {{ .Values.secrets.csrfKey }}
+      - {{ .Values.secrets.secretKey }}
+      - {{ .Values.secrets.tokenKey }}
+      - {{ .Values.secrets.registryPassword }}
+{{- if $oidc }}
+      - {{ .Values.oidc.clientSecretSecret }}
+{{- end }}
+    networks:
+      - internal
+      - {{ .Values.database.network }}
+{{- if $metrics }}
+      - {{ .Values.metrics.network }}
+{{- end }}
+    environment:
+      CONFIG_PATH: /etc/core/app.conf
+      PORT: "8080"
+      LOG_LEVEL: info
+      EXT_ENDPOINT: {{ $externalURL | quote }}
+      DATABASE_TYPE: postgresql
+      POSTGRESQL_HOST: {{ .Values.database.host | quote }}
+      POSTGRESQL_PORT: {{ .Values.database.port | quote }}
+      POSTGRESQL_USERNAME: {{ .Values.database.username | quote }}
+      POSTGRESQL_DATABASE: {{ .Values.database.name | quote }}
+      POSTGRESQL_SSLMODE: {{ .Values.database.sslmode | quote }}
+      POSTGRESQL_MAX_IDLE_CONNS: {{ .Values.database.maxIdleConns | quote }}
+      POSTGRESQL_MAX_OPEN_CONNS: {{ .Values.database.maxOpenConns | quote }}
+      _REDIS_URL_CORE: "redis://{{ $p }}valkey:6379?idle_timeout_seconds=30"
+      _REDIS_URL_REG: "redis://{{ $p }}valkey:6379/1?idle_timeout_seconds=30"
+      CORE_URL: "http://{{ $p }}core:8080"
+      CORE_LOCAL_URL: http://127.0.0.1:8080
+      PORTAL_URL: "http://{{ $p }}portal:8080"
+      JOBSERVICE_URL: "http://{{ $p }}jobservice:8080"
+      REGISTRY_URL: "http://{{ $p }}registry:5000"
+      REGISTRY_CONTROLLER_URL: "http://{{ $p }}registryctl:8080"
+      TOKEN_SERVICE_URL: "http://{{ $p }}core:8080/service/token"
+      REGISTRY_STORAGE_PROVIDER_NAME: {{ .Values.storage.type | quote }}
+      REGISTRY_CREDENTIAL_USERNAME: harbor_registry_user
+      WITH_TRIVY: {{ $trivy | quote }}
+      TRIVY_ADAPTER_URL: "http://{{ $p }}trivy:8080"
+      MAX_JOB_WORKERS: {{ .Values.jobservice.workers | quote }}
+      READ_ONLY: "false"
+      # Read as files rather than through the wrapper: Harbor takes both by path.
+      KEY_PATH: {{ printf "%s/%s" $secretPath .Values.secrets.secretKey | quote }}
+      TOKEN_PRIVATE_KEY_PATH: {{ printf "%s/%s" $secretPath .Values.secrets.tokenKey | quote }}
+      # Upstream's installer sets both lists; an empty proxy-cache list permits no registry.
+      PERMITTED_REGISTRY_TYPES_FOR_PROXY_CACHE: docker-hub,harbor,azure-acr,ali-acr,aws-ecr,google-gcr,docker-registry,github-ghcr,jfrog-artifactory
+      REPLICATION_ADAPTER_WHITELIST: ali-acr,aws-ecr,azure-acr,docker-hub,docker-registry,github-ghcr,google-gcr,harbor,huawei-SWR,jfrog-artifactory,tencent-tcr,volcengine-cr
+{{- if $metrics }}
+      METRIC_ENABLE: "true"
+      METRIC_PATH: /metrics
+      METRIC_PORT: "8001"
+      METRIC_NAMESPACE: harbor
+      METRIC_SUBSYSTEM: core
+{{- end }}
+{{- if $oidc }}
+      # The wrapper replaces the placeholder with the client secret and exports the result
+      # as CONFIG_OVERWRITE_JSON.
+      HARBOR_CONFIG_OVERWRITE: {{ toJson $overwrite | replace "$" "$$" | quote }}
+{{- else if $overwrite }}
+      CONFIG_OVERWRITE_JSON: {{ toJson $overwrite | replace "$" "$$" | quote }}
+{{- end }}
+    # The start-up wrapper: exports the secrets, checks the three whose shape Harbor depends on,
+    # then execs the image's entrypoint. The secret key is read verbatim as an AES key, so a
+    # trailing newline is a 17th byte; a CSRF key of the wrong length makes Harbor refuse
+    # every UI request that changes something; a token key in PKCS#8 (OpenSSL 3's default)
+    # fails every docker login with a 500 while every health check stays green.
+    entrypoint:
+      - /bin/bash
+      - -c
+    command:
+      - |-
+        set -eu
+        {{ $rd }}
+        rd POSTGRESQL_PASSWORD {{ .Values.database.passwordSecret }}
+        rd HARBOR_ADMIN_PASSWORD {{ .Values.admin.passwordSecret }}
+        rd CORE_SECRET {{ .Values.secrets.core }}
+        rd JOBSERVICE_SECRET {{ .Values.secrets.jobservice }}
+        rd CSRF_KEY {{ .Values.secrets.csrfKey }}
+        rd REGISTRY_CREDENTIAL_PASSWORD {{ .Values.secrets.registryPassword }}
+        if [ "$${#CSRF_KEY}" -ne 32 ]; then echo "secret {{ .Values.secrets.csrfKey }} must be exactly 32 characters (got $${#CSRF_KEY})" >&2; exit 1; fi
+        n="$$(wc -c < "$$KEY_PATH")"
+        if [ "$$n" -ne 16 ]; then echo "secret {{ .Values.secrets.secretKey }} must be exactly 16 bytes with no trailing newline (got $$n); create it with printf '%s'" >&2; exit 1; fi
+        read -r first < "$$TOKEN_PRIVATE_KEY_PATH" || true
+        if [ "$$first" != "-----BEGIN RSA PRIVATE KEY-----" ]; then echo "secret {{ .Values.secrets.tokenKey }} must be a PKCS#1 RSA key (BEGIN RSA PRIVATE KEY): Harbor signs registry tokens with libtrust, which reads no other format; create it with openssl genrsa -traditional" >&2; exit 1; fi
+{{- if $oidc }}
+        rd HARBOR_OIDC_CLIENT_SECRET {{ .Values.oidc.clientSecretSecret }}
+        case "$$HARBOR_OIDC_CLIENT_SECRET" in *[\"\\]*) echo "secret {{ .Values.oidc.clientSecretSecret }} contains a double quote or backslash - refusing to start" >&2; exit 1;; esac
+        export CONFIG_OVERWRITE_JSON="$${HARBOR_CONFIG_OVERWRITE/__HARBOR_OIDC_CLIENT_SECRET__/"$$HARBOR_OIDC_CLIENT_SECRET"}"
+        unset HARBOR_OIDC_CLIENT_SECRET
+{{- end }}
+        exec /harbor/entrypoint.sh
+{{- if .Values.healthcheck.enabled }}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8080/api/v2.0/ping"]
+      interval: {{ .Values.healthcheck.interval }}
+      timeout: {{ .Values.healthcheck.timeout }}
+      retries: {{ .Values.healthcheck.retries }}
+      start_period: {{ .Values.healthcheck.startPeriod }}
+{{- else }}
+    healthcheck:
+      disable: true
+{{- end }}
+    deploy:
+      replicas: 1
+{{- if .Values.healthcheck.enabled }}
+      update_config:
+        monitor: {{ .Values.healthcheck.monitor }}
+{{- end }}
+{{- if $constraints }}
+      placement:
+        constraints:
+{{- range $constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- if $metrics }}
+      labels:
+        - "prometheus.io/scrape=true"
+        - "prometheus.io/port=8001"
+{{- end }}
+
+  portal:
+    image: {{ .Values.portal.image.repository }}:{{ .Values.portal.image.tag | default $tag }}
+    configs:
+      - source: portal
+        target: /etc/nginx/nginx.conf
+    networks:
+      - internal
+{{- if .Values.healthcheck.enabled }}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: {{ .Values.healthcheck.interval }}
+      timeout: {{ .Values.healthcheck.timeout }}
+      retries: {{ .Values.healthcheck.retries }}
+      start_period: 30s
+{{- else }}
+    healthcheck:
+      disable: true
+{{- end }}
+    deploy:
+      replicas: 1
+{{- if .Values.healthcheck.enabled }}
+      update_config:
+        monitor: {{ .Values.healthcheck.monitor }}
+{{- end }}
+{{- if $constraints }}
+      placement:
+        constraints:
+{{- range $constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+
+  jobservice:
+    image: {{ .Values.jobservice.image.repository }}:{{ .Values.jobservice.image.tag | default $tag }}
+    configs:
+      - source: {{ ternary "jobservice-metrics" "jobservice" $metrics }}
+        target: /etc/jobservice/config.yml
+    secrets:
+      - {{ .Values.secrets.core }}
+      - {{ .Values.secrets.jobservice }}
+      - {{ .Values.secrets.registryPassword }}
+    networks:
+      - internal
+      - {{ .Values.database.network }}
+{{- if $metrics }}
+      - {{ .Values.metrics.network }}
+{{- end }}
+    environment:
+      LOG_LEVEL: info
+      CORE_URL: "http://{{ $p }}core:8080"
+      REGISTRY_URL: "http://{{ $p }}registry:5000"
+      REGISTRY_CONTROLLER_URL: "http://{{ $p }}registryctl:8080"
+      REGISTRY_CREDENTIAL_USERNAME: harbor_registry_user
+      JOB_SERVICE_POOL_WORKERS: {{ .Values.jobservice.workers | quote }}
+      JOB_SERVICE_POOL_REDIS_URL: "redis://{{ $p }}valkey:6379/2?idle_timeout_seconds=30"
+{{- if $metrics }}
+      METRIC_NAMESPACE: harbor
+      METRIC_SUBSYSTEM: jobservice
+{{- end }}
+    # Exports the three secrets it shares with core and the registry, waits for core, then
+    # execs the image's entrypoint. jobservice reads the rest of its configuration from core
+    # at start, the database's address and password included, and connects to the database
+    # itself. Started before core answers it exits, which Swarm counts against a rollout.
+    entrypoint:
+      - /bin/bash
+      - -c
+    command:
+      - |-
+        set -eu
+        {{ $rd }}
+        rd CORE_SECRET {{ .Values.secrets.core }}
+        rd JOBSERVICE_SECRET {{ .Values.secrets.jobservice }}
+        rd REGISTRY_CREDENTIAL_PASSWORD {{ .Values.secrets.registryPassword }}
+        until curl -fsS -o /dev/null --max-time 5 "$$CORE_URL/api/v2.0/ping"; do echo "waiting for core at $$CORE_URL" >&2; sleep 5; done
+        exec /harbor/entrypoint.sh
+{{- if .Values.healthcheck.enabled }}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8080/api/v1/stats"]
+      interval: {{ .Values.healthcheck.interval }}
+      timeout: {{ .Values.healthcheck.timeout }}
+      retries: {{ .Values.healthcheck.retries }}
+      start_period: {{ .Values.healthcheck.startPeriod }}
+{{- else }}
+    healthcheck:
+      disable: true
+{{- end }}
+    deploy:
+      replicas: 1
+{{- if .Values.healthcheck.enabled }}
+      update_config:
+        monitor: {{ .Values.healthcheck.monitor }}
+{{- end }}
+{{- if $constraints }}
+      placement:
+        constraints:
+{{- range $constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- if $metrics }}
+      labels:
+        - "prometheus.io/scrape=true"
+        - "prometheus.io/port=8001"
+{{- end }}
+
+{{- range $svc := list "registry" "registryctl" }}
+
+  {{ $svc }}:
+{{-   if eq $svc "registry" }}
+    image: {{ $.Values.registry.image.repository }}:{{ $.Values.registry.image.tag | default $tag }}
+{{-   else }}
+    image: {{ $.Values.registryctl.image.repository }}:{{ $.Values.registryctl.image.tag | default $tag }}
+    configs:
+      - source: registryctl
+        target: /etc/registryctl/config.yml
+{{-   end }}
+    # The wrapper runs as root, the registry itself as uid 10000 (see above).
+    user: "0:0"
+    secrets:
+{{-   if eq $svc "registry" }}
+      - {{ $.Values.secrets.registryHttp }}
+      - {{ $.Values.secrets.registryHtpasswd }}
+{{-   else }}
+      - {{ $.Values.secrets.core }}
+      - {{ $.Values.secrets.jobservice }}
+{{-   end }}
+{{-   if $s3 }}
+      - {{ $.Values.storage.s3.accessKeySecret }}
+      - {{ $.Values.storage.s3.secretKeySecret }}
+{{-   end }}
+    networks:
+      - internal
+{{-   if and $s3 $.Values.storage.s3.network }}
+      - {{ $.Values.storage.s3.network }}
+{{-   end }}
+{{-   if and $metrics (eq $svc "registry") }}
+      - {{ $.Values.metrics.network }}
+{{-   end }}
+{{-   if and (not $s3) $pv.enabled }}
+    volumes:
+      - {{ $pv.registryPath | default $pv.registryVolume }}:/storage
+{{-   end }}
+    environment:
+      HARBOR_REGISTRY_CONFIG: {{ toYaml $registryConfig | quote }}
+    entrypoint:
+      - /bin/bash
+      - -c
+    command:
+      - |-
+        set -eu
+        {{ $rd }}
+        mkdir -p /etc/registry
+        printf '%s\n' "$$HARBOR_REGISTRY_CONFIG" > /etc/registry/config.yml
+        unset HARBOR_REGISTRY_CONFIG
+{{-   if eq $svc "registry" }}
+        rd REGISTRY_HTTP_SECRET {{ $.Values.secrets.registryHttp }}
+{{-   else }}
+        rd CORE_SECRET {{ $.Values.secrets.core }}
+        rd JOBSERVICE_SECRET {{ $.Values.secrets.jobservice }}
+{{-   end }}
+{{-   if $s3 }}
+        rd REGISTRY_STORAGE_S3_ACCESSKEY {{ $.Values.storage.s3.accessKeySecret }}
+        rd REGISTRY_STORAGE_S3_SECRETKEY {{ $.Values.storage.s3.secretKeySecret }}
+{{-   end }}
+        {{ $asHarbor }}exec su -s /bin/sh harbor -c 'exec {{ ternary "/home/harbor/entrypoint.sh" "/home/harbor/start.sh" (eq $svc "registry") }}'
+{{-   if $.Values.healthcheck.enabled }}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "{{ ternary "http://127.0.0.1:5000/" "http://127.0.0.1:8080/api/health" (eq $svc "registry") }}"]
+      interval: {{ $.Values.healthcheck.interval }}
+      timeout: {{ $.Values.healthcheck.timeout }}
+      retries: {{ $.Values.healthcheck.retries }}
+      start_period: 30s
+{{-   else }}
+    healthcheck:
+      disable: true
+{{-   end }}
+    deploy:
+      replicas: 1
+      # One registry and one registryctl on the storage: an update stops the old task first.
+      update_config:
+        order: stop-first
+{{-   if $.Values.healthcheck.enabled }}
+        monitor: {{ $.Values.healthcheck.monitor }}
+{{-   end }}
+{{-   $c := ternary $constraints $dataConstraints $s3 }}
+{{-   if $c }}
+      placement:
+        constraints:
+{{-     range $c }}
+          - {{ . }}
+{{-     end }}
+{{-   end }}
+      restart_policy:
+        condition: any
+{{-   if and $metrics (eq $svc "registry") }}
+      labels:
+        - "prometheus.io/scrape=true"
+        - "prometheus.io/port=8001"
+{{-   end }}
+{{- end }}
+
+  valkey:
+    image: {{ .Values.valkey.image.repository }}:{{ .Values.valkey.image.tag | default $tag }}
+    networks:
+      - internal
+{{- if $pv.enabled }}
+    volumes:
+      - {{ $pv.valkeyPath | default $pv.valkeyVolume }}:/var/lib/redis
+{{- end }}
+{{- if .Values.healthcheck.enabled }}
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: {{ .Values.healthcheck.interval }}
+      timeout: {{ .Values.healthcheck.timeout }}
+      retries: {{ .Values.healthcheck.retries }}
+      start_period: 30s
+{{- else }}
+    healthcheck:
+      disable: true
+{{- end }}
+    deploy:
+      replicas: 1
+      update_config:
+        order: stop-first
+{{- if .Values.healthcheck.enabled }}
+        monitor: {{ .Values.healthcheck.monitor }}
+{{- end }}
+{{- if $dataConstraints }}
+      placement:
+        constraints:
+{{- range $dataConstraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- if $trivy }}
+
+  # The scanner. Its database cache lives in the container (/home/scanner/.cache), so a
+  # replaced task downloads it again.
+  trivy:
+    image: {{ .Values.trivy.image.repository }}:{{ .Values.trivy.image.tag | default $tag }}
+    networks:
+      - internal
+    environment:
+      SCANNER_LOG_LEVEL: info
+      SCANNER_REDIS_URL: "redis://{{ $p }}valkey:6379/5?idle_timeout_seconds=30"
+      SCANNER_STORE_REDIS_URL: "redis://{{ $p }}valkey:6379/5?idle_timeout_seconds=30"
+      SCANNER_STORE_REDIS_NAMESPACE: harbor.scanner.trivy:store
+      SCANNER_JOB_QUEUE_REDIS_URL: "redis://{{ $p }}valkey:6379/5?idle_timeout_seconds=30"
+      SCANNER_JOB_QUEUE_REDIS_NAMESPACE: harbor.scanner.trivy:job-queue
+      SCANNER_TRIVY_CACHE_DIR: /home/scanner/.cache/trivy
+      SCANNER_TRIVY_REPORTS_DIR: /home/scanner/.cache/reports
+      SCANNER_TRIVY_VULN_TYPE: os,library
+      SCANNER_TRIVY_SEVERITY: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+      SCANNER_TRIVY_IGNORE_UNFIXED: {{ .Values.trivy.ignoreUnfixed | quote }}
+      SCANNER_TRIVY_OFFLINE_SCAN: {{ .Values.trivy.offlineScan | quote }}
+      SCANNER_TRIVY_TIMEOUT: {{ .Values.trivy.timeout | quote }}
+{{- if .Values.healthcheck.enabled }}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8080/probe/healthy"]
+      interval: {{ .Values.healthcheck.interval }}
+      timeout: {{ .Values.healthcheck.timeout }}
+      retries: {{ .Values.healthcheck.retries }}
+      start_period: 30s
+{{- else }}
+    healthcheck:
+      disable: true
+{{- end }}
+    deploy:
+      replicas: 1
+{{- if .Values.healthcheck.enabled }}
+      update_config:
+        monitor: {{ .Values.healthcheck.monitor }}
+{{- end }}
+{{- if $constraints }}
+      placement:
+        constraints:
+{{- range $constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- end }}
+{{- if $metrics }}
+
+  # Harbor's exporter: project, quota, artifact and job-queue metrics from the database,
+  # core's health API and the job queue. It logs in as a read-only role of its own, with a
+  # small pool: it queries on scrape, behind a 23 s cache.
+  exporter:
+    image: {{ .Values.metrics.exporter.image.repository }}:{{ .Values.metrics.exporter.image.tag | default $tag }}
+    secrets:
+      - {{ .Values.metrics.database.passwordSecret }}
+    networks:
+      - internal
+      - {{ .Values.database.network }}
+      - {{ .Values.metrics.network }}
+    environment:
+      LOG_LEVEL: info
+      HARBOR_EXPORTER_PORT: "8001"
+      HARBOR_EXPORTER_METRICS_PATH: /metrics
+      HARBOR_EXPORTER_METRICS_ENABLED: "true"
+      HARBOR_EXPORTER_MAX_REQUESTS: "30"
+      HARBOR_EXPORTER_CACHE_TIME: "23"
+      HARBOR_EXPORTER_CACHE_CLEAN_INTERVAL: "14400"
+      HARBOR_METRIC_NAMESPACE: harbor
+      HARBOR_METRIC_SUBSYSTEM: exporter
+      HARBOR_SERVICE_SCHEME: http
+      HARBOR_SERVICE_HOST: "{{ $p }}core"
+      HARBOR_SERVICE_PORT: "8080"
+      HARBOR_REDIS_URL: "redis://{{ $p }}valkey:6379/2"
+      HARBOR_REDIS_NAMESPACE: harbor_job_service_namespace
+      HARBOR_REDIS_TIMEOUT: "3600"
+      HARBOR_DATABASE_HOST: {{ .Values.database.host | quote }}
+      HARBOR_DATABASE_PORT: {{ .Values.database.port | quote }}
+      HARBOR_DATABASE_USERNAME: {{ .Values.metrics.database.username | quote }}
+      HARBOR_DATABASE_DBNAME: {{ .Values.database.name | quote }}
+      HARBOR_DATABASE_SSLMODE: {{ .Values.database.sslmode | quote }}
+      HARBOR_DATABASE_MAX_IDLE_CONNS: "2"
+      HARBOR_DATABASE_MAX_OPEN_CONNS: "5"
+    entrypoint:
+      - /bin/bash
+      - -c
+    command:
+      - |-
+        set -eu
+        {{ $rd }}
+        rd HARBOR_DATABASE_PASSWORD {{ .Values.metrics.database.passwordSecret }}
+        exec /harbor/entrypoint.sh
+    deploy:
+      replicas: 1
+{{- if $constraints }}
+      placement:
+        constraints:
+{{- range $constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+      labels:
+        - "prometheus.io/scrape=true"
+        - "prometheus.io/port=8001"
+{{- end }}
+
+configs:
+  nginx:
+    name: "{{ .Release.Name }}_nginx_{{ .Chart.Version }}"
+    file: files/nginx/nginx.conf
+    template_driver: golang
+  portal:
+    name: "{{ .Release.Name }}_portal_{{ .Chart.Version }}"
+    file: files/portal/nginx.conf
+  core:
+    name: "{{ .Release.Name }}_core_{{ .Chart.Version }}"
+    file: files/core/app.conf
+  registryctl:
+    name: "{{ .Release.Name }}_registryctl_{{ .Chart.Version }}"
+    file: files/registryctl/config.yml
+{{- if $metrics }}
+  jobservice-metrics:
+    name: "{{ .Release.Name }}_jobservice-metrics_{{ .Chart.Version }}"
+    file: files/jobservice/config-metrics.yml
+{{- else }}
+  jobservice:
+    name: "{{ .Release.Name }}_jobservice_{{ .Chart.Version }}"
+    file: files/jobservice/config.yml
+{{- end }}
+
+secrets:
+{{- range $secretNames }}
+  {{ . }}:
+    external: true
+{{- end }}
+
+networks:
+  # The stack's own overlay: every Harbor service, Valkey included, and nothing else.
+  internal:
+    driver: overlay
+{{- $external := list .Values.database.network }}
+{{- if $proxied }}{{ $external = append $external .Values.exposure.network }}{{ end }}
+{{- if and $s3 .Values.storage.s3.network }}{{ $external = append $external .Values.storage.s3.network }}{{ end }}
+{{- if $metrics }}{{ $external = append $external .Values.metrics.network }}{{ end }}
+{{- range $external | uniq }}
+  {{ . }}:
+    external: true
+{{- end }}
+{{- $volumes := list }}
+{{- if and $pv.enabled (not $s3) (not $pv.registryPath) }}{{ $volumes = append $volumes $pv.registryVolume }}{{ end }}
+{{- if and $pv.enabled (not $pv.valkeyPath) }}{{ $volumes = append $volumes $pv.valkeyVolume }}{{ end }}
+{{- if $volumes }}
+
+volumes:
+{{- range $volumes }}
+  {{ . }}: {}
+{{- end }}
+{{- end }}
