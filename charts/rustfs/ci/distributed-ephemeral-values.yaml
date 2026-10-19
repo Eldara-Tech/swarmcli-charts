@@ -1,0 +1,7 @@
+# Persistence off: no volumes and no node pins (a pin without a volume would strand the
+# peers Pending on labels nobody needs to set).
+mode: distributed
+persistence:
+  enabled: false
+buckets:
+  - scratch

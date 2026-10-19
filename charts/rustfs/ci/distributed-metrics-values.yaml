@@ -1,0 +1,8 @@
+# Metrics on: one OpenTelemetry Collector every peer pushes to over rustfs-net, scraped by
+# Prometheus on the monitoring overlay. `labels` is set to prove it stays off the collector:
+# its deploy labels are readable through Prometheus.
+mode: distributed
+metrics:
+  enabled: true
+labels:
+  team: storage

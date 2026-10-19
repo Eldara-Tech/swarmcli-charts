@@ -140,6 +140,16 @@ peer needs.
   disables network aliases, so both the per-peer alias and the shared client alias
   stop existing; `charts/mariadb-galera` shipped that to CI and every state
   transfer failed with `resolve: Host not found (authoritative)`.
+- **Software that dials its peers by a configured name may use the alias instead.**
+  The real address matters to a protocol that binds to it and advertises it, as Galera
+  does. RustFS does neither: every peer starts with the same list of peer URLs and finds
+  itself in it, so `charts/rustfs`'s distributed mode gives each peer a release-scoped alias
+  (`<release>-rustfs-<n>`, without the `_` a host name cannot hold) and the peers dial its
+  VIP, which also survives a reschedule. Either way, Swarm puts no name of a task in DNS —
+  not `tasks.*`, not an alias, not the service name — and routes nothing to its VIP until
+  its healthcheck passes. Software that resolves its peers before it serves must be told
+  which entry is its own (RustFS: `RUSTFS_LOCAL_ENDPOINT_HOST`), and its healthcheck must
+  pass without any peer, or no peer ever starts (#290).
 - **A peer must ADVERTISE a real IP, not a name.** Read it from `/etc/hosts`, which
   Docker writes for the container's hostname and which needs no DNS, and refuse to
   start if it cannot be established. Anything that has to *bind* a listener to the

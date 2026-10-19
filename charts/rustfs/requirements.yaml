@@ -9,7 +9,7 @@ networks:
     driver: overlay
     attachable: true
     autoCreate: true
-    description: "Overlay S3 clients join to reach <release>-rustfs (network.name)"
+    description: "Overlay S3 clients join to reach <release>-rustfs, and the peers reach each other on in distributed mode (network.name)"
   # Attached only while the S3 API or the console is traefik-routed.
   - name: "{{ .Values.exposure.network }}"
     driver: overlay

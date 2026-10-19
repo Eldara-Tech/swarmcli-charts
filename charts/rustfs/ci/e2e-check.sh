@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# e2e smoke check for the rustfs chart. scripts/e2e-test.sh runs this after the release
-# converges:
+# e2e smoke check for the rustfs chart in standalone mode; a distributed-* case goes to
+# ci/e2e-check-distributed.sh. scripts/e2e-test.sh runs this after the release converges:
 #   $1 = release name (== Docker stack name)   $2 = chart directory   $3 = fixture case
 # Exit 0 = healthy, non-zero = failure.
 #
@@ -36,6 +36,8 @@ set -euo pipefail
 release="$1"
 dir="$2"
 case="${3:-}"
+# mode: distributed has checks of its own, for the same case names without the prefix.
+case "$case" in distributed-*) exec "$(dirname "$0")/e2e-check-distributed.sh" "$release" "$dir" "${case#distributed-}" ;; esac
 
 CURL_IMAGE="${RUSTFS_E2E_CURL_IMAGE:-curlimages/curl:latest}"
 KEY="${RUSTFS_E2E_ACCESS_KEY:-e2e-access-key}"
@@ -150,7 +152,10 @@ else
   mport="$(docker service inspect "$msvc" --format '{{index .Spec.Labels "prometheus.io/port"}}')"
   [ "$mport" = "8889" ] || die "$msvc carries prometheus.io/port='$mport', expected 8889"
   mon="$dir/monitoring"
-  want="$( { grep -v -E '^[[:space:]]*(#|summary:|description:)' "$mon/rustfs-rules.yml"; grep -F '"expr"' "$mon/rustfs-dashboard.json"; } \
+  # The standalone group of the rules only: the distributed group reads erasure-set series.
+  group="$(awk '/^  - name: /{ g = $3 } g == "rustfs"' "$mon/rustfs-rules.yml" | grep -v -E '^[[:space:]]*(#|summary:|description:)' || true)"
+  grep -E 'rustfs_[a-z0-9_]+' <<<"$group" >/dev/null || die "monitoring/rustfs-rules.yml has no group 'rustfs' with metrics in it; the extraction is broken"
+  want="$( { printf '%s\n' "$group"; grep -F '"expr"' "$mon/rustfs-dashboard.json"; } \
     | grep -oE 'rustfs_[a-z0-9_]+' | sed -E 's/_(bucket|sum|count)$//' | sort -u)"
   [ "$(wc -l <<<"$want")" -ge 15 ] || die "found only $(wc -l <<<"$want") metric names in monitoring/; the extraction is broken"
   m=""; missing="$want"

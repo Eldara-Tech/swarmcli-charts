@@ -1,13 +1,16 @@
-# promtool unit tests for monitoring/rustfs-rules.yml, which the chart ships for operators to
-# load into their Prometheus but does not deploy itself. ci/e2e-check.sh runs them with a
-# pinned prom/prometheus image's promtool in the metrics case.
+# promtool unit tests for the rustfs (standalone) group of monitoring/rustfs-rules.yml, which
+# the chart ships for operators to load into their Prometheus but does not deploy itself.
+# ci/e2e-check.sh runs them with a pinned prom/prometheus image's promtool in the metrics
+# case; ci/rustfs-distributed-rules-test.yml covers the distributed group.
 #
 # One release per failure. Three must raise nothing: `ok` serves traffic with 1% of it 5xx
 # and has drive errors from long ago; `idle` has served nothing but the healthcheck, whose
 # /health/ready probes count as 2xx requests, 4 a minute, after two answered 503 while it
 # started long ago; `start` is RustFS starting, whose first push reaches the collector after
 # 2 minutes with two probes answered 503 and a capacity of 0, then one more 503, to prove a
-# start trips neither ratio.
+# start trips neither ratio. `cluster` is a distributed release under its own job, with a
+# drive offline, 5% free and drive errors: the standalone group selects none of its series,
+# so only the distributed group's warnings fire for it.
 rule_files:
   - ../monitoring/rustfs-rules.yml
 
@@ -32,6 +35,8 @@ tests:
       - series: 'up{job="full_rustfs-metrics",instance="10.0.4.5:8889",stack="full"}'
         values: '1x35'
       - series: 'up{job="ioerr_rustfs-metrics",instance="10.0.5.5:8889",stack="ioerr"}'
+        values: '1x35'
+      - series: 'up{job="cluster_rustfs-distributed-metrics",instance="10.0.6.5:8889",stack="cluster"}'
         values: '1x35'
       # Another job's target with no RustFS series is none of these alerts' business.
       - series: 'up{job="ok_redis-exporter",instance="10.0.9.9:9121",stack="ok"}'
@@ -116,6 +121,19 @@ tests:
       - series: 'rustfs_system_drive_availability_errors_total{job="ioerr_rustfs-metrics",instance="10.0.5.5:8889",stack="ioerr",exported_job="RustFS",exported_instance="10.0.10.11",collection_scope="local",drive="/data",observer=":::9000",server=":::9000"}'
         values: '0x14 4x21'
 
+      # cluster: a distributed release, peer 1 reporting a drive offline from 2m, 5% free and
+      # four drive errors at 15m.
+      - series: 'rustfs_system_process_uptime_seconds{job="cluster_rustfs-distributed-metrics",instance="10.0.6.5:8889",stack="cluster",exported_job="RustFS",exported_instance="10.0.10.12",server="cluster-rustfs-1:9000"}'
+        values: '600+60x35'
+      - series: 'rustfs_cluster_health_drives_offline_count{job="cluster_rustfs-distributed-metrics",instance="10.0.6.5:8889",stack="cluster",exported_job="RustFS",exported_instance="10.0.10.12",collection_scope="cluster",observer="cluster-rustfs-1:9000"}'
+        values: '0 0 1x33'
+      - series: 'rustfs_cluster_capacity_free_bytes{job="cluster_rustfs-distributed-metrics",instance="10.0.6.5:8889",stack="cluster",exported_job="RustFS",exported_instance="10.0.10.12",collection_scope="cluster",observer="cluster-rustfs-1:9000"}'
+        values: '5000000000x35'
+      - series: 'rustfs_cluster_capacity_usable_total_bytes{job="cluster_rustfs-distributed-metrics",instance="10.0.6.5:8889",stack="cluster",exported_job="RustFS",exported_instance="10.0.10.12",collection_scope="cluster",observer="cluster-rustfs-1:9000"}'
+        values: '100000000000x35'
+      - series: 'rustfs_system_drive_availability_errors_total{job="cluster_rustfs-distributed-metrics",instance="10.0.6.5:8889",stack="cluster",exported_job="RustFS",exported_instance="10.0.10.12",collection_scope="local",drive="/data/rustfs0",observer="cluster-rustfs-1:9000",server="cluster-rustfs-1:9000"}'
+        values: '0x14 4x21'
+
     alert_rule_test:
       # Before any `for` has run out, nothing fires: start's first minutes without metrics
       # and its capacity of 0 included.
@@ -160,6 +178,15 @@ tests:
             exp_annotations:
               summary: 'RustFS driveoff has lost its drive'
               description: 'RustFS driveoff has reported its drive offline for 5 minutes; it refuses every read and write until the drive is back.'
+          # cluster's is the distributed group's warning, and only that.
+          - exp_labels:
+              mode: distributed
+              severity: warning
+              job: cluster_rustfs-distributed-metrics
+              stack: cluster
+            exp_annotations:
+              summary: 'RustFS cluster has drives offline'
+              description: 'RustFS cluster has had drives offline for 5 minutes, 1 at the last count: a peer is down or a drive has failed (docker stack ps cluster).'
       # Not ok's 1%, nor idle's health checks, nor start's 503s.
       - eval_time: 12m
         alertname: RustFSS3ServerErrors
@@ -182,6 +209,14 @@ tests:
             exp_annotations:
               summary: 'RustFS full is running out of space'
               description: 'RustFS full has 5% of its drive free.'
+          - exp_labels:
+              mode: distributed
+              severity: warning
+              job: cluster_rustfs-distributed-metrics
+              stack: cluster
+            exp_annotations:
+              summary: 'RustFS cluster is running out of space'
+              description: 'RustFS cluster has 5% of its usable capacity free.'
       # Not ok's errors from long ago; and ioerr's stop counting once they leave the window.
       - eval_time: 20m
         alertname: RustFSDriveIOErrors
@@ -193,6 +228,15 @@ tests:
             exp_annotations:
               summary: 'RustFS ioerr is getting errors from its drive'
               description: 'RustFS ioerr counted 4 I/O errors or timeouts on its drive in the last 15 minutes.'
+          - exp_labels:
+              mode: distributed
+              severity: warning
+              job: cluster_rustfs-distributed-metrics
+              stack: cluster
+              server: cluster-rustfs-1:9000
+            exp_annotations:
+              summary: 'RustFS cluster peer cluster-rustfs-1:9000 is getting errors from its drives'
+              description: 'Peer cluster-rustfs-1:9000 of RustFS cluster counted 4 I/O errors or timeouts on its drives in the last 15 minutes.'
       - eval_time: 31m
         alertname: RustFSDriveIOErrors
         exp_alerts: []
