@@ -164,10 +164,6 @@ services:
   gitlab:
     image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
 
-    # A stable hostname: Swarm otherwise names the container after the task, which changes
-    # on every reschedule and shows up in `gitlab-ctl` output and SMTP HELO.
-    hostname: {{ .Values.ingress.host | quote }}
-
 {{- if $nets }}
     networks:
 {{- range $nets }}
