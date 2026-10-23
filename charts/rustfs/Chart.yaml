@@ -4,7 +4,7 @@ description: RustFS S3-compatible object store for Docker Swarm — a single nod
 version: 0.1.0
 # appVersion is the default image tag for rustfs/rustfs.
 # renovate: image=rustfs/rustfs
-appVersion: "1.0.1"
+appVersion: "1.0.3"
 # Oldest swarmcli whose chart engine renders this chart; verified by
 # scripts/floor-check.sh against a real binary of that version. 2.2.0 is the first
 # to roll a distributed cluster's peers one at a time (com.swarmcli.rollout on each
