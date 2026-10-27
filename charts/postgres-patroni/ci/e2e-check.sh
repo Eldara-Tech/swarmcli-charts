@@ -216,42 +216,32 @@ for i in $(seq 1 30); do
   sleep 1
 done
 
-# The metrics fixture, from the monitoring overlay, where Prometheus would scrape: every
-# exporter answers with pg_up 1 and every default collector succeeding, which proves the
-# one-shot created a pg_monitor role through the proxy whose password survived the secret's
-# quoting traps; the collector relays Patroni from every peer (exactly one primary) and etcd
-# from every member (each with a leader); and nothing behind the two resolves there.
+# The metrics fixture, from the monitoring overlay, where Prometheus would scrape and where
+# the collector is the one thing of this release: it relays every exporter (pg_up 1, every
+# default collector succeeding, which proves the one-shot created a pg_monitor role through
+# the proxy whose password survived the secret's quoting traps), Patroni from every peer
+# (exactly one primary) and etcd from every member (each with a leader), and nothing behind
+# it resolves there, the exporters included.
 metrics_ok=""
 if [ "$case" = metrics ]; then
-  mcurl() { docker run --rm --network monitoring curlimages/curl:8.17.0 -sSf -m 5 "$1" 2>&1 || true; }
-  for p in $peers; do
-    exp="${p/_postgres-patroni-/_postgres-patroni-exporter-}"
-    m=""
-    for _ in $(seq 1 20); do
-      m="$(mcurl "http://$exp:9187/metrics")"
-      grep -qx 'pg_up 1' <<<"$m" && break
-      sleep 3
-    done
-    if ! grep -qx 'pg_up 1' <<<"$m"; then
-      echo "  $exp: pg_up is not 1 on the monitoring overlay. Scrape and logs:"
-      grep -E '^pg_up|^curl' <<<"$m" | sed 's/^/    /'
-      docker service logs --tail 5 "$exp" 2>&1 | sed 's/^/    /'
-      docker service logs --tail 5 "${release}_postgres-patroni-exporter-user" 2>&1 | sed 's/^/    /'
-      exit 1
-    fi
-    failed="$(grep -E '^pg_scrape_collector_success\{.*\} 0$' <<<"$m" || true)"
-    [ -z "$failed" ] || { echo "  $exp: failing collectors (a missing privilege):"; echo "$failed" | sed 's/^/    /'; exit 1; }
-  done
   col="${release}_postgres-patroni-metrics"
+  want_up=$((2 * want + want_members))
   m=""
-  for _ in $(seq 1 20); do
-    m="$(mcurl "http://$col:8889/metrics")"
-    [ "$(grep -cE '^up\{.*\} 1$' <<<"$m" || true)" = "$((want + want_members))" ] && break
+  for _ in $(seq 1 30); do
+    m="$(docker run --rm --network monitoring curlimages/curl:8.17.0 -sSf -m 5 "http://$col:8889/metrics" 2>&1 || true)"
+    [ "$(grep -cE '^up\{.*\} 1$' <<<"$m" || true)" = "$want_up" ] \
+      && [ "$(grep -cE '^pg_up\{.*\} 1$' <<<"$m" || true)" = "$want" ] && break
     sleep 3
   done
   up_n="$(grep -cE '^up\{.*\} 1$' <<<"$m" || true)"
-  [ "$up_n" = "$((want + want_members))" ] \
-    || { echo "  $col: reaches $up_n of $((want + want_members)) Patroni and etcd targets:"; grep -E '^up\{' <<<"$m" | sed 's/^/    /'; exit 1; }
+  if [ "$up_n" != "$want_up" ] || [ "$(grep -cE '^pg_up\{.*\} 1$' <<<"$m" || true)" != "$want" ]; then
+    echo "  $col: reaches $up_n of $want_up targets, or an exporter does not reach its peer:"
+    grep -E '^up\{|^pg_up\{|^curl' <<<"$m" | sed 's/^/    /'
+    docker service logs --tail 5 "${release}_postgres-patroni-exporter-user" 2>&1 | sed 's/^/    /'
+    exit 1
+  fi
+  failed="$(grep -E '^pg_scrape_collector_success\{.*\} 0$' <<<"$m" || true)"
+  [ -z "$failed" ] || { echo "  failing exporter collectors (a missing privilege):"; echo "$failed" | sed 's/^/    /'; exit 1; }
   primaries="$(grep -E '^patroni_primary\{' <<<"$m" | awk '{ s += $NF } END { print s + 0 }')"
   [ "$primaries" = 1 ] || { echo "  $col: relays $primaries Patroni primaries, want 1"; exit 1; }
   [ "$(grep -cE '^patroni_primary\{' <<<"$m" || true)" = "$want" ] || { echo "  $col: relays patroni_primary for fewer than $want peers"; exit 1; }
@@ -262,7 +252,7 @@ if [ "$case" = metrics ]; then
   # As on the client overlay: the collector must resolve, and then nothing behind it may.
   probe="$(docker run --rm --network monitoring --entrypoint bash "$image" -c \
     "getent hosts $col >/dev/null || { echo no-collector; exit 0; }
-     for h in tasks.$first_peer $etcd_alias tasks.$first_member ${release}_postgres-patroni-proxy; do getent hosts \$h >/dev/null && echo \$h; done; true")"
+     for h in tasks.$first_peer $etcd_alias tasks.$first_member ${release}_postgres-patroni-proxy ${release}_postgres-patroni-exporter-1 tasks.${release}_postgres-patroni-exporter-1; do getent hosts \$h >/dev/null && echo \$h; done; true")"
   case "$probe" in
     no-collector) echo "  the probe could not resolve $col on monitoring, so it proves nothing"; exit 1 ;;
     ?*) echo "  resolves on the monitoring overlay: $(echo $probe)"; exit 1 ;;
@@ -277,7 +267,7 @@ if [ "$case" = metrics ]; then
     echo "$out" | sed 's/^/    /'
     exit 1
   fi
-  metrics_ok="; metrics on monitoring: $want exporters at pg_up 1 with every collector OK, the collector relaying $want Patroni and $want_members etcd targets with one primary, nothing behind them resolvable, rules pass promtool"
+  metrics_ok="; metrics on monitoring through the collector alone: $want exporters at pg_up 1 with every collector OK, Patroni from $want peers with one primary, etcd from $want_members members, nothing behind it resolvable, rules pass promtool"
 fi
 
 lifecycle_ok=""

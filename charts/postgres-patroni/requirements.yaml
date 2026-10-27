@@ -14,7 +14,7 @@ networks:
     driver: overlay
     attachable: true
     autoCreate: true
-    description: "Overlay the exporters and the metrics collector share with Prometheus (when metrics.enabled); the prometheus-stack chart scrapes on it by default"
+    description: "Overlay the metrics collector shares with Prometheus (when metrics.enabled); the prometheus-stack chart scrapes on it by default"
 secrets:
   - name: "{{ .Values.auth.superuser.secretName }}"
     description: "PostgreSQL superuser password, shared by every peer. Pre-create: printf 'S3cr3t' | docker secret create postgres_patroni_superuser_password -"

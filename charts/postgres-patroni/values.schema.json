@@ -141,10 +141,15 @@
             "tag": { "type": "string", "minLength": 1 }
           }
         },
-        "username": { "type": "string", "pattern": "^[a-z_][a-z0-9_]*$" },
+        "username": {
+          "description": "The exporters' role. A plain lower-case identifier, and not pg_*, a prefix PostgreSQL reserves.",
+          "type": "string",
+          "pattern": "^[a-z_][a-z0-9_]{0,62}$",
+          "not": { "pattern": "^pg_" }
+        },
         "secretName": { "type": "string", "minLength": 1 },
         "network": {
-          "description": "External overlay the exporters and the collector share with Prometheus.",
+          "description": "External overlay the collector shares with Prometheus.",
           "type": "string", "minLength": 1
         },
         "collector": {

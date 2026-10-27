@@ -169,14 +169,16 @@ postgresql:
   parameters: {}
 
 # Prometheus metrics, found by Docker Swarm service discovery: one postgres_exporter per
-# peer, and one OpenTelemetry Collector that relays Patroni's and etcd's own metrics. Each
-# carries the deploy labels prometheus.io/scrape=true and prometheus.io/port, and joins
-# metrics.network, the prometheus-stack chart's default scrape overlay, so that chart picks
-# them up with no config. The alert rules and the dashboard are in monitoring/ (README.md §
-# Metrics).
+# peer, and one OpenTelemetry Collector that scrapes those, Patroni's own metrics and etcd's
+# over the stack-internal overlay and serves them all on metrics.network, the
+# prometheus-stack chart's default scrape overlay. The collector carries the deploy labels
+# prometheus.io/scrape=true and prometheus.io/port=8889, so that chart picks it up with no
+# config, and it is the only thing of this chart on that overlay. The alert rules and the
+# dashboard are in monitoring/ (README.md § Metrics).
 #
 # Off by default, and nothing below renders while it is off. Turning it on adds services and
-# leaves the peers' and etcd members' specs untouched, so it restarts nothing.
+# leaves the peers' and etcd members' specs untouched, so within one chart version it
+# restarts nothing.
 #
 # The exporters log in as their own least-privilege role (LOGIN plus membership of the
 # built-in pg_monitor role; no access to your tables), which a one-shot service creates, or
@@ -185,10 +187,9 @@ postgresql:
 #   openssl rand -base64 32 | docker secret create postgres_patroni_exporter_password -
 # To rotate it, create a secret under a new name and point secretName at it.
 #
-# Patroni serves /metrics on its REST API and etcd on a listener of its own, and neither may
-# join metrics.network: etcd's client port has no authentication, and the REST API's read
-# endpoints none either. The collector scrapes both over the stack-internal overlay instead
-# and serves the result on metrics.network.
+# None of the exporters, Patroni and etcd may join metrics.network: etcd's client port has
+# no authentication, the REST API's read endpoints none either, and postgres_exporter's
+# /probe endpoint dials whatever the caller names. The collector relays all three instead.
 metrics:
   enabled: false
   image:
@@ -201,8 +202,8 @@ metrics:
   # refuses an existing one of that name.
   username: exporter
   secretName: postgres_patroni_exporter_password
-  # External overlay the exporters and the collector share with Prometheus. Nothing else of
-  # this chart joins it. requirements.yaml declares it autoCreate:true.
+  # External overlay the collector shares with Prometheus. Nothing else of this chart joins
+  # it. requirements.yaml declares it autoCreate:true.
   network: monitoring
   collector:
     image:

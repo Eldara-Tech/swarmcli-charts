@@ -32,7 +32,7 @@
 {{- end -}}
 {{- if .Values.metrics.enabled -}}
 {{- if or (eq .Values.metrics.network .Values.network.name) (eq .Values.metrics.network "cluster") -}}
-{{- fail "metrics.network must differ from network.name and from \"cluster\": the exporters and the collector join it, and the point of a separate metrics overlay is that Prometheus never shares one with the proxy's SQL ports, etcd or the Patroni REST API." -}}
+{{- fail "metrics.network must differ from network.name and from \"cluster\": the collector joins it, and the point of a separate metrics overlay is that Prometheus never shares one with the proxy's SQL ports, etcd, the exporters or the Patroni REST API." -}}
 {{- end -}}
 {{- if or (eq .Values.metrics.username .Values.auth.superuser.username) (eq .Values.metrics.username .Values.auth.replication.username) -}}
 {{- fail "metrics.username must differ from auth.superuser.username and auth.replication.username: the chart resets the exporter role's password to metrics.secretName, and must never touch theirs." -}}
@@ -396,11 +396,12 @@ services:
   {{ $prefix }}-exporter-{{ $n }}:
     image: {{ $.Values.metrics.image.repository }}:{{ $.Values.metrics.image.tag }}
 
-    # The cluster overlay to reach this peer, and the metrics overlay for Prometheus to
-    # reach the exporter. The peer itself never joins the metrics overlay.
+    # The cluster overlay only, like the peer it watches: the collector scrapes it there and
+    # relays its metrics. postgres_exporter's /probe?target= dials whatever host the caller
+    # names, with credentials the caller supplies, so on the metrics overlay it would reach
+    # every peer past the proxy and make pg_up a password-guessing oracle.
     networks:
       - cluster
-      - {{ $.Values.metrics.network }}
 
     secrets:
       - {{ $.Values.metrics.secretName }}
@@ -428,11 +429,6 @@ services:
 {{- end }}
       restart_policy:
         condition: any
-      # Only the discovery labels, never $.Values.labels: once a service opts in, every one of
-      # its deploy labels is readable through Prometheus's targets API.
-      labels:
-        - "prometheus.io/scrape=true"
-        - "prometheus.io/port=9187"
 {{- end }}
 {{- end }}
 
@@ -573,8 +569,9 @@ services:
   #
   # It adopts only a role it created, recognised by its comment: a role of that name made by
   # someone else may hold any privilege or membership, and its new password would go to the
-  # exporters, so it is refused, untouched. Its own role gets its attributes reset on every
-  # run. Statement logging is switched off for the session first, or log_statement=ddl, a
+  # exporters, so it is refused, untouched. The role and its comment are created in one
+  # transaction, so a failover between the two cannot leave a role it no longer recognises.
+  # Its own role gets its attributes reset on every run. Statement logging is switched off for the session first, or log_statement=ddl, a
   # duration log or a failed statement would write the password to the server log.
   {{ $prefix }}-exporter-user:
     image: {{ $image }}
@@ -612,11 +609,14 @@ services:
         SET log_statement = 'none';
         SET log_min_duration_statement = -1;
         SET log_min_error_statement = 'panic';
+        SET pg_stat_statements.track_utility = off;
         SELECT NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'exporter') AS fresh
         \gset
         \if :fresh
+        BEGIN;
         CREATE ROLE :"exporter";
         COMMENT ON ROLE :"exporter" IS 'swarmcli-charts postgres-patroni: metrics exporter role';
+        COMMIT;
         \endif
         SELECT coalesce(shobj_description(oid, 'pg_authid'), '') = 'swarmcli-charts postgres-patroni: metrics exporter role' AS ours FROM pg_roles WHERE rolname = :'exporter'
         \gset
@@ -654,18 +654,20 @@ services:
       restart_policy:
         condition: on-failure
 
-  # An OpenTelemetry Collector that scrapes what must stay off the metrics overlay — each
-  # peer's Patroni REST API (/metrics on 8008) and each etcd member's metrics-only listener
-  # (2381) — over the cluster overlay, and serves all of it to Prometheus on the metrics
-  # overlay, port 8889. Neither etcd, whose client port has no authentication, nor the REST
-  # API ever joins that overlay. It receives nothing (no OTLP receiver), so nothing on either
+  # An OpenTelemetry Collector that scrapes everything that must stay off the metrics
+  # overlay — each peer's Patroni REST API (/metrics on 8008), each etcd member's
+  # metrics-only listener (2381) and each peer's postgres_exporter (9187) — over the cluster
+  # overlay, and serves all of it to Prometheus on the metrics overlay, port 8889, the only
+  # port this chart puts there. It receives nothing (no OTLP receiver), so nothing on either
   # overlay can push to it. The image has no shell, so there is no healthcheck; a collector
   # that stops answering is prometheus-stack's TargetDown. Its configuration is an
   # environment variable, read by the collector's env provider.
   #
-  # Every scraped series keeps its origin as exported_job (patroni or etcd) and
+  # Every scraped series keeps its origin as exported_job (patroni, etcd or postgres) and
   # exported_instance (the target), since Prometheus renames the collector's job and
-  # instance labels; monitoring/postgres-patroni-rules.yml selects on them.
+  # instance labels, and carries the peer or member as `name`; monitoring/ selects on them.
+  # Each job keeps only its own metric family (and the synthesized up), so the Go runtime
+  # and gRPC series of three programs never reach Prometheus.
   {{ $prefix }}-metrics:
     image: {{ .Values.metrics.collector.image.repository }}:{{ .Values.metrics.collector.image.tag }}
     command:
@@ -676,16 +678,19 @@ services:
           prometheus:
             config:
               scrape_configs:
+                # honor_labels: Patroni labels its own series with the same `name` as the
+                # target's, which would otherwise land beside it as exported_name.
                 - job_name: patroni
                   scrape_interval: 15s
+                  honor_labels: true
                   metric_relabel_configs:
                     - source_labels: [__name__]
                       regex: "patroni_.+|up"
                       action: keep
                   static_configs:
-                    - targets:
-{{- range $peerAddrs }}
-                        - {{ . }}:8008
+{{- range $i := until $peers }}
+                    - targets: [{{ index $peerAddrs $i }}:8008]
+                      labels: {name: {{ printf "%s-%d" $prefix (add1 $i) }}}
 {{- end }}
                 - job_name: etcd
                   scrape_interval: 15s
@@ -694,9 +699,20 @@ services:
                       regex: "etcd_.+|up"
                       action: keep
                   static_configs:
-                    - targets:
-{{- range $etcdHosts }}
-                        - {{ trimSuffix ":2379" . }}:2381
+{{- range $i := until $members }}
+                    - targets: [{{ trimSuffix ":2379" (index $etcdHosts $i) }}:2381]
+                      labels: {name: {{ printf "%s-etcd-%d" $prefix (add1 $i) }}}
+{{- end }}
+                - job_name: postgres
+                  scrape_interval: 15s
+                  metric_relabel_configs:
+                    - source_labels: [__name__]
+                      regex: "pg_.+|up"
+                      action: keep
+                  static_configs:
+{{- range $i := until $peers }}
+                    - targets: [tasks.{{ $.Release.Name }}_{{ $prefix }}-exporter-{{ add1 $i }}:9187]
+                      labels: {name: {{ printf "%s-%d" $prefix (add1 $i) }}}
 {{- end }}
         exporters:
           prometheus:
@@ -777,8 +793,8 @@ networks:
   {{ .Values.metrics.network }}:
     external: true
 {{- end }}
-  # Stack-internal: etcd, the peers, the proxy and, with metrics, the exporters and the
-  # collector. etcd has no authentication and the
+  # Stack-internal: etcd, the peers, the proxy and, with metrics, the exporters, the
+  # one-shot and the collector. etcd has no authentication and the
   # Patroni REST API's read endpoints none either, so this overlay is what keeps both away
   # from the app stacks on the client overlay. Not attachable, so no `docker run` container
   # can join it; a Swarm service can only by declaring it, which takes manager access.
