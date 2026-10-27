@@ -84,10 +84,22 @@ wait_cluster() {
         and ([.[] | select(.Role == "Replica" and .State == "streaming")] | length) == $n - 1
         and ([.[] | .TL] | unique | length) == 1' <<<"$out" >/dev/null; then
       for _ in $(seq 1 30); do
-        [ "$(trap - ERR; sql 5432 'SELECT pg_is_in_recovery()' 2>/dev/null)" = f ] && return 0
+        [ "$(trap - ERR; sql 5432 'SELECT pg_is_in_recovery()' 2>/dev/null)" = f ] && break
         sleep 2
       done
-      echo "  $1: the cluster settled, but the proxy's primary port did not reach it within 60s"
+      [ "$(trap - ERR; sql 5432 'SELECT pg_is_in_recovery()' 2>/dev/null)" = f ] \
+        || { echo "  $1: the cluster settled, but the proxy's primary port did not reach it within 60s"; exit 1; }
+      # And until Swarm counts every task as running. A task with a healthcheck stays
+      # `starting` until its first healthy check, which can come after Patroni already
+      # streams, and swarmcli rolls a service that is not running in the first batch,
+      # beside the one it rolls first: the next upgrade would restart two peers at once.
+      local states=""
+      for _ in $(seq 1 60); do
+        states="$(for s in $peers $members; do docker service ps --filter desired-state=running --format '{{.CurrentState}}' "$s" | sed -n 1p; done)"
+        grep -v '^Running' <<<"$states" >/dev/null || return 0
+        sleep 2
+      done
+      echo "  $1: the cluster settled, but Swarm does not count every task as running: $(echo $states)"
       exit 1
     fi
     sleep 4
