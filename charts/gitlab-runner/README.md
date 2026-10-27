@@ -222,7 +222,7 @@ refuses (`got object, want string`). prometheus-stack's README, *Keeping your se
 git*, shows where to list the two files.
 
 - **Alerts** (`gitlab-runner-rules.yml`), each per runner task: `GitLabRunnerDisabled`
-  while it skips its job polls, which it does for an hour at a time once GitLab has
+  while it skips its job polls, backing off from 30 seconds to an hour, once GitLab has
   refused it three times (usually a revoked token); `GitLabRunnerJobRequestsFailing`
   while over half its job requests fail (GitLab unreachable, 5xx, 429);
   `GitLabRunnerSaturated` after 30 minutes at its job capacity (`concurrent`, or
@@ -230,7 +230,7 @@ git*, shows where to list the two files.
   jobs fail with `runner_system_failure`, the runner's fault rather than the script's.
   There is no upstream mixin: they are built on the metrics in GitLab's
   [runner monitoring docs](https://docs.gitlab.com/runner/monitoring/) and checked
-  against the runner's v19.4.0 source.
+  against the runner's v19.5.0 source.
 - **Dashboard** (`gitlab-runner-dashboard.json`, uid `gitlab-runner`): jobs against
   capacity, jobs by stage, job duration and time in GitLab's queue, jobs started and
   failed by reason, job requests and other API calls by status, skipped polls and
