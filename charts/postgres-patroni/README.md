@@ -134,6 +134,7 @@ alias resolves to both proxies and clients are spread over two unrelated databas
 | `etcd.members` | `3` | Number of etcd members, `3` or `5`. Fixed at install. |
 | `etcd.image.repository` | `gcr.io/etcd-development/etcd` | etcd image. |
 | `etcd.image.tag` | pinned in `values.yaml` | etcd image tag (a concrete pin; Renovate maintains it). |
+| `etcd.generation` | `1` | Disaster recovery only: bumped when etcd is rebuilt from empty volumes. See below. |
 | `etcd.rejoinMembers` | `[]` | Disaster recovery only: members that join the running etcd cluster. See below. |
 | `etcd.resources.limits.memory` | `""` | Per-member memory limit. Rendered only when set. |
 | `auth.superuser.username` | `postgres` | The superuser Patroni creates when it initialises the cluster. |
@@ -197,7 +198,7 @@ between nodes is already trusted. Client connections are not TLS-encrypted by th
 
 ## Operating the cluster
 
-Every command below runs inside a peer. Any running peer will do:
+The `patronictl` commands below run inside a peer, and any running peer will do:
 
 ```bash
 peer() { docker ps -q -f label=com.docker.swarm.service.name=db_postgres-patroni-$1 | head -1; }
@@ -293,7 +294,10 @@ join them. With the other members still a majority, replace it. For member 3 of 
 ```bash
 e1=$(docker ps -q -f label=com.docker.swarm.service.name=db_postgres-patroni-etcd-1 | head -1)
 docker service scale db_postgres-patroni-etcd-3=0
-docker volume rm db_postgres-patroni-etcd-3            # on member 3's node, if it still exists
+# On member 3's node, if it still exists. Swarm keeps the stopped task's container,
+# which holds the volume, so remove that first:
+docker rm -f $(docker ps -aq -f label=com.docker.swarm.service.name=db_postgres-patroni-etcd-3)
+docker volume rm db_postgres-patroni-etcd-3
 docker exec $e1 etcdctl member list                     # note member 3's ID
 docker exec $e1 etcdctl member remove <id>
 docker exec $e1 etcdctl member add postgres-patroni-etcd-3 --peer-urls=http://db-etcd-3:2380
@@ -304,7 +308,7 @@ swarmcli charts upgrade db swarmcli-charts/postgres-patroni --reuse-values \
 The peer URL is `http://<release>-etcd-<N>:2380`, with any `_` or `.` in the release name
 turned into `-`. `etcd.rejoinMembers` makes member 3 join the running cluster instead of
 forming a new one. etcd reads it only while the member's data directory is empty, so it
-can stay set afterwards.
+can stay set afterwards, until etcd is rebuilt from nothing (below).
 
 This is also why `persistence.enabled: false` is for demos only: there, an etcd member
 that loses its task loses its data.
@@ -316,14 +320,22 @@ needs a majority. Rebuild etcd from nothing instead, **while the primary is stil
 running**. `failsafe_mode` keeps it writable as long as every peer is up:
 
 ```bash
-for m in 1 2 3; do docker service scale --detach db_postgres-patroni-etcd-$m=0; done
-docker volume rm db_postgres-patroni-etcd-1 db_postgres-patroni-etcd-2 db_postgres-patroni-etcd-3   # on each member's node
-for m in 1 2 3; do docker service scale --detach db_postgres-patroni-etcd-$m=1; done
+for m in 1 2 3; do docker service scale db_postgres-patroni-etcd-$m=0; done
+# On each member's node: its stopped container first, which holds the volume.
+docker rm -f $(docker ps -aq -f label=com.docker.swarm.service.name=db_postgres-patroni-etcd-<N>)
+docker volume rm db_postgres-patroni-etcd-<N>
+# Then, with the next etcd.generation (1 unless you have done this before):
+swarmcli charts upgrade db swarmcli-charts/postgres-patroni --reuse-values \
+  --version <installed version> --set etcd.generation=2 --set 'etcd.rejoinMembers={}'
 ```
 
-The members form a new, empty etcd cluster. The running primary takes the leader key
-again and writes back the rest of Patroni's state, `edit-config` changes included, and
-the replicas follow it. Do it before any peer restarts: a peer cannot start while etcd is
+The members form a new, empty etcd cluster. The new `etcd.generation` gives it a new
+cluster ID, and that is not optional: Patroni remembers the old cluster's raft term and
+refuses a cluster with the same ID and a lower term as one that fell behind, so without
+it the peers never use the new etcd. `etcd.rejoinMembers` is cleared because every
+member must start as new. The running primary then takes the leader key again and writes
+back the rest of Patroni's state, `edit-config` changes included, and the replicas follow
+it. Do it before any peer restarts: a peer cannot start while etcd is
 down, and a missing peer makes the primary give up `failsafe_mode` and turn read-only.
 This chart has no tested procedure for the case where no peer is still running.
 

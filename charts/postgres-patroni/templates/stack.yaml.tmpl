@@ -104,7 +104,9 @@ services:
     # argv, and every value is fixed at render time.
     #
     # The --initial-cluster* flags only matter while the data dir is empty: etcd ignores
-    # them once it holds a member's data. "existing" is for a member re-added with
+    # them once it holds a member's data. The token decides the cluster's ID, which is why
+    # it carries etcd.generation: Patroni refuses an etcd whose raft term went backwards,
+    # as a rebuilt one's does, unless its ID changed too. "existing" is for a member re-added with
     # `etcdctl member add` after its data was lost (etcd.rejoinMembers, README § Replacing
     # an etcd member). Started as "new" with an empty data dir beside a running cluster, a
     # member fails instead of joining.
@@ -121,7 +123,7 @@ services:
       - --initial-advertise-peer-urls=http://{{ $alias }}:2380
       - --advertise-client-urls=http://{{ $alias }}:2379
       - --initial-cluster={{ join "," $initialCluster }}
-      - --initial-cluster-token={{ $.Release.Name }}-{{ $.Values.cluster.name }}
+      - --initial-cluster-token={{ $.Release.Name }}-{{ $.Values.cluster.name }}-{{ $.Values.etcd.generation }}
       - --initial-cluster-state={{ ternary "existing" "new" (has (toString $n) $rejoin) }}
       - --auto-compaction-mode=periodic
       - --auto-compaction-retention=1h

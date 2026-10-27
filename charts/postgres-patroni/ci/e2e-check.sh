@@ -272,10 +272,14 @@ if [ "$case" = lifecycle ]; then
   # do: one at a time, each new task starts only after the one before outlived its monitor
   # window (60s for a peer in this fixture, 30s for an etcd member); all at once, they
   # start within seconds of each other.
+  starts="$(for k in $after; do docker inspect --format '{{.CreatedAt.Unix}} {{.ServiceID}}' "$k"; done | sort -n)"
   prev=""
-  for t in $(for k in $after; do docker inspect --format '{{.CreatedAt.Unix}}' "$k"; done | sort -n); do
+  for t in $(printf '%s\n' "$starts" | cut -d' ' -f1); do
     if [ -n "$prev" ] && [ $((t - prev)) -lt 25 ]; then
-      echo "  two new tasks started $((t - prev))s apart; the upgrade did not roll one service at a time"
+      echo "  two new tasks started $((t - prev))s apart; the upgrade did not roll one service at a time:"
+      printf '%s\n' "$starts" | while read -r at id; do
+        echo "    $at $(docker service inspect --format '{{.Spec.Name}}' "$id")"
+      done
       exit 1
     fi
     prev="$t"
@@ -350,8 +354,10 @@ if [ "$case" = lifecycle ]; then
   [ "$got" = "$want_rows" ] || { echo "  rows after replacing etcd member 3: $got, want $want_rows"; exit 1; }
 
   # 7. etcd's majority lost for good, recovered as README.md § etcd lost its majority for
-  #    good says: every member wiped and started empty while the primary runs. failsafe_mode
-  #    keeps it writable throughout, and Patroni writes its state back into the new etcd.
+  #    good says: every member wiped, then started empty under a new etcd.generation while
+  #    the primary runs. failsafe_mode keeps it writable throughout, and Patroni writes its
+  #    state back into the new etcd. Without the new generation the rebuilt etcd keeps its
+  #    ID with a lower raft term, and Patroni refuses it for good.
   for m in $members; do docker service scale --detach "$m=0" >/dev/null; done
   for m in $members; do
     stop_svc "$m"
@@ -359,7 +365,9 @@ if [ "$case" = lifecycle ]; then
   done
   for k in $(seq 1 "$want_members"); do docker volume rm "${release}_postgres-patroni-etcd-$k" >/dev/null; done
   write_until 4 "etcd wiped" >/dev/null
-  for m in $members; do docker service scale --detach "$m=1" >/dev/null; done
+  # rejoinMembers cleared too: step 6 set it, and a rebuilt cluster needs every member new.
+  upgrade --set etcd.generation=2 --set 'etcd.rejoinMembers={}' --timeout 10m \
+    || { echo "  the etcd.generation upgrade did not roll out"; exit 1; }
   wait_cluster "after rebuilding etcd from empty"
   conf="$(docker exec "$(cid_of "$(printf '%s\n' $peers | sed -n 1p)")" patronictl show-config)"
   grep -qx 'failsafe_mode: true' <<<"$conf" || { echo "  Patroni did not write its configuration back into the rebuilt etcd:"; echo "$conf"; exit 1; }

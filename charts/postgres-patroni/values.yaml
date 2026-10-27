@@ -38,11 +38,17 @@ etcd:
     # A concrete tag, not appVersion: this is a second image, and Renovate's
     # helm-values manager maintains pins written here.
     tag: "v3.6.16"
+  # DISASTER RECOVERY ONLY — bump it by one when rebuilding etcd from empty volumes
+  # (README.md § etcd lost its majority for good), and only then. It gives the rebuilt
+  # etcd cluster a new ID: Patroni remembers the old cluster's raft term and refuses a
+  # cluster with the same ID and a lower term as one that fell behind. etcd reads it
+  # only while a member's data dir is empty.
+  generation: 1
   # DISASTER RECOVERY ONLY — normally []. Members that join the RUNNING etcd cluster
   # instead of forming a new one, for a member whose data was lost and which has been
   # re-added with `etcdctl member add` (README.md § Replacing an etcd member). etcd reads
-  # this only while the member's data dir is empty, so leaving it set afterwards is
-  # harmless.
+  # this only while the member's data dir is empty, so it can stay set afterwards, until
+  # etcd is rebuilt from nothing: that needs every member new, so clear it then.
   rejoinMembers: []
   resources:
     limits:

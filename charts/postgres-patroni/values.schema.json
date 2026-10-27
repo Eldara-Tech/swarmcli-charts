@@ -34,6 +34,10 @@
             "tag": { "type": "string", "minLength": 1 }
           }
         },
+        "generation": {
+          "description": "Disaster recovery only: bumped when etcd is rebuilt from empty volumes.",
+          "type": "integer", "minimum": 1
+        },
         "rejoinMembers": {
           "description": "Disaster recovery only: members that join the running etcd cluster after `etcdctl member add`.",
           "type": "array",

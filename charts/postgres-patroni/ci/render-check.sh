@@ -92,7 +92,10 @@ for s in $members; do
   initial_cluster="$ic"
   # Members with different tokens form different clusters out of one member list.
   tok="$(arg "$s" initial-cluster-token)"
-  [ -n "$tok" ] || err "$s: no --initial-cluster-token"
+  case "$tok" in
+    *-postgres-patroni-1) ;;
+    *) err "$s: --initial-cluster-token '$tok' does not end with cluster.name and etcd.generation" ;;
+  esac
   [ -z "${token:-}" ] || [ "$tok" = "$token" ] || err "$s: --initial-cluster-token differs between members"
   token="$tok"
   seen_ic="$seen_ic$s=http://$alias:2380,"
