@@ -1,0 +1,554 @@
+{{- /* The CROSS-FIELD invariants only. Single-field rules (peers is 2 to 5, etcd.members
+       is 3 or 5, a volumePath is absolute) live in values.schema.json, which rejects them
+       earlier and names the offending path. What is left is the set a schema cannot state,
+       and nothing downstream catches these either: `docker compose config` accepts all of
+       them. */ -}}
+{{- $peers := int .Values.cluster.peers -}}
+{{- $members := int .Values.etcd.members -}}
+{{- if and .Values.persistence.enabled .Values.persistence.volumePaths -}}
+{{- if ne (len .Values.persistence.volumePaths) $peers -}}
+{{- fail (printf "persistence.volumePaths has %d entries but cluster.peers is %d. Give exactly one absolute host path per peer, in peer order, or leave it [] to use named volumes." (len .Values.persistence.volumePaths) $peers) -}}
+{{- end -}}
+{{- end -}}
+{{- if and .Values.persistence.enabled .Values.persistence.etcdVolumePaths -}}
+{{- if ne (len .Values.persistence.etcdVolumePaths) $members -}}
+{{- fail (printf "persistence.etcdVolumePaths has %d entries but etcd.members is %d. Give exactly one absolute host path per etcd member, in member order, or leave it [] to use named volumes." (len .Values.persistence.etcdVolumePaths) $members) -}}
+{{- end -}}
+{{- end -}}
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePaths) (contains "/" .Values.persistence.volumePrefix) -}}
+{{- fail "persistence.volumePrefix is a Docker named-volume name prefix and cannot contain '/'. To store data under host directories, set persistence.volumePaths instead." -}}
+{{- end -}}
+{{- if and .Values.persistence.enabled (not .Values.persistence.etcdVolumePaths) (contains "/" .Values.persistence.etcdVolumePrefix) -}}
+{{- fail "persistence.etcdVolumePrefix is a Docker named-volume name prefix and cannot contain '/'. To store etcd data under host directories, set persistence.etcdVolumePaths instead." -}}
+{{- end -}}
+{{- if eq .Values.auth.superuser.username .Values.auth.replication.username -}}
+{{- fail "auth.replication.username must differ from auth.superuser.username: Patroni creates the replication role with only the REPLICATION attribute, and the superuser is a different role with a different password." -}}
+{{- end -}}
+{{- if eq .Values.persistence.volumePrefix .Values.persistence.etcdVolumePrefix -}}
+{{- fail "persistence.volumePrefix and persistence.etcdVolumePrefix must differ: peer N and etcd member N would mount one volume." -}}
+{{- end -}}
+{{- if or (eq .Values.auth.superuser.secretName .Values.auth.replication.secretName) (eq .Values.auth.superuser.secretName .Values.auth.restApi.secretName) (eq .Values.auth.replication.secretName .Values.auth.restApi.secretName) -}}
+{{- fail "auth.superuser.secretName, auth.replication.secretName and auth.restApi.secretName must be three different secrets: a shared one would hand the superuser's password to whatever holds the other." -}}
+{{- end -}}
+{{- if eq .Values.network.name "cluster" -}}
+{{- fail "network.name cannot be \"cluster\": that is the stack-internal overlay this chart keeps etcd and the peers on, and the two would collide." -}}
+{{- end -}}
+{{- if eq (int .Values.exposure.port) (int .Values.exposure.replicaPort) -}}
+{{- fail "exposure.port and exposure.replicaPort must differ: one reaches the primary and the other the replicas." -}}
+{{- end -}}
+{{- $rejoin := list -}}
+{{- range .Values.etcd.rejoinMembers -}}
+{{- if or (lt (int .) 1) (gt (int .) $members) -}}
+{{- fail (printf "etcd.rejoinMembers names member %v, but etcd.members is %d." . $members) -}}
+{{- end -}}
+{{- $rejoin = append $rejoin (toString (int .)) -}}
+{{- end -}}
+{{- /* Names and addresses.
+
+       Peer N is the service <chart>-N, and that one string is also its hostname and its
+       Patroni member name, so a rename cannot desynchronise them. etcd member N is the
+       service <chart>-etcd-N, which is likewise its etcd member name.
+
+       etcd records each member's peer URL in the cluster membership, so it must be a name
+       that stays the same when Swarm reschedules the task: a network alias, which resolves
+       to the service VIP. Release-scoped, with the release name's `_` (which a host name
+       cannot hold) and `.` (which would turn it into a domain name) replaced by `-`. The etcd
+       services carry no healthcheck (see there), so Swarm publishes these aliases as soon as
+       each task runs.
+
+       The proxy addresses each peer by `tasks.<release>_<peer>`, the name Swarm publishes
+       for the task itself, so no VIP sits between the proxy and the peer whose REST API it
+       checks. The peers advertise their own IP to each other through etcd (see the peer
+       wrapper), never a name. */ -}}
+{{- $prefix := .Chart.Name -}}
+{{- $rel := .Release.Name | replace "_" "-" | replace "." "-" -}}
+{{- $image := printf "%s:%s" .Values.image.repository (.Values.image.tag | default .Chart.AppVersion) -}}
+{{- $etcdImage := printf "%s:%s" .Values.etcd.image.repository .Values.etcd.image.tag -}}
+{{- $initialCluster := list -}}
+{{- $etcdHosts := list -}}
+{{- range $i := until $members -}}
+{{- $alias := printf "%s-etcd-%d" $rel (add1 $i) -}}
+{{- $initialCluster = append $initialCluster (printf "%s-etcd-%d=http://%s:2380" $prefix (add1 $i) $alias) -}}
+{{- $etcdHosts = append $etcdHosts (printf "%s:2379" $alias) -}}
+{{- end -}}
+{{- $peerAddrs := list -}}
+{{- range $i := until $peers -}}
+{{- $peerAddrs = append $peerAddrs (printf "tasks.%s_%s-%d" $.Release.Name $prefix (add1 $i)) -}}
+{{- end -}}
+version: "3.9"
+
+services:
+{{- range $i := until $members }}
+{{- $n := add1 $i }}
+{{- $name := printf "%s-etcd-%d" $prefix $n }}
+{{- $alias := printf "%s-etcd-%d" $rel $n }}
+
+  {{ $name }}:
+    image: {{ $etcdImage }}
+
+    networks:
+      cluster:
+        aliases:
+          - {{ $alias }}
+
+{{- if $.Values.persistence.enabled }}
+    volumes:
+{{- if $.Values.persistence.etcdVolumePaths }}
+      - {{ index $.Values.persistence.etcdVolumePaths $i }}:/var/lib/etcd
+{{- else }}
+      - {{ printf "%s-%d" $.Values.persistence.etcdVolumePrefix $n }}:/var/lib/etcd
+{{- end }}
+{{- end }}
+
+    # The image is distroless (etcd, etcdctl and etcdutl, no shell), so this is the whole
+    # argv, and every value is fixed at render time.
+    #
+    # The --initial-cluster* flags only matter while the data dir is empty: etcd ignores
+    # them once it holds a member's data. "existing" is for a member re-added with
+    # `etcdctl member add` after its data was lost (etcd.rejoinMembers, README § Replacing
+    # an etcd member). Started as "new" with an empty data dir beside a running cluster, a
+    # member fails instead of joining.
+    #
+    # Patroni rewrites its member keys every loop_wait, so without compaction the key
+    # history only grows, until the backend quota (2 GB) is full and etcd refuses every
+    # write. One hour of history is plenty for a DCS that is only ever read at its head.
+    command:
+      - /usr/local/bin/etcd
+      - --name={{ $name }}
+      - --data-dir=/var/lib/etcd/data
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --initial-advertise-peer-urls=http://{{ $alias }}:2380
+      - --advertise-client-urls=http://{{ $alias }}:2379
+      - --initial-cluster={{ join "," $initialCluster }}
+      - --initial-cluster-token={{ $.Release.Name }}-{{ $.Values.cluster.name }}
+      - --initial-cluster-state={{ ternary "existing" "new" (has (toString $n) $rejoin) }}
+      - --auto-compaction-mode=periodic
+      - --auto-compaction-retention=1h
+
+    # No healthcheck, on purpose. Every etcd health endpoint needs quorum (the client
+    # listener does not even open before the member has joined one), and Swarm publishes
+    # no DNS name for a task, alias included, until its healthcheck passes. So a
+    # healthcheck would keep every member's alias out of DNS on a first install, no member
+    # could reach another, and quorum would never form. Swarm still restarts a member that
+    # exits, and Patroni reports a DCS it cannot reach.
+
+    deploy:
+      # One replica per member, always: a member IS a service here, and two tasks sharing
+      # one data dir would corrupt it.
+      replicas: 1
+      # vip (the default, stated because it is load-bearing): it is what keeps network
+      # aliases working, and the alias above is this member's identity in etcd.
+      endpoint_mode: vip
+      update_config:
+        # The old task must be gone before the new one starts: both would mount one data dir.
+        order: stop-first
+        # A member that dies within this window fails the rollout, which then stops
+        # before it takes a second member down with it.
+        monitor: 30s
+{{- /* etcd member N shares node label N with peer N, so labelling one node per peer
+       places both. The pin travels with persistence, so the ephemeral mode never strands
+       a task Pending on a missing node label. */}}
+{{- $constraints := list }}
+{{- if and $.Values.persistence.enabled $.Values.persistence.nodeLabelPrefix }}
+{{-   $constraints = append $constraints (printf "node.labels.%s-%d == true" $.Values.persistence.nodeLabelPrefix $n) }}
+{{- end }}
+{{- range $.Values.placement.constraints }}
+{{-   $constraints = append $constraints . }}
+{{- end }}
+{{- if $constraints }}
+      placement:
+        constraints:
+{{- range $constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- with $.Values.etcd.resources.limits.memory }}
+      resources:
+        limits:
+          memory: {{ . | quote }}
+{{- end }}
+      restart_policy:
+        condition: any
+      # swarmcli >= 2.2.0 updates services carrying this label one at a time, each
+      # converged before the next, so an upgrade never takes etcd's quorum down.
+      labels:
+        - "com.swarmcli.rollout=sequential"
+{{- range $key, $val := $.Values.labels }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+{{- end }}
+{{- range $i := until $peers }}
+{{- $n := add1 $i }}
+{{- $name := printf "%s-%d" $prefix $n }}
+
+  {{ $name }}:
+    image: {{ $image }}
+    # A stable hostname: it is what the address lookup below searches /etc/hosts for, and
+    # what shows up in this peer's log instead of a task ID that changes on every reschedule.
+    hostname: {{ $name }}
+    # Long enough for Patroni to stop PostgreSQL cleanly (a checkpoint, then the shutdown
+    # record streamed to the replicas) and hand the leader key over. Killed partway, a
+    # primary is failed over only once its leader key expires (ttl), and rejoins by
+    # pg_rewind.
+    stop_grace_period: {{ $.Values.stopGracePeriod }}
+
+    # Only the stack-internal overlay. Clients reach the cluster through the proxy, so
+    # nothing on the shared client overlay can reach PostgreSQL, the Patroni REST API or
+    # etcd directly.
+    networks:
+      - cluster
+
+{{- if $.Values.persistence.enabled }}
+    volumes:
+{{- if $.Values.persistence.volumePaths }}
+      - {{ index $.Values.persistence.volumePaths $i }}:/data/db
+{{- else }}
+      - {{ printf "%s-%d" $.Values.persistence.volumePrefix $n }}:/data/db
+{{- end }}
+{{- end }}
+
+    secrets:
+      - {{ $.Values.auth.superuser.secretName }}
+      - {{ $.Values.auth.replication.secretName }}
+      - {{ $.Values.auth.restApi.secretName }}
+
+    environment:
+      # `docker exec <container> patronictl list` finds the configuration through this.
+      PATRONICTL_CONFIG_FILE: /tmp/patroni.yml
+      # Everything but the credentials and this peer's own address, which the wrapper
+      # below adds. Written out at every start, so a values change takes effect on
+      # redeploy.
+      #
+      # The REST API credentials stay out of this file entirely: patronictl formats them
+      # from it, and a username without its password makes every `docker exec … patronictl`
+      # fail, read-only commands included. A command that needs them passes both
+      # (README § Operating the cluster).
+      #
+      # bootstrap.dcs is read once, when the cluster is first initialised, and lives in etcd
+      # from then on: change it with `patronictl edit-config` (README § Changing PostgreSQL
+      # settings). postgresql.parameters is this peer's own and applies on every start.
+      PATRONI_YAML: |
+        scope: {{ $.Values.cluster.name | quote }}
+        name: {{ $name }}
+        restapi:
+          listen: 0.0.0.0:8008
+        etcd3:
+          hosts: {{ join "," $etcdHosts }}
+        bootstrap:
+          dcs:
+            ttl: 30
+            loop_wait: 10
+            retry_timeout: 10
+            maximum_lag_on_failover: 1048576
+            # Keeps the primary writable while etcd has no quorum, as long as it still
+            # reaches every other peer's REST API, rather than demoting it after ttl.
+            failsafe_mode: true
+            postgresql:
+              use_pg_rewind: true
+              use_slots: true
+{{- with $.Values.postgresql.parameters }}
+              parameters:
+                {{- toYaml . | nindent 16 }}
+{{- end }}
+        postgresql:
+          listen: 0.0.0.0:5432
+          data_dir: /data/db/pgdata
+          pgpass: /tmp/pgpass
+          use_unix_socket: true
+          authentication:
+            superuser:
+              username: {{ $.Values.auth.superuser.username | quote }}
+            replication:
+              username: {{ $.Values.auth.replication.username | quote }}
+          # Local connections are trusted: only this container's own processes can reach the
+          # socket, and anything that can run one can read the secrets anyway. Over the
+          # network every role authenticates.
+          pg_hba:
+            - local all all trust
+            - host replication {{ $.Values.auth.replication.username }} all scram-sha-256
+            - host all all all scram-sha-256
+{{- with $.Values.postgresql.parameters }}
+          parameters:
+            {{- toYaml . | nindent 12 }}
+{{- end }}
+
+    # The image's own entrypoint runs a single PostgreSQL; this runs Patroni instead, which
+    # starts, initialises, replicates and promotes PostgreSQL itself. `$$` is the compose
+    # escape for a literal `$`, so every expansion below happens inside the container.
+    entrypoint:
+      - /bin/bash
+      - -c
+    command:
+      - |-
+        set -eu
+        # This peer's own overlay address, taken from /etc/hosts, where Docker writes the
+        # container's hostname, and never from DNS. Patroni publishes it in etcd as the
+        # address the other peers replicate from and call, so it must be one they can dial
+        # now: Swarm withholds a task's DNS names until its healthcheck passes. There is
+        # deliberately no fallback: advertising anything else fails later and far from here.
+        SELF_ADDR="$$(awk -v h="$$(hostname)" '$$1 !~ /^127\./ { for (i = 2; i <= NF; i++) if ($$i == h) { print $$1; exit } }' /etc/hosts)"
+        if [ -z "$$SELF_ADDR" ]; then
+          echo 'postgres-patroni: cannot determine this peer own address from /etc/hosts' >&2
+          exit 1
+        fi
+        # Not "of <peers>": that would put cluster.peers in every peer's spec, so scaling
+        # the cluster would restart every peer.
+        echo "postgres-patroni: peer {{ $n }} starting at $$SELF_ADDR"
+        printf '%s\n' "$$PATRONI_YAML" > /tmp/patroni.yml
+        export PATRONI_POSTGRESQL_CONNECT_ADDRESS="$$SELF_ADDR:5432"
+        export PATRONI_RESTAPI_CONNECT_ADDRESS="$$SELF_ADDR:8008"
+        # Read from the mounted secrets, so the plaintext is never in the compose file or
+        # `docker inspect`, only in this process's environment.
+        PATRONI_SUPERUSER_PASSWORD="$$(cat /run/secrets/{{ $.Values.auth.superuser.secretName }})"
+        PATRONI_REPLICATION_PASSWORD="$$(cat /run/secrets/{{ $.Values.auth.replication.secretName }})"
+        PATRONI_RESTAPI_PASSWORD="$$(cat /run/secrets/{{ $.Values.auth.restApi.secretName }})"
+        PATRONI_RESTAPI_USERNAME={{ $.Values.auth.restApi.username | quote }}
+        export PATRONI_SUPERUSER_PASSWORD PATRONI_REPLICATION_PASSWORD PATRONI_RESTAPI_USERNAME PATRONI_RESTAPI_PASSWORD
+        exec patroni /tmp/patroni.yml
+
+{{- if $.Values.healthcheck.enabled }}
+    # /liveness: 200 while Patroni's HA loop is running, whatever the role. Deliberately
+    # NOT /health or /readiness, which look stricter and better and are a trap: a replica
+    # being built or rebuilt by pg_basebackup answers 503 on both for the whole copy, and
+    # Swarm would kill it partway and restart it into the same copy forever. Whether a
+    # peer should take client traffic is the proxy's question (/primary, /replica), not
+    # Swarm's. GET endpoints need no REST API password.
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -fsS
+        - -o
+        - /dev/null
+        - http://127.0.0.1:8008/liveness
+      interval: {{ $.Values.healthcheck.interval }}
+      timeout: {{ $.Values.healthcheck.timeout }}
+      retries: {{ $.Values.healthcheck.retries }}
+      start_period: {{ $.Values.healthcheck.startPeriod }}
+{{- end }}
+
+    deploy:
+      # One replica per peer, always: a peer IS a service here, and two tasks sharing one
+      # data dir would corrupt it. Scale the cluster with cluster.peers, never with replicas.
+      replicas: 1
+      # vip (the default, stated because tasks.<release>_<peer> and the proxy rely on it).
+      endpoint_mode: vip
+      update_config:
+{{- if $.Values.healthcheck.enabled }}
+        {{- /* Swarm watches a task for `monitor` after CREATING it, and only counts a
+               failure inside that window against the rollout. Shorter than the
+               healthcheck needs to fail and a broken deploy reports success. */}}
+        monitor: {{ $.Values.healthcheck.monitor }}
+{{- end }}
+        # The old task must be gone before the new one starts: both would mount one data dir.
+        order: stop-first
+{{- /* Each peer is pinned to the node holding ITS volume, so the pins differ per peer.
+       The pin travels with persistence; placement.constraints adds extras. */}}
+{{- $constraints := list }}
+{{- if and $.Values.persistence.enabled $.Values.persistence.nodeLabelPrefix }}
+{{-   $constraints = append $constraints (printf "node.labels.%s-%d == true" $.Values.persistence.nodeLabelPrefix $n) }}
+{{- end }}
+{{- range $.Values.placement.constraints }}
+{{-   $constraints = append $constraints . }}
+{{- end }}
+{{- if $constraints }}
+      placement:
+        constraints:
+{{- range $constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- with $.Values.resources.limits.memory }}
+      resources:
+        limits:
+          memory: {{ . | quote }}
+{{- end }}
+      restart_policy:
+        condition: any
+      # swarmcli >= 2.2.0 updates services carrying this label one at a time, each
+      # converged before the next, so an upgrade restarts one peer at a time. Each
+      # restart of the current primary is a switchover: about 10 seconds without a
+      # writable primary behind the proxy.
+      labels:
+        - "com.swarmcli.rollout=sequential"
+{{- range $key, $val := $.Values.labels }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+{{- end }}
+
+  {{ $prefix }}-proxy:
+    image: {{ .Values.proxy.image.repository }}:{{ .Values.proxy.image.tag }}
+
+    # The client overlay to serve, and the cluster overlay to reach the peers. The proxy is
+    # the only service on both.
+    networks:
+      {{ .Values.network.name }}:
+{{- if .Values.network.clientAlias }}
+        aliases:
+          - {{ .Values.network.clientAlias }}
+{{- end }}
+      cluster: {}
+{{- if .Values.exposure.enabled }}
+
+    # Ingress: the proxy is one replicated service, so the routing mesh shares each port
+    # across its replicas.
+    ports:
+      - target: 5432
+        published: {{ .Values.exposure.port }}
+        protocol: tcp
+        mode: ingress
+      - target: 5433
+        published: {{ .Values.exposure.replicaPort }}
+        protocol: tcp
+        mode: ingress
+{{- end }}
+
+    # The config travels in an env var and is written out at every start, so a values
+    # change takes effect on redeploy. `$$` is the compose escape for a literal `$`.
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - >-
+        set -eu;
+        printf '%s\n' "$$HAPROXY_CFG" > /tmp/haproxy.cfg;
+        exec haproxy -f /tmp/haproxy.cfg -db
+    environment:
+      HAPROXY_CFG: |
+        global
+          log stdout format raw local0
+          maxconn 4096
+        # Docker's embedded DNS, asked again while the proxy runs, so it follows a peer
+        # Swarm reschedules, and init-addr none lets it start before any peer is in DNS.
+        resolvers docker
+          nameserver dns 127.0.0.11:53
+        defaults
+          mode tcp
+          log global
+          option tcplog
+          timeout connect 5s
+          # Database sessions are long-lived and idle between statements; a short timeout
+          # here would sever them mid-transaction.
+          timeout client 1h
+          timeout server 1h
+          # on-marked-down shutdown-sessions: after a failover, connections still open to
+          # the old primary are cut rather than left talking to a server that is now a
+          # replica, or is gone.
+          default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions resolvers docker resolve-prefer ipv4 init-addr none
+        # What the container healthcheck connects to. A probe of 5432 itself would be
+        # forwarded to the primary, which logs every one as an incomplete startup packet.
+        frontend health
+          mode http
+          bind :8405
+          monitor-uri /healthz
+        # The checks ask Patroni's REST API, not PostgreSQL: /primary answers 200 only on
+        # the peer holding the leader key, /replica only on a running replica.
+        listen primary
+          bind :5432
+          option httpchk GET /primary
+          http-check expect status 200
+{{- range $i := until $peers }}
+          server {{ printf "%s-%d" $prefix (add1 $i) }} {{ index $peerAddrs $i }}:5432 check port 8008
+{{- end }}
+        listen replicas
+          bind :5433
+          balance roundrobin
+          option httpchk GET /replica
+          http-check expect status 200
+{{- range $i := until $peers }}
+          server {{ printf "%s-%d" $prefix (add1 $i) }} {{ index $peerAddrs $i }}:5432 check port 8008
+{{- end }}
+
+    healthcheck:
+      # HAProxy is up iff it is listening (it refuses to start if any bind fails); whether
+      # a primary exists is the cluster's health, not the proxy's, and conflating them
+      # would take the endpoint down exactly when clients need it to follow a failover.
+      # CMD with bash: /dev/tcp is a bash feature, and CMD-SHELL would run dash.
+      test:
+        - CMD
+        - bash
+        - -c
+        - "exec 3<>/dev/tcp/127.0.0.1/8405"
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    deploy:
+      # Stateless, so this is the one part of the chart that is safe to scale, and it
+      # should be: a single proxy in front of an HA cluster is a single point of failure.
+      replicas: {{ .Values.proxy.replicas }}
+      endpoint_mode: vip
+      update_config:
+        monitor: 60s
+        order: start-first
+{{- if .Values.placement.constraints }}
+      placement:
+        constraints:
+{{- range .Values.placement.constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- with .Values.proxy.resources.limits.memory }}
+      resources:
+        limits:
+          memory: {{ . | quote }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- if .Values.labels }}
+      labels:
+{{- range $key, $val := .Values.labels }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+{{- end }}
+
+{{- if and .Values.persistence.enabled (or (not .Values.persistence.volumePaths) (not .Values.persistence.etcdVolumePaths)) }}
+
+volumes:
+{{- if not .Values.persistence.volumePaths }}
+{{- range $i := until $peers }}
+  {{ printf "%s-%d" $.Values.persistence.volumePrefix (add1 $i) }}: {}
+{{- end }}
+{{- end }}
+{{- if not .Values.persistence.etcdVolumePaths }}
+{{- range $i := until $members }}
+  {{ printf "%s-%d" $.Values.persistence.etcdVolumePrefix (add1 $i) }}: {}
+{{- end }}
+{{- end }}
+{{- end }}
+
+secrets:
+  {{ .Values.auth.superuser.secretName }}:
+    external: true
+  {{ .Values.auth.replication.secretName }}:
+    external: true
+  {{ .Values.auth.restApi.secretName }}:
+    external: true
+
+networks:
+  {{ .Values.network.name }}:
+{{- if .Values.network.external }}
+    external: true
+{{- else }}
+    driver: overlay
+    attachable: true
+{{- if .Values.network.encrypted }}
+    driver_opts:
+      encrypted: "true"
+{{- end }}
+{{- end }}
+  # Stack-internal: etcd, the peers and the proxy only. etcd has no authentication and the
+  # Patroni REST API's read endpoints none either, so this overlay is what keeps both away
+  # from the app stacks on the client overlay. Not attachable, so no `docker run` container
+  # can join it; a Swarm service can only by declaring it, which takes manager access.
+  cluster:
+    driver: overlay
+    attachable: false
+{{- if .Values.network.encrypted }}
+    # IPsec on the data plane. Replication carries every row written, so without this it
+    # crosses the wire between nodes in the clear.
+    driver_opts:
+      encrypted: "true"
+{{- end }}

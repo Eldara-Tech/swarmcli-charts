@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "postgres-patroni chart values",
+  "type": "object",
+  "properties": {
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string" }
+      }
+    },
+    "cluster": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "peers": {
+          "description": "PostgreSQL peers. etcd holds the quorum, so 2 is already enough for failover.",
+          "type": "integer", "minimum": 2, "maximum": 5
+        }
+      }
+    },
+    "etcd": {
+      "type": "object",
+      "properties": {
+        "members": {
+          "description": "etcd needs a majority, so only odd counts of 3 or more make sense.",
+          "enum": [3, 5]
+        },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string", "minLength": 1 }
+          }
+        },
+        "rejoinMembers": {
+          "description": "Disaster recovery only: members that join the running etcd cluster after `etcdctl member add`.",
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1, "maximum": 5 }
+        },
+        "resources": {
+          "type": "object",
+          "properties": {
+            "limits": {
+              "type": "object",
+              "properties": { "memory": { "type": "string" } }
+            }
+          }
+        }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "properties": {
+        "superuser": { "$ref": "#/$defs/credential" },
+        "replication": { "$ref": "#/$defs/credential" },
+        "restApi": { "$ref": "#/$defs/credential" }
+      }
+    },
+    "persistence": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "volumePrefix": { "type": "string", "minLength": 1 },
+        "etcdVolumePrefix": { "type": "string", "minLength": 1 },
+        "volumePaths": {
+          "description": "One absolute host path per peer, in peer order, or [] for named volumes.",
+          "type": "array",
+          "items": { "type": "string", "pattern": "^/" }
+        },
+        "etcdVolumePaths": {
+          "description": "One absolute host path per etcd member, in member order, or [] for named volumes.",
+          "type": "array",
+          "items": { "type": "string", "pattern": "^/" }
+        },
+        "nodeLabelPrefix": { "type": "string" }
+      }
+    },
+    "placement": {
+      "type": "object",
+      "properties": {
+        "constraints": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "network": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "external": { "type": "boolean" },
+        "encrypted": { "type": "boolean" },
+        "clientAlias": { "type": "string" }
+      }
+    },
+    "exposure": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "replicaPort": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "proxy": {
+      "type": "object",
+      "properties": {
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string", "minLength": 1 }
+          }
+        },
+        "replicas": {
+          "description": "Stateless, so more than one is safe and recommended.",
+          "type": "integer", "minimum": 1
+        },
+        "resources": {
+          "type": "object",
+          "properties": {
+            "limits": {
+              "type": "object",
+              "properties": { "memory": { "type": "string" } }
+            }
+          }
+        }
+      }
+    },
+    "postgresql": {
+      "type": "object",
+      "properties": {
+        "parameters": {
+          "description": "PostgreSQL settings, key: value.",
+          "type": "object"
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "limits": {
+          "type": "object",
+          "properties": { "memory": { "type": "string" } }
+        }
+      }
+    },
+    "healthcheck": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "interval": { "type": "string", "minLength": 1 },
+        "timeout": { "type": "string", "minLength": 1 },
+        "retries": { "type": "integer", "minimum": 1 },
+        "startPeriod": { "type": "string", "minLength": 1 },
+        "monitor": { "type": "string", "minLength": 1 }
+      }
+    },
+    "stopGracePeriod": {
+      "description": "How long Swarm waits for a peer to stop before killing it, e.g. 2m.",
+      "type": "string", "minLength": 1
+    },
+    "labels": { "type": "object" }
+  },
+  "$defs": {
+    "credential": {
+      "type": "object",
+      "properties": {
+        "username": { "type": "string", "pattern": "^[a-z_][a-z0-9_]*$" },
+        "secretName": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

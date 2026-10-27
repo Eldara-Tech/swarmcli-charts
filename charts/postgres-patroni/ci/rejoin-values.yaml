@@ -1,0 +1,6 @@
+# etcd member 3 re-added with `etcdctl member add` after its data was lost: it alone
+# starts with --initial-cluster-state=existing (README.md § Replacing an etcd member).
+# Render-only (ci/e2e-render-only): on a fresh install there is no running cluster for
+# it to join.
+etcd:
+  rejoinMembers: [3]

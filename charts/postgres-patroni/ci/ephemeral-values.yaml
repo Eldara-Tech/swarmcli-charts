@@ -1,0 +1,5 @@
+# Persistence off: no volumes and no node pins, so nothing may render a placement
+# block. A peer that loses its task re-copies the primary; an etcd member cannot rejoin
+# (README.md § Replacing an etcd member), which is why this is for CI and demos only.
+persistence:
+  enabled: false

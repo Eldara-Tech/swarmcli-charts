@@ -1,0 +1,20 @@
+# External resources this chart needs. Authoritative: every external
+# network/secret/config the rendered stack references must be listed here
+# (swarmcli pre-flights it; scripts/requirements-check.sh enforces it at PR time).
+#
+# The overlay etcd and the peers use is stack-internal, created and removed with the
+# release, so it is not listed.
+networks:
+  - name: "{{ .Values.network.name }}"
+    driver: overlay
+    attachable: true
+    autoCreate: true
+    description: "Shared overlay app stacks attach to in order to reach the cluster's proxy"
+secrets:
+  - name: "{{ .Values.auth.superuser.secretName }}"
+    description: "PostgreSQL superuser password, shared by every peer. Pre-create: printf 'S3cr3t' | docker secret create postgres_patroni_superuser_password -"
+  - name: "{{ .Values.auth.replication.secretName }}"
+    description: "Password of the role replicas stream with. Pre-create: openssl rand -base64 32 | docker secret create postgres_patroni_replication_password -"
+  - name: "{{ .Values.auth.restApi.secretName }}"
+    description: "Basic-auth password of the Patroni REST API's write endpoints. Pre-create: openssl rand -base64 32 | docker secret create postgres_patroni_restapi_password -"
+configs: []

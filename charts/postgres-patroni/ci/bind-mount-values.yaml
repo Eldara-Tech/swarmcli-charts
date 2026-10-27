@@ -1,0 +1,13 @@
+# Host paths instead of named volumes — exercises the host-mount acknowledgment in
+# Chart.yaml. One absolute path per peer and per etcd member, in order, so no
+# top-level volumes block renders. ci/e2e-setup.sh prepares them: the peers' owned by
+# the image's postgres uid (26), the members' by root.
+persistence:
+  volumePaths:
+    - /opt/postgres-patroni/peer-1
+    - /opt/postgres-patroni/peer-2
+    - /opt/postgres-patroni/peer-3
+  etcdVolumePaths:
+    - /opt/postgres-patroni/etcd-1
+    - /opt/postgres-patroni/etcd-2
+    - /opt/postgres-patroni/etcd-3
