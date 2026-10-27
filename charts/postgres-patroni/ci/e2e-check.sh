@@ -196,6 +196,8 @@ new="$(leader)"
 docker service scale --detach "$lead_svc=1" >/dev/null
 wait_cluster "after $lead rejoined"
 [ "$(leader)" = "$new" ] || { echo "  $lead took the leader back when it rejoined"; exit 1; }
+# Kept apart from $lead and $new, which the lifecycle steps below reuse.
+failed_over="from $lead to $new"
 for i in $(seq 1 30); do
   [ "$(local_sql "$lead_svc" 'SELECT count(*) FROM e2e_patroni.t' 2>/dev/null || true)" = 2 ] && break
   [ "$i" = 30 ] && { echo "  $lead rejoined without the row written while it was down"; exit 1; }
@@ -377,4 +379,4 @@ if [ "$case" = lifecycle ]; then
   lifecycle_ok=", rolled every service one at a time with $upgrade_acked acknowledged writes all kept, recovered from a leader crash, stayed writable without etcd quorum, rebuilt a replica from an empty volume, came back from a full stop, replaced an etcd member, and rebuilt etcd from empty under a running primary"
 fi
 
-echo "  cluster: leader + $((want - 1)) streaming replicas over $want_members etcd members; primary/replica ports route by role; nothing behind the proxy reachable from $net; failed over from $lead to $new and rejoined$lifecycle_ok"
+echo "  cluster: leader + $((want - 1)) streaming replicas over $want_members etcd members; primary/replica ports route by role; nothing behind the proxy reachable from $net; failed over $failed_over and rejoined$lifecycle_ok"
