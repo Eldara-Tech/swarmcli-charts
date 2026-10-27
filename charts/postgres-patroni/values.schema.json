@@ -129,6 +129,47 @@
         }
       }
     },
+    "metrics": {
+      "description": "One postgres_exporter per peer and a collector relaying Patroni and etcd, labelled for Docker Swarm service discovery.",
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string", "minLength": 1 }
+          }
+        },
+        "username": { "type": "string", "pattern": "^[a-z_][a-z0-9_]*$" },
+        "secretName": { "type": "string", "minLength": 1 },
+        "network": {
+          "description": "External overlay the exporters and the collector share with Prometheus.",
+          "type": "string", "minLength": 1
+        },
+        "collector": {
+          "type": "object",
+          "properties": {
+            "image": {
+              "type": "object",
+              "properties": {
+                "repository": { "type": "string", "minLength": 1 },
+                "tag": { "type": "string", "minLength": 1 }
+              }
+            },
+            "resources": {
+              "type": "object",
+              "properties": {
+                "limits": {
+                  "type": "object",
+                  "properties": { "memory": { "type": "string" } }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "postgresql": {
       "type": "object",
       "properties": {

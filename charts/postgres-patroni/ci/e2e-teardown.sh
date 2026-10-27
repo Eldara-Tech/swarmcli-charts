@@ -3,12 +3,12 @@
 # e2e teardown for the postgres-patroni chart. scripts/e2e-test.sh runs this AFTER it
 # uninstalls the release, once per fixture:
 #   $1 = release name   $2 = chart directory   $3 = fixture case name
-# It removes exactly what ci/e2e-setup.sh created (the three secrets and the five node
+# It removes exactly what ci/e2e-setup.sh created (the four secrets and the five node
 # labels, and the bind-mount fixture's host directories). The shared postgres-patroni-net overlay is LEFT in place, like the other
 # charts' hooks. Best-effort: every step tolerates already-gone resources.
 set -uo pipefail
 
-for s in superuser replication restapi; do
+for s in superuser replication restapi exporter; do
   docker secret rm "postgres_patroni_${s}_password" >/dev/null 2>&1 || true
 done
 

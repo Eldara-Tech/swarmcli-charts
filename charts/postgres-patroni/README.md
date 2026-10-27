@@ -123,6 +123,115 @@ alias resolves to both proxies and clients are spread over two unrelated databas
 - **A replica is lost**: nothing for clients but one replica fewer on 5433. One that comes
   back with an empty volume copies the primary again by itself.
 
+## Metrics
+
+`metrics.enabled` adds two kinds of service, both carrying the deploy labels
+`prometheus.io/scrape=true` and `prometheus.io/port` and joining the `monitoring`
+overlay, which is where the prometheus-stack chart scrapes by default. Prometheus finds
+them by itself, with no scrape config, as does any Prometheus using Docker Swarm service
+discovery on those labels.
+
+- **One [postgres_exporter](https://github.com/prometheus-community/postgres_exporter)
+  per peer** (port 9187, job `<release>_postgres-patroni-exporter-<N>`): `pg_up`,
+  connections, transactions, locks, database sizes and `pg_replication_*`, from the
+  primary and each replica alike. Each shares its peer's node pin.
+- **One collector** (port 8889, job `<release>_postgres-patroni-metrics`), an
+  [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/) that scrapes
+  Patroni's own `/metrics` on each peer and each etcd member's metrics-only listener over
+  the stack-internal overlay, and serves them on `monitoring`. Neither etcd nor the
+  Patroni REST API may join that overlay themselves (see *Security note*). Every series it
+  relays keeps where it came from as `exported_job` (`patroni` or `etcd`) and
+  `exported_instance`, beside its own `job`; Patroni's carry the peer as `name`. That is
+  `patroni_primary`, `patroni_replica`, `patroni_postgres_streaming`, the
+  `patroni_xlog_*` positions, `patroni_failsafe_mode_is_active` and
+  `patroni_dcs_last_seen`, and etcd's `etcd_server_has_leader`,
+  `etcd_mvcc_db_total_size_in_bytes`, its disk and leader-change series and the rest of
+  its `etcd_*` metrics.
+
+```bash
+openssl rand -base64 32 | docker secret create postgres_patroni_exporter_password -
+swarmcli charts upgrade db swarmcli-charts/postgres-patroni -f db-values.yaml --set metrics.enabled=true
+```
+
+Pass the values you installed with (`-f`, or the same `--set`s), not `--reuse-values`.
+That flag merges over the previous release's stored values *instead of* this chart
+version's defaults, so every `metrics.*` key would render empty
+([swarmcli#687](https://github.com/Eldara-Tech/swarmcli/issues/687)).
+
+Turning it on adds services and changes no peer and no etcd member, so it is safe on a
+running cluster: nothing restarts. The exporters log in as a role of their own,
+`exporter`, which a one-shot service (`postgres-patroni-exporter-user`) creates as the
+superuser through the proxy, so on the primary, and which replicates to every peer from
+there. The role has `LOGIN`, membership of the built-in `pg_monitor` role and a
+connection limit of 3, and no access to your tables. The one-shot adopts only a role it
+created itself, and refuses an existing `exporter` it did not.
+
+- **Rotating the password**: create a secret under a new name and point
+  `metrics.secretName` at it. The changed spec runs the one-shot again, which resets the
+  password; a scrape or two may read `pg_up 0` until it has.
+- `metrics.network` must differ from `network.name` and from `cluster`, and the render
+  fails if it does not.
+- **Turning it off** leaves the services running (swarmcli deploys without `--prune`).
+  Remove them yourself: `docker service rm <release>_postgres-patroni-exporter-1 …
+  <release>_postgres-patroni-exporter-user <release>_postgres-patroni-metrics`.
+
+### Alerts and a dashboard
+
+The chart ships both under [`monitoring/`](monitoring) for your Prometheus and Grafana,
+and deploys neither: scraping is automatic, but which rules and dashboards a monitoring
+stack loads is its operator's choice. With the prometheus-stack chart they go in through
+its own configuration:
+
+```bash
+base=https://raw.githubusercontent.com/Eldara-Tech/swarmcli-charts/main/charts/postgres-patroni/monitoring
+curl -fsSL -O "$base/postgres-patroni-rules.yml" -O "$base/postgres-patroni-dashboard.json"
+v="$(swarmcli charts status mon | sed -n 's/^CHART: prometheus-stack-//p')"
+swarmcli charts upgrade mon swarmcli-charts/prometheus-stack --version "${v:?}" --reuse-values \
+  --set-file prometheus.extraRules.postgres-patroni=./postgres-patroni-rules.yml \
+  --set-file grafana.dashboards.postgres-patroni=./postgres-patroni-dashboard.json
+```
+
+`--version` keeps prometheus-stack at the version it runs, the only case in which
+`--reuse-values` is safe (Eldara-Tech/swarmcli#687).
+
+A release file and swarmcli-cd take values files only, not `--set-file`, so there both
+files go in as values files: each file's content, as it is, indented under its key as a
+block string. From the two files downloaded above:
+
+```bash
+mkdir -p monitoring/rules monitoring/dashboards
+{ printf 'prometheus:\n  extraRules:\n    postgres-patroni: |\n'; sed 's/^./      &/' postgres-patroni-rules.yml; } > monitoring/rules/postgres-patroni.yaml
+{ printf 'grafana:\n  dashboards:\n    postgres-patroni: |\n'; sed 's/^./      &/' postgres-patroni-dashboard.json; } > monitoring/dashboards/postgres-patroni.yaml
+```
+
+The dashboard stays JSON: converted to YAML it becomes a mapping, which the render
+refuses (`got object, want string`). prometheus-stack's README, *Keeping your setup in
+git*, shows where to list the two files.
+
+- **Alerts** (`postgres-patroni-rules.yml`). Critical: `PatroniNoPrimary` (no peer holds
+  the leader key for a minute, so writes go nowhere), `PatroniMultiplePrimaries`,
+  `EtcdNoLeader` (etcd's quorum is lost, so no failover is possible) and
+  `PostgresPatroniMaxConnectionsReached`. Warning: a peer, a replica's streaming or etcd
+  member down; a replica more than `maximum_lag_on_failover` (1 MiB) behind, which a
+  failover would not promote; the cluster running on `failsafe_mode`; a peer that has
+  not reached etcd for a minute; failover paused or a setting waiting for a restart;
+  etcd elections, slow fsyncs and a backend near its quota; and the postgres chart's
+  connection, deadlock and collector alerts, restricted to this chart's exporters so
+  loading both files raises nothing twice. The file's header says where each comes from
+  and how it is rated.
+- **Dashboard** (`postgres-patroni-dashboard.json`, uid `postgres-patroni`): the primary,
+  how many there are, streaming replicas, timeline, failsafe mode and etcd's leader at a
+  glance; then each peer's role over time, replica lag in bytes, reachability and time
+  since each peer last reached etcd; connections, transactions, deadlocks and database
+  sizes per peer; and etcd's database size against its quota, leader changes and WAL
+  fsync latency. Pick a release by its `stack`.
+
+The dashboard picks a release by the `stack` label prometheus-stack's discovery puts on
+every target, and the alerts carry it. Another Prometheus needs the same relabelling of
+`__meta_dockerswarm_service_label_com_docker_stack_namespace` to `stack`, and must not
+set `honor_labels` on the collector's target, or its `job` and `instance` would replace
+the collector's rather than land in `exported_job` and `exported_instance`.
+
 ## Values
 
 | Key | Default | Description |
@@ -161,6 +270,15 @@ alias resolves to both proxies and clients are spread over two unrelated databas
 | `proxy.image.tag` | pinned in `values.yaml` | Proxy image tag (a concrete pin; Renovate maintains it). |
 | `proxy.replicas` | `2` | Proxy replicas — stateless, so more than one is safe and recommended. |
 | `proxy.resources.limits.memory` | `""` | Proxy memory limit. Rendered only when set. |
+| `metrics.enabled` | `false` | An exporter per peer and the Patroni/etcd collector, labelled for Prometheus service discovery. See *Metrics*. |
+| `metrics.image.repository` | `prometheuscommunity/postgres-exporter` | Exporter image. |
+| `metrics.image.tag` | pinned in `values.yaml` | Exporter image tag (a concrete pin; Renovate maintains it). |
+| `metrics.username` | `exporter` | Role the exporters log in as; the chart creates it. |
+| `metrics.secretName` | `postgres_patroni_exporter_password` | External secret holding that role's password. |
+| `metrics.network` | `monitoring` | External overlay the exporters and the collector share with Prometheus. |
+| `metrics.collector.image.repository` | `otel/opentelemetry-collector` | Collector image. |
+| `metrics.collector.image.tag` | pinned in `values.yaml` | Collector image tag (a concrete pin; Renovate maintains it). |
+| `metrics.collector.resources.limits.memory` | `128M` | Collector memory limit. |
 | `postgresql.parameters` | `{}` | PostgreSQL settings, `key: value`. See *Changing Patroni and PostgreSQL settings*. |
 | `resources.limits.memory` | `""` | Per-peer memory limit, e.g. `1G`. Rendered only when set. |
 | `healthcheck.enabled` | `true` | Container healthcheck — Patroni's `/liveness`. |
@@ -191,6 +309,13 @@ from there.
 Inside the cluster, every role authenticates with SCRAM over the network. Local
 connections inside a peer's container are trusted, since anything that can run a process
 there can read the secrets anyway.
+
+With `metrics.enabled`, the exporters and the collector are the only services on both the
+stack-internal overlay and `metrics.network`, so what can reach Prometheus can reach
+ports 9187 and 8889 and nothing behind them. `/metrics` has no authentication. The
+collector only scrapes; it receives nothing, so nothing on either overlay can push to it.
+The exporters' role reads statistics, never your tables, and is capped at 3
+connections; give it a long random password anyway, as above.
 
 Replication carries every row written, and on a multi-node swarm it crosses the
 stack-internal overlay between nodes. Set `network.encrypted: true` unless the network
@@ -364,5 +489,4 @@ waits it out on each peer before it rolls the next one.
 
 ## Not included
 
-Backups (the image ships pgBackRest, but nothing configures it) and metrics are not part of
-this chart yet.
+Backups: the image ships pgBackRest, but nothing configures it.

@@ -45,7 +45,13 @@ proxy="$(printf '%s\n' "$all" | { grep -xF 'postgres-patroni-proxy' || true; })"
 [ "$(count "$peers")" -eq "$want_peers" ] || err "expected $want_peers peer services, rendered $(count "$peers"): $(echo $peers)"
 [ "$(count "$members")" -eq "$want_members" ] || err "expected $want_members etcd services, rendered $(count "$members"): $(echo $members)"
 [ -n "$proxy" ] || err "no proxy service rendered: without it nothing routes to the primary"
-others="$(printf '%s\n' "$all" | { grep -vE '^postgres-patroni-([0-9]+|etcd-[0-9]+|proxy)$' || true; })"
+metrics_svcs="$(printf '%s\n' "$all" | { grep -E '^postgres-patroni-(exporter-[0-9]+|exporter-user|metrics)$' || true; })"
+if [ "$case_name" = metrics ]; then
+  [ "$(count "$metrics_svcs")" = "$((want_peers + 2))" ] || err "metrics: expected $want_peers exporters, the one-shot and the collector, rendered: $(echo $metrics_svcs)"
+else
+  [ -z "$metrics_svcs" ] || err "metrics services rendered for case '$case_name'; metrics must be opt-in: $(echo $metrics_svcs)"
+fi
+others="$(printf '%s\n' "$all" | { grep -vE '^postgres-patroni-([0-9]+|etcd-[0-9]+|proxy|exporter-[0-9]+|exporter-user|metrics)$' || true; })"
 [ -z "$others" ] || err "unexpected services rendered: $(echo $others)"
 
 # The stack-internal overlay: chart-managed and not attachable, so nothing outside the
@@ -105,6 +111,8 @@ for s in $members; do
   [ "$state" = "$want_state" ] || err "$s: --initial-cluster-state is '$state', want $want_state"
   [ "$(arg "$s" auto-compaction-mode)" = periodic ] && [ -n "$(arg "$s" auto-compaction-retention)" ] \
     || err "$s: no auto-compaction; Patroni's key history would fill the backend quota"
+  # Rendered in every fixture, so turning metrics on restarts no member.
+  [ "$(arg "$s" listen-metrics-urls)" = "http://0.0.0.0:2381" ] || err "$s: no metrics-only listener on 2381 for the collector"
 done
 [ "$initial_cluster" = "${seen_ic%,}" ] || err "--initial-cluster '$initial_cluster' does not name exactly the rendered members"
 aliases="$(for s in $members; do yq -r ".services.\"$s\".networks.cluster.aliases // [] | .[]" "$f"; done)"
@@ -243,6 +251,45 @@ if [ "$case_name" = published ]; then
   [ "$pports" = "15432>5432/ingress 15433>5433/ingress" ] || err "proxy: publishes '$pports', want 15432>5432 and 15433>5433 through ingress"
 else
   [ -z "$pports" ] || err "proxy: publishes '$pports' without exposure.enabled"
+fi
+
+# --- metrics: only the exporters and the collector on metrics.network ------------------
+on_monitoring="$(yq -r '.services | to_entries | .[] | select(.value.networks | (tag == "!!seq" and (.[] == "monitoring")) or (tag == "!!map" and has("monitoring"))) | .key' "$f" | sort)"
+if [ "$case_name" = metrics ]; then
+  want_on="$(printf '%s\n' $peers | sed 's/postgres-patroni-/postgres-patroni-exporter-/'; echo postgres-patroni-metrics)"
+  [ "$on_monitoring" = "$(printf '%s\n' $want_on | sort)" ] || err "metrics: the services on monitoring are '$(echo $on_monitoring)', want only the exporters and the collector"
+  [ "$(yq -r '.networks.monitoring.external' "$f")" = true ] || err "metrics: the monitoring overlay is not external"
+  for s in $peers; do
+    n="${s##*-}"
+    e="postgres-patroni-exporter-$n"
+    [ "$(yq -r ".services.\"$e\".deploy.labels | join(\",\")" "$f")" = "prometheus.io/scrape=true,prometheus.io/port=9187" ] \
+      || err "$e: deploy labels are not exactly the two discovery labels; every one is readable through Prometheus"
+    [ "$(yq -r ".services.\"$e\".networks | join(\",\")" "$f")" = "cluster,monitoring" ] || err "$e: not on exactly the cluster and monitoring overlays"
+    uri="$(yq -r ".services.\"$e\".environment.DATA_SOURCE_URI" "$f")"
+    grep -Eq "^tasks\.[A-Za-z0-9_.-]+_$s:5432/" <<<"$uri" || err "$e: scrapes '$uri', not its own peer $s"
+    [ "$(yq -r ".services.\"$e\".environment | keys | map(select(test(\"PASS\"))) | join(\",\")" "$f")" = DATA_SOURCE_PASS_FILE ] \
+      || err "$e: takes its password other than from the mounted secret file"
+    [ "$(yq -r ".services.\"$e\".deploy.placement.constraints // [] | join(\",\")" "$f")" = "$(yq -r ".services.\"$s\".deploy.placement.constraints // [] | join(\",\")" "$f")" ] \
+      || err "$e: is not pinned like its peer $s"
+  done
+  c=postgres-patroni-metrics
+  [ "$(yq -r ".services.\"$c\".deploy.labels | join(\",\")" "$f")" = "prometheus.io/scrape=true,prometheus.io/port=8889" ] \
+    || err "$c: deploy labels are not exactly the two discovery labels"
+  [ "$(yq -r ".services.\"$c\".networks | join(\",\")" "$f")" = "cluster,monitoring" ] || err "$c: not on exactly the cluster and monitoring overlays"
+  ccfg="$(yq -r ".services.\"$c\".environment.COLLECTOR_CONFIG" "$f")"
+  [ "$(yq -r '.receivers | keys | join(",")' <<<"$ccfg")" = prometheus ] || err "$c: has a receiver other than prometheus; anything on either overlay could push to it"
+  pt="$(yq -r '.receivers.prometheus.config.scrape_configs[] | select(.job_name == "patroni") | .static_configs[].targets[]' <<<"$ccfg")"
+  [ "$(count "$pt")" = "$want_peers" ] || err "$c: scrapes $(count "$pt") Patroni targets for $want_peers peers"
+  for s in $peers; do
+    grep -Eqx "tasks\.[A-Za-z0-9_.-]+_$s:8008" <<<"$pt" || err "$c: does not scrape $s's REST API"
+  done
+  et="$(yq -r '.receivers.prometheus.config.scrape_configs[] | select(.job_name == "etcd") | .static_configs[].targets[]' <<<"$ccfg")"
+  [ "$et" = "$(printf '%s\n' $aliases | sed 's/$/:2381/')" ] || err "$c: etcd targets '$(echo $et)' are not every member's alias on 2381"
+  u=postgres-patroni-exporter-user
+  [ "$(yq -r ".services.\"$u\".networks | join(\",\")" "$f")" = cluster ] || err "$u: holds the superuser's password, and must stay off monitoring"
+  [ "$(yq -r ".services.\"$u\".deploy.restart_policy.condition" "$f")" = on-failure ] || err "$u: is not a one-shot (restart_policy on-failure)"
+else
+  [ -z "$on_monitoring" ] || err "services on monitoring without metrics.enabled: $(echo $on_monitoring)"
 fi
 
 exit "$fail"

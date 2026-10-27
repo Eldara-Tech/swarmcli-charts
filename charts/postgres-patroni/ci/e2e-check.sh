@@ -216,6 +216,70 @@ for i in $(seq 1 30); do
   sleep 1
 done
 
+# The metrics fixture, from the monitoring overlay, where Prometheus would scrape: every
+# exporter answers with pg_up 1 and every default collector succeeding, which proves the
+# one-shot created a pg_monitor role through the proxy whose password survived the secret's
+# quoting traps; the collector relays Patroni from every peer (exactly one primary) and etcd
+# from every member (each with a leader); and nothing behind the two resolves there.
+metrics_ok=""
+if [ "$case" = metrics ]; then
+  mcurl() { docker run --rm --network monitoring curlimages/curl:8.17.0 -sSf -m 5 "$1" 2>&1 || true; }
+  for p in $peers; do
+    exp="${p/_postgres-patroni-/_postgres-patroni-exporter-}"
+    m=""
+    for _ in $(seq 1 20); do
+      m="$(mcurl "http://$exp:9187/metrics")"
+      grep -qx 'pg_up 1' <<<"$m" && break
+      sleep 3
+    done
+    if ! grep -qx 'pg_up 1' <<<"$m"; then
+      echo "  $exp: pg_up is not 1 on the monitoring overlay. Scrape and logs:"
+      grep -E '^pg_up|^curl' <<<"$m" | sed 's/^/    /'
+      docker service logs --tail 5 "$exp" 2>&1 | sed 's/^/    /'
+      docker service logs --tail 5 "${release}_postgres-patroni-exporter-user" 2>&1 | sed 's/^/    /'
+      exit 1
+    fi
+    failed="$(grep -E '^pg_scrape_collector_success\{.*\} 0$' <<<"$m" || true)"
+    [ -z "$failed" ] || { echo "  $exp: failing collectors (a missing privilege):"; echo "$failed" | sed 's/^/    /'; exit 1; }
+  done
+  col="${release}_postgres-patroni-metrics"
+  m=""
+  for _ in $(seq 1 20); do
+    m="$(mcurl "http://$col:8889/metrics")"
+    [ "$(grep -cE '^up\{.*\} 1$' <<<"$m" || true)" = "$((want + want_members))" ] && break
+    sleep 3
+  done
+  up_n="$(grep -cE '^up\{.*\} 1$' <<<"$m" || true)"
+  [ "$up_n" = "$((want + want_members))" ] \
+    || { echo "  $col: reaches $up_n of $((want + want_members)) Patroni and etcd targets:"; grep -E '^up\{' <<<"$m" | sed 's/^/    /'; exit 1; }
+  primaries="$(grep -E '^patroni_primary\{' <<<"$m" | awk '{ s += $NF } END { print s + 0 }')"
+  [ "$primaries" = 1 ] || { echo "  $col: relays $primaries Patroni primaries, want 1"; exit 1; }
+  [ "$(grep -cE '^patroni_primary\{' <<<"$m" || true)" = "$want" ] || { echo "  $col: relays patroni_primary for fewer than $want peers"; exit 1; }
+  [ "$(grep -cE '^etcd_server_has_leader\{.*\} 1$' <<<"$m" || true)" = "$want_members" ] \
+    || { echo "  $col: not every etcd member reports a leader:"; grep -E '^etcd_server_has_leader' <<<"$m" | sed 's/^/    /'; exit 1; }
+  role="$(local_sql "${release}_$(leader)" "SELECT rolsuper, rolconnlimit, pg_has_role(rolname, 'pg_monitor', 'member') FROM pg_roles WHERE rolname = 'exporter'")"
+  [ "$role" = "f|3|t" ] || { echo "  role exporter is '$role' (rolsuper|rolconnlimit|pg_monitor), expected 'f|3|t'"; exit 1; }
+  # As on the client overlay: the collector must resolve, and then nothing behind it may.
+  probe="$(docker run --rm --network monitoring --entrypoint bash "$image" -c \
+    "getent hosts $col >/dev/null || { echo no-collector; exit 0; }
+     for h in tasks.$first_peer $etcd_alias tasks.$first_member ${release}_postgres-patroni-proxy; do getent hosts \$h >/dev/null && echo \$h; done; true")"
+  case "$probe" in
+    no-collector) echo "  the probe could not resolve $col on monitoring, so it proves nothing"; exit 1 ;;
+    ?*) echo "  resolves on the monitoring overlay: $(echo $probe)"; exit 1 ;;
+  esac
+  # The alert rules the chart ships for operators to load (monitoring/), checked here because
+  # nothing deploys them: their logic, under the promtool of a pinned Prometheus.
+  chart="$(cd "$2" && pwd)"
+  prom_tag="$(sed -n 's/^appVersion: *"\(.*\)"$/\1/p' "$chart/../prometheus-stack/Chart.yaml")"
+  if ! out="$(docker run --rm --entrypoint promtool -v "$chart:/chart:ro" "prom/prometheus:${prom_tag:?no appVersion in charts/prometheus-stack/Chart.yaml}" \
+      test rules /chart/ci/postgres-patroni-rules-test.yml 2>&1)"; then
+    echo "  promtool test rules fails on monitoring/postgres-patroni-rules.yml:"
+    echo "$out" | sed 's/^/    /'
+    exit 1
+  fi
+  metrics_ok="; metrics on monitoring: $want exporters at pg_up 1 with every collector OK, the collector relaying $want Patroni and $want_members etcd targets with one primary, nothing behind them resolvable, rules pass promtool"
+fi
+
 lifecycle_ok=""
 if [ "$case" = lifecycle ]; then
   # What a long-lived cluster goes through, each step asserting rows rather than
@@ -398,4 +462,4 @@ if [ "$case" = lifecycle ]; then
   lifecycle_ok=", rolled every service one at a time with $upgrade_acked acknowledged writes all kept, recovered from a leader crash, stayed writable without etcd quorum, rebuilt a replica from an empty volume, came back from a full stop, replaced an etcd member, and rebuilt etcd from empty under a running primary"
 fi
 
-echo "  cluster: leader + $((want - 1)) streaming replicas over $want_members etcd members; primary/replica ports route by role; nothing behind the proxy reachable from $net; failed over $failed_over and rejoined$lifecycle_ok"
+echo "  cluster: leader + $((want - 1)) streaming replicas over $want_members etcd members; primary/replica ports route by role; nothing behind the proxy reachable from $net; failed over $failed_over and rejoined$metrics_ok$lifecycle_ok"

@@ -10,6 +10,11 @@ networks:
     attachable: true
     autoCreate: true
     description: "Shared overlay app stacks attach to in order to reach the cluster's proxy"
+  - name: "{{ .Values.metrics.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: true
+    description: "Overlay the exporters and the metrics collector share with Prometheus (when metrics.enabled); the prometheus-stack chart scrapes on it by default"
 secrets:
   - name: "{{ .Values.auth.superuser.secretName }}"
     description: "PostgreSQL superuser password, shared by every peer. Pre-create: printf 'S3cr3t' | docker secret create postgres_patroni_superuser_password -"
@@ -17,4 +22,6 @@ secrets:
     description: "Password of the role replicas stream with. Pre-create: openssl rand -base64 32 | docker secret create postgres_patroni_replication_password -"
   - name: "{{ .Values.auth.restApi.secretName }}"
     description: "Basic-auth password of the Patroni REST API's write endpoints. Pre-create: openssl rand -base64 32 | docker secret create postgres_patroni_restapi_password -"
+  - name: "{{ .Values.metrics.secretName }}"
+    description: "Password of the exporters' database role (when metrics.enabled). Pre-create: openssl rand -base64 32 | docker secret create postgres_patroni_exporter_password -"
 configs: []

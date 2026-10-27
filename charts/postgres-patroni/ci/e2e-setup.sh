@@ -4,7 +4,7 @@
 # `swarmcli charts install`, once per fixture:
 #   $1 = release name   $2 = chart directory   $3 = fixture case name
 # It provisions the external prerequisites swarmcli validates but never creates: the
-# three operator-supplied secrets and the per-peer persistence node-label pins. The
+# four operator-supplied secrets and the per-peer persistence node-label pins. The
 # shared postgres-patroni-net overlay is autoCreate:true, so swarmcli creates it at
 # install, not this hook. ci/e2e-teardown.sh removes everything created here.
 #
@@ -27,6 +27,10 @@ for s in superuser replication restapi; do
   docker secret inspect "postgres_patroni_${s}_password" >/dev/null 2>&1 \
     || printf 'test' | docker secret create "postgres_patroni_${s}_password" - >/dev/null
 done
+# The exporters' password carries the quoting traps the role one-shot must survive (and a
+# surrounding space and newline it must trim), as the postgres chart's does.
+docker secret inspect postgres_patroni_exporter_password >/dev/null 2>&1 \
+  || printf '%s\n' " a'b\\c\$HOME#d\"e%x:y@z/" | docker secret create postgres_patroni_exporter_password - >/dev/null
 
 node="$(docker node ls --format '{{.ID}} {{.Self}}' 2>/dev/null | awk '$2=="true"{print $1; exit}')"
 [ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | sed -n 1p)"

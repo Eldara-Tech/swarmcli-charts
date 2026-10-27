@@ -30,6 +30,17 @@
 {{- if or (eq .Values.auth.superuser.secretName .Values.auth.replication.secretName) (eq .Values.auth.superuser.secretName .Values.auth.restApi.secretName) (eq .Values.auth.replication.secretName .Values.auth.restApi.secretName) -}}
 {{- fail "auth.superuser.secretName, auth.replication.secretName and auth.restApi.secretName must be three different secrets: a shared one would hand the superuser's password to whatever holds the other." -}}
 {{- end -}}
+{{- if .Values.metrics.enabled -}}
+{{- if or (eq .Values.metrics.network .Values.network.name) (eq .Values.metrics.network "cluster") -}}
+{{- fail "metrics.network must differ from network.name and from \"cluster\": the exporters and the collector join it, and the point of a separate metrics overlay is that Prometheus never shares one with the proxy's SQL ports, etcd or the Patroni REST API." -}}
+{{- end -}}
+{{- if or (eq .Values.metrics.username .Values.auth.superuser.username) (eq .Values.metrics.username .Values.auth.replication.username) -}}
+{{- fail "metrics.username must differ from auth.superuser.username and auth.replication.username: the chart resets the exporter role's password to metrics.secretName, and must never touch theirs." -}}
+{{- end -}}
+{{- if has .Values.metrics.secretName (list .Values.auth.superuser.secretName .Values.auth.replication.secretName .Values.auth.restApi.secretName) -}}
+{{- fail "metrics.secretName must differ from the auth secrets: the exporters would hold that password, on an overlay Prometheus shares." -}}
+{{- end -}}
+{{- end -}}
 {{- if eq .Values.network.name "cluster" -}}
 {{- fail "network.name cannot be \"cluster\": that is the stack-internal overlay this chart keeps etcd and the peers on, and the two would collide." -}}
 {{- end -}}
@@ -120,6 +131,9 @@ services:
       - --data-dir=/var/lib/etcd/data
       - --listen-peer-urls=http://0.0.0.0:2380
       - --listen-client-urls=http://0.0.0.0:2379
+      # /metrics and /health only, which the metrics collector scrapes. Always on, so turning
+      # metrics.enabled on restarts no member; it is reachable on the cluster overlay alone.
+      - --listen-metrics-urls=http://0.0.0.0:2381
       - --initial-advertise-peer-urls=http://{{ $alias }}:2380
       - --advertise-client-urls=http://{{ $alias }}:2379
       - --initial-cluster={{ join "," $initialCluster }}
@@ -377,6 +391,49 @@ services:
 {{- range $key, $val := $.Values.labels }}
         - "{{ $key }}={{ $val }}"
 {{- end }}
+{{- if $.Values.metrics.enabled }}
+
+  {{ $prefix }}-exporter-{{ $n }}:
+    image: {{ $.Values.metrics.image.repository }}:{{ $.Values.metrics.image.tag }}
+
+    # The cluster overlay to reach this peer, and the metrics overlay for Prometheus to
+    # reach the exporter. The peer itself never joins the metrics overlay.
+    networks:
+      - cluster
+      - {{ $.Values.metrics.network }}
+
+    secrets:
+      - {{ $.Values.metrics.secretName }}
+
+    # The exporter reads its password from the mounted secret itself (DATA_SOURCE_PASS_FILE),
+    # so it never lands in the compose file or `docker inspect`. tasks.<release>_<peer>
+    # resolves to this peer's task, and to nothing while it has none, so a missing peer reads
+    # as pg_up 0 at once. sslmode=disable because the peers serve no TLS; the password itself
+    # is sent as a SCRAM proof. A replica answers too: the role replicates with everything else.
+    environment:
+      DATA_SOURCE_URI: "tasks.{{ $.Release.Name }}_{{ $name }}:5432/postgres?sslmode=disable"
+      DATA_SOURCE_USER: {{ $.Values.metrics.username | quote }}
+      DATA_SOURCE_PASS_FILE: /run/secrets/{{ $.Values.metrics.secretName }}
+
+    deploy:
+      replicas: 1
+{{- /* The same pin as the peer it watches: Prometheus labels every target with the node it
+       runs on, and that should be the peer's node. */}}
+{{- if $constraints }}
+      placement:
+        constraints:
+{{- range $constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+      # Only the discovery labels, never $.Values.labels: once a service opts in, every one of
+      # its deploy labels is readable through Prometheus's targets API.
+      labels:
+        - "prometheus.io/scrape=true"
+        - "prometheus.io/port=9187"
+{{- end }}
 {{- end }}
 
   {{ $prefix }}-proxy:
@@ -506,6 +563,177 @@ services:
 {{- end }}
 {{- end }}
 
+{{- if .Values.metrics.enabled }}
+
+  # Creates the exporters' role, or resets its password, then exits. It logs in as the
+  # superuser through the proxy, which is what reaches the primary wherever it is, so turning
+  # metrics on works on a cluster that already exists without restarting any peer. The role
+  # replicates to every peer from there. Swarm runs it again only when its spec changes,
+  # which is what a rotation does: a new metrics.secretName.
+  #
+  # It adopts only a role it created, recognised by its comment: a role of that name made by
+  # someone else may hold any privilege or membership, and its new password would go to the
+  # exporters, so it is refused, untouched. Its own role gets its attributes reset on every
+  # run. Statement logging is switched off for the session first, or log_statement=ddl, a
+  # duration log or a failed statement would write the password to the server log.
+  {{ $prefix }}-exporter-user:
+    image: {{ $image }}
+
+    networks:
+      - cluster
+
+    secrets:
+      - {{ .Values.auth.superuser.secretName }}
+      - {{ .Values.metrics.secretName }}
+
+    # PGPASSWORD keeps the superuser's password off the command line. The exporter's password
+    # never reaches one either: psql reads it from the environment through a backquoted \set,
+    # and :'pw' quotes it as a SQL literal, so no character in it needs escaping here. It is
+    # trimmed the way the exporter trims what it reads (Go's strings.TrimSpace), or the two
+    # would disagree about a secret that ends with a newline. Whitespace INSIDE it is refused:
+    # postgres_exporter splits its connection string on spaces, so pg_up would read 0 forever.
+    entrypoint:
+      - /bin/bash
+      - -c
+    command:
+      - |-
+        set -eu
+        export PGPASSWORD="$$(cat /run/secrets/{{ .Values.auth.superuser.secretName }})"
+        pw="$$(cat /run/secrets/{{ .Values.metrics.secretName }})"
+        pw="$${pw#"$${pw%%[![:space:]]*}"}"
+        pw="$${pw%"$${pw##*[![:space:]]}"}"
+        case "$$pw" in
+          "") echo "postgres-patroni: secret {{ .Values.metrics.secretName }} is empty; refusing to set an empty exporter password" >&2; exit 1 ;;
+          *[[:space:]]*) echo "postgres-patroni: secret {{ .Values.metrics.secretName }} contains whitespace, which postgres_exporter cannot log in with; recreate it, e.g. openssl rand -base64 32" >&2; exit 1 ;;
+        esac
+        export EXPORTER_PASSWORD="$$pw"
+        sql="$$(cat <<'SQL'
+        \set pw `printf '%s' "$$EXPORTER_PASSWORD"`
+        SET log_statement = 'none';
+        SET log_min_duration_statement = -1;
+        SET log_min_error_statement = 'panic';
+        SELECT NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'exporter') AS fresh
+        \gset
+        \if :fresh
+        CREATE ROLE :"exporter";
+        COMMENT ON ROLE :"exporter" IS 'swarmcli-charts postgres-patroni: metrics exporter role';
+        \endif
+        SELECT coalesce(shobj_description(oid, 'pg_authid'), '') = 'swarmcli-charts postgres-patroni: metrics exporter role' AS ours FROM pg_roles WHERE rolname = :'exporter'
+        \gset
+        \if :ours
+        ALTER ROLE :"exporter" WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT CONNECTION LIMIT 3 PASSWORD :'pw';
+        GRANT pg_monitor TO :"exporter";
+        \else
+        DO $$$$BEGIN RAISE EXCEPTION 'refusing: role {{ .Values.metrics.username }} exists but was not created by this chart, and its password would go to the exporters. Drop it or set another metrics.username.'; END$$$$;
+        \endif
+        SQL
+        )"
+        err=""
+        for _ in $$(seq 1 60); do
+          if err="$$(printf '%s\n' "$$sql" | psql -h {{ $prefix }}-proxy -p 5432 -U {{ .Values.auth.superuser.username | quote }} -d postgres -v ON_ERROR_STOP=1 -v exporter={{ .Values.metrics.username | quote }} -qAt 2>&1)"; then
+            echo "postgres-patroni: exporter role {{ .Values.metrics.username }} is ready"
+            exit 0
+          fi
+          case "$$err" in *refusing:*) echo "postgres-patroni: $$err" >&2; exit 1 ;; esac
+          sleep 5
+        done
+        echo "postgres-patroni: the primary did not accept the exporter role statements; last error: $$err" >&2
+        exit 1
+
+    deploy:
+      replicas: 1
+{{- if .Values.placement.constraints }}
+      placement:
+        constraints:
+{{- range .Values.placement.constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      # on-failure, not none: a first install can take longer than the loop above to elect a
+      # primary, and Swarm then simply runs it again.
+      restart_policy:
+        condition: on-failure
+
+  # An OpenTelemetry Collector that scrapes what must stay off the metrics overlay — each
+  # peer's Patroni REST API (/metrics on 8008) and each etcd member's metrics-only listener
+  # (2381) — over the cluster overlay, and serves all of it to Prometheus on the metrics
+  # overlay, port 8889. Neither etcd, whose client port has no authentication, nor the REST
+  # API ever joins that overlay. It receives nothing (no OTLP receiver), so nothing on either
+  # overlay can push to it. The image has no shell, so there is no healthcheck; a collector
+  # that stops answering is prometheus-stack's TargetDown. Its configuration is an
+  # environment variable, read by the collector's env provider.
+  #
+  # Every scraped series keeps its origin as exported_job (patroni or etcd) and
+  # exported_instance (the target), since Prometheus renames the collector's job and
+  # instance labels; monitoring/postgres-patroni-rules.yml selects on them.
+  {{ $prefix }}-metrics:
+    image: {{ .Values.metrics.collector.image.repository }}:{{ .Values.metrics.collector.image.tag }}
+    command:
+      - --config=env:COLLECTOR_CONFIG
+    environment:
+      COLLECTOR_CONFIG: |
+        receivers:
+          prometheus:
+            config:
+              scrape_configs:
+                - job_name: patroni
+                  scrape_interval: 15s
+                  metric_relabel_configs:
+                    - source_labels: [__name__]
+                      regex: "patroni_.+|up"
+                      action: keep
+                  static_configs:
+                    - targets:
+{{- range $peerAddrs }}
+                        - {{ . }}:8008
+{{- end }}
+                - job_name: etcd
+                  scrape_interval: 15s
+                  metric_relabel_configs:
+                    - source_labels: [__name__]
+                      regex: "etcd_.+|up"
+                      action: keep
+                  static_configs:
+                    - targets:
+{{- range $etcdHosts }}
+                        - {{ trimSuffix ":2379" . }}:2381
+{{- end }}
+        exporters:
+          prometheus:
+            endpoint: 0.0.0.0:8889
+            translation_strategy: UnderscoreEscapingWithoutSuffixes
+            without_scope_info: true
+        service:
+          pipelines:
+            metrics:
+              receivers: [prometheus]
+              exporters: [prometheus]
+    networks:
+      - cluster
+      - {{ .Values.metrics.network }}
+    deploy:
+      replicas: 1
+{{- if .Values.placement.constraints }}
+      placement:
+        constraints:
+{{- range .Values.placement.constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- with .Values.metrics.collector.resources.limits.memory }}
+      resources:
+        limits:
+          memory: {{ . | quote }}
+{{- end }}
+      restart_policy:
+        condition: any
+      # Exactly the two discovery labels: every deploy label of a service that opts in is
+      # readable through Prometheus's targets API.
+      labels:
+        - "prometheus.io/scrape=true"
+        - "prometheus.io/port=8889"
+{{- end }}
+
 {{- if and .Values.persistence.enabled (or (not .Values.persistence.volumePaths) (not .Values.persistence.etcdVolumePaths)) }}
 
 volumes:
@@ -528,6 +756,10 @@ secrets:
     external: true
   {{ .Values.auth.restApi.secretName }}:
     external: true
+{{- if .Values.metrics.enabled }}
+  {{ .Values.metrics.secretName }}:
+    external: true
+{{- end }}
 
 networks:
   {{ .Values.network.name }}:
@@ -541,7 +773,12 @@ networks:
       encrypted: "true"
 {{- end }}
 {{- end }}
-  # Stack-internal: etcd, the peers and the proxy only. etcd has no authentication and the
+{{- if .Values.metrics.enabled }}
+  {{ .Values.metrics.network }}:
+    external: true
+{{- end }}
+  # Stack-internal: etcd, the peers, the proxy and, with metrics, the exporters and the
+  # collector. etcd has no authentication and the
   # Patroni REST API's read endpoints none either, so this overlay is what keeps both away
   # from the app stacks on the client overlay. Not attachable, so no `docker run` container
   # can join it; a Swarm service can only by declaring it, which takes manager access.
