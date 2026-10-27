@@ -147,7 +147,7 @@ tests:
               stack: ci
             exp_annotations:
               summary: 'ci_gitlab-runner has stopped asking GitLab for jobs'
-              description: 'Runner task 10.0.1.5:9252 of ci_gitlab-runner has skipped its job polls for 10 minutes: after 3 job requests failed outright, usually a 403 for its token, it disables itself for an hour at a time. Check the runner in GitLab and the token secret.'
+              description: 'Runner task 10.0.1.5:9252 of ci_gitlab-runner has skipped its job polls for 10 minutes: after 3 job requests failed outright, usually a 403 for its token, it disables itself for 30 seconds at first, doubling up to an hour. Check the runner in GitLab and the token secret.'
       # Task 2 only: task 1's 403s stopped its requests rather than outnumbering its
       # successes, and release ok's 503s are 1 in 10.
       - eval_time: 50m
