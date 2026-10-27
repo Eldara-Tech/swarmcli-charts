@@ -383,8 +383,15 @@ if [ "$case" = lifecycle ]; then
   upgrade --set etcd.generation=2 --set 'etcd.rejoinMembers={}' --timeout 10m \
     || { echo "  the etcd.generation upgrade did not roll out"; exit 1; }
   wait_cluster "after rebuilding etcd from empty"
-  conf="$(docker exec "$(cid_of "$(printf '%s\n' $peers | sed -n 1p)")" patronictl show-config)"
-  grep -qx 'failsafe_mode: true' <<<"$conf" || { echo "  Patroni did not write its configuration back into the rebuilt etcd:"; echo "$conf"; exit 1; }
+  # The leader writes its configuration back a loop or two after it retakes the leader key,
+  # which is what wait_cluster saw, so this polls.
+  conf=""
+  for _ in $(seq 1 30); do
+    conf="$(docker exec "$(cid_of "$(printf '%s\n' $peers | sed -n 1p)")" patronictl show-config 2>/dev/null || true)"
+    grep -qx 'failsafe_mode: true' <<<"$conf" && break
+    sleep 2
+  done
+  grep -qx 'failsafe_mode: true' <<<"$conf" || { echo "  Patroni did not write its configuration back into the rebuilt etcd within 60s:"; echo "$conf"; exit 1; }
   got="$(rows)"
   [ "$got" = "$((want_rows + 1))" ] || { echo "  rows after rebuilding etcd: $got, want $((want_rows + 1))"; exit 1; }
 
