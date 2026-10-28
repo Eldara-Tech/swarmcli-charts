@@ -188,6 +188,12 @@ That also shows the pattern for adding a second application's user (`db.getSibli
   (`resources.limits.memory`) when one is set, otherwise from the node's RAM — on a node shared
   with other services, set a limit. Leave headroom above the cache for connections and for the
   healthcheck's `mongosh`.
+- **TCMalloc runs on per-thread caches.** The chart sets `GLIBC_TUNABLES=glibc.pthread.rseq=1`,
+  overriding the image's `rseq=0`: with TCMalloc's per-CPU caches on, mongod refuses to start on
+  Linux 6.19 through 7.0.13 ([SERVER-121912](https://jira.mongodb.org/browse/SERVER-121912)), and
+  Ubuntu reports every 7.0 kernel as `7.0.0-N`, so its hosts never clear that check. Per-thread
+  caches start on every kernel, without the per-CPU caches MongoDB recommends for
+  [allocator performance](https://www.mongodb.com/docs/manual/administration/tcmalloc-performance/).
 - **Host-path persistence.** By default data lives on the node-local named volume `mongodb-data`
   (durable across restarts/redeploys, under Docker's own volume storage). To store it under a
   directory you choose instead, set `persistence.volumePath` to an absolute path — it takes
