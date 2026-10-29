@@ -273,7 +273,7 @@ metrics:
     repository: otel/opentelemetry-collector
     # A concrete tag, not appVersion: this is a second image, and Renovate's
     # helm-values manager maintains pins written here.
-    tag: "0.162.0"
+    tag: "0.164.0"
   # External overlay the collector shares with Prometheus. Only the collector joins it,
   # never RustFS. requirements.yaml declares it autoCreate:true.
   network: monitoring
