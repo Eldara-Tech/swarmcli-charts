@@ -6,7 +6,8 @@
 # the way a live server shows it: the exporter counts one below the limit, then, at 12m,
 # every collector metric vanishes while pg_up stays 1. `warm` is past 80% of its slots and
 # deadlocks; `blind` has a collector failing. `su`'s exporter logs in as a superuser, so it
-# can count all 97 slots taken. Release `ok` stays healthy and must raise nothing.
+# can count all 97 slots taken. Release `ok` stays healthy and must raise nothing, and so
+# must `ha`, a postgres-patroni peer whose relayed series this file leaves out.
 rule_files:
   - ../monitoring/postgres-rules.yml
 
@@ -17,6 +18,14 @@ tests:
     input_series:
       - series: 'pg_up{job="down_postgres-exporter",instance="10.0.1.5:9187",stack="down"}'
         values: '1 1 0x38'
+      # A postgres-patroni peer, as its collector relays it, with its server gone and a
+      # collector failing: that chart's rules cover it, and none of these may fire for it.
+      - series: 'pg_up{job="ha_postgres-patroni-metrics",instance="ha_postgres-patroni-metrics:8889",exported_job="postgres",name="postgres-patroni-1",stack="ha"}'
+        values: '0x40'
+      - series: 'pg_scrape_collector_success{collector="database",job="ha_postgres-patroni-metrics",instance="ha_postgres-patroni-metrics:8889",exported_job="postgres",name="postgres-patroni-1",stack="ha"}'
+        values: '0x40'
+      - series: 'pg_stat_database_deadlocks{datname="app",job="ha_postgres-patroni-metrics",instance="ha_postgres-patroni-metrics:8889",exported_job="postgres",name="postgres-patroni-1",stack="ha"}'
+        values: '0+600x40'
       - series: 'pg_up{job="full_postgres-exporter",instance="10.0.2.5:9187",stack="full"}'
         values: '1x40'
       - series: 'pg_up{job="warm_postgres-exporter",instance="10.0.3.5:9187",stack="warm"}'

@@ -262,6 +262,25 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
     `cluster.forceBootstrap` through the README's `--wsrep-recover` runbook, then
     clearing it;
   - a crash of every peer, recovered by an election.
+- **postgres-patroni** — the four dummy secrets (superuser, replication, REST API, exporter) + a node
+  label for EVERY peer (`postgres-patroni-1` … `-5`) on the single CI node, so the pinned
+  fixtures schedule every peer and etcd member there, and for `bind-mount` the host dirs,
+  owned by the image's postgres uid (26). `ci/e2e-check.sh` asserts one Patroni leader with
+  every other peer streaming and one etcd cluster with one leader, a write through the
+  proxy's primary port read back from every replica through its replica port, that nothing
+  behind the proxy resolves on the client overlay and that the REST API refuses an
+  unauthenticated write; then it stops the leader and asserts writes through the same
+  endpoint resume on a new one and the old leader rejoins with every row. The `metrics`
+  fixture scrapes every exporter (`pg_up 1`, every collector succeeding) and the collector
+  relaying Patroni and etcd (every target up, one primary, a leader on every member) from
+  the `monitoring` overlay, checks the exporters' role and that nothing behind them resolves
+  there, and runs promtool on the shipped rules. The `lifecycle`
+  fixture runs as a job of its own (`e2e (postgres-patroni lifecycle)`): an upgrade rolling
+  every peer and etcd member one at a time under a steady writer, losing no acknowledged
+  write, with each new task started a monitor window after the one before; a leader crash;
+  etcd without quorum (`failsafe_mode` keeps writes going); a replica rebuilt from an empty
+  volume; a full stop; an etcd member replaced through the README's `etcdctl member add`
+  runbook; and etcd rebuilt from empty volumes under a running primary.
 - **keycloak** — the two operator secrets + the DB/ingress overlays + a throwaway
   co-located backend on `keycloak-db-net` — MariaDB, or PostgreSQL for the `postgres` fixture —
   because Keycloak attaches its DB overlay unconditionally and `/health/ready` only passes once

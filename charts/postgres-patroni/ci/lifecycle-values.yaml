@@ -1,0 +1,9 @@
+# Lifecycle: the operations a long-lived cluster goes through, driven by ci/e2e-check.sh
+# in a CI job of its own (.github/e2e-matrix.yaml): an upgrade rolling every peer and
+# etcd member one at a time under a steady writer, a leader crash, etcd losing its
+# quorum, a replica rebuilt from an empty volume, a full stop, an etcd member replaced,
+# and etcd rebuilt from empty. Shorter health windows than the defaults, so each of the seven sequential
+# rollouts costs a minute rather than two.
+healthcheck:
+  startPeriod: 30s
+  monitor: 60s

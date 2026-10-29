@@ -80,6 +80,24 @@ include:
   # the monitoring overlay, which proves the one-shot created a pg_monitor role whose password
   # survived the secret's quoting traps and that every default collector accepts.
   - { chart: postgres,      cases: "",                                                                                timeout: 8m  }
+  # postgres-patroni: the fixtures that converge on ONE node. ci/e2e-setup.sh labels it with
+  # every peer label, so the pinned default shape schedules there: not HA, but a real etcd
+  # quorum and real streaming replicas. Convergence proves little here, so ci/e2e-check.sh
+  # asserts one leader with every other peer streaming, routing by role through both proxy
+  # ports, nothing behind the proxy reachable from the client overlay, and a failover of
+  # the leader through the same endpoint. bind-mount proves the uid-26 host dirs work;
+  # two-peers the shape where node label 3 carries only etcd; `metrics` scrapes every
+  # exporter and the Patroni/etcd collector from the monitoring overlay and runs promtool.
+  # internal-net (an IPsec overlay), five, unpinned and rejoin (ci/e2e-render-only) are
+  # covered by charts.yml.
+  - { chart: postgres-patroni, cases: "default ephemeral bind-mount published two-peers metrics",                    timeout: 10m }
+  # postgres-patroni lifecycle, a job of its own: an upgrade rolling every peer and etcd
+  # member one at a time under a steady writer (no acknowledged write may be lost), a leader
+  # crash, etcd without quorum (failsafe_mode keeps writes going), a replica rebuilt from an
+  # empty volume, a full stop, an etcd member replaced through the README's runbook, and etcd
+  # rebuilt from empty under a running primary. It drives `swarmcli charts upgrade` itself;
+  # its fixture shortens the health windows. ~11 minutes locally.
+  - { chart: postgres-patroni, name: "postgres-patroni lifecycle", cases: "lifecycle",                                timeout: 25m }
   # mongodb: EVERY fixture (cases: "" => no filter). ci/e2e-setup.sh creates the three dummy
   # secrets and the data node label; ci/e2e-check.sh then connects from a throwaway client
   # container on the release's overlay, so `replica-set` proves clients can follow replica-set

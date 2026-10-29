@@ -1,0 +1,238 @@
+# postgres-patroni alerts, for what metrics.enabled adds: the collector (job
+# <release>_postgres-patroni-metrics) relaying Patroni's, etcd's and each peer's
+# postgres_exporter's metrics, every series under exported_job="patroni", "etcd" or
+# "postgres", the target as exported_instance and the peer or member as `name`. A target
+# the collector cannot scrape reads up 0 there and its other series vanish at once, which
+# is why the cluster-wide alerts also count `up`. The chart does not deploy these: hand the
+# file to your Prometheus, e.g. the prometheus-stack chart's prometheus.extraRules (README §
+# Alerts and a dashboard).
+#
+# Sources and ratings:
+#   * patroni: written for this chart from Patroni's /metrics, around what decides
+#     availability: a primary, exactly one, replicas a failover may promote, etcd reachable.
+#   * etcd: EtcdNoLeader, EtcdInsufficientMembers, EtcdHighNumberOfLeaderChanges and
+#     EtcdHighFsyncDurations are from the etcd mixin (etcd-io/etcd contrib/mixin,
+#     Apache-2.0); EtcdMemberDown and EtcdDatabaseNearQuota are this chart's, the latter
+#     because a full backend quota makes etcd refuse every write, Patroni's included.
+#   * postgres: the postgres chart's rules (from the postgres_exporter mixin), on this
+#     chart's relayed exporters, by peer. The postgres chart's own file leaves these series
+#     out, so both files can be loaded side by side.
+# Severity: critical only while writes are refused or about to be — no primary, two
+# primaries, etcd without a leader or a majority (no failover is possible, and the primary
+# keeps writing only while failsafe_mode holds), no connection slot left — warning
+# otherwise. One peer down leaves the cluster serving, so this chart's PostgresPatroniPeerDown
+# is a warning where the postgres chart's PostgreSQLDown is critical; the etcd mixin's
+# ratings stand.
+#
+# Validate (from the repo root):
+#   docker run --rm --entrypoint promtool -v "$PWD/charts/postgres-patroni:/chart:ro" \
+#     "prom/prometheus:$(sed -n 's/^appVersion: *"\(.*\)"$/\1/p' charts/prometheus-stack/Chart.yaml)" \
+#     test rules /chart/ci/postgres-patroni-rules-test.yml
+groups:
+  - name: postgres-patroni
+    rules:
+      # A sum rather than a count of the 1s: a count of nothing is no series at all. The
+      # second operand is every peer unreachable, when patroni_primary vanishes entirely.
+      # The collector itself down is prometheus-stack's TargetDown.
+      - alert: PatroniNoPrimary
+        expr: |
+          sum by (stack) (patroni_primary{exported_job="patroni"}) == 0
+          or
+          sum by (stack) (up{exported_job="patroni"}) == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Patroni cluster {{ $labels.stack }} has no primary'
+          description: 'For a minute no peer of {{ $labels.stack }} has held the leader key, or none has answered at all, so the proxy routes no write anywhere. A switchover takes about 10 seconds; this is longer. See `patronictl list` in any peer.'
+      - alert: PatroniMultiplePrimaries
+        expr: sum by (stack) (patroni_primary{exported_job="patroni"}) > 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Patroni cluster {{ $labels.stack }} reports {{ $value }} primaries'
+          description: 'More than one peer of {{ $labels.stack }} has reported itself primary for a minute. The proxy routes writes to whichever answers its check, so writes may be diverging.'
+      - alert: PatroniPeerDown
+        expr: up{exported_job="patroni"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Patroni on {{ $labels.name }} in {{ $labels.stack }} does not answer'
+          description: 'The collector has not reached the Patroni REST API at {{ $labels.exported_instance }} for 2 minutes: the peer is down, rescheduling, or not yet in DNS. The cluster serves without it, with one failover candidate fewer.'
+      - alert: PatroniReplicaNotStreaming
+        expr: patroni_replica{exported_job="patroni"} == 1 unless on (stack, name) patroni_postgres_streaming{exported_job="patroni"} == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Replica {{ $labels.name }} in {{ $labels.stack }} is not streaming'
+          description: 'Replica {{ $labels.name }} has not streamed from the primary for 5 minutes: it is copying it, replaying archived WAL, or cut off. It falls behind and stops being a failover candidate.'
+      # maximum_lag_on_failover is 1 MiB: a replica further behind is never promoted. The
+      # primary reports its own WAL position and replicas report 0 there, so the max is the
+      # primary's. The two positions come from two targets the collector scrapes up to one
+      # interval (15s) apart, so a busy primary would show lag on a replica that has none:
+      # the threshold allows that interval's worth of WAL on top.
+      - alert: PatroniReplicaLagging
+        expr: |
+          (
+            max by (stack) (patroni_xlog_location{exported_job="patroni"})
+              - on (stack) group_right ()
+            (patroni_xlog_received_location{exported_job="patroni"} and on (stack, name) patroni_replica{exported_job="patroni"} == 1)
+          )
+            > on (stack) group_left ()
+          (1048576 + 15 * max by (stack) (rate(patroni_xlog_location{exported_job="patroni"}[2m])))
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Replica {{ $labels.name }} in {{ $labels.stack }} is {{ $value | humanize1024 }}B behind the primary'
+          description: 'For 5 minutes replica {{ $labels.name }} has been more than maximum_lag_on_failover (1 MiB) behind, beyond what the scrape interval explains, so a failover would not promote it.'
+      # Every peer reports failsafe mode active, not only the primary, so this is one alert
+      # per release.
+      - alert: PatroniFailsafeModeActive
+        expr: max by (stack) (patroni_failsafe_mode_is_active{exported_job="patroni"}) == 1
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Patroni cluster {{ $labels.stack }} is running on failsafe_mode, without etcd'
+          description: 'The peers cannot reach etcd, and the primary stays writable only through failsafe_mode, which ends the moment any peer stops answering: the primary then turns read-only. Bring etcd back (see EtcdNoLeader).'
+      # timestamp(), not time(): the age at the sample's own scrape, without the delay until
+      # this rule is evaluated.
+      - alert: PatroniDCSUnreachable
+        expr: timestamp(patroni_dcs_last_seen{exported_job="patroni"}) - patroni_dcs_last_seen{exported_job="patroni"} > 60
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Peer {{ $labels.name }} in {{ $labels.stack }} has not reached etcd for {{ $value | humanizeDuration }}'
+          description: 'Patroni on {{ $labels.name }} has not reached etcd for over a minute. A replica in that state cannot take part in a failover; a primary keeps writing only through failsafe_mode.'
+      - alert: PatroniPaused
+        expr: patroni_is_paused{exported_job="patroni"} == 1
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Automatic failover is paused in {{ $labels.stack }}'
+          description: 'Patroni has been in maintenance mode for an hour (`patronictl pause`): nothing fails over if the primary is lost. Resume it with `patronictl resume`.'
+      - alert: PatroniPendingRestart
+        expr: patroni_pending_restart{exported_job="patroni"} == 1
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Peer {{ $labels.name }} in {{ $labels.stack }} waits for a restart to apply a setting'
+          description: 'A changed setting on {{ $labels.name }} takes effect only after a restart, and it has waited 30 minutes. README § Changing Patroni and PostgreSQL settings: `patronictl restart <cluster> --pending`.'
+
+  - name: postgres-patroni-etcd
+    rules:
+      - alert: EtcdNoLeader
+        expr: etcd_server_has_leader{exported_job="etcd"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'etcd member {{ $labels.name }} in {{ $labels.stack }} has no leader'
+          description: 'etcd has had no leader for a minute: its quorum is lost. Patroni cannot fail over, and the primary keeps writing only through failsafe_mode. README § Replacing an etcd member, or § etcd lost its majority for good.'
+      # When no member answers, nothing reports has_leader at all; this is what fires then.
+      - alert: EtcdInsufficientMembers
+        expr: sum by (stack) (up{exported_job="etcd"}) < (count by (stack) (up{exported_job="etcd"}) + 1) / 2
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Fewer than a majority of etcd members in {{ $labels.stack }} answer'
+          description: 'The collector has reached fewer than a majority of etcd members for 3 minutes, so etcd has no quorum: Patroni cannot fail over, and the primary keeps writing only through failsafe_mode. README § etcd lost its majority for good.'
+      - alert: EtcdMemberDown
+        expr: up{exported_job="etcd"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'etcd member {{ $labels.name }} in {{ $labels.stack }} does not answer'
+          description: 'The collector has not reached etcd member {{ $labels.name }} at {{ $labels.exported_instance }} for 2 minutes. With a majority still up nothing is lost yet, but one more member down loses the quorum.'
+      - alert: EtcdHighNumberOfLeaderChanges
+        expr: increase(etcd_server_leader_changes_seen_total{exported_job="etcd"}[15m]) >= 4
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'etcd member {{ $labels.name }} in {{ $labels.stack }} saw {{ printf "%.0f" $value }} leader changes in 15 minutes'
+          description: 'Frequent elections usually mean slow disks or a congested network between the members; each one pauses Patroni''s writes to etcd.'
+      - alert: EtcdHighFsyncDurations
+        expr: histogram_quantile(0.99, rate(etcd_disk_wal_fsync_duration_seconds_bucket{exported_job="etcd"}[5m])) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'etcd member {{ $labels.name }} in {{ $labels.stack }} takes {{ $value | humanizeDuration }} to fsync its WAL'
+          description: 'The 99th percentile of WAL fsyncs has been over 500ms for 10 minutes. etcd shares the node with a PostgreSQL peer; a disk that slow costs elections.'
+      - alert: EtcdDatabaseNearQuota
+        expr: etcd_mvcc_db_total_size_in_bytes{exported_job="etcd"} / etcd_server_quota_backend_bytes{exported_job="etcd"} > 0.8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'etcd member {{ $labels.name }} in {{ $labels.stack }} is at {{ $value | humanizePercentage }} of its backend quota'
+          description: 'A full backend quota makes etcd refuse every write, Patroni''s included. The chart compacts its history hourly; space freed by compaction is reused but not returned, which `etcdctl defrag` does.'
+
+  - name: postgres-patroni-postgres
+    rules:
+      # pg_up 0 is the peer down; up 0 is its exporter down, when pg_up vanishes.
+      - alert: PostgresPatroniPeerDown
+        expr: pg_up{exported_job="postgres"} != 1 or up{exported_job="postgres"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'PostgreSQL on {{ $labels.name }} in {{ $labels.stack }} is not reachable'
+          description: 'For 5 minutes the exporter of {{ $labels.name }} has not reached its peer, or the collector has not reached the exporter. The cluster serves without it; PatroniNoPrimary fires if it was the primary and nothing took over.'
+      # As in the postgres chart: roles that are not superusers get max_connections minus
+      # superuser_reserved_connections, and this chart's exporter is one, so once those are
+      # full its collector metrics vanish while pg_up stays 1, which the second operand catches.
+      - alert: PostgresPatroniMaxConnectionsReached
+        expr: |
+          sum by (stack, name) (pg_stat_activity_count{exported_job="postgres"})
+            >=
+          sum by (stack, name) (pg_settings_max_connections{exported_job="postgres"})
+            - sum by (stack, name) (pg_settings_superuser_reserved_connections{exported_job="postgres"})
+          or
+          max by (stack, name) (pg_up{exported_job="postgres"} == 1 unless on (stack, name) pg_scrape_collector_success{exported_job="postgres"})
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'PostgreSQL on {{ $labels.name }} in {{ $labels.stack }} has no connection slot left for roles that are not superusers'
+          description: 'For a minute, every slot outside superuser_reserved_connections has been taken on this peer, so roles that are not superusers cannot connect to it, through the proxy or not.'
+      - alert: PostgresPatroniHighConnections
+        expr: |
+          sum by (stack, name) (pg_stat_activity_count{exported_job="postgres"})
+            >
+          (
+            sum by (stack, name) (pg_settings_max_connections{exported_job="postgres"})
+              - sum by (stack, name) (pg_settings_superuser_reserved_connections{exported_job="postgres"})
+          ) * 0.8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'PostgreSQL on {{ $labels.name }} in {{ $labels.stack }} is above 80% of its connection limit'
+          description: '{{ $value }} connections have been open for 10 minutes, more than 80% of max_connections minus superuser_reserved_connections.'
+      - alert: PostgresPatroniHighDeadLocks
+        expr: rate(pg_stat_database_deadlocks{exported_job="postgres", datname!~"template.*"}[5m]) * 60 > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Deadlocks in database {{ $labels.datname }} on {{ $labels.name }} in {{ $labels.stack }}'
+          description: 'Database {{ $labels.datname }} has had more than 5 deadlocks a minute for 5 minutes, {{ $value | humanize }} now. Each one aborts a transaction.'
+      - alert: PostgresPatroniExporterErrors
+        expr: pg_scrape_collector_success{exported_job="postgres"} == 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'The exporter of {{ $labels.name }} in {{ $labels.stack }} fails its {{ $labels.collector }} collector'
+          description: 'postgres_exporter on {{ $labels.name }} has failed its {{ $labels.collector }} collector for 30 minutes, usually for a privilege its role lacks.'

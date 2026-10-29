@@ -1,0 +1,4 @@
+# Persistence on, node pins off: the single-node-swarm shape. Volumes still render,
+# placement does not.
+persistence:
+  nodeLabelPrefix: ""

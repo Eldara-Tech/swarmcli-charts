@@ -1,0 +1,246 @@
+# postgres-patroni chart default values.
+#
+# A highly available PostgreSQL cluster on Docker Swarm: one primary and streaming
+# replicas, with automatic failover by Patroni. Patroni keeps the cluster's state in a
+# three-member etcd cluster deployed beside it, which is what decides the primary, so
+# two PostgreSQL peers are already enough for failover; etcd's majority is the quorum.
+#
+# Each peer and each etcd member is its OWN Swarm service with exactly one replica, its
+# own data volume and its own node label, because a Swarm volume is node-local. Peer N
+# and etcd member N share node label N, so labelling one node per peer places both.
+#
+# Clients connect to an HAProxy in front of the peers: port 5432 reaches the primary,
+# port 5433 the replicas. It follows a failover by itself, asking each peer's Patroni
+# REST API which role it has. etcd, the REST API and the peers themselves sit on a
+# stack-internal overlay that app stacks on the client overlay cannot reach.
+#
+# Every password ALWAYS comes from an EXTERNAL Swarm secret the operator pre-creates
+# (never created by the chart).
+
+image:
+  # Percona's PostgreSQL image, which ships Patroni and its etcd support beside the
+  # server. Its own entrypoint is not used: the chart runs Patroni.
+  repository: percona/percona-distribution-postgresql
+  tag: ""  # defaults to the appVersion in Chart.yaml
+
+cluster:
+  # Patroni's cluster name (its "scope"), under which it keeps its keys in etcd.
+  name: postgres-patroni
+  # Number of PostgreSQL peers, 2 to 5. Any of them can become the primary; the others
+  # replicate from it. etcd holds the quorum, so an even count is fine here.
+  peers: 3
+
+etcd:
+  # Number of etcd members: 3 survives losing 1, 5 survives losing 2.
+  members: 3
+  image:
+    repository: gcr.io/etcd-development/etcd
+    # A concrete tag, not appVersion: this is a second image, and Renovate's
+    # helm-values manager maintains pins written here.
+    tag: "v3.6.16"
+  # DISASTER RECOVERY ONLY — bump it by one when rebuilding etcd from empty volumes
+  # (README.md § etcd lost its majority for good), and only then. It gives the rebuilt
+  # etcd cluster a new ID: Patroni remembers the old cluster's raft term and refuses a
+  # cluster with the same ID and a lower term as one that fell behind. etcd reads it
+  # only while a member's data dir is empty.
+  generation: 1
+  # DISASTER RECOVERY ONLY — normally []. Members that join the RUNNING etcd cluster
+  # instead of forming a new one, for a member whose data was lost and which has been
+  # re-added with `etcdctl member add` (README.md § Replacing an etcd member). etcd reads
+  # this only while the member's data dir is empty, so it can stay set afterwards, until
+  # etcd is rebuilt from nothing: that needs every member new, so clear it then.
+  rejoinMembers: []
+  resources:
+    limits:
+      memory: ""          # e.g. "256M"
+
+# Credentials. Passwords are read from mounted secret files at start, so the plaintext
+# never lands in the compose file or `docker inspect`. Pre-create all three, e.g.:
+#   printf 'S3cr3t' | docker secret create postgres_patroni_superuser_password -
+#   openssl rand -base64 32 | docker secret create postgres_patroni_replication_password -
+#   openssl rand -base64 32 | docker secret create postgres_patroni_restapi_password -
+#
+#   superuser: the PostgreSQL superuser Patroni creates when it initialises the cluster
+#     (and uses for pg_rewind). As in the postgres chart there is no separate app user;
+#     README.md § Connecting has the recipe for one.
+#   replication: the role the replicas stream from the primary with.
+#   restApi: basic auth for the Patroni REST API's write endpoints (switchover,
+#     restart, reinitialise, configuration). Its read endpoints, which the proxy and
+#     the healthcheck use, need none. Not a database role.
+auth:
+  superuser:
+    username: postgres
+    secretName: postgres_patroni_superuser_password
+  replication:
+    username: replicator
+    secretName: postgres_patroni_replication_password
+  restApi:
+    username: patroni
+    secretName: postgres_patroni_restapi_password
+
+# Persistence. One named volume per peer at /data/db, suffixed with the peer's 1-based
+# index (postgres-patroni-data-1, -2, -3), and one per etcd member
+# (postgres-patroni-etcd-1, -2, -3).
+#
+# enabled:false => an ephemeral cluster: no volumes and no node pins. A peer that loses
+# its task re-copies the primary, but an etcd member that loses its task cannot rejoin
+# etcd (README.md § Replacing an etcd member), so this is for CI and demos, never for
+# real data.
+persistence:
+  enabled: true
+  volumePrefix: postgres-patroni-data
+  etcdVolumePrefix: postgres-patroni-etcd
+  # Store data under host directories instead of Docker's managed volume storage. When
+  # set they TAKE PRECEDENCE over the prefixes above: give exactly one ABSOLUTE host path
+  # per peer (volumePaths) and per etcd member (etcdVolumePaths), in order. Each
+  # directory must already exist on that peer's node. A peer's must be writable by the
+  # image's postgres uid (26), not 999 as in the official image; an etcd member's by root.
+  # This is host-filesystem access, acknowledged via swarmcli-charts/allow: "host-mount"
+  # in Chart.yaml. Leave empty ([]) to use named volumes.
+  volumePaths: []
+  etcdVolumePaths: []
+  # Node-label prefix pinning peer N and etcd member N to the node carrying their
+  # volumes (Swarm volumes are node-local). Both render
+  # `node.labels.<nodeLabelPrefix>-<N> == true` while persistence is enabled, and the
+  # pin is dropped automatically when it is not. Label one node per peer first, and as
+  # many as there are etcd members if that is more:
+  #   docker node update --label-add postgres-patroni-1=true <node-a>
+  #   docker node update --label-add postgres-patroni-2=true <node-b>
+  #   docker node update --label-add postgres-patroni-3=true <node-c>
+  # Set "" to schedule everything unpinned even with persistence on. That is only
+  # correct on a single-node swarm, where it is a single point of failure: no
+  # availability, just a realistic cluster to develop against.
+  nodeLabelPrefix: postgres-patroni
+
+# Extra scheduling constraints, applied to EVERY service (independent of the per-peer
+# persistence pins above).
+placement:
+  constraints: []
+
+# The overlay clients use to reach the proxy. external:true (default) is a shared
+# attachable overlay (declared in requirements.yaml, auto-created if missing) that app
+# stacks also join. external:false => chart-managed (only services in this stack reach
+# it).
+#
+# clientAlias is the proxy's DNS name on it. Set "" to use only the service name
+# (<release>_postgres-patroni-proxy).
+#
+# encrypted applies IPsec to the data plane of the overlays this chart creates: always
+# the internal one that carries replication, and this one too when external:false. It
+# costs throughput, so it is opt-in. For an external overlay, pass `--opt encrypted` to
+# `docker network create` instead.
+network:
+  name: postgres-patroni-net
+  external: true
+  encrypted: false
+  clientAlias: postgres
+
+# Publish the proxy's ports on every node through the ingress routing mesh. Disabled
+# by default — the cluster stays internal to the overlay.
+#   port: the host port reaching the primary (the proxy's 5432).
+#   replicaPort: the host port reaching the replicas (the proxy's 5433).
+exposure:
+  enabled: false
+  port: 5432
+  replicaPort: 5433
+
+# The HAProxy in front of the peers. Stateless, so it runs more than one replica and
+# Swarm load-balances across them; it is the one part of this chart that is safe to
+# scale.
+proxy:
+  image:
+    repository: haproxy
+    # A concrete tag, not appVersion: this is a second image, and Renovate's
+    # helm-values manager maintains pins written here.
+    tag: "3.4"
+  replicas: 2
+  resources:
+    limits:
+      memory: ""
+
+# PostgreSQL settings (key: value), e.g. { max_connections: 200, shared_buffers: 1GB }.
+# Applied when the cluster is first initialised, and on every peer's start after that.
+# A few settings must be equal on every peer, and Patroni takes them only from etcd once
+# the cluster exists (max_connections, max_wal_senders, max_replication_slots,
+# max_worker_processes, max_prepared_transactions, max_locks_per_transaction,
+# wal_level, wal_keep_size, wal_log_hints, track_commit_timestamp, hot_standby): change
+# those with `patronictl edit-config`, README.md § Changing PostgreSQL settings.
+postgresql:
+  parameters: {}
+
+# Prometheus metrics, found by Docker Swarm service discovery: one postgres_exporter per
+# peer, and one OpenTelemetry Collector that scrapes those, Patroni's own metrics and etcd's
+# over the stack-internal overlay and serves them all on metrics.network, the
+# prometheus-stack chart's default scrape overlay. The collector carries the deploy labels
+# prometheus.io/scrape=true and prometheus.io/port=8889, so that chart picks it up with no
+# config, and it is the only thing of this chart on that overlay. The alert rules and the
+# dashboard are in monitoring/ (README.md § Metrics).
+#
+# Off by default, and nothing below renders while it is off. Turning it on adds services and
+# leaves the peers' and etcd members' specs untouched, so within one chart version it
+# restarts nothing.
+#
+# The exporters log in as their own least-privilege role (LOGIN plus membership of the
+# built-in pg_monitor role; no access to your tables), which a one-shot service creates, or
+# resets the password of, as the superuser through the proxy. secretName is an EXTERNAL Swarm
+# secret holding its password. Pre-create it with a random one:
+#   openssl rand -base64 32 | docker secret create postgres_patroni_exporter_password -
+# To rotate it, create a secret under a new name and point secretName at it.
+#
+# None of the exporters, Patroni and etcd may join metrics.network: etcd's client port has
+# no authentication, the REST API's read endpoints none either, and postgres_exporter's
+# /probe endpoint dials whatever the caller names. The collector relays all three instead.
+metrics:
+  enabled: false
+  image:
+    repository: prometheuscommunity/postgres-exporter
+    # A concrete tag, not appVersion: this is a second image, and Renovate's helm-values
+    # manager maintains pins written here.
+    tag: "v0.20.1"
+  # The exporters' role. Must differ from the superuser and the replication role: the
+  # one-shot resets this role's password. It adopts only a role it created itself, and
+  # refuses an existing one of that name.
+  username: exporter
+  secretName: postgres_patroni_exporter_password
+  # External overlay the collector shares with Prometheus. Nothing else of this chart joins
+  # it. requirements.yaml declares it autoCreate:true.
+  network: monitoring
+  collector:
+    image:
+      repository: otel/opentelemetry-collector
+      # A concrete tag; Renovate's helm-values manager maintains it.
+      tag: "0.162.0"
+    resources:
+      limits:
+        memory: "128M"
+
+# Swarm deploy resource limits per peer (optional). Rendered only when limits.memory is
+# set.
+resources:
+  limits:
+    memory: ""           # e.g. "1G"
+
+# Container healthcheck: Patroni's /liveness, 200 while its HA loop runs, whatever the
+# peer's role. NOT /health or /readiness: a replica copying the primary with
+# pg_basebackup fails both for the whole copy, and Swarm would kill it partway. Which
+# peer takes client traffic is the proxy's decision. See the template for the details.
+healthcheck:
+  enabled: true
+  interval: 10s
+  timeout: 5s
+  retries: 3
+  startPeriod: 60s
+  # How long Swarm counts a task failure against the rollout, measured from task
+  # creation. Must cover the healthcheck's worst case above
+  # (60s start_period + 10s interval x 3 retries = 90s) or a container that goes
+  # unhealthy after the window does not fail the deploy. Raise it if you raise the
+  # values above.
+  monitor: 2m
+
+# How long Swarm waits for a peer to stop before killing it. Patroni stops PostgreSQL
+# with a checkpoint and hands the leader key over; a primary killed partway is failed
+# over only once its leader key expires. Raise it for a large shared_buffers.
+stopGracePeriod: 2m
+
+# Extra deploy labels (key: value), applied to every service.
+labels: {}
