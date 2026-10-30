@@ -209,7 +209,7 @@ metrics:
     image:
       repository: otel/opentelemetry-collector
       # A concrete tag; Renovate's helm-values manager maintains it.
-      tag: "0.162.0"
+      tag: "0.164.0"
     resources:
       limits:
         memory: "128M"
