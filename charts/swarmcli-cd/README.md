@@ -207,6 +207,7 @@ sso:
   clientId: swarmcli-cd
   redirectURL: https://cd.example.com/auth/callback
   clientSecretSecret: swarmcli-cd-oidc-secret   # omit for a public client
+  displayName: Keycloak   # the button reads "Sign in with Keycloak"; default SSO
 ```
 
 All three of `issuer`, `clientId` and `redirectURL`, or none of them — a provider missing
@@ -367,6 +368,7 @@ nothing.
 | `publish.port` | `8080` | `published`: the published port |
 | `publish.mode` | `ingress` | `published`: `ingress` (routing mesh) or `host` |
 | `auth.adminTokenSecret` | `swarmcli-cd-token` | **External** secret holding the API admin token. The controller refuses to start without one |
+| `auth.adminUsername` | `""` | The username the web UI's login asks for beside the admin token; `""` = the controller's default, `admin`. No `:` |
 | `git.username` | `""` | Git username — GitHub wants `x-access-token` |
 | `git.tokenSecret` | `""` | **External** secret with the git password/token. Private repositories only |
 | `registryAuthSecrets` | `[]` | **External** secrets holding `docker config.json`s, one per application that pulls from a private registry |
@@ -376,6 +378,7 @@ nothing.
 | `sso.clientId` | `""` | The OIDC client registered with the provider |
 | `sso.redirectURL` | `""` | Where the provider sends the browser back. Must end in `/auth/callback` |
 | `sso.clientSecretSecret` | `""` | **External** secret with the OIDC client secret. Omit for a public client, which is protected by PKCE |
+| `sso.displayName` | `""` | The provider's name on the login button, "Sign in with &lt;displayName&gt;"; `""` = `SSO` |
 | `prune.enabled` | `false` | Delete an application's resources when it leaves the set |
 | `prune.volumes` | `false` | Extend prune to named volumes. Requires `prune.enabled` |
 | `controllerId` | `default` | This controller's identity. Two controllers on one swarm must differ |

@@ -70,6 +70,12 @@
 {{- if and .Values.sso.clientSecretSecret (not $sso) }}
 {{-   fail "sso.clientSecretSecret configures nothing on its own: without sso.issuer, sso.clientId and sso.redirectURL no single sign-on is rendered, and the secret would be mounted and never read" }}
 {{- end }}
+{{- if and .Values.sso.displayName (not $sso) }}
+{{-   fail "sso.displayName configures nothing on its own: without sso.issuer, sso.clientId and sso.redirectURL there is no single sign-on button to name" }}
+{{- end }}
+{{- if contains ":" .Values.auth.adminUsername }}
+{{-   fail "auth.adminUsername must not contain ':', which separates the username from the token at login: the controller refuses to start on it" }}
+{{- end }}
 {{- /* Where each piece lands in the container. The app set's directory is deliberately
        NOT under the data directory: in git mode the controller keeps its own app-set
        clone at <data>/appset, and a volume mounted over that would be read as one. */}}
@@ -160,6 +166,9 @@ services:
     # delivered in memory, and never appears in `docker service inspect`.
     environment:
       SWARMCLI_CD_ADMIN_TOKEN_FILE: /run/secrets/{{ .Values.auth.adminTokenSecret }}
+{{- if .Values.auth.adminUsername }}
+      SWARMCLI_CD_ADMIN_USERNAME: {{ .Values.auth.adminUsername | quote }}
+{{- end }}
 {{- if .Values.git.tokenSecret }}
       SWARMCLI_CD_GIT_USERNAME: {{ .Values.git.username | quote }}
       SWARMCLI_CD_GIT_TOKEN_FILE: /run/secrets/{{ .Values.git.tokenSecret }}
@@ -181,6 +190,9 @@ services:
       SWARMCLI_CD_OIDC_ISSUER: {{ .Values.sso.issuer | quote }}
       SWARMCLI_CD_OIDC_CLIENT_ID: {{ .Values.sso.clientId | quote }}
       SWARMCLI_CD_OIDC_REDIRECT_URL: {{ .Values.sso.redirectURL | quote }}
+{{- if .Values.sso.displayName }}
+      SWARMCLI_CD_OIDC_NAME: {{ .Values.sso.displayName | quote }}
+{{- end }}
 {{- if .Values.sso.clientSecretSecret }}
       # The file form, never the value: a Docker secret is encrypted at rest in the raft
       # log and delivered in memory. A public client has none and is protected by PKCE.

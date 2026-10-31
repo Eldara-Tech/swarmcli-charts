@@ -155,5 +155,39 @@ if [ -n "$redirect" ]; then
   esac
 fi
 
+# 15. The login's names (#313) reach the controller when set, and are absent otherwise so
+#     the controller's own defaults, admin and SSO, apply.
+if [ "$case" = "listener-tls-sso" ]; then
+  [ "$(env_of SWARMCLI_CD_ADMIN_USERNAME)" = "ops" ] || bad "SWARMCLI_CD_ADMIN_USERNAME is not auth.adminUsername"
+  [ "$(env_of SWARMCLI_CD_OIDC_NAME)" = "Keycloak" ] || bad "SWARMCLI_CD_OIDC_NAME is not sso.displayName"
+else
+  for v in SWARMCLI_CD_ADMIN_USERNAME SWARMCLI_CD_OIDC_NAME; do
+    [ "$(yq -r ".services.controller.environment | has(\"$v\")" "$out")" = "false" ] \
+      || bad "$v is rendered although its value is unset"
+  done
+fi
+if [ "$case" = "default" ]; then
+  chart="$(cd "$(dirname "$0")/.." && pwd)"
+  tmp="$(mktemp)"
+  trap 'rm -f "$tmp" "$tmp.err"' EXIT
+  refused() {
+    local want="$1"; shift
+    if "${SWARMCLI:?render-check needs SWARMCLI to render the refusals}" charts template ci "$chart" "$@" >"$tmp" 2>"$tmp.err"; then
+      bad "rendered with $* — it must be refused"
+    elif ! grep -F "$want" "$tmp.err" >/dev/null; then
+      bad "$* failed, but not with \"$want\": $(tr '\n' ' ' <"$tmp.err")"
+    fi
+  }
+  refused "auth.adminUsername must not contain ':'" --set auth.adminUsername=ops:1
+  refused 'sso.displayName configures nothing on its own' --set sso.displayName=Keycloak
+  if "$SWARMCLI" charts template ci "$chart" --set sso.issuer=https://sso.example.com/realms/ops \
+       --set sso.clientId=cd --set sso.redirectURL=https://cd.example.com/auth/callback >"$tmp" 2>"$tmp.err"; then
+    [ "$(yq -r '.services.controller.environment | has("SWARMCLI_CD_OIDC_NAME")' "$tmp")" = "false" ] \
+      || bad "SWARMCLI_CD_OIDC_NAME is rendered with sso but without sso.displayName"
+  else
+    bad "sso without sso.displayName was refused: $(tr '\n' ' ' <"$tmp.err")"
+  fi
+fi
+
 [ "$fail" -eq 0 ] || exit 1
-echo "  placement: manager pin + node pin consistent; secrets by file path; self-update reverts; TLS probe consistent ($case)"
+echo "  placement: manager pin + node pin consistent; secrets by file path; self-update reverts; TLS probe consistent; login names ($case)"
