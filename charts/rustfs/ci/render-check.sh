@@ -217,6 +217,9 @@ if [ "$case" = "oidc" ]; then
   [ "$(env_ RUSTFS_IDENTITY_OPENID_CLIENT_ID)" = "rustfs-e2e" ] || bad "case $case: RUSTFS_IDENTITY_OPENID_CLIENT_ID is not console.oidc.clientId"
   [ "$(env_ RUSTFS_IDENTITY_OPENID_DISPLAY_NAME)" = "SSO" ] \
     || bad "case $case: RUSTFS_IDENTITY_OPENID_DISPLAY_NAME is not the default console.oidc.displayName, SSO (got '$(env_ RUSTFS_IDENTITY_OPENID_DISPLAY_NAME)') — the button would read 'Login with default'"
+  got="$(for v in SCOPES GROUPS_CLAIM ROLES_CLAIM EMAIL_CLAIM USERNAME_CLAIM; do env_ "RUSTFS_IDENTITY_OPENID_$v"; done | paste -sd ' ' -)"
+  [ "$got" = "openid,profile,email groups roles email preferred_username" ] \
+    || bad "case $case: the scopes and claims are not console.oidc.*'s defaults (got '$got')"
   [ "$(env_ RUSTFS_BROWSER_REDIRECT_URL)" = "https://rustfs-console.e2e.test" ] \
     || bad "case $case: RUSTFS_BROWSER_REDIRECT_URL is not derived from console.ingress (got '$(env_ RUSTFS_BROWSER_REDIRECT_URL)') — the login would fail"
   [ "$(env_ RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC)" = "off" ] \
@@ -230,7 +233,9 @@ if [ "$case" = "oidc" ]; then
     || bad "case $case: the wrapper does not export the client secret from /run/secrets/rustfs-oidc-client-secret, refusing an empty one"
 else
   for v in RUSTFS_IDENTITY_OPENID_CONFIG_URL RUSTFS_IDENTITY_OPENID_CLIENT_ID RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC \
-           RUSTFS_IDENTITY_OPENID_DISPLAY_NAME RUSTFS_BROWSER_REDIRECT_URL RUSTFS_OUTBOUND_ALLOW_ORIGINS; do
+           RUSTFS_IDENTITY_OPENID_DISPLAY_NAME RUSTFS_BROWSER_REDIRECT_URL RUSTFS_OUTBOUND_ALLOW_ORIGINS \
+           RUSTFS_IDENTITY_OPENID_SCOPES RUSTFS_IDENTITY_OPENID_GROUPS_CLAIM RUSTFS_IDENTITY_OPENID_ROLES_CLAIM \
+           RUSTFS_IDENTITY_OPENID_EMAIL_CLAIM RUSTFS_IDENTITY_OPENID_USERNAME_CLAIM; do
     [ "$(env_ "$v")" = "null" ] || bad "case $case: $v is set although oidc is off"
   done
   [ "$(q "$svc.secrets | length")" = "2" ] || bad "case $case: a third secret is mounted although oidc is off"
@@ -454,7 +459,18 @@ if [ "$case" = "default" ]; then
            MINIO_IDENTITY_OPENID_REDIRECT_URI; do
     refused "extraEnv: $k: use the RUSTFS_IDENTITY_OPENID_ spelling" "${kco[@]}" --set "extraEnv.$k=x"
   done
-  tune="SCOPES CLAIM_NAME CLAIM_PREFIX ROLE_POLICY GROUPS_CLAIM ROLES_CLAIM EMAIL_CLAIM USERNAME_CLAIM HIDE_FROM_UI"
+  # The scopes and the other claims are console.oidc.*, so extraEnv refuses them by that name.
+  for t in SCOPES:scopes GROUPS_CLAIM:groupsClaim ROLES_CLAIM:rolesClaim EMAIL_CLAIM:emailClaim USERNAME_CLAIM:usernameClaim; do
+    refused "extraEnv: RUSTFS_IDENTITY_OPENID_${t%%:*} is set by the chart from console.oidc.${t#*:}" \
+      "${kco[@]}" --set "extraEnv.RUSTFS_IDENTITY_OPENID_${t%%:*}=x"
+  done
+  refused 'console.oidc.scopes must include openid' "${kco[@]}" --set console.oidc.scopes=profile
+  refused 'console.oidc.scopes must include openid' "${kco[@]}" --set console.oidc.scopes=
+  printf '%s\n' 'console:' '  oidc:' '    scopes: "profile, openid"' '    groupsClaim: rustfs_policies' '    rolesClaim: ""' >"$tmp.values"
+  render "${kco[@]}" -f "$tmp.values" \
+    && [ "$(yq -r "$svc.environment | [.RUSTFS_IDENTITY_OPENID_SCOPES, .RUSTFS_IDENTITY_OPENID_GROUPS_CLAIM, .RUSTFS_IDENTITY_OPENID_ROLES_CLAIM] | join(\"|\")" "$tmp")" = "profile, openid|rustfs_policies|" ] \
+    || bad "console.oidc.scopes / groupsClaim / rolesClaim were refused or not passed on: $(tr '\n' ' ' <"$tmp.err")"
+  tune="CLAIM_NAME CLAIM_PREFIX ROLE_POLICY HIDE_FROM_UI"
   sets=(); for t in $tune; do sets+=(--set "extraEnv.RUSTFS_IDENTITY_OPENID_$t=x"); done
   if render "${kco[@]}" "${sets[@]}"; then
     for k in $(printf 'RUSTFS_IDENTITY_OPENID_%s ' $tune); do

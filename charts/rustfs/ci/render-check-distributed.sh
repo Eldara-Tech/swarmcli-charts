@@ -279,17 +279,20 @@ for n in $PEERS; do
     [ "$(env_ "$n" RUSTFS_IDENTITY_OPENID_CONFIG_URL)" = "http://rustfs-e2e-idp:8080/realms/e2e/.well-known/openid-configuration" ] \
       && [ "$(env_ "$n" RUSTFS_IDENTITY_OPENID_CLIENT_ID)" = "rustfs-e2e" ] \
       && [ "$(env_ "$n" RUSTFS_IDENTITY_OPENID_DISPLAY_NAME)" = "SSO" ] \
+      && [ "$(for v in SCOPES GROUPS_CLAIM ROLES_CLAIM EMAIL_CLAIM USERNAME_CLAIM; do env_ "$n" "RUSTFS_IDENTITY_OPENID_$v"; done | paste -sd ' ' -)" = "openid,profile,email groups roles email preferred_username" ] \
       && [ "$(env_ "$n" RUSTFS_BROWSER_REDIRECT_URL)" = "https://rustfs-cluster-console.e2e.test" ] \
       && [ "$(env_ "$n" RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC)" = "off" ] \
       && [ "$(env_ "$n" RUSTFS_OUTBOUND_ALLOW_ORIGINS)" = "http://rustfs-e2e-idp:8080" ] \
-      || bad "case $case: peer $n's OIDC settings are not console.oidc.* (config URL, client id, label, callback base, no dynamic redirect, the provider's origin allow-listed)"
+      || bad "case $case: peer $n's OIDC settings are not console.oidc.* (config URL, client id, label, scopes and claims, callback base, no dynamic redirect, the provider's origin allow-listed)"
     [ "$(q "$(p "$n").secrets[2]")" = "rustfs-oidc-client-secret" ] || bad "case $case: peer $n does not mount the OIDC client secret"
     grep -F 'done; f=/run/secrets/rustfs-oidc-client-secret; RUSTFS_IDENTITY_OPENID_CLIENT_SECRET="$$(cat "$$f" 2>/dev/null || true)"; if [ -z "$$RUSTFS_IDENTITY_OPENID_CLIENT_SECRET" ]; then echo' <<<"$script" >/dev/null \
       && grep -F 'export RUSTFS_IDENTITY_OPENID_CLIENT_SECRET;' <<<"$script" >/dev/null \
       || bad "case $case: peer $n's wrapper does not export the client secret from /run/secrets/rustfs-oidc-client-secret, refusing an empty one"
   else
     for v in RUSTFS_IDENTITY_OPENID_CONFIG_URL RUSTFS_IDENTITY_OPENID_CLIENT_ID RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC \
-             RUSTFS_IDENTITY_OPENID_DISPLAY_NAME RUSTFS_BROWSER_REDIRECT_URL RUSTFS_OUTBOUND_ALLOW_ORIGINS; do
+             RUSTFS_IDENTITY_OPENID_DISPLAY_NAME RUSTFS_BROWSER_REDIRECT_URL RUSTFS_OUTBOUND_ALLOW_ORIGINS \
+             RUSTFS_IDENTITY_OPENID_SCOPES RUSTFS_IDENTITY_OPENID_GROUPS_CLAIM RUSTFS_IDENTITY_OPENID_ROLES_CLAIM \
+             RUSTFS_IDENTITY_OPENID_EMAIL_CLAIM RUSTFS_IDENTITY_OPENID_USERNAME_CLAIM; do
       [ "$(env_ "$n" "$v")" = "null" ] || bad "case $case: peer $n sets $v although oidc is off"
     done
     [ "$(q "$(p "$n").secrets | length")" = "2" ] || bad "case $case: peer $n mounts a third secret although oidc is off"

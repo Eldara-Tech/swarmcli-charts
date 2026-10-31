@@ -61,6 +61,9 @@
 {{- if and $oidc (not (regexMatch `^https?://[^/?#@,%\\\s]+(/\S*)?$` .Values.console.oidc.configUrl)) -}}
 {{-   fail (printf "console.oidc.configUrl must be the http(s) URL of the provider's discovery document when console.oidc.enabled (got %q)" .Values.console.oidc.configUrl) -}}
 {{- end -}}
+{{- if and $oidc (not (has "openid" (splitList "," (nospace .Values.console.oidc.scopes)))) -}}
+{{-   fail (printf "console.oidc.scopes must include openid: RustFS refuses the provider without it, and the console has no single sign-on (got %q)" .Values.console.oidc.scopes) -}}
+{{- end -}}
 {{- if and $oidc .Values.console.oidc.browserUrl (not (regexMatch `^https?://[^/?#@,\\\s]+/?$` .Values.console.oidc.browserUrl)) -}}
 {{-   fail (printf "console.oidc.browserUrl must be scheme://host[:port] only, without a path (got %q)" .Values.console.oidc.browserUrl) -}}
 {{- end -}}
@@ -77,11 +80,13 @@
        both spellings of a credential are refused, the *_FILE forms included, and so is the
        OIDC client secret under any provider suffix. The listener settings are wired from
        s3.port / console.*, so they are refused too. OIDC is an allow-list: the provider,
-       client, issuer, callback and label come from console.oidc.* (a redirect_uri here would
-       beat the callback the chart sets, a suffixed key would add a second provider), so
-       extraEnv may only tune scopes, claims, a role policy and whether the button shows,
-       and only with console.oidc.enabled. RustFS maps only some MINIO_IDENTITY_OPENID_
-       names and ignores the rest, so that spelling is refused. */}}
+       client, issuer, callback, label, scopes and the groups, roles, email and username
+       claims come from console.oidc.* (a redirect_uri here would beat the callback the chart
+       sets, a suffixed key would add a second provider), so extraEnv may only tune the
+       policy claim, its prefix, a role policy and whether the button shows, and only with
+       console.oidc.enabled. RustFS maps only some MINIO_IDENTITY_OPENID_ names and ignores
+       the rest, so that spelling is refused. */}}
+{{- $oidcOwned := dict "SCOPES" "scopes" "GROUPS_CLAIM" "groupsClaim" "ROLES_CLAIM" "rolesClaim" "EMAIL_CLAIM" "emailClaim" "USERNAME_CLAIM" "usernameClaim" }}
 {{- range $k, $v := .Values.extraEnv }}
 {{-   if not (regexMatch "^[A-Za-z_][A-Za-z0-9_]*$" $k) }}
 {{-     fail (printf "extraEnv: %q is not an environment variable name (letters, digits and _, not starting with a digit)" $k) }}
@@ -100,8 +105,10 @@
 {{-       fail (printf "extraEnv: %s configures OIDC, which the chart owns; set console.oidc.enabled and console.oidc.* instead" $k) }}
 {{-     else if hasPrefix "MINIO_" $k }}
 {{-       fail (printf "extraEnv: %s: use the RUSTFS_IDENTITY_OPENID_ spelling; RustFS reads only some MINIO_IDENTITY_OPENID_ names and silently ignores the rest" $k) }}
-{{-     else if not (has (trimPrefix "RUSTFS_IDENTITY_OPENID_" $k) (list "SCOPES" "CLAIM_NAME" "CLAIM_PREFIX" "ROLE_POLICY" "GROUPS_CLAIM" "ROLES_CLAIM" "EMAIL_CLAIM" "USERNAME_CLAIM" "HIDE_FROM_UI")) }}
-{{-       fail (printf "extraEnv: %s is not an OIDC setting extraEnv may tune (SCOPES, CLAIM_NAME, CLAIM_PREFIX, ROLE_POLICY, GROUPS_CLAIM, ROLES_CLAIM, EMAIL_CLAIM, USERNAME_CLAIM, HIDE_FROM_UI, without a provider suffix): the provider, client, callback and label come from console.oidc.*, and a second provider is not supported" $k) }}
+{{-     else if hasKey $oidcOwned (trimPrefix "RUSTFS_IDENTITY_OPENID_" $k) }}
+{{-       fail (printf "extraEnv: %s is set by the chart from console.oidc.%s; use that instead" $k (get $oidcOwned (trimPrefix "RUSTFS_IDENTITY_OPENID_" $k))) }}
+{{-     else if not (has (trimPrefix "RUSTFS_IDENTITY_OPENID_" $k) (list "CLAIM_NAME" "CLAIM_PREFIX" "ROLE_POLICY" "HIDE_FROM_UI")) }}
+{{-       fail (printf "extraEnv: %s is not an OIDC setting extraEnv may tune (CLAIM_NAME, CLAIM_PREFIX, ROLE_POLICY, HIDE_FROM_UI, without a provider suffix): the provider, client, callback, label, scopes and claims come from console.oidc.*, and a second provider is not supported" $k) }}
 {{-     end }}
 {{-   end }}
 {{-   if eq $k "RUSTFS_BROWSER_REDIRECT_URL" }}
@@ -343,6 +350,13 @@ services:
       RUSTFS_IDENTITY_OPENID_CLIENT_ID: {{ $.Values.console.oidc.clientId | quote }}
       # The login button's label; without it RustFS shows the provider id, "default".
       RUSTFS_IDENTITY_OPENID_DISPLAY_NAME: {{ $.Values.console.oidc.displayName | quote }}
+      # What the login requests, and the ID token claims RustFS reads policies and the
+      # user's name from.
+      RUSTFS_IDENTITY_OPENID_SCOPES: {{ $.Values.console.oidc.scopes | quote }}
+      RUSTFS_IDENTITY_OPENID_GROUPS_CLAIM: {{ $.Values.console.oidc.groupsClaim | quote }}
+      RUSTFS_IDENTITY_OPENID_ROLES_CLAIM: {{ $.Values.console.oidc.rolesClaim | quote }}
+      RUSTFS_IDENTITY_OPENID_EMAIL_CLAIM: {{ $.Values.console.oidc.emailClaim | quote }}
+      RUSTFS_IDENTITY_OPENID_USERNAME_CLAIM: {{ $.Values.console.oidc.usernameClaim | quote }}
       # A backstop: RustFS takes the login callback from RUSTFS_BROWSER_REDIRECT_URL below,
       # and with this off it never falls back to the request's X-Forwarded-Proto and Host,
       # which the client controls, on either listener.

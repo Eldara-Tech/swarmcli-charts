@@ -70,7 +70,12 @@
             "clientId": { "type": "string", "minLength": 1 },
             "clientSecretSecret": { "type": "string", "minLength": 1 },
             "browserUrl": { "type": "string" },
-            "displayName": { "type": "string", "minLength": 1 }
+            "displayName": { "type": "string", "minLength": 1 },
+            "scopes": { "type": "string" },
+            "groupsClaim": { "type": "string" },
+            "rolesClaim": { "type": "string" },
+            "emailClaim": { "type": "string" },
+            "usernameClaim": { "type": "string" }
           }
         }
       }
