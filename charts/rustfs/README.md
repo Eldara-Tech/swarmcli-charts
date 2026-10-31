@@ -263,10 +263,11 @@ cache:
 With `console.oidc.enabled` the console offers a login through an OpenID Connect
 provider beside the key-pair login. Its button reads **Login with SSO**, and
 `console.oidc.displayName` sets the label. RustFS's STS (`AssumeRoleWithWebIdentity`)
-accepts that provider's tokens too. RustFS maps each value of one ID token claim to the
-RustFS policy of the same name (`consoleAdmin`, `readwrite`, `readonly`, or your own)
-and gives the session temporary credentials with those policies. The claim is `groups`
-unless `extraEnv` names another; the Keycloak steps below give RustFS one of its own,
+accepts that provider's tokens too. RustFS maps each value of the ID token's policy claims
+to the RustFS policy of the same name (`consoleAdmin`, `readwrite`, `readonly`, or your own)
+and gives the session temporary credentials with those policies. The claims are
+`console.oidc.groupsClaim`, `groups` by default, and `console.oidc.rolesClaim`, `roles`
+(`""` reads the groups claim alone); the Keycloak steps below give RustFS one of its own,
 `rustfs_policies`. Each value must name an existing policy, or RustFS refuses the whole
 login (see the last point below). Policies attached inside RustFS to a group named like
 a claim value take the claim's place, and so does a `ROLE_POLICY` in `extraEnv`.
@@ -321,10 +322,10 @@ console:
     configUrl: https://keycloak.example.com/realms/<realm>/.well-known/openid-configuration
     clientId: rustfs
     displayName: Keycloak        # the button reads "Login with Keycloak"; default SSO
+    groupsClaim: rustfs_policies # the claim of step 6
 extraEnv:
-  # The claim of step 6. Set both: with GROUPS_CLAIM alone, RustFS still reads `groups`
-  # through CLAIM_NAME's default and refuses the login.
-  RUSTFS_IDENTITY_OPENID_GROUPS_CLAIM: rustfs_policies
+  # Set both: with groupsClaim alone, RustFS still reads `groups` through CLAIM_NAME's
+  # default and refuses the login.
   RUSTFS_IDENTITY_OPENID_CLAIM_NAME: rustfs_policies
 ```
 
@@ -369,19 +370,20 @@ which names no policy, and a user in any group that is not a policy is refused.
   start, by the start-up wrapper; it is never in the manifest or `docker inspect`.
   `extraEnv` refuses it in every spelling.
 - **What `extraEnv` may tune**, as `RUSTFS_IDENTITY_OPENID_<name>` and only with
-  `console.oidc.enabled`: `SCOPES`, `CLAIM_NAME`, `CLAIM_PREFIX`, `ROLE_POLICY`,
-  `GROUPS_CLAIM`, `ROLES_CLAIM`, `EMAIL_CLAIM`, `USERNAME_CLAIM` and `HIDE_FROM_UI`.
-  Every other OIDC setting is refused, since the provider, client, issuer, callback
-  and label come from `console.oidc.*`, and so is a provider suffix: a second provider
-  is not supported. The `MINIO_IDENTITY_OPENID_*` spelling is refused too, because
-  RustFS reads only some of those names and ignores the rest.
+  `console.oidc.enabled`: `CLAIM_NAME`, `CLAIM_PREFIX`, `ROLE_POLICY` and
+  `HIDE_FROM_UI`. Every other OIDC setting is refused, since the provider, client,
+  issuer, callback, label, scopes and claims come from `console.oidc.*`, and so is a
+  provider suffix: a second provider is not supported. The `MINIO_IDENTITY_OPENID_*`
+  spelling is refused too, because RustFS reads only some of those names and ignores
+  the rest.
 - **`OIDC policy mapping did not resolve to current policies`** at the callback means
   the token's policy claim is missing or holds a value that names no RustFS policy:
   RustFS checks every value, and one miss refuses the whole login. Look at the ID token
   as in step 8. The usual causes: a mapper not added to the ID token, a client-role
-  mapper with no **Client ID**, a role or group named differently from its policy, only
-  one of the two `extraEnv` keys set, or, with the groups mapper, **Full group path** on
-  or a user who is also in a group that is not a policy.
+  mapper with no **Client ID**, a role or group named differently from its policy,
+  `groupsClaim` set without `CLAIM_NAME`, a top-level `roles` claim holding values that
+  name no policy (set `rolesClaim: ""`), or, with the groups mapper, **Full group path**
+  on or a user who is also in a group that is not a policy.
 
 **In distributed mode** every peer is a client of the provider, with the same client id,
 secret and callback. **Route the console through Traefik**, whose sticky cookie keeps a
@@ -771,6 +773,11 @@ ignores it, except where its description says it is refused.
 | `console.oidc.clientSecretSecret` | `rustfs-oidc-client-secret` | External secret holding the client secret |
 | `console.oidc.browserUrl` | `""` | Console public base URL for the callback; `""` = from `console.ingress` when routed, required otherwise |
 | `console.oidc.displayName` | `SSO` | The login button's label, "Login with &lt;displayName&gt;" |
+| `console.oidc.scopes` | `openid,profile,email` | The scopes the login requests, comma-separated; must include `openid` |
+| `console.oidc.groupsClaim` | `groups` | ID token claim whose values name RustFS policies |
+| `console.oidc.rolesClaim` | `roles` | A second claim whose values name RustFS policies; `""` = none |
+| `console.oidc.emailClaim` | `email` | ID token claim holding the user's email |
+| `console.oidc.usernameClaim` | `preferred_username` | ID token claim holding the username |
 | `buckets` | `[]` | Buckets created at start if missing (by peer 1, distributed) |
 | `persistence.enabled` | `true` | Persist `/data` (each peer's drives) |
 | `persistence.volumeName` | `rustfs-data` | (standalone) Named volume |

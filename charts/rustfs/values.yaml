@@ -89,10 +89,10 @@ console:
     port: 9001
     mode: ingress
   # Single sign-on through an OpenID Connect provider such as Keycloak (README "Single
-  # sign-on"); needs the console enabled. RustFS maps the ID token's groups claim to
-  # RustFS policy names and gives the console session temporary credentials with those
-  # policies; the root key pair keeps working. Scopes, claims and a role policy are
-  # RUSTFS_IDENTITY_OPENID_* settings in extraEnv.
+  # sign-on"); needs the console enabled. RustFS maps the ID token's groups and roles
+  # claims to RustFS policy names and gives the console session temporary credentials
+  # with those policies; the root key pair keeps working. The policy claim, its prefix
+  # and a role policy are RUSTFS_IDENTITY_OPENID_* settings in extraEnv.
   oidc:
     enabled: false
     # The provider's discovery document, e.g.
@@ -116,6 +116,15 @@ console:
     browserUrl: ""
     # The login button's label: "Login with <displayName>".
     displayName: SSO
+    # The scopes the login requests, comma-separated. Must include openid.
+    scopes: "openid,profile,email"
+    # The ID token claims RustFS reads. Each value of groupsClaim and of rolesClaim names a
+    # RustFS policy, and one that names none refuses the whole login; "" for rolesClaim
+    # maps groupsClaim alone.
+    groupsClaim: groups
+    rolesClaim: roles
+    emailClaim: email
+    usernameClaim: preferred_username
 
 # Buckets created once the store accepts writes, if they do not exist yet (an existing
 # bucket is left alone, so restarts are safe). Clients such as the GitLab Runner cache
