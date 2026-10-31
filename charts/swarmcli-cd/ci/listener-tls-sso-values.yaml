@@ -20,3 +20,6 @@ sso:
   clientId: swarmcli-cd
   redirectURL: https://cd.example.com/auth/callback
   clientSecretSecret: swarmcli-cd-oidc-secret
+  displayName: Keycloak
+auth:
+  adminUsername: ops

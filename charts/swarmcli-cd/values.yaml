@@ -167,6 +167,10 @@ auth:
   # merely rejected every request is indistinguishable, from outside, from a wrong token.
   #   printf '%s' "$(openssl rand -hex 32)" | docker secret create swarmcli-cd-token -
   adminTokenSecret: swarmcli-cd-token
+  # The username the web UI's login asks for beside that token, and the name syncs are
+  # attributed to. Not a secret. "" => the controller's default, admin. It must not
+  # contain ':', which separates the username from the token at login.
+  adminUsername: ""
 
 # The credential for PRIVATE application repositories — and, in `git` mode, for the app-set
 # repository too. One credential for the controller, not one per repository. Leave
@@ -219,6 +223,9 @@ sso:
   # client, which this controller always protects with PKCE.
   #   printf '%s' "$THE_CLIENT_SECRET" | docker secret create swarmcli-cd-oidc-secret -
   clientSecretSecret: ""
+  # The provider's name on the login button: Keycloak makes it read "Sign in with
+  # Keycloak". "" => the controller's default, SSO.
+  displayName: ""
 
 # Image-pull credentials, per application rather than per controller: an application's
 # `registryAuth:` in the app set names one of these secrets, and it can use only the one
