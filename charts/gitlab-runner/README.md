@@ -272,7 +272,7 @@ every target, and the alerts carry it. Another Prometheus needs the same relabel
 | `cache.enabled` | `false` | Store job caches in S3-compatible object storage. |
 | `cache.shared` | `true` | Share cached archives between runners. |
 | `cache.path` | `""` | Prefix inside the bucket. |
-| `cache.s3.server` | `""` | `host:port` of the endpoint. Required when the cache is on. |
+| `cache.s3.server` | `""` | `host:port` of the endpoint, no scheme (`insecure` picks HTTP). Required when the cache is on. |
 | `cache.s3.bucket` | `gitlab-runner-cache` | Bucket name. |
 | `cache.s3.location` | `""` | S3 region. AWS needs it; MinIO ignores it. |
 | `cache.s3.insecure` | `false` | Plain HTTP instead of HTTPS. |

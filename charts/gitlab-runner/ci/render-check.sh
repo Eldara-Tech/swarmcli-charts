@@ -205,6 +205,14 @@ if [ "$case" = "metrics" ]; then
     || bad "a basicauth.usersfile label was refused; it is the alternative the error recommends: $(cat "$tmp/err")"
   render -f "$tmp/off.yaml" >/dev/null 2>"$tmp/err" \
     || bad "a credential label with metrics off was refused; only discovery makes it readable: $(cat "$tmp/err")"
+  # The runner prefixes https:// (http:// with insecure) itself, so a scheme renders and
+  # deploys, and then fails at job time on https://https://… (#304).
+  cache="$chart/ci/cache-values.yaml"
+  refused 'cache.s3.server is "https://s3.example.com", but it is host[:port]' -f "$cache" --set cache.s3.server=https://s3.example.com
+  refused 'cache.s3.server is "http://minio:9000", but it is host[:port]' -f "$cache" --set cache.s3.server=http://minio:9000
+  refused 'cache.s3.server is "minio:9000/runner-cache", but it is host[:port]' -f "$cache" --set cache.s3.server=minio:9000/runner-cache
+  render -f "$cache" >/dev/null 2>"$tmp/err" \
+    || bad "the cache fixture's host:port server was refused: $(cat "$tmp/err")"
 fi
 
 # ── placement: the pin must follow the node label, in every persistence mode ──────────

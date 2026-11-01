@@ -31,6 +31,9 @@
 {{- if not .Values.cache.s3.server -}}
 {{- fail "cache.s3.server is required when cache.enabled is true: it is the host:port of the S3-compatible endpoint (e.g. minio:9000)." -}}
 {{- end -}}
+{{- if contains "/" .Values.cache.s3.server -}}
+{{- fail (printf "cache.s3.server is %q, but it is host[:port] with no scheme or path (e.g. s3.example.com or minio:9000): the runner adds https:// itself, so a scheme ends up doubled. For plain HTTP set cache.s3.insecure: true." .Values.cache.s3.server) -}}
+{{- end -}}
 {{- if not .Values.cache.s3.bucket -}}
 {{- fail "cache.s3.bucket is required when cache.enabled is true." -}}
 {{- end -}}
