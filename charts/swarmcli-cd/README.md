@@ -208,6 +208,8 @@ sso:
   redirectURL: https://cd.example.com/auth/callback
   clientSecretSecret: swarmcli-cd-oidc-secret   # omit for a public client
   displayName: Keycloak   # the button reads "Sign in with Keycloak"; default SSO
+  adminGroup: cd-admins     # the admin role's group; default admin
+  readonlyGroup: cd-viewers # the readonly role's group; default readonly
 ```
 
 All three of `issuer`, `clientId` and `redirectURL`, or none of them — a provider missing
@@ -215,6 +217,12 @@ one rejects every login and looks, from outside, exactly like a wrong password, 
 controller and this chart refuse the half-configured state. `redirectURL` must end in
 `/auth/callback`: the controller serves exactly one callback path, and the provider
 redirects to whatever was registered with it.
+
+Every login gets a role from the ID token's `groups` claim: members of `adminGroup` may do
+everything, members of `readonlyGroup` everything but sync, and a login in neither is
+refused. Names match exactly, so with Keycloak's *Full group path* on give the full path
+(`/cd/admin`); with it off, a group of that name at any depth matches. The roles need a
+controller that has them ([swarmcli-cd#342][roles]); an older one ignores both values.
 
 The client secret is a **secret name, never a value**. A confidential client passes one:
 
@@ -230,6 +238,7 @@ value through `values.yaml`.
 Full setup, including the provider side: [swarmcli-cd docs/sso.md][sso].
 
 [sso]: https://github.com/Eldara-Tech/swarmcli-cd/blob/main/docs/sso.md
+[roles]: https://github.com/Eldara-Tech/swarmcli-cd/pull/342
 
 ## Prune, and two controllers on one swarm
 
@@ -379,6 +388,8 @@ nothing.
 | `sso.redirectURL` | `""` | Where the provider sends the browser back. Must end in `/auth/callback` |
 | `sso.clientSecretSecret` | `""` | **External** secret with the OIDC client secret. Omit for a public client, which is protected by PKCE |
 | `sso.displayName` | `""` | The provider's name on the login button, "Sign in with &lt;displayName&gt;"; `""` = `SSO` |
+| `sso.adminGroup` | `""` | The group whose members get the admin role; `""` = `admin`. Matched exactly |
+| `sso.readonlyGroup` | `""` | The group whose members get the readonly role, everything but sync; `""` = `readonly` |
 | `prune.enabled` | `false` | Delete an application's resources when it leaves the set |
 | `prune.volumes` | `false` | Extend prune to named volumes. Requires `prune.enabled` |
 | `controllerId` | `default` | This controller's identity. Two controllers on one swarm must differ |

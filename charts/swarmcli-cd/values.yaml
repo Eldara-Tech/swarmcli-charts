@@ -226,6 +226,13 @@ sso:
   # The provider's name on the login button: Keycloak makes it read "Sign in with
   # Keycloak". "" => the controller's default, SSO.
   displayName: ""
+  # The groups, in the ID token's `groups` claim, whose members get the admin role (every
+  # action) and the readonly role (everything but sync). A login in neither is refused.
+  # Matched exactly, so Keycloak's "Full group path" decides what a name means: off, a
+  # group of that name at any depth matches; on, give the full path, e.g. /cd/admin.
+  # "" => the controller's defaults, admin and readonly.
+  adminGroup: ""
+  readonlyGroup: ""
 
 # Image-pull credentials, per application rather than per controller: an application's
 # `registryAuth:` in the app set names one of these secrets, and it can use only the one

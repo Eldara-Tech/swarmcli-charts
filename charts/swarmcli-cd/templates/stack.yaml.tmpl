@@ -73,6 +73,9 @@
 {{- if and .Values.sso.displayName (not $sso) }}
 {{-   fail "sso.displayName configures nothing on its own: without sso.issuer, sso.clientId and sso.redirectURL there is no single sign-on button to name" }}
 {{- end }}
+{{- if and (or .Values.sso.adminGroup .Values.sso.readonlyGroup) (not $sso) }}
+{{-   fail "sso.adminGroup and sso.readonlyGroup configure nothing on their own: without sso.issuer, sso.clientId and sso.redirectURL there is no login to give a role" }}
+{{- end }}
 {{- if contains ":" .Values.auth.adminUsername }}
 {{-   fail "auth.adminUsername must not contain ':', which separates the username from the token at login: the controller refuses to start on it" }}
 {{- end }}
@@ -192,6 +195,12 @@ services:
       SWARMCLI_CD_OIDC_REDIRECT_URL: {{ .Values.sso.redirectURL | quote }}
 {{- if .Values.sso.displayName }}
       SWARMCLI_CD_OIDC_NAME: {{ .Values.sso.displayName | quote }}
+{{- end }}
+{{- if .Values.sso.adminGroup }}
+      SWARMCLI_CD_OIDC_ADMIN_GROUP: {{ .Values.sso.adminGroup | quote }}
+{{- end }}
+{{- if .Values.sso.readonlyGroup }}
+      SWARMCLI_CD_OIDC_READONLY_GROUP: {{ .Values.sso.readonlyGroup | quote }}
 {{- end }}
 {{- if .Values.sso.clientSecretSecret }}
       # The file form, never the value: a Docker secret is encrypted at rest in the raft
