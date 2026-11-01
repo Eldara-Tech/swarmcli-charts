@@ -368,6 +368,12 @@
         },
         "displayName": {
           "type": "string"
+        },
+        "adminGroup": {
+          "type": "string"
+        },
+        "readonlyGroup": {
+          "type": "string"
         }
       }
     }

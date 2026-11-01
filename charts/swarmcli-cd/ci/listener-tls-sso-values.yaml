@@ -21,5 +21,7 @@ sso:
   redirectURL: https://cd.example.com/auth/callback
   clientSecretSecret: swarmcli-cd-oidc-secret
   displayName: Keycloak
+  adminGroup: /cd/admin
+  readonlyGroup: /cd/readonly
 auth:
   adminUsername: ops
