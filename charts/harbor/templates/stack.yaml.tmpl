@@ -59,8 +59,13 @@
 {{-     fail "oidc.clientId is required when oidc.enabled" -}}
 {{-   end -}}
 {{- end -}}
+{{- /* Harbor's key for each oidc.* value, so a refusal can name the one to set (#343). */}}
+{{- $fromOidc := dict "auth_mode" "oidc.enabled" "oidc_name" "oidc.name" "oidc_endpoint" "oidc.endpoint" "oidc_client_id" "oidc.clientId" "oidc_client_secret" "oidc.clientSecretSecret" "oidc_scope" "oidc.scope" "oidc_user_claim" "oidc.userClaim" "oidc_auto_onboard" "oidc.autoOnboard" "oidc_groups_claim" "oidc.groupsClaim" "oidc_admin_group" "oidc.adminGroup" "oidc_group_filter" "oidc.groupFilter" "oidc_verify_cert" "oidc.verifyCert" "oidc_logout" "oidc.logout" -}}
 {{- range $k, $v := .Values.config -}}
 {{-   if or (and $oidc (eq $k "auth_mode")) (hasPrefix "oidc_" $k) -}}
+{{-     with get $fromOidc $k -}}
+{{-       fail (printf "config.%s is set by the chart from %s; set that instead" $k .) -}}
+{{-     end -}}
 {{-     fail (printf "config.%s is set by the chart from oidc.*; use those values instead" $k) -}}
 {{-   end -}}
 {{-   if regexMatch "(?i)(password|secret)$" $k -}}

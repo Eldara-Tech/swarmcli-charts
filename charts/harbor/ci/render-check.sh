@@ -361,7 +361,9 @@ if [ "$case" = "default" ]; then
   refused 'config.auth_mode is set by the chart' --set oidc.enabled=true --set oidc.endpoint=https://kc.example.com/realms/r --set config.auth_mode=db_auth
   render --set config.auth_mode=ldap_auth && [ "$(yq -r .services.core.environment.CONFIG_OVERWRITE_JSON "$tmp")" = '{"auth_mode":"ldap_auth"}' ] \
     || bad "config.auth_mode without OIDC (e.g. LDAP) was refused or not passed on: $(tr '\n' ' ' <"$tmp.err")"
-  refused 'config.oidc_client_secret is set by the chart' --set config.oidc_client_secret=x
+  refused 'config.oidc_client_secret is set by the chart from oidc.clientSecretSecret' --set config.oidc_client_secret=x
+  refused 'config.oidc_admin_group is set by the chart from oidc.adminGroup' --set config.oidc_admin_group=x
+  refused 'config.oidc_group_filter is set by the chart from oidc.groupFilter' --set 'config.oidc_group_filter=^x$'
   refused 'config.ldap_search_password is a credential' --set config.ldap_search_password=x
   # healthcheck.enabled=false disables the images' own checks rather than falling back to
   # them: core's has no start period and would kill a migration after about 90 seconds.

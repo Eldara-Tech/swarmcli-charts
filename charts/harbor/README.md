@@ -199,6 +199,16 @@ oidc:
   adminGroup: harbor-admins       # members become Harbor admins
 ```
 
+Each of Harbor's `oidc_*` settings is an `oidc.*` value here — `oidc_admin_group` is
+`oidc.adminGroup`, `oidc_group_filter` is `oidc.groupFilter` — and `config:` refuses the raw
+keys, naming the value to set instead. With **Full group path** on, groups arrive as paths:
+
+```yaml
+oidc:
+  groupFilter: ^/applications/harbor/.*$          # only these groups are imported
+  adminGroup: /applications/harbor/administrators
+```
+
 `offline_access` stays in `oidc.scope` so a CLI secret keeps working after the ID token
 expires.
 
