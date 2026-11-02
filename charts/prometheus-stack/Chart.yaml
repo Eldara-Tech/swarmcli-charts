@@ -5,7 +5,7 @@ version: 0.1.0
 # appVersion is the default image tag for prom/prometheus. Upstream tags carry the
 # leading `v`, so it is part of the pin.
 # renovate: image=prom/prometheus
-appVersion: "v3.15.0"
+appVersion: "v3.15.1"
 # Oldest swarmcli whose chart engine renders this chart; verified by
 # scripts/floor-check.sh against a real binary of that version. 1.13.0 is the
 # release that taught the chart engine `files/` and `values/`: this chart ships its
