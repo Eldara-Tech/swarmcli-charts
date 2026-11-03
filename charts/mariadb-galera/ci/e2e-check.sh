@@ -608,4 +608,83 @@ if [ "$case" = lifecycle ]; then
   lifecycle_ok=", rejoined, re-synced a rebuilt peer 1, rolled an all-peer upgrade with quorum kept, elected a peer after a full stop and after a crash, and forced one with a peer lost"
 fi
 
-echo "  ${release}: $want peers, all Synced, cross-peer write replicated$metrics_ok$recovery_ok$lifecycle_ok OK"
+# With the events fixture: a scheduled event keeps running on the one peer that owns
+# it, through restarts and through a full state transfer FROM that peer. Every peer
+# runs the scheduler, and peer 1 is every joiner's preferred donor, so a peer rebuilt
+# from an empty volume copies peer 1's ENABLED event. Only its own server_id keeps it
+# from running the event as well (README, Scheduled events).
+events_ok=""
+if [ "$case" = events ]; then
+  p1="$(printf '%s\n' $peers | sed -n 1p)"
+  p2="$(printf '%s\n' $peers | sed -n 2p)"
+  p3="$(printf '%s\n' $peers | tail -1)"
+  owner="${p1##*_}"
+  stop_peer() {
+    docker service scale --detach "$1=0" >/dev/null
+    for _ in $(seq 1 60); do
+      [ -z "$(cid_of "$1")" ] && return 0
+      sleep 2
+    done
+    echo "  $1: did not stop"; exit 1
+  }
+  wait_cluster() {  # wait_cluster <svc> <what>: every member present, <svc> Synced
+    local c size="" state=""
+    for _ in $(seq 1 90); do
+      c="$(cid_of "$1")"
+      size="$( [ -n "$c" ] && status_of "$c" 'WSREP_CLUSTER_SIZE' 2>/dev/null || true)"
+      state="$( [ -n "$c" ] && status_of "$c" 'WSREP_LOCAL_STATE_COMMENT' 2>/dev/null || true)"
+      [ "$size" = "$want" ] && [ "$state" = Synced ] && return 0
+      sleep 5
+    done
+    echo "  $2: $1 is '$state' in a cluster of '$size', expected Synced in $want"
+    docker service ps --no-trunc --format '    {{.Name}} {{.CurrentState}} {{.Error}}' "$1" 2>&1 | sed -n 1,5p
+    exit 1
+  }
+  restart() {  # restart <svc>: a new task, Synced in the whole cluster
+    local old t
+    old="$(docker service ps -q --filter desired-state=running "$1" | sed -n 1p)"
+    docker service update --detach --force "$1" >/dev/null
+    for _ in $(seq 1 60); do
+      t="$(docker service ps -q --filter desired-state=running "$1" | sed -n 1p)"
+      [ -n "$t" ] && [ "$t" != "$old" ] && break
+      sleep 2
+    done
+    wait_cluster "$1" "after restarting $1"
+  }
+  now() { q "$(cid_of "$p1")" 'SELECT NOW(6)'; }
+  # Which peers ran the event since $1: it must be the owner alone, and it must have run.
+  ran_since() {
+    local got
+    sleep 6
+    got="$(q "$(cid_of "$p1")" "SET SESSION wsrep_sync_wait=1; SELECT GROUP_CONCAT(DISTINCT peer ORDER BY peer) FROM e2e_galera.ticks WHERE at > '$1'")"
+    [ "$got" = "$owner" ] || { echo "  $2: the event ran on '$got', expected $owner alone"; exit 1; }
+  }
+
+  q "$(cid_of "$p1")" "CREATE TABLE e2e_galera.ticks (id INT AUTO_INCREMENT PRIMARY KEY, peer VARCHAR(64) NOT NULL, at DATETIME(6) NOT NULL DEFAULT NOW(6));
+    CREATE EVENT e2e_galera.tick ON SCHEDULE EVERY 1 SECOND DO INSERT INTO e2e_galera.ticks (peer) VALUES (@@hostname)" >/dev/null
+  ran_since "$(now)" "after creating the event on $owner"
+
+  # A restarted peer that does not own the event leaves it alone, and the owner, once
+  # restarted, runs it again.
+  restart "$p2"
+  ran_since "$(now)" "after restarting $p2"
+  restart "$p1"
+  ran_since "$(now)" "after restarting $p1"
+
+  # A full state transfer from the owner. The joiner's copy of the event arrives
+  # ENABLED, exactly as the owner holds it; at start-up the joiner must disable it.
+  stop_peer "$p3"
+  for c in $(docker ps -aq -f "label=com.docker.swarm.service.name=$p3"); do docker rm -f "$c" >/dev/null; done
+  docker volume rm "$(docker volume ls -q --filter "label=com.docker.stack.namespace=${release}" | sort | tail -1)" >/dev/null
+  docker service scale --detach "$p3=1" >/dev/null
+  wait_cluster "$p3" "after rebuilding $p3 from an empty volume"
+  docker logs "$(cid_of "$p3")" 2>&1 | grep -E "Selected [0-9]+\.[0-9]+ \($owner\)" >/dev/null \
+    || { echo "  $p3 did not take its state from $owner, so this case tests nothing"; exit 1; }
+  st="$(q "$(cid_of "$p3")" "SELECT STATUS FROM information_schema.EVENTS WHERE EVENT_SCHEMA = 'e2e_galera' AND EVENT_NAME = 'tick'")"
+  [ "$st" = SLAVESIDE_DISABLED ] \
+    || { echo "  $p3 holds the event as '$st' after a state transfer from $owner, expected SLAVESIDE_DISABLED"; exit 1; }
+  ran_since "$(now)" "after rebuilding $p3 by a state transfer from $owner"
+  events_ok=", the event ran on $owner alone through restarts and a full state transfer from it"
+fi
+
+echo "  ${release}: $want peers, all Synced, cross-peer write replicated$metrics_ok$recovery_ok$lifecycle_ok$events_ok OK"

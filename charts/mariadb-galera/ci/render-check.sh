@@ -65,6 +65,10 @@ for s in $svcs; do
   cmd="$(yq -r ".services.\"$s\".command[0]" "$f")"
   grep -Fq -- "--wsrep-node-name=$s" <<<"$cmd" \
     || err "$s: does not set --wsrep-node-name=$s (peer identity crossed over)"
+  # Its own number as server_id. Two peers with one server_id each run the scheduled
+  # events a state transfer copied between them.
+  grep -Eq -- "--server-id=${s##*-} " <<<"$cmd" \
+    || err "$s: does not run with --server-id=${s##*-}; a peer rebuilt by a state transfer would run its donor's events too"
   # The advertised address must be a real local IP, established at start-up from
   # /etc/hosts. Galera BINDS its IST listener to it, so a DNS name here fails with
   # "Failed to open IST listener ... Host not found (authoritative)" and the joiner

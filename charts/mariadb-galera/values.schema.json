@@ -160,7 +160,11 @@
       "description": "How long Swarm waits for a peer to stop before killing it, e.g. 5m.",
       "type": "string", "minLength": 1
     },
-    "extraArgs": { "type": "array", "items": { "type": "string" } },
+    "extraArgs": {
+      "description": "Extra mariadbd flags for every peer. Not --server-id: the chart gives each peer its own, and one value on every peer lets a peer rebuilt by a state transfer run its donor's scheduled events too.",
+      "type": "array",
+      "items": { "type": "string", "not": { "pattern": "^--server[-_]id" } }
+    },
     "labels": { "type": "object" }
   }
 }

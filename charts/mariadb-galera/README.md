@@ -488,6 +488,43 @@ standalone MariaDB:
   as a deadlock even when nothing local conflicted. Applications must retry.
 - `LOCK TABLES`, `GET_LOCK()` and other explicit locking are not cluster-aware.
 
+### Scheduled events
+
+Events run only where `event_scheduler` is on, so set `--event-scheduler=ON` in
+`extraArgs`. Each event then runs on one peer: the one whose copy is `ENABLED`,
+which is the peer it was created or last altered on. Every other peer holds it as
+`SLAVESIDE_DISABLED`, and the `ORIGINATOR` column in `information_schema.EVENTS`
+names the peer that runs it.
+
+Peer N runs with `server_id` N, which keeps it that way through a state
+transfer. At start-up a peer disables every event whose originator is not its own
+`server_id`. A peer rebuilt from a donor therefore does not also run the donor's
+events, as it would if every peer shared one `server_id`. (MariaDB's guide to
+replicating *out* of a Galera cluster suggests one `server_id` on every node. This
+chart sets up no such replication, and under `wsrep_gtid_mode` the GTIDs take the
+bootstrap peer's `server_id` anyway.)
+
+MariaDB never runs a missed occurrence later, and an event stops when the peer
+running it stops: no other peer takes it over.
+
+**Upgrading from a chart where every peer ran `server_id` 1** (0.2.x and earlier):
+an event created through peer 2 or higher is disabled when that peer restarts with
+its own `server_id`, and then runs nowhere. Before upgrading, note what each peer
+runs:
+
+```sql
+SELECT EVENT_SCHEMA, EVENT_NAME, DEFINER FROM information_schema.EVENTS WHERE STATUS = 'ENABLED';
+```
+
+An event that peer 1 lists as well was a copy, and running it twice is what the
+new `server_id`s stop. After the upgrade, re-enable each of the others on the peer
+that should run it, naming its definer: without `DEFINER=`, `ALTER EVENT` makes
+the user who runs it the definer.
+
+```sql
+ALTER DEFINER = '<user>'@'<host>' EVENT <schema>.<event> ENABLE;
+```
+
 ### Scaling the cluster
 
 Change `cluster.peers` between `3` and `5` and upgrade. **Shrinking needs a manual

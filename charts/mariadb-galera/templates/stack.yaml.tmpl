@@ -366,6 +366,10 @@ services:
         # in HAProxy's backend state.
         socat TCP-LISTEN:{{ $.Values.proxy.checkPort }},fork,reuseaddr EXEC:/usr/local/bin/galera-synced-check 2>/dev/null &
 {{- end }}
+        # --server-id is the peer's own number. At start-up a Galera peer disables every
+        # scheduled event whose originator is not its server_id, which is what keeps a
+        # peer rebuilt by a state transfer from running the events it copied from its
+        # donor. With one server_id on every peer, both would run them.
         exec docker-entrypoint.sh mariadbd \
           --wsrep-on=ON \
           --wsrep-provider=/usr/lib/galera/libgalera_smm.so \
@@ -373,6 +377,7 @@ services:
           --wsrep-cluster-address="$$GCOMM" \
           --wsrep-node-name={{ $name }} \
           --wsrep-node-address="$$SELF_ADDR" \
+          --server-id={{ $n }} \
           --wsrep-sst-method=mariabackup \
           --wsrep-sst-auth=mysql: \
           --binlog-format=ROW \
