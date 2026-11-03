@@ -144,6 +144,48 @@ smtp:
   displayName: ""
   replyTo: ""
 
+# Single sign-on through ONE OpenID Connect provider (Keycloak, Authentik, Entra ID, ...),
+# found through its discovery document. Register a confidential client whose redirect URI is
+#   <external_url>/users/auth/openid_connect/callback
+# The client secret comes from an EXTERNAL Swarm secret, read by GitLab's own Ruby at
+# reconfigure time like the SMTP password, and referenced only while oidc.enabled:
+#   printf '%s' '<client secret>' | docker secret create gitlab_oidc_client_secret -
+# GitLab's OIDC group options (admin_groups, required_groups, ...) are Premium/Ultimate and
+# do nothing on CE: restrict who may sign in at the provider.
+oidc:
+  enabled: false
+  # The sign-in button's label. "" => GitLab's default, "Openid Connect".
+  label: ""
+  # The provider's issuer, e.g. https://keycloak.example.com/realms/main. Must be https:
+  # GitLab fetches <issuer>/.well-known/openid-configuration over https whatever scheme is
+  # written here.
+  issuer: ""
+  clientId: ""
+  clientSecretSecretName: gitlab_oidc_client_secret
+  scopes:
+    - openid
+    - profile
+    - email
+  # The claim that identifies a user. "" => GitLab's default, sub, which never changes. A
+  # claim such as preferred_username can, and a changed one signs in as somebody new.
+  uidField: ""
+  pkce: true
+  # How GitLab authenticates at the token endpoint: basic, jwt_bearer, or any other value
+  # (GitLab's own examples use query) to post the id and secret in the request body.
+  # "" => GitLab's default, basic.
+  clientAuthMethod: ""
+  # Create a GitLab account at a user's first sign-in. false => only users who already have
+  # an account get in, once they have linked the provider from their profile.
+  allowSignUp: true
+  # Hold an account created at first sign-in for an administrator's approval.
+  blockAutoCreatedUsers: true
+  # Link a first sign-in to the existing account with the same e-mail address. Only with a
+  # provider that verifies addresses: whoever holds an address there holds the account.
+  autoLinkUser: false
+  # Skip the sign-in page and go straight to the provider. The local login stays reachable
+  # at /users/sign_in?auto_sign_in=false.
+  autoSignIn: false
+
 config:
   # Extra omnibus configuration, appended VERBATIM after everything the chart generates —
   # so it can override any of it. This is the same Ruby you would put in gitlab.rb, e.g.

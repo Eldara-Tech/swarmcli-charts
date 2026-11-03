@@ -220,12 +220,14 @@ include:
   # gitlab: ONE fixture. GitLab CE is a multi-gigabyte monolith (Postgres, Redis, Gitaly,
   # Puma, Sidekiq in one container) whose documented baseline is 8 vCPU / 16 GB, so the
   # runner boots exactly the case that carries the most signal per minute: `minimal` is the
-  # default shape (Traefik labels, SSH TCP router, all three volumes) with BOTH secret-backed
-  # settings on and the worker pools trimmed. Converging it proves the whole generated
-  # omnibus config parsed and both File.read calls found their mounted secrets — reconfigure
-  # raises otherwise and the task never becomes healthy. It also turns metrics on, so
-  # ci/e2e-check.sh scrapes the web metrics server from the monitoring overlay in the same
-  # boot rather than in a second 20-minute one. Every other fixture is render-only, and
+  # default shape (Traefik labels, SSH TCP router, all three volumes) with ALL THREE
+  # secret-backed settings on (root password, SMTP, OIDC) and the worker pools trimmed.
+  # Converging it proves the whole generated omnibus config parsed and every File.read call
+  # found its mounted secret — reconfigure raises otherwise and the task never becomes
+  # healthy. OIDC needs no provider to boot: GitLab contacts it only at sign-in, so
+  # ci/e2e-check.sh reads the provider back out of gitlab.yml and the sign-in page. It also
+  # turns metrics on, so ci/e2e-check.sh scrapes the web metrics server from the monitoring
+  # overlay in the same boot rather than in a second 20-minute one. Every other fixture is render-only, and
   # ci/render-check.sh is correspondingly thorough.
   #
   # 30m, not the 20m every other chart tops out at, and MEASURED rather than guessed. The

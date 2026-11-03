@@ -1,9 +1,11 @@
 # The e2e fixture (.github/e2e-matrix.yaml runs this one case). It is the default shape —
-# Traefik labels, SSH TCP router, persistence, and BOTH secret-backed settings, so that a
-# converged release proves GitLab's Ruby really did read /run/secrets — but trimmed to
+# Traefik labels, SSH TCP router, persistence, and ALL THREE secret-backed settings, so that
+# a converged release proves GitLab's Ruby really did read /run/secrets — but trimmed to
 # something a 4-vCPU CI runner can boot inside the timeout. Metrics are on as well, because
 # this is the only fixture that boots: ci/e2e-check.sh scrapes the web metrics server from
-# the monitoring overlay, which no render can prove.
+# the monitoring overlay, which no render can prove. OIDC is on with the chart's defaults
+# for the same reason; no provider exists at this issuer, and none is needed: GitLab only
+# contacts it when someone signs in.
 ingress:
   host: gitlab.e2e.test
 auth:
@@ -19,6 +21,10 @@ smtp:
   from: gitlab@e2e.test
 metrics:
   enabled: true
+oidc:
+  enabled: true
+  issuer: https://idp.e2e.test/realms/e2e
+  clientId: gitlab-e2e
 config:
   extraRb: |
     puma['worker_processes'] = 0

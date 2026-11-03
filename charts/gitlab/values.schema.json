@@ -121,6 +121,24 @@
         "replyTo": { "type": "string" }
       }
     },
+    "oidc": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "label": { "type": "string" },
+        "issuer": { "type": "string" },
+        "clientId": { "type": "string" },
+        "clientSecretSecretName": { "type": "string", "minLength": 1 },
+        "scopes": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 },
+        "uidField": { "type": "string" },
+        "pkce": { "type": "boolean" },
+        "clientAuthMethod": { "type": "string" },
+        "allowSignUp": { "type": "boolean" },
+        "blockAutoCreatedUsers": { "type": "boolean" },
+        "autoLinkUser": { "type": "boolean" },
+        "autoSignIn": { "type": "boolean" }
+      }
+    },
     "config": {
       "type": "object",
       "properties": {

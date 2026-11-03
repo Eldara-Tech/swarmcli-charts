@@ -20,4 +20,6 @@ secrets:
     description: "auth.rootPassword.enabled=true only - initial root password, applied when the database is first seeded"
   - name: "{{ .Values.smtp.passwordSecretName }}"
     description: "smtp.enabled=true with authentication other than none - SMTP password"
+  - name: "{{ .Values.oidc.clientSecretSecretName }}"
+    description: "oidc.enabled=true only - OpenID Connect client secret"
 configs: []

@@ -50,6 +50,7 @@ through a Traefik **TCP** entrypoint by default.
    ```bash
    printf 'S3cr3tPassw0rd' | docker secret create gitlab_root_password -   # auth.rootPassword.enabled
    printf 'hunter2'        | docker secret create gitlab_smtp_password -   # smtp.enabled
+   printf '%s' '<client secret>' | docker secret create gitlab_oidc_client_secret -   # oidc.enabled
    ```
 
 ## Installing
@@ -81,8 +82,9 @@ references, whatever its name. A default install needs:
 ```
 
 `auth.rootPassword.enabled` adds `gitlab_root_password` to `secrets`, SMTP with an
-`smtp.authentication` other than `none` adds `gitlab_smtp_password`, and `metrics.enabled`
-adds `monitoring` to `networks`. Each entry is the name
+`smtp.authentication` other than `none` adds `gitlab_smtp_password`, `oidc.enabled` adds
+`gitlab_oidc_client_secret`, and `metrics.enabled` adds `monitoring` to `networks`.
+Each entry is the name
 itself, so an override in values needs the same change here. See
 [`allow`](https://github.com/Eldara-Tech/swarmcli-cd/blob/main/docs/configuration.md#allow-optional) in the swarmcli-cd docs.
 
@@ -149,6 +151,63 @@ renders a `File.read('/run/secrets/…')` call into the Ruby config, and GitLab 
 mounted secret itself at reconfigure time. `docker inspect` shows only the call. If a secret
 is missing the read raises and reconfigure fails loudly rather than booting GitLab with an
 empty password.
+
+## Single sign-on (OpenID Connect)
+
+`oidc.enabled` puts one OpenID Connect provider on the sign-in page. Register a
+confidential client with the provider whose redirect URI is GitLab's callback under
+`external_url` — `https://gitlab.example.com/users/auth/openid_connect/callback` for
+`ingress.host: gitlab.example.com`, with `publish.port` in it under `exposure.mode:
+published` — and put the client secret in a Swarm secret:
+
+```bash
+printf '%s' '<client secret>' | docker secret create gitlab_oidc_client_secret -
+```
+
+```yaml
+oidc:
+  enabled: true
+  label: Keycloak
+  issuer: https://keycloak.example.com/realms/main
+  clientId: gitlab
+```
+
+GitLab finds the provider's endpoints in `<issuer>/.well-known/openid-configuration`, and it
+fetches that over **https** whatever scheme the issuer names, so an `http://` issuer is
+refused when the chart renders rather than failing at the first sign-in. Nothing contacts
+the provider before somebody signs in, so GitLab starts whether or not it is reachable.
+
+Who gets in:
+
+- `allowSignUp: true` (the default) creates a GitLab account at a user's first sign-in, and
+  `blockAutoCreatedUsers: true` (the default) holds it until an administrator approves it
+  (**Admin** > **Overview** > **Users**, filtered by **State=Pending approval**). With
+  `blockAutoCreatedUsers: false`, anyone the provider authenticates gets an active account
+  straight away.
+- `allowSignUp: false` lets in only users who already have an account and have linked the
+  provider from their profile — or, with `autoLinkUser: true`, whose e-mail address matches.
+- `autoLinkUser: true` links a first sign-in to the existing account with the same e-mail
+  address. Use it only with a provider that verifies addresses: whoever holds an address
+  there holds the GitLab account.
+- `autoSignIn: true` skips the sign-in page;
+  `/users/sign_in?auto_sign_in=false` still shows the local login.
+
+**Restrict who may sign in at the provider.** GitLab's OIDC group options
+(`required_groups`, `admin_groups`, `external_groups`, `auditor_groups`) are Premium and
+Ultimate features, which CE ignores.
+
+`uidField` is the claim that identifies a user, `sub` unless set. Keep it a claim that
+never changes: if a user's `preferred_username` changes, their next sign-in counts as a new
+user. `clientAuthMethod` is GitLab's `client_auth_method`, HTTP Basic unless set; `query`
+(used in GitLab's own examples) posts the client id and secret in the request body instead.
+
+The secret is handled like the passwords above: the manifest carries only the `File.read`
+call. GitLab itself writes it into the `gitlab.yml` it generates inside the container, as it
+does with every provider setting.
+
+The chart models one provider and mounts only its secret. Other omniauth settings, such as
+`omniauth_sync_profile_from_provider`, go in `config.extraRb`, which runs after the chart's
+block and wins over it.
 
 ## Exposure
 
@@ -347,6 +406,19 @@ every target, and the alerts carry it. Another Prometheus needs the same relabel
 | `smtp.starttlsAuto` | `true` | STARTTLS when the server offers it |
 | `smtp.opensslVerifyMode` | `peer` | Certificate verification mode |
 | `smtp.from` / `.displayName` / `.replyTo` | `""` | E-mail identity |
+| `oidc.enabled` | `false` | Sign in through one OpenID Connect provider. See *Single sign-on* |
+| `oidc.label` | `""` | Sign-in button label; `""` => GitLab's "Openid Connect" |
+| `oidc.issuer` | `""` | Provider issuer URL, `https://` only. Required with `oidc.enabled` |
+| `oidc.clientId` | `""` | Client id registered with the provider. Required with `oidc.enabled` |
+| `oidc.clientSecretSecretName` | `gitlab_oidc_client_secret` | External secret holding the client secret |
+| `oidc.scopes` | `[openid, profile, email]` | Scopes requested |
+| `oidc.uidField` | `""` | Claim identifying a user; `""` => `sub` |
+| `oidc.pkce` | `true` | Use PKCE |
+| `oidc.clientAuthMethod` | `""` | Token endpoint authentication; `""` => `basic` |
+| `oidc.allowSignUp` | `true` | Create an account at a user's first sign-in |
+| `oidc.blockAutoCreatedUsers` | `true` | Hold such an account for administrator approval |
+| `oidc.autoLinkUser` | `false` | Link a first sign-in to the account with the same e-mail |
+| `oidc.autoSignIn` | `false` | Skip the sign-in page and go straight to the provider |
 | `metrics.enabled` | `false` | The web metrics server, labelled for Prometheus service discovery. See *Metrics* |
 | `metrics.port` | `8083` | Its container port (never published) |
 | `metrics.network` | `monitoring` | Overlay GitLab shares with Prometheus (auto-created) |

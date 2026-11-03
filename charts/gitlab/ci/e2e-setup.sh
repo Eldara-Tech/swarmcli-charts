@@ -4,7 +4,7 @@
 # install`, once per fixture:
 #   $1 = release name   $2 = chart directory   $3 = fixture case name
 # It provisions the external prerequisites swarmcli validates but never creates:
-#   * the two dummy secrets the minimal fixture wires into GitLab's omnibus config;
+#   * the three dummy secrets the minimal fixture wires into GitLab's omnibus config;
 #   * the persistence node label the data pin needs;
 #   * traefik-public (autoCreate:false in requirements.yaml — the operator/traefik chart
 #     owns it; here we stand in for them).
@@ -13,7 +13,7 @@
 # The secrets matter beyond convergence: GitLab reads them with Ruby's File.read at
 # reconfigure time, so if the path or the mount were wrong, reconfigure RAISES and the
 # container never becomes healthy. A converged release is therefore the proof that the
-# secret plumbing works — which is why the e2e fixture turns both of them on.
+# secret plumbing works — which is why the e2e fixture turns all three of them on.
 #
 # Idempotent: safe to re-run after a crashed run (every step tolerates "already exists").
 set -euo pipefail
@@ -25,6 +25,7 @@ dir="$2"
 # inside the hostnames in GITLAB_OMNIBUS_CONFIG would make that assertion fire on itself.
 SMTP_PW='sw4rm-smtp-e2e-pw'
 ROOT_PW='sw4rm-r00t-e2e-pw'
+OIDC_SECRET='sw4rm-01dc-e2e-secret'
 
 # Pull the image HERE rather than letting the deploy do it. GitLab CE is several gigabytes
 # and E2E_TIMEOUT is the CONVERGENCE budget: a pull inside it spends minutes GitLab needs to
@@ -49,6 +50,8 @@ docker secret inspect gitlab_smtp_password >/dev/null 2>&1 \
   || printf '%s' "$SMTP_PW" | docker secret create gitlab_smtp_password - >/dev/null
 docker secret inspect gitlab_root_password >/dev/null 2>&1 \
   || printf '%s' "$ROOT_PW" | docker secret create gitlab_root_password - >/dev/null
+docker secret inspect gitlab_oidc_client_secret >/dev/null 2>&1 \
+  || printf '%s' "$OIDC_SECRET" | docker secret create gitlab_oidc_client_secret - >/dev/null
 
 # Label this (single-node) swarm's node so the persistence.nodeLabel constraint schedules.
 node="$(docker node ls --format '{{.ID}} {{.Self}}' 2>/dev/null | awk '$2=="true"{print $1; exit}')"

@@ -20,7 +20,10 @@
 #   7. no password is ever in the manifest — only the File.read call that fetches it;
 #   9. metrics are opt-in, and when on, the web metrics server binds the overlay on
 #      metrics.port, the service carries exactly that discovery label, and the IP
-#      allow-list of /-/metrics is NOT what was widened.
+#      allow-list of /-/metrics is NOT what was widened;
+#  10. OIDC is opt-in, and when on, the one provider is found through discovery, calls back
+#      to the route GitLab serves under external_url, reads its secret with File.read, and
+#      carries exactly the account options the values ask for.
 set -euo pipefail
 
 out="$1"
@@ -219,6 +222,21 @@ esac
 [ "$(yq -r '.services.gitlab.stop_grace_period // ""' "$out")" != "" ] \
   || note "no stop_grace_period — Swarm's 10s default SIGKILLs Postgres mid-shutdown"
 
+# The refusals in 9 and 10, rendered from this chart and this fixture with the renderer
+# test-charts.sh exports.
+chart="$(cd "$(dirname "$0")/.." && pwd)"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+render() { "${SWARMCLI:?render-check needs SWARMCLI to test the refusals}" charts template r "$chart" -f "$chart/ci/$case-values.yaml" "$@"; }
+refused() {
+  local want="$1"; shift
+  if render "$@" >/dev/null 2>"$tmp/err"; then
+    note "$case: rendered with $* — it must be refused"
+  elif ! grep -F "$want" "$tmp/err" >/dev/null; then
+    note "$case: $* failed, but not with \"$want\": $(cat "$tmp/err")"
+  fi
+}
+
 # 9. Metrics: the web metrics server is the only thing opted in, and only on request.
 case "$case" in minimal) mport=8083 ;; metrics) mport=8183 ;; *) mport="" ;; esac
 nets="$(yq -r '.services.gitlab.networks // [] | .[]' "$out")"
@@ -246,19 +264,6 @@ else
     [ "$nets" = "monitoring" ] || note "$case: published mode should be on the metrics overlay alone, got: $(tr '\n' ' ' <<<"$nets")"
     grep -Fx 'team=git' <<<"$labels" >/dev/null || note "$case: the fixture's labels did not render beside the discovery labels"
 
-    # The refusals, rendered from this chart with the renderer test-charts.sh exports.
-    chart="$(cd "$(dirname "$0")/.." && pwd)"
-    tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' EXIT
-    render() { "${SWARMCLI:?render-check needs SWARMCLI to test the refusals}" charts template r "$chart" -f "$chart/ci/metrics-values.yaml" "$@"; }
-    refused() {
-      local want="$1"; shift
-      if render "$@" >/dev/null 2>"$tmp/err"; then
-        note "$case: rendered with $* — it must be refused"
-      elif ! grep -F "$want" "$tmp/err" >/dev/null; then
-        note "$case: $* failed, but not with \"$want\": $(cat "$tmp/err")"
-      fi
-    }
     # A credential in a label of the scraped service.
     for key in traefik.http.middlewares.a.basicauth.users traefik.http.middlewares.a.DigestAuth.Users \
                traefik.http.middlewares.a.headers.customrequestheaders.Authorization; do
@@ -282,5 +287,80 @@ else
       || note "$case: Traefik is not pinned to the ingress overlay — with two networks it could pick the metrics one"
   fi
 fi
+
+# 10. OIDC single sign-on. Off, nothing of it renders. On: one provider, named openid_connect
+#     at both levels (GitLab derives the callback route from the name), found through
+#     discovery, whose redirect_uri is the route GitLab serves under external_url and whose
+#     secret is only ever a File.read of a mounted secret. The omniauth_* settings are
+#     compared as a whole, so an option the values did not ask for fails too.
+oidc_secret=gitlab_oidc_client_secret
+omni="$(grep -E "^gitlab_rails\['omniauth_" <<<"$generated" || true)"
+prov="$(awk '/^gitlab_rails\[.omniauth_providers.\] = \[$/,/^\]$/' <<<"$generated")"
+has() { grep -Fx -- "$1" <<<"$prov" >/dev/null; }
+case "$case" in
+  oidc|minimal)
+    [ "$(grep -cFx '    name: "openid_connect",' <<<"$prov" || true)" = "1" ] \
+      || note "$case: expected exactly one provider named openid_connect"
+    has '      name: "openid_connect",' || note "$case: args.name is not openid_connect, the name GitLab's callback route is derived from"
+    has '      discovery: true,' || note "$case: the provider is not found through discovery"
+    has '      response_type: "code",' || note "$case: response_type is not code"
+    has "        redirect_uri: \"$url/users/auth/openid_connect/callback\"" \
+      || note "$case: redirect_uri is not $url/users/auth/openid_connect/callback, the route GitLab serves under external_url"
+    has "        secret: File.read(\"/run/secrets/$oidc_secret\").strip," \
+      || note "$case: the client secret is not a File.read of /run/secrets/$oidc_secret"
+    grep -Fx "$oidc_secret" <<<"$svc_secrets" >/dev/null || note "$case: $oidc_secret is read but not mounted"
+    ;;
+  *)
+    [ -z "$omni" ] || note "$case: omniauth settings rendered although oidc is off: $omni"
+    grep -Fx "$oidc_secret" <<<"$svc_secrets" >/dev/null && note "$case: mounted $oidc_secret although oidc is off"
+    ;;
+esac
+case "$case" in
+  minimal)  # the chart's defaults: sign-up allowed, pending an administrator's approval
+    has '      scope: ["openid", "profile", "email"],' || note "$case: the default scopes are not openid, profile, email"
+    has '      pkce: true,' || note "$case: PKCE is not on by default"
+    grep -E '^ +(label|uid_field|client_auth_method):' <<<"$prov" >/dev/null \
+      && note "$case: an unset optional setting rendered: $(grep -E '^ +(label|uid_field|client_auth_method):' <<<"$prov" | tr -s ' ')"
+    want="gitlab_rails['omniauth_providers'] = [
+gitlab_rails['omniauth_allow_single_sign_on'] = ['saml', 'openid_connect']
+gitlab_rails['omniauth_block_auto_created_users'] = true"
+    [ "$omni" = "$want" ] || note "$case: the omniauth settings are not the defaults' (sign-up pending approval): $omni"
+    ;;
+  oidc)  # every optional setting set, every account option flipped
+    has '    label: "Keycloak",' || note "$case: oidc.label did not render"
+    has '      scope: ["openid", "profile", "email", "groups"],' || note "$case: oidc.scopes did not render"
+    has '      uid_field: "preferred_username",' || note "$case: oidc.uidField did not render"
+    has '      client_auth_method: "query",' || note "$case: oidc.clientAuthMethod did not render"
+    has '      pkce: false,' || note "$case: oidc.pkce: false did not render"
+    want="gitlab_rails['omniauth_providers'] = [
+gitlab_rails['omniauth_block_auto_created_users'] = false
+gitlab_rails['omniauth_auto_link_user'] = ['openid_connect']
+gitlab_rails['omniauth_auto_sign_in_with_provider'] = 'openid_connect'"
+    [ "$omni" = "$want" ] || note "$case: the omniauth settings do not follow the account options: $omni"
+
+    printf 'oidc:\n  issuer: ""\n' >"$tmp/no-issuer.yaml"
+    refused "oidc.issuer is required" -f "$tmp/no-issuer.yaml"
+    printf 'oidc:\n  clientId: ""\n' >"$tmp/no-client.yaml"
+    refused "oidc.clientId is required" -f "$tmp/no-client.yaml"
+    for iss in http://keycloak.example.com/realms/main keycloak.example.com/realms/main; do
+      printf 'oidc:\n  issuer: %s\n' "$iss" >"$tmp/iss.yaml"
+      refused "must be an https:// URL" -f "$tmp/iss.yaml"
+    done
+    # The callback follows external_url into the other exposure shapes too: plain http,
+    # and the published port.
+    for shape in published tls-off; do
+      shaped="$(render -f "$chart/ci/$shape-values.yaml" 2>"$tmp/err" \
+        | yq -r '.services.gitlab.environment.GITLAB_OMNIBUS_CONFIG')" \
+        || { note "$case: did not render with ci/$shape-values.yaml: $(cat "$tmp/err")"; continue; }
+      ext="$(sed -n 's/^external_url "\(.*\)"$/\1/p' <<<"$shaped")"
+      grep -Fx "        redirect_uri: \"$ext/users/auth/openid_connect/callback\"" <<<"$shaped" >/dev/null \
+        || note "$case + $shape: redirect_uri is not $ext/users/auth/openid_connect/callback"
+    done
+    # ... and only while it is on.
+    printf 'oidc:\n  enabled: false\n  issuer: http://keycloak.example.com\n  clientId: ""\n' >"$tmp/off.yaml"
+    render -f "$tmp/off.yaml" >/dev/null 2>"$tmp/err" \
+      || note "$case: an unusable oidc block was refused with oidc off: $(cat "$tmp/err")"
+    ;;
+esac
 
 exit "$fail"
