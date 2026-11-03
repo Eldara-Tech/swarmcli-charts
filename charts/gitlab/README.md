@@ -185,7 +185,7 @@ Who gets in:
   `blockAutoCreatedUsers: false`, anyone the provider authenticates gets an active account
   straight away.
 - `allowSignUp: false` lets in only users who already have an account and have linked the
-  provider from their profile.
+  provider from their profile — or, with `autoLinkUser: true`, whose e-mail address matches.
 - `autoLinkUser: true` links a first sign-in to the existing account with the same e-mail
   address. Use it only with a provider that verifies addresses: whoever holds an address
   there holds the GitLab account.

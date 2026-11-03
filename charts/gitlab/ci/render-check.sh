@@ -346,6 +346,16 @@ gitlab_rails['omniauth_auto_sign_in_with_provider'] = 'openid_connect'"
       printf 'oidc:\n  issuer: %s\n' "$iss" >"$tmp/iss.yaml"
       refused "must be an https:// URL" -f "$tmp/iss.yaml"
     done
+    # The callback follows external_url into the other exposure shapes too: plain http,
+    # and the published port.
+    for shape in published tls-off; do
+      shaped="$(render -f "$chart/ci/$shape-values.yaml" 2>"$tmp/err" \
+        | yq -r '.services.gitlab.environment.GITLAB_OMNIBUS_CONFIG')" \
+        || { note "$case: did not render with ci/$shape-values.yaml: $(cat "$tmp/err")"; continue; }
+      ext="$(sed -n 's/^external_url "\(.*\)"$/\1/p' <<<"$shaped")"
+      grep -Fx "        redirect_uri: \"$ext/users/auth/openid_connect/callback\"" <<<"$shaped" >/dev/null \
+        || note "$case + $shape: redirect_uri is not $ext/users/auth/openid_connect/callback"
+    done
     # ... and only while it is on.
     printf 'oidc:\n  enabled: false\n  issuer: http://keycloak.example.com\n  clientId: ""\n' >"$tmp/off.yaml"
     render -f "$tmp/off.yaml" >/dev/null 2>"$tmp/err" \

@@ -8,7 +8,7 @@
 # Convergence already proves a great deal here, and the checks below deliberately do not
 # repeat it: GitLab's healthcheck gates task-running, and `gitlab-ctl reconfigure` runs on
 # every boot, so a task that reached Running means the whole generated omnibus config
-# parsed AND both File.read calls found their mounted secrets. Anything wrong with the
+# parsed AND every File.read call found its mounted secret. Anything wrong with the
 # secret plumbing raises in Ruby and the task never converges.
 #
 # What convergence does NOT show, and what this asserts:

@@ -170,8 +170,8 @@ oidc:
   # claim such as preferred_username can, and a changed one signs in as somebody new.
   uidField: ""
   pkce: true
-  # How GitLab authenticates at the token endpoint: basic, jwt_bearer, mtls, or any other
-  # value (GitLab's own examples use query) to post the id and secret in the request body.
+  # How GitLab authenticates at the token endpoint: basic, jwt_bearer, or any other value
+  # (GitLab's own examples use query) to post the id and secret in the request body.
   # "" => GitLab's default, basic.
   clientAuthMethod: ""
   # Create a GitLab account at a user's first sign-in. false => only users who already have
