@@ -28,7 +28,7 @@ are already included; do not repeat them in this list.
 ## Prerequisites
 
 Every node that may run an Airbyte service needs an **x86-64-v2 CPU** (SSE4.2,
-POPCNT). Airbyte's images are built on Amazon Linux 2023 since 2.3.0 (2.2.0 was
+POPCNT). Airbyte's images are built on Amazon Linux 2023 since 2.3.0 (2.2.0 was <!-- appversion-ok -->
 the last on Amazon Linux 2), and its glibc refuses to start without it: the service exits at once with `Fatal glibc error:
 CPU does not support x86-64-v2`. Physical CPUs from the last decade qualify; a VM
 qualifies only if the hypervisor passes the capability through, which the generic

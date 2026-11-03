@@ -20,6 +20,15 @@ if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" != "false" ]; then
   exit 1
 fi
 
+# The lines of $dir's README.md and values.yaml that name version $1, bar those matching $2.
+mentions() {
+  awk -v v="$1" -v skip="$2" '
+    BEGIN { esc = v; gsub(/\./, "\\.", esc); re = "[^0-9.]" esc "[^0-9.]" }
+    $0 ~ skip { next }
+    { padded = " " $0 " "; if (padded ~ re) printf "%s:%d: %s\n", FILENAME, FNR, $0 }
+  ' "${dir%/}/README.md" "${dir%/}/values.yaml" 2>/dev/null
+}
+
 for dir in charts/*/; do
   chart="$(basename "$dir")"
   for field in name version appVersion description; do
@@ -66,23 +75,26 @@ for dir in charts/*/; do
   # that USED to be the appVersion and is still in the prose is, by construction, a claim the
   # bump left behind. charts/mariadb opened with "Single-instance MariaDB 11.8" for the entire
   # life of appVersion 12.3 (#153) — first line of the chart's front page, and nothing noticed.
-  # It fires on the bump PR, which is where the fix belongs and where someone is already looking.
   #
   # A deliberate historical mention ("Superset's 5.0.0 docs listed …") is legitimate prose, not
   # drift: mark that line `<!-- appversion-ok -->` in Markdown, `# appversion-ok` in YAML.
   #
+  # That check fires on the bump PR, which Renovate opens and nobody is watching: gitlab-runner's
+  # "checked against the runner's v19.5.0 source" held two bumps red for days (#302, #314). So the
+  # CURRENT appVersion fails here too, in the PR that writes it, unless the line says which kind
+  # it is: `appversion-ok` for history that stays true, or `appversion-pin` for prose that must
+  # change with every bump (postgres's major), which the check above still fails on the bump PR.
+  #
   # awk, not grep -E: `grep` is ugrep on some contributors' machines, and it does not match an
   # anchor inside an alternation — `(^|[^0-9.])` silently matches NOTHING there while GNU grep
   # matches. A check that reports clean because its regex never fired is the worst kind.
-  cur="$(sed -n 's/^appVersion: *"\?\([^"]*\)"\?$/\1/p' "$dir/Chart.yaml" 2>/dev/null)"
+  # sed -E for the same reason: BSD sed has no `\?`, so on macOS this read every appVersion as
+  # empty and never fired.
+  cur="$(sed -nE 's/^appVersion: *"?([^"]*)"?$/\1/p' "$dir/Chart.yaml" 2>/dev/null)"
   for old in $(git log -p --format= -- "$dir/Chart.yaml" \
-      | sed -n 's/^+appVersion: *"\?\([^"]*\)"\?$/\1/p' | sort -u); do
+      | sed -nE 's/^\+appVersion: *"?([^"]*)"?$/\1/p' | sort -u); do
     [ "$old" = "$cur" ] && continue
-    drift="$(awk -v v="$old" '
-      BEGIN { esc = v; gsub(/\./, "\\.", esc); re = "[^0-9.]" esc "[^0-9.]" }
-      /appversion-ok/ { next }
-      { padded = " " $0 " "; if (padded ~ re) printf "%s:%d: %s\n", FILENAME, FNR, $0 }
-    ' "${dir%/}/README.md" "${dir%/}/values.yaml" 2>/dev/null)"
+    drift="$(mentions "$old" 'appversion-ok')"
     if [ -n "$drift" ]; then
       echo "ERROR: $chart docs still name $old, which is no longer its appVersion ($cur):"
       printf '%s\n' "$drift" | sed 's/^/         /'
@@ -91,6 +103,14 @@ for dir in charts/*/; do
       fail=1
     fi
   done
+  pinned="$(mentions "$cur" 'appversion-(ok|pin)')"
+  if [ -n "$pinned" ]; then
+    echo "ERROR: $chart docs name its current appVersion $cur, so its next bump will fail lint:"
+    printf '%s\n' "$pinned" | sed 's/^/         /'
+    echo "       De-version the line, or mark it 'appversion-ok' (history that stays true) or"
+    echo "       'appversion-pin' (must change with every bump; the bump PR fails until it does)."
+    fail=1
+  fi
 
   # A floating tag is unpinnable and unreviewable: it changes what deploys without
   # a commit. Renovate can only keep a concrete tag fresh.
