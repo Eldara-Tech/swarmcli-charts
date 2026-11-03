@@ -30,8 +30,8 @@ trap 'rm -rf "$WORK"' EXIT INT TERM
 fail=0
 note() { echo "  $1: $2"; if [ "$1" = FAIL ]; then fail=1; fi; }
 # has <label> <needle> <haystack>
-has() { if printf '%s' "$3" | grep -qF -- "$2"; then note PASS "$1"; else note FAIL "$1 (no [$2])"; fi; }
-lacks() { if printf '%s' "$3" | grep -qF -- "$2"; then note FAIL "$1 (found [$2])"; else note PASS "$1"; fi; }
+has() { if grep -qF -- "$2" <<<"$3"; then note PASS "$1"; else note FAIL "$1 (no [$2])"; fi; }
+lacks() { if grep -qF -- "$2" <<<"$3"; then note FAIL "$1 (found [$2])"; else note PASS "$1"; fi; }
 
 # ---- Fixture: demo at two tags, other at one -----------------------------------
 REPO_DIR="$WORK/repo"
@@ -115,7 +115,7 @@ OUT="$(cd "$REPO_DIR" && "$GEN" "$REPO" "$WORK/index.yaml" 2>"$WORK/err")" \
 
 # row <tag>: the page's one-line table row for that release.
 row() { printf '%s\n' "$OUT" | grep -F "href=\"${TAGS}/$1\"" || true; }
-line() { printf '%s\n' "$OUT" | grep -nF -- "$1" | head -1 | cut -d: -f1; }
+line() { grep -nF -- "$1" <<<"$OUT" | sed -n 1p | cut -d: -f1; }
 
 has   "page is an HTML document"          '<!DOCTYPE html>'                                 "$OUT"
 has   "page is closed"                    '</html>'                                         "$OUT"
