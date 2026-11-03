@@ -177,9 +177,10 @@ sharing any state. It moves like this:
 - **Failover.** A writer that stops answering, or stops being `Synced` (as when it
   donates a state transfer), is marked down after three failed checks 2s apart. Its
   connections are closed then, and new ones go to the next peer.
-- **Failback.** Once a lower-numbered peer is `Synced` again, new connections go to
-  it, and those still open to the peer that stood in are closed within a second.
-  That second interruption is what keeps every replica on the same writer.
+- **Failback.** Once a lower-numbered peer is `Synced` again and has passed two
+  checks 2s apart, new connections go to it, and those still open to the peer that
+  stood in are closed within the next second: about 5s in all. That second
+  interruption is what keeps every replica on the same writer.
 - **Existing connections** therefore never stay on a peer that is no longer the
   writer. The application sees the connection close, reconnects, and lands on the
   writer. A transaction open on a closed connection is rolled back, and only the
@@ -566,7 +567,8 @@ MariaDB never runs a missed occurrence later, and an event stops when the peer
 running it stops: no other peer takes it over unless you turn on *Event failover*
 below.
 
-**Upgrading from a chart where every peer ran `server_id` 1** (0.2.x and earlier):
+**Upgrading from a chart where every peer ran `server_id` 1** (mariadb-galera 0.2.5
+and earlier):
 an event created through peer 2 or higher is disabled when that peer restarts with
 its own `server_id`, and then runs nowhere. Before upgrading, note what each peer
 runs:
@@ -627,10 +629,24 @@ What each case comes to:
   MariaDB never makes one up. The controller logs it, e.g. `app.weekly_closing was
   due at 2026-11-08 02:00:00 (Europe/Budapest) while the writer changed from peer 1
   to peer 2, and may not have run, or not to the end`. Check, and run the job by hand
-  if it is needed. Write such jobs so that running them again is harmless.
+  if it is needed. Write such jobs so that running them again is harmless. The
+  controller measures from the last run it saw on a writer, so it cannot tell after
+  it restarted itself; after an outage that took it down too, check by hand.
 - **A run in progress** on the old writer is not stopped. It finishes there, and the
   new writer's first run is the next scheduled one. The two overlap only if a run
   lasts longer than its own interval, which MariaDB allows even without failover.
+
+**Which events to list.** Every recurring event the cluster runs today. Ask the peer
+that runs them, before you take a dump:
+
+```sql
+SELECT CONCAT(EVENT_SCHEMA, '.', EVENT_NAME) FROM information_schema.EVENTS
+WHERE STATUS = 'ENABLED' AND EVENT_TYPE = 'RECURRING';
+```
+
+On any other peer, an enabled event and one disabled on purpose look the same
+(`SLAVESIDE_DISABLED`), and so does a dump taken there. Listed events are turned on
+on the writer whatever the dump said.
 
 Only listed events are ever touched. That is how an event disabled on purpose stays
 disabled: a peer holds it `SLAVESIDE_DISABLED`, exactly as it holds one that another
@@ -646,7 +662,9 @@ and `_missed_runs_total`. `monitoring/galera-rules.yml` alerts on them:
 
 - `GaleraEventsMisplaced`: a listed event is missing, one-time, or not running on
   the writer alone.
-- `GaleraEventTakeoverFailing`: a turn-off or turn-on failed.
+- `GaleraEventTakeoverFailing`: turning an event on on the writer keeps failing.
+  A turn-off that fails, as on a peer shutting down, is only logged: a peer that
+  keeps the event on shows up as misplaced.
 - `GaleraEventRunMissed`: a run may have been missed.
 - `GaleraEventSchedulerOff`: `event_scheduler` is off on the writer.
 

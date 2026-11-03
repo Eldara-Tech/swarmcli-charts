@@ -647,6 +647,9 @@ services:
     command:
       - |-
         set -u
+        # PID 1 ignores SIGTERM unless it traps it; without this every update waits out
+        # the stop grace period and is then killed.
+        trap 'exit 0' TERM INT
         PEERS=({{ $peerList }})
         EVENTS='{{ join " " .Values.events.failover.events }}'
         MYSQL_PWD="$$(cat /run/secrets/{{ .Values.auth.rootSecretName }})"
@@ -655,7 +658,9 @@ services:
         # Logs a condition once, and again only once it has changed.
         declare -A noted
         note() { [ "$${noted[$$1]:-}" = "$$2" ] || { [ -z "$$2" ] || log "$$2"; noted[$$1]="$$2"; }; }
-        sql() { mariadb -h "$$1" -uroot -N -B --connect-timeout=2 <<<"$$2"; }
+        # Bounded, so that a peer dying mid-query, or a donor's backup lock holding an
+        # ALTER, never stalls the loop and with it every event's failover.
+        sql() { timeout 10 mariadb -h "$$1" -uroot -N -B --connect-timeout=2 <<<"$$2"; }
         # A SQL string literal, escaped the way the image's entrypoint escapes passwords.
         lit() { local s="$$1"; s="$${s//\\/\\\\}"; s="$${s//\'/\\\'}"; printf "'%s'" "$$s"; }
 {{- if .Values.metrics.enabled }}
@@ -666,10 +671,11 @@ services:
         printf 'HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s\n' "$$(($${#body} + 1))" "$$body"
         SERVE
         chmod +x /usr/local/bin/events-metrics
-        socat TCP-LISTEN:9104,fork,reuseaddr EXEC:/usr/local/bin/events-metrics 2>/dev/null &
+        socat TCP-LISTEN:9104,fork,reuseaddr,max-children=4 EXEC:/usr/local/bin/events-metrics 2>/dev/null &
 {{- end }}
 
         prev=0
+        lastw=0
         declare -A last
         takeovers=0 errors=0 missed=0
         while :; do
@@ -692,27 +698,32 @@ services:
           if [ "$$writer" != 0 ]; then
             w="$${PEERS[writer - 1]}"
             # A run due while the writer changed was skipped: MariaDB never makes one up.
-            if [ "$$prev" != 0 ] && [ "$$prev" != "$$writer" ]; then
+            # Also after a stretch with no writer at all, measured from the last writer.
+            if [ "$$lastw" != 0 ] && [ "$$prev" != "$$writer" ]; then
               for e in $$EVENTS; do
                 [ -n "$${last[$$e]:-}" ] || continue
                 IFS=$$'\x1f' read -r at value unit tz <<<"$${last[$$e]}"
                 [[ $$unit =~ ^[A-Z_]+$$ ]] || continue
-                # Fresher from the old writer itself while it still answers, as at a failback:
-                # the last check's value may be a run behind.
-                fresh="$$(sql "$${PEERS[prev - 1]}" "SELECT IFNULL(LAST_EXECUTED, '') FROM information_schema.EVENTS WHERE EVENT_SCHEMA = $$(lit "$${e%%.*}") AND EVENT_NAME = $$(lit "$${e#*.}")" 2>/dev/null || true)"
-                [ -z "$$fresh" ] || at="$$fresh"
+                # Fresher from the old writer itself at a failback, while it is still Synced:
+                # the last check's value may be a run behind. Not after it was lost: a peer
+                # cut off from the cluster still records the runs it could not do.
+                if [ "$$prev" != 0 ] && [[ " $${synced[*]} " == *" $$prev "* ]]; then
+                  fresh="$$(sql "$${PEERS[prev - 1]}" "SELECT IFNULL(LAST_EXECUTED, '') FROM information_schema.EVENTS WHERE EVENT_SCHEMA = $$(lit "$${e%%.*}") AND EVENT_NAME = $$(lit "$${e#*.}")" 2>/dev/null || true)"
+                  [[ ! "$$fresh" > "$$at" ]] || at="$$fresh"
+                fi
                 next="TIMESTAMP($$(lit "$$at")) + INTERVAL $$(lit "$${value//\'/}") $$unit"
                 due="$$(sql "$$w" "SELECT IF($$next <= CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', $$(lit "$$tz")), $$next, '')" 2>/dev/null || true)"
                 if [ -n "$$due" ]; then
                   missed=$$((missed + 1))
-                  log "$$e was due at $$due ($$tz) while the writer changed from peer $$prev to peer $$writer, and may not have run, or not to the end. MariaDB does not make up a missed run: check, and run it by hand if it is needed"
+                  log "$$e was due at $$due ($$tz) while the writer changed from peer $$lastw to peer $$writer, and may not have run, or not to the end. MariaDB does not make up a missed run: check, and run it by hand if it is needed"
                 fi
               done
             fi
-            if [ "$$(sql "$$w" 'SELECT @@event_scheduler' 2>/dev/null)" != ON ]; then
+            sched="$$(sql "$$w" 'SELECT @@event_scheduler' 2>/dev/null || true)"
+            if [ -n "$$sched" ] && [ "$$sched" != ON ]; then
               scheduler_off=1
-              note scheduler "event_scheduler is not ON on peer $$writer, so the listed events do not run at all: add --event-scheduler=ON to extraArgs"
-            else
+              note scheduler "event_scheduler is $$sched on peer $$writer, so the listed events do not run at all: add --event-scheduler=ON to extraArgs"
+            elif [ "$$sched" = ON ]; then
               note scheduler ''
             fi
             for e in $$EVENTS; do
@@ -729,7 +740,7 @@ services:
                 misplaced=$$((misplaced + 1)); note "$$e" "$$e is a one-time event, which would run again on another peer, so it is left where it is"; continue
               fi
               note "$$e" ''
-              as="SET SESSION character_set_client = $$cs, collation_connection = $$cc; ALTER DEFINER = $$(lit "$${definer%@*}")@$$(lit "$${definer##*@}") EVENT \`$$schema\`.\`$$name\`"
+              as="SET SESSION character_set_client = $$cs, collation_connection = $$cc, lock_wait_timeout = 5; ALTER DEFINER = $$(lit "$${definer%@*}")@$$(lit "$${definer##*@}") EVENT \`$$schema\`.\`$$name\`"
               # Off on every other peer first, so that no two peers run it at once. Locally
               # (wsrep_on off), which also reaches a peer outside the primary component, and
               # a donor, which still runs its events while it is not Synced.
@@ -741,7 +752,9 @@ services:
                 if out="$$(sql "$${PEERS[i]}" "SET SESSION wsrep_on = OFF; $$as DISABLE ON SLAVE" 2>&1)"; then
                   log "$$e: turned off on peer $$((i + 1)), to turn it on on the writer, peer $$writer"
                 else
-                  errors=$$((errors + 1)); log "$$e: could not turn it off on peer $$((i + 1)): $$out"
+                  # Not an error: a peer shutting down refuses it, and one that keeps the
+                  # event on shows as misplaced.
+                  log "$$e: could not turn it off on peer $$((i + 1)): $$out"
                 fi
               done
               [ "$$enabled" = 1 ] && [ "$$status" = ENABLED ] || misplaced=$$((misplaced + 1))
@@ -753,10 +766,14 @@ services:
                   errors=$$((errors + 1)); log "$$e: could not turn it on on peer $$writer: $$out"
                 fi
               fi
-              if [ -n "$$at" ]; then last[$$e]="$$at"$$'\x1f'"$$value"$$'\x1f'"$$unit"$$'\x1f'"$$tz"; fi
+              # The latest run seen on any writer: LAST_EXECUTED is each peer's own, and a
+              # peer that stood in, or was rebuilt, can hold one from long ago.
+              old="$${last[$$e]:-}"
+              if [ -n "$$at" ] && [[ "$$at" > "$${old%%$$'\x1f'*}" ]]; then last[$$e]="$$at"$$'\x1f'"$$value"$$'\x1f'"$$unit"$$'\x1f'"$$tz"; fi
             done
           fi
           prev="$$writer"
+          [ "$$writer" = 0 ] || lastw="$$writer"
 {{- if .Values.metrics.enabled }}
           {
             echo '# HELP mariadb_galera_events_writer_peer The peer the listed events run on, the lowest-numbered Synced peer; 0 when none is.'
@@ -771,7 +788,7 @@ services:
             echo '# HELP mariadb_galera_events_takeovers_total Listed events turned on on a new writer.'
             echo '# TYPE mariadb_galera_events_takeovers_total counter'
             echo "mariadb_galera_events_takeovers_total $$takeovers"
-            echo '# HELP mariadb_galera_events_errors_total Failed attempts to turn a listed event off or on.'
+            echo '# HELP mariadb_galera_events_errors_total Failed attempts to turn a listed event on on the writer.'
             echo '# TYPE mariadb_galera_events_errors_total counter'
             echo "mariadb_galera_events_errors_total $$errors"
             echo '# HELP mariadb_galera_events_missed_runs_total Runs that fell due while the writer changed and may not have run.'
@@ -811,7 +828,7 @@ services:
     entrypoint:
       - socat
     command:
-      - TCP-LISTEN:9104,fork,reuseaddr
+      - TCP-LISTEN:9104,fork,reuseaddr,max-children=4
       - TCP:tasks.{{ .Release.Name }}_{{ $prefix }}-events:9104
 
     deploy:
@@ -910,12 +927,15 @@ services:
           # the order below, so every replica picks the lowest-numbered Synced peer.
           # on-marked-down closes a lost writer's connections at once; the Lua task
           # closes the ones left on a peer that is no longer the first one up.
+          # init-state down: a replica that just started, or a peer just resolved at a
+          # new address, waits for a passed check, so a Donor peer 1 is never "up" for
+          # the 2s before its first one.
           balance first
 {{- end }}
           # Each peer at its task address, the name the peers dial each other by,
           # so no service VIP sits between the proxy and the peer it checks.
 {{- range $i := until $peers }}
-          server {{ printf "%s-%d" $prefix (add1 $i) }} {{ index $addrs $i }}:{{ $.Values.exposure.port }} check port {{ $.Values.proxy.checkPort }}{{ if $singleWriter }} on-marked-down shutdown-sessions{{ end }}
+          server {{ printf "%s-%d" $prefix (add1 $i) }} {{ index $addrs $i }}:{{ $.Values.exposure.port }} check port {{ $.Values.proxy.checkPort }}{{ if $singleWriter }} init-state down on-marked-down shutdown-sessions{{ end }}
 {{- end }}
 {{- if $singleWriter }}
       # When the writer changes back to a lower-numbered peer, `balance first` sends new

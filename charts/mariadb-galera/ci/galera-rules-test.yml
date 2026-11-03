@@ -127,15 +127,16 @@ tests:
               summary: 'Galera cluster db lost a member'
               description: 'Cluster db has 2 member(s), fewer than it had in the last day.'
 
-  # The events controller of cluster db: an event goes missing at 2m, a takeover fails
-  # at 3m and a run is missed at 4m, and the scheduler is off from the start. Cluster ok
-  # takes over twice, which is routine, and must raise nothing.
+  # The events controller of cluster db: an event goes missing at 2m, turning one on
+  # fails on every pass from 3m and a run is missed at 4m, and the scheduler is off from
+  # the start. Cluster ok takes over twice and fails once, both routine (a writer lost
+  # mid-ALTER is retried on the next), and must raise nothing.
   - interval: 1m
     input_series:
       - series: 'mariadb_galera_events_misplaced{job="db_mariadb-galera-events-metrics",stack="db"}'
         values: '0 0 1x10'
       - series: 'mariadb_galera_events_errors_total{job="db_mariadb-galera-events-metrics",stack="db"}'
-        values: '0 0 0 1x9'
+        values: '0 0 0 1+1x9'
       - series: 'mariadb_galera_events_missed_runs_total{job="db_mariadb-galera-events-metrics",stack="db"}'
         values: '0 0 0 0 1x8'
       - series: 'mariadb_galera_events_scheduler_off{job="db_mariadb-galera-events-metrics",stack="db"}'
@@ -143,7 +144,7 @@ tests:
       - series: 'mariadb_galera_events_misplaced{job="ok_mariadb-galera-events-metrics",stack="ok"}'
         values: '0x12'
       - series: 'mariadb_galera_events_errors_total{job="ok_mariadb-galera-events-metrics",stack="ok"}'
-        values: '0x12'
+        values: '0 0 1x10'
       - series: 'mariadb_galera_events_missed_runs_total{job="ok_mariadb-galera-events-metrics",stack="ok"}'
         values: '0x12'
       - series: 'mariadb_galera_events_takeovers_total{job="ok_mariadb-galera-events-metrics",stack="ok"}'
@@ -175,7 +176,7 @@ tests:
               stack: db
             exp_annotations:
               summary: 'Event failover in db is failing'
-              description: 'The events controller failed to turn a listed event off or on in the last 10 minutes; its log says which and why. Until it succeeds the event can run on two peers, or on none.'
+              description: 'The events controller failed again and again in the last 10 minutes to turn a listed event on on the writer; its log says which and why. Until it succeeds the event runs on no peer.'
       - eval_time: 6m
         alertname: GaleraEventRunMissed
         exp_alerts:

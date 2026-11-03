@@ -152,7 +152,8 @@ fi
 # return. Then an app in a stack of its own reaches the proxy over the overlay with
 # no port published.
 if [ "$case" = single-writer ]; then
-  proxy="$(printf '%s\n' "$all_svcs" | grep -E -- '-proxy$')"
+  proxy="$(printf '%s\n' "$all_svcs" | { grep -E -- '-proxy$' || true; })"
+  [ -n "$proxy" ] || { echo "  no proxy service in stack ${release}"; exit 1; }
   net="$(docker service inspect "$proxy" --format '{{range .Spec.TaskTemplate.Networks}}{{.Target}}{{end}}' | sed -n 1p)"
   netname="$(docker network inspect --format '{{.Name}}' "$net")"
   pw="$(docker exec "$first" sh -c 'cat /run/secrets/mariadb_galera_root_password')"
@@ -228,11 +229,21 @@ if [ "$case" = single-writer ]; then
     done
     echo "  $2: a connection held open to the old writer was not closed"; proxy_log; exit 1
   }
+  # The Lua task, not the peer, closed what was left on <from>: a stopped peer drops its
+  # own connections, so a closed one alone proves nothing about the proxy.
+  lua_closed() {  # lua_closed <from host> <writer host> <when>
+    local c
+    for c in $(docker ps -q -f "label=com.docker.swarm.service.name=$proxy"); do
+      docker logs "$c" 2>&1 | grep -E "single-writer: closing [0-9]+ connection\(s\) to $1; the writer is $2" >/dev/null && return 0
+    done
+    echo "  $3: no proxy replica logged closing the connections left on $1"; proxy_log; exit 1
+  }
   # The events controller keeps the listed event on the peer the proxy writes to. It
   # runs every second and records which peer ran it. A second event, disabled on purpose
   # and not listed, must never run anywhere. Both belong to the app user, which every
   # move of the event must keep as its definer.
-  ctl="$(printf '%s\n' "$all_svcs" | grep -E -- '-events$')"
+  ctl="$(printf '%s\n' "$all_svcs" | { grep -E -- '-events$' || true; })"
+  [ -n "$ctl" ] || { echo "  no events controller in stack ${release}"; exit 1; }
   ctl_log() { docker service logs --raw "$ctl" 2>&1 | tail -n 15 | sed 's/^/    /'; }
   ticks_on() {  # ticks_on <svc> <peer host> <when>: the event's last 3s, asked of <svc>
     local got=""
@@ -250,6 +261,19 @@ if [ "$case" = single-writer ]; then
 
   routes_to "$h1" "after install"
   ticks_on "$p1" "$h1" "after install"
+  # A writer that stays up but is not Synced: desynced, as a donor is. mariadbd keeps a
+  # connection to it open, so only the proxy can close it, and the event must move too.
+  c0="$(hold)"; on "$c0" "$h1"
+  q "$(cid_of "$p1")" 'SET GLOBAL wsrep_desync = ON' >/dev/null
+  closed "$c0" "after $h1 desynced"
+  routes_to "$h2" "with $h1 desynced"
+  ticks_on "$p2" "$h2" "with $h1 desynced"
+  c0="$(hold)"; on "$c0" "$h2"
+  q "$(cid_of "$p1")" 'SET GLOBAL wsrep_desync = OFF' >/dev/null
+  closed "$c0" "after $h1 was Synced again"
+  lua_closed "$h2" "$h1" "after $h1 was Synced again"
+  routes_to "$h1" "after $h1 was Synced again"
+  ticks_on "$p1" "$h1" "after $h1 was Synced again"
   c1="$(hold)"; on "$c1" "$h1"
   stop_peer "$p1"
   closed "$c1" "after $h1 stopped"
@@ -263,11 +287,13 @@ if [ "$case" = single-writer ]; then
   c3="$(hold)"; on "$c3" "$h3"
   start_peer "$p2"
   closed "$c3" "after $h2 came back while $h3 stood in"
+  lua_closed "$h3" "$h2" "after $h2 came back while $h3 stood in"
   routes_to "$h2" "after $h2 came back"
   ticks_on "$p2" "$h2" "after $h2 came back"
   c4="$(hold)"; on "$c4" "$h2"
   start_peer "$p1"
   closed "$c4" "after $h1 came back"
+  lua_closed "$h2" "$h1" "after $h1 came back"
   routes_to "$h1" "after $h1 came back"
   ticks_on "$p1" "$h1" "after $h1 came back"
 
@@ -296,7 +322,14 @@ if [ "$case" = single-writer ]; then
   docker service logs --raw "$ctl" 2>&1 | grep -F 'e2e_galera.tick was due at' >/dev/null \
     || { echo "  the controller logged no run that fell due while the writer was lost"; ctl_log; exit 1; }
   # Its state where Prometheus would scrape it: through the relay, on the metrics overlay.
-  m="$(docker run --rm --network monitoring curlimages/curl:latest -sSf "http://${ctl}-metrics:9104/metrics" 2>&1 || true)"
+  # Polled, because the pass that moves an event counts it misplaced until the next one.
+  m=""
+  for _ in $(seq 1 10); do
+    m="$(docker run --rm --network monitoring curlimages/curl:latest -sSf "http://${ctl}-metrics:9104/metrics" 2>&1 || true)"
+    grep -Fx 'mariadb_galera_events_writer_peer 1' <<<"$m" >/dev/null \
+      && grep -Fx 'mariadb_galera_events_misplaced 0' <<<"$m" >/dev/null && break
+    sleep 3
+  done
   # Turning it off on a peer that is shutting down may fail, harmlessly; turning it on
   # on the writer must not.
   if docker service logs --raw "$ctl" 2>&1 | grep -F 'could not turn it on' >/dev/null; then
@@ -306,7 +339,7 @@ if [ "$case" = single-writer ]; then
     grep -Fx "$want_m" <<<"$m" >/dev/null || { echo "  the controller's metrics lack '$want_m':"; grep -v '^#' <<<"$m" | sed 's/^/    /'; exit 1; }
   done
   got="$(sed -n 's/^mariadb_galera_events_takeovers_total //p' <<<"$m")"
-  [ "${got:-0}" -ge 4 ] || { echo "  the controller counted '$got' takeovers through four changes of writer"; exit 1; }
+  [ "${got:-0}" -ge 6 ] || { echo "  the controller counted '$got' takeovers through six changes of writer"; exit 1; }
 
   # An app in a stack of its own, as a user deploys one: the client alias over the
   # shared overlay, its password from the secret. The chart publishes no port.
@@ -342,7 +375,7 @@ EOF
   done
   [ "$got" = "$h1" ] || { echo "  an app in stack $app reached '$got' through the overlay, expected the writer $h1"; docker service logs --tail 5 "${app}_client" 2>&1 | sed 's/^/    /'; exit 1; }
 
-  echo "  ${release}: $want peers, all Synced, every proxy replica routed to the lowest-numbered Synced peer through two failures and two returns, closing each connection held open to an old writer, the listed event followed it with never two peers at once and the disabled one never ran, and an app stack reached it over the overlay with no port published$metrics_ok OK"
+  echo "  ${release}: $want peers, all Synced, every proxy replica routed to the lowest-numbered Synced peer through a desync, two failures and their returns, closing each connection held open to an old writer, the listed event followed it with never two peers at once and the disabled one never ran, and an app stack reached it over the overlay with no port published$metrics_ok OK"
   exit 0
 fi
 

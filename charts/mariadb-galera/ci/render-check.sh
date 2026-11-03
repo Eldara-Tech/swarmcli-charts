@@ -181,6 +181,10 @@ if [ -n "$proxy_svc" ]; then
     for s in $svcs; do
       grep -Eq "^ *server $s .* on-marked-down shutdown-sessions$" <<<"$cfg" \
         || err "single-writer proxy keeps connections to $s after marking it down"
+      # Up only once a check passed: else a replica just started sends writes to peer 1
+      # for the 2s before its first check, Donor or not.
+      grep -Eq "^ *server $s .* init-state down " <<<"$cfg" \
+        || err "single-writer proxy counts $s up before its first check"
     done
     # In peer order: `balance first` picks by position, so the order IS the writer rule.
     [ "$(grep -oE '^ *server [^ ]+' <<<"$cfg" | awk '{print $2}' | tr '\n' ' ')" = "$(echo $svcs) " ] \
@@ -214,8 +218,8 @@ if [ "$case_name" = "single-writer" ]; then
   grep -Fxq "EVENTS='e2e_galera.tick'" <<<"$ccmd" || err "$c: EVENTS is not the fixture's events.failover.events"
   grep -Fq 'ALTER DEFINER = $$(lit "$${definer%@*}")@$$(lit "$${definer##*@}")' <<<"$ccmd" \
     || err "$c: an ALTER EVENT without the event's own DEFINER would make root its definer"
-  grep -Fq 'SET SESSION character_set_client = $$cs, collation_connection = $$cc;' <<<"$ccmd" \
-    || err "$c: ALTER EVENT runs without the event's character set, which it would replace with the session's"
+  grep -Fq 'SET SESSION character_set_client = $$cs, collation_connection = $$cc, lock_wait_timeout = 5;' <<<"$ccmd" \
+    || err "$c: ALTER EVENT runs without the event's character set, which it would replace with the session's, or without a lock timeout, which lets a donor's backup lock stall every failover"
   off="$( { grep -nF 'SET SESSION wsrep_on = OFF; $$as DISABLE ON SLAVE' <<<"$ccmd" || true; } | cut -d: -f1)"
   on="$( { grep -nF '"$$as ENABLE"' <<<"$ccmd" || true; } | cut -d: -f1)"
   [ -n "$off" ] && [ -n "$on" ] && [ "$off" -lt "$on" ] \
@@ -227,7 +231,7 @@ if [ "$case_name" = "single-writer" ]; then
   fi
   r="mariadb-galera-events-metrics"
   [ "$(yq -r ".services.\"$r\".secrets // [] | length" "$f")" = 0 ] || err "$r: the metrics relay mounts a secret"
-  yq -r ".services.\"$r\".command // [] | join(\" \")" "$f" | grep -Ex 'TCP-LISTEN:9104,fork,reuseaddr TCP:tasks\.[A-Za-z0-9_.-]*_mariadb-galera-events:9104' >/dev/null \
+  yq -r ".services.\"$r\".command // [] | join(\" \")" "$f" | grep -Ex 'TCP-LISTEN:9104,fork,reuseaddr,max-children=4 TCP:tasks\.[A-Za-z0-9_.-]*_mariadb-galera-events:9104' >/dev/null \
     || err "$r: does not forward its port to the controller"
   lbls="$(yq -r ".services.\"$r\".deploy.labels // [] | sort | join(\",\")" "$f")"
   [ "$lbls" = "prometheus.io/port=9104,prometheus.io/scrape=true" ] \

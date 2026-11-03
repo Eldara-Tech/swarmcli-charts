@@ -187,8 +187,8 @@ proxy:
   #   single-writer: every proxy replica sends every connection to the writer, the
   #     lowest-numbered Synced peer, and closes the connections it holds to any other
   #     peer. So when the writer changes, existing connections are closed rather than
-  #     left writing to the old one: within seconds of losing the writer, and within a
-  #     second of a lower-numbered peer being Synced again (failback). README.md §
+  #     left writing to the old one: within seconds of losing the writer, and within
+  #     about 5s of a lower-numbered peer being Synced again (failback). README.md §
   #     Single-writer routing.
   routing: multi-primary
   resources:
