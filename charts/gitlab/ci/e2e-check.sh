@@ -21,7 +21,10 @@
 #   4. the state that must survive a redeploy is on the persisted volumes;
 #   5. with metrics on, the web metrics server answers on the monitoring overlay — where
 #      Prometheus scrapes it — with GitLab's own Rails series, and serves nothing else.
-#   6. with metrics on, the alert rules the chart ships under monitoring/ pass their tests.
+#   6. with metrics on, the alert rules the chart ships under monitoring/ pass their tests;
+#   7. the OIDC provider is in the running configuration with the secret's real bytes, the
+#      sign-in page offers it — without the provider existing, since GitLab only contacts
+#      it when someone signs in — and the secret is in no environment or spec.
 set -euo pipefail
 
 release="$1"
@@ -30,6 +33,7 @@ case_name="${3:-}"
 # deliberately distinctive: the environment assertion below greps for it, and a value like
 # "test" also occurs inside HOST, so it would report a leak that is not there.
 SMTP_PW='sw4rm-smtp-e2e-pw'
+OIDC_SECRET='sw4rm-01dc-e2e-secret'
 HOST='gitlab.e2e.test'
 
 fail=0
@@ -156,5 +160,50 @@ if [ -n "$mport" ]; then
     printf '%s\n' "$out" | sed 's/^/    /'
   fi
 fi
+
+# 7. OIDC, from what reconfigure generated: omnibus writes each provider into gitlab.yml as
+#    one JSON line, so that line must carry the secret's real content (File.read returned
+#    the secret, not an empty string) and the callback under external_url; sign-up must be
+#    on and pending approval, the chart's defaults. Neither branch echoes the secret.
+prov="$(docker exec "$cid" grep -E '^ +- \{"name":"openid_connect"' "$railscfg" 2>/dev/null || true)"
+# The fixture decides, as in 5: only minimal turns OIDC on among the fixtures that boot.
+case "$case_name" in
+  minimal)
+    if [ -z "$prov" ]; then
+      note "gitlab.yml lists no openid_connect provider — the provider block did not reach the running configuration"
+    else
+      if grep -F "\"secret\":\"${OIDC_SECRET}\"" <<<"$prov" >/dev/null; then
+        ok "gitlab.yml's openid_connect provider carries the secret's real content (File.read worked)"
+      else
+        note "the openid_connect secret in gitlab.yml is not the secret's content — File.read returned something else"
+      fi
+      grep -F "\"redirect_uri\":\"https://${HOST}/users/auth/openid_connect/callback\"" <<<"$prov" >/dev/null \
+        || note "the provider's redirect_uri is not https://${HOST}/users/auth/openid_connect/callback"
+    fi
+    if docker exec "$cid" grep -E '^ +allow_single_sign_on: \["saml","openid_connect"\]$' "$railscfg" >/dev/null 2>&1 \
+      && docker exec "$cid" grep -E '^ +block_auto_created_users: true$' "$railscfg" >/dev/null 2>&1; then
+      ok "first sign-in through openid_connect creates an account, pending approval"
+    else
+      note "gitlab.yml does not allow sign-up through openid_connect pending approval:"
+      docker exec "$cid" grep -E '^ +(allow_single_sign_on|block_auto_created_users):' "$railscfg" 2>/dev/null | sed 's/^/    /' || true
+    fi
+    page="$(docker exec "$cid" /opt/gitlab/embedded/bin/curl -s --max-time 30 -H "Host: ${HOST}" \
+      -H 'X-Forwarded-Proto: https' http://127.0.0.1:80/users/sign_in 2>/dev/null || true)"
+    if grep -F '/users/auth/openid_connect' <<<"$page" >/dev/null; then
+      ok "the sign-in page offers the openid_connect provider"
+    else
+      note "the sign-in page does not link /users/auth/openid_connect ($(wc -c <<<"$page") bytes):"
+      grep -iE 'omniauth|oidc|openid' <<<"$page" | sed -n '1,5p' | sed 's/^/    /' || true
+    fi
+    if docker exec "$cid" sh -c "tr '\\0' '\\n' < /proc/1/environ" 2>/dev/null | grep -F "${OIDC_SECRET}" >/dev/null \
+      || { docker service inspect "${release}_gitlab"; docker inspect "$cid"; } 2>/dev/null | grep -F "${OIDC_SECRET}" >/dev/null; then
+      note "the OIDC client secret is in PID 1's environment or docker inspect — it must only ever be read from /run/secrets"
+    else
+      ok "the OIDC client secret is in neither PID 1's environment nor docker inspect"
+    fi
+    ;;
+  *)
+    [ -z "$prov" ] || note "fixture $case_name has oidc off, but gitlab.yml lists an openid_connect provider" ;;
+esac
 
 exit "$fail"

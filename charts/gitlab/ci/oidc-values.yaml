@@ -1,0 +1,18 @@
+# Single sign-on through one OpenID Connect provider, with every optional provider setting
+# set and every account option flipped from its default, so ci/render-check.sh sees each
+# of them rendered. (ci/minimal-values.yaml carries the defaults, and boots them in e2e.)
+# The client secret is an external Swarm secret read by GitLab's own Ruby — the manifest
+# only ever carries the File.read call.
+oidc:
+  enabled: true
+  label: Keycloak
+  issuer: https://keycloak.example.com/realms/main
+  clientId: gitlab
+  scopes: [openid, profile, email, groups]
+  uidField: preferred_username
+  pkce: false
+  clientAuthMethod: query
+  allowSignUp: false
+  blockAutoCreatedUsers: false
+  autoLinkUser: true
+  autoSignIn: true

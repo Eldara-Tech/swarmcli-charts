@@ -25,6 +25,20 @@
 {{- if and .Values.smtp.enabled (not .Values.smtp.address) -}}
 {{- fail "smtp.address is required when smtp.enabled is true." -}}
 {{- end -}}
+{{- if .Values.oidc.enabled -}}
+{{- if not .Values.oidc.issuer -}}
+{{- fail "oidc.issuer is required when oidc.enabled is true: the provider's issuer URL, e.g. https://keycloak.example.com/realms/main." -}}
+{{- end -}}
+{{- /* The openid_connect gem keeps only the issuer's host, port and path and builds the
+       discovery URL with https (swd's url_builder), so an http:// provider would fail at
+       the first sign-in, not here. */}}
+{{- if not (hasPrefix "https://" .Values.oidc.issuer) -}}
+{{- fail (printf "oidc.issuer %q must be an https:// URL: GitLab fetches the provider's discovery document over https whatever scheme the issuer names." .Values.oidc.issuer) -}}
+{{- end -}}
+{{- if not .Values.oidc.clientId -}}
+{{- fail "oidc.clientId is required when oidc.enabled is true." -}}
+{{- end -}}
+{{- end -}}
 {{- if .Values.metrics.enabled -}}
 {{- /* Ports already bound inside the container: nginx (service.port, and its status page on
        *:8060), sshd, and the loopback listeners of Puma, Sidekiq, KAS, Workhorse and Gitaly,
@@ -69,6 +83,7 @@ version: "3.9"
 {{- $secrets := list }}
 {{- if .Values.auth.rootPassword.enabled }}{{ $secrets = append $secrets .Values.auth.rootPassword.secretName }}{{- end }}
 {{- if $smtpAuth }}{{ $secrets = append $secrets .Values.smtp.passwordSecretName }}{{- end }}
+{{- if .Values.oidc.enabled }}{{ $secrets = append $secrets .Values.oidc.clientSecretSecretName }}{{- end }}
 
 {{- /* ---------------------------------------------------------------------------------------
        The omnibus configuration. GitLab has no per-setting env vars: /assets/gitlab.rb ends
@@ -141,6 +156,55 @@ version: "3.9"
 {{- end }}
 {{- with .Values.smtp.replyTo }}
 {{- $rb = append $rb (printf "gitlab_rails['gitlab_email_reply_to'] = %q" .) }}
+{{- end }}
+{{- end }}
+{{- if .Values.oidc.enabled }}
+{{- /* One provider, found through discovery. GitLab's callback route for a provider named
+       openid_connect is /users/auth/openid_connect/callback, under external_url — so the
+       redirect URI follows the exposure mode, published port included. Nothing contacts
+       the provider until someone signs in (the strategy discovers in its request phase). */}}
+{{- $scopes := list }}
+{{- range .Values.oidc.scopes }}{{ $scopes = append $scopes (printf "%q" .) }}{{- end }}
+{{- $rb = append $rb "# --- single sign-on: OpenID Connect ---" }}
+{{- $rb = append $rb "gitlab_rails['omniauth_providers'] = [" }}
+{{- $rb = append $rb "  {" }}
+{{- $rb = append $rb (printf "    name: %q," "openid_connect") }}
+{{- with .Values.oidc.label }}
+{{- $rb = append $rb (printf "    label: %q," .) }}
+{{- end }}
+{{- $rb = append $rb "    args: {" }}
+{{- $rb = append $rb (printf "      name: %q," "openid_connect") }}
+{{- $rb = append $rb (printf "      scope: [%s]," (join ", " $scopes)) }}
+{{- $rb = append $rb (printf "      response_type: %q," "code") }}
+{{- $rb = append $rb (printf "      issuer: %q," .Values.oidc.issuer) }}
+{{- $rb = append $rb "      discovery: true," }}
+{{- with .Values.oidc.uidField }}
+{{- $rb = append $rb (printf "      uid_field: %q," .) }}
+{{- end }}
+{{- with .Values.oidc.clientAuthMethod }}
+{{- $rb = append $rb (printf "      client_auth_method: %q," .) }}
+{{- end }}
+{{- $rb = append $rb (printf "      pkce: %v," .Values.oidc.pkce) }}
+{{- $rb = append $rb "      client_options: {" }}
+{{- $rb = append $rb (printf "        identifier: %q," .Values.oidc.clientId) }}
+{{- $rb = append $rb (printf "        secret: File.read(%q).strip," (printf "/run/secrets/%s" .Values.oidc.clientSecretSecretName)) }}
+{{- $rb = append $rb (printf "        redirect_uri: %q" (printf "%s/users/auth/openid_connect/callback" $externalURL)) }}
+{{- $rb = append $rb "      }" }}
+{{- $rb = append $rb "    }" }}
+{{- $rb = append $rb "  }" }}
+{{- $rb = append $rb "]" }}
+{{- /* Without openid_connect here, a user with no GitLab account cannot sign in through
+       the provider at all. saml is the omnibus default, kept so this adds rather than
+       replaces. */}}
+{{- if .Values.oidc.allowSignUp }}
+{{- $rb = append $rb "gitlab_rails['omniauth_allow_single_sign_on'] = ['saml', 'openid_connect']" }}
+{{- end }}
+{{- $rb = append $rb (printf "gitlab_rails['omniauth_block_auto_created_users'] = %v" .Values.oidc.blockAutoCreatedUsers) }}
+{{- if .Values.oidc.autoLinkUser }}
+{{- $rb = append $rb "gitlab_rails['omniauth_auto_link_user'] = ['openid_connect']" }}
+{{- end }}
+{{- if .Values.oidc.autoSignIn }}
+{{- $rb = append $rb "gitlab_rails['omniauth_auto_sign_in_with_provider'] = 'openid_connect'" }}
 {{- end }}
 {{- end }}
 {{- if .Values.metrics.enabled }}
