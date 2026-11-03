@@ -1,0 +1,22 @@
+# Single sign-on through CONFIG_OVERWRITE_JSON, plus one further system setting. The e2e
+# case points it at a stub provider from ci/e2e-setup.sh and follows the login redirect.
+exposure:
+  mode: published
+publish:
+  port: 18080
+externalURL: http://127.0.0.1:18080
+persistence:
+  nodeLabel: ""
+# The throwaway PostgreSQL ci/e2e-setup.sh stands up, on an overlay of its own.
+database:
+  host: harbor-e2e-db
+  network: harbor-e2e-db-net
+oidc:
+  enabled: true
+  name: Keycloak
+  endpoint: http://harbor-e2e-idp:8080/realms/e2e
+  userClaim: preferred_username
+  autoOnboard: true
+  adminGroup: harbor-admins
+config:
+  project_creation_restriction: adminonly

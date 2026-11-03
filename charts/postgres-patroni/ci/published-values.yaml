@@ -1,0 +1,25 @@
+# The proxy's two ports published through the ingress mesh, on host ports that differ
+# from the container ports, so the two are proven to be different knobs. Also the
+# resource limits, PostgreSQL settings (rendered into both the bootstrap and the local
+# Patroni configuration) and extra deploy labels.
+exposure:
+  enabled: true
+  port: 15432
+  replicaPort: 15433
+resources:
+  limits:
+    memory: "1G"
+etcd:
+  resources:
+    limits:
+      memory: "256M"
+proxy:
+  resources:
+    limits:
+      memory: "128M"
+postgresql:
+  parameters:
+    max_connections: 200
+    log_min_duration_statement: 1000
+labels:
+  team: data

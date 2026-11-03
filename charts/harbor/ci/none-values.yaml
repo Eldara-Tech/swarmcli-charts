@@ -1,0 +1,5 @@
+# Nothing exposed: nginx joins exposure.network for an operator's own proxy, with no labels
+# and no published port.
+exposure:
+  mode: none
+externalURL: https://registry.example.com

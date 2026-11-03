@@ -1,0 +1,39 @@
+name: postgres-patroni
+description: PostgreSQL high-availability cluster for Docker Swarm — Patroni automatic failover over etcd, one pinned peer per node, HAProxy primary and replica endpoints
+version: 0.1.0
+# Quoted: the renderer unmarshals appVersion into a Go string. The tag is the series
+# (Percona re-publishes it with each minor release), as for the postgres chart.
+# renovate: image=percona/percona-distribution-postgresql
+appVersion: "18"
+# Oldest swarmcli whose chart engine renders this chart; verified by
+# scripts/floor-check.sh against a real binary of that version. 2.2.0 is the first
+# to roll the peers and etcd members one at a time (com.swarmcli.rollout on each).
+swarmcliVersion: ">= 2.2.0"
+# host-mount is acknowledged because persistence.volumePaths and etcdVolumePaths can
+# bind-mount data dirs from operator-chosen host paths. The default (named volumes)
+# render mounts no host path — no docker.sock, unprivileged — so the annotation is
+# exercised by the security scan only when host paths are configured.
+annotations:
+  swarmcli-charts/allow: "host-mount"
+maintainers:
+  - name: Eldara
+    url: https://github.com/Eldara-Tech
+keywords:
+  - postgres
+  - postgresql
+  - patroni
+  - etcd
+  - database
+  - sql
+  - cluster
+  - replication
+  - high-availability
+  - failover
+  - stateful
+  - swarm
+home: https://github.com/Eldara-Tech/swarmcli-charts
+sources:
+  - https://github.com/Eldara-Tech/swarmcli-charts
+  - https://github.com/patroni/patroni
+  - https://github.com/percona/percona-docker
+  - https://github.com/etcd-io/etcd

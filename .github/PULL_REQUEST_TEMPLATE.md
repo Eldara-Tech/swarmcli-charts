@@ -20,3 +20,6 @@
       `privileged`, host network/PID, `cap_add`), it is acknowledged via
       `annotations: swarmcli-charts/allow:` in `Chart.yaml`
 - [ ] No `<no value>` in the rendered output (missing-key typos)
+- [ ] If the software serves or pushes metrics: `metrics.enabled` per CONTRIBUTING
+      *Metrics*, plus alert rules and a dashboard under `monitoring/` with a
+      `promtool test rules` check

@@ -1,0 +1,108 @@
+# Harbor alerts for the metrics that metrics.enabled turns on: core, jobservice and the
+# registry serve their own, and the harbor-exporter service adds Harbor's health API, the job
+# queue and project quotas. The chart does not deploy them: hand the file to your Prometheus,
+# e.g. the prometheus-stack chart's prometheus.extraRules (README § Alerts and a dashboard).
+# Harbor ships no alert rules or mixin, so these are this chart's, written against Harbor
+# v2.15's metrics. A component Prometheus cannot scrape is prometheus-stack's TargetDown, not
+# repeated here. Each alert groups by the `stack` and `job` labels prometheus-stack's discovery
+# adds, `job` being the Swarm service, <release>_<component>. There is no alert on the overall
+# harbor_health: it is unhealthy exactly while a component is, and the component alerts name it.
+# Critical only while users lose service, writes or data now: core unreachable, a component
+# pushes and pulls or the UI depend on down, and 5xx from core or the registry. Background jobs
+# (jobservice, registryctl, Trivy), a stalled job queue and a nearly full project quota warn.
+#
+# Validate (from the repo root):
+#   docker run --rm --entrypoint promtool -v "$PWD/charts/harbor:/chart:ro" \
+#     "prom/prometheus:$(sed -n 's/^appVersion: *"\(.*\)"$/\1/p' charts/prometheus-stack/Chart.yaml)" \
+#     test rules /chart/ci/harbor-rules-test.yml
+groups:
+  - name: harbor
+    rules:
+      # The exporter answers and reads the job queue from Valkey, but serves no harbor_health:
+      # it fetches that from core's health API on every scrape and reports nothing when core
+      # does not answer. harbor_task_scheduled_total, which the exporter always reports, is what
+      # tells a Harbor exporter from another stack's service named `exporter`.
+      - alert: HarborCoreUnreachable
+        expr: |
+          max by (stack, job) (up{job=~".+_exporter"}) == 1
+            and on (stack, job) max by (stack, job) (harbor_task_scheduled_total)
+            unless on (stack, job) max by (stack, job) (harbor_health)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Harbor {{ $labels.stack }} core does not answer'
+          description: '{{ $labels.job }} has not reached core''s health API for 5 minutes: the UI, the API and every push and pull go through core (docker service logs {{ $labels.stack }}_core).'
+      # Harbor's health API reports these as down: core itself, the UI, the registry, and the
+      # database and Valkey every request needs.
+      - alert: HarborComponentDown
+        expr: max by (stack, job, component) (harbor_up{component=~"core|portal|registry|database|redis"}) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Harbor {{ $labels.stack }}: {{ $labels.component }} is down'
+          description: 'Harbor {{ $labels.stack }} has reported {{ $labels.component }} unhealthy for 5 minutes; pushes, pulls or the UI fail while it is.'
+      # The background components: replication, garbage collection, retention and scans stop
+      # (jobservice), tag and blob deletion fails (registryctl), scans fail (trivy). Any
+      # component Harbor adds later lands here rather than nowhere.
+      - alert: HarborComponentDegraded
+        expr: max by (stack, job, component) (harbor_up{component!~"core|portal|registry|database|redis"}) == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Harbor {{ $labels.stack }}: {{ $labels.component }} is down'
+          description: 'Harbor {{ $labels.stack }} has reported {{ $labels.component }} unhealthy for 10 minutes. Pushes and pulls still work; its background jobs or scans do not.'
+      # Every request core answered: the API, the UI's calls, the token service and the /v2
+      # proxy in front of the registry. No traffic floor: an idle Harbor answers its own
+      # healthcheck's /api/v2.0/ping, so the ratio is defined, and 2xx.
+      - alert: HarborCoreServerErrors
+        expr: |
+          sum by (stack, job) (rate(harbor_core_http_request_total{code=~"5.."}[5m]))
+            / sum by (stack, job) (rate(harbor_core_http_request_total[5m]))
+            > 0.05
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Harbor {{ $labels.stack }} core is failing requests'
+          description: '{{ $value | humanizePercentage }} of the requests Harbor {{ $labels.stack }} core answered in the last 5 minutes were 5xx.'
+      # The registry behind core's /v2 proxy, and behind jobservice's replication and garbage
+      # collection: a storage backend that fails shows here first.
+      - alert: HarborRegistryServerErrors
+        expr: |
+          sum by (stack, job) (rate(registry_http_requests_total{job=~".+_registry",code=~"5.."}[5m]))
+            / sum by (stack, job) (rate(registry_http_requests_total{job=~".+_registry"}[5m]))
+            > 0.05
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Harbor {{ $labels.stack }} registry is failing requests'
+          description: '{{ $value | humanizePercentage }} of the requests the Harbor {{ $labels.stack }} registry answered in the last 5 minutes were 5xx; check its storage (docker service logs {{ $labels.stack }}_registry).'
+      # How long the oldest waiting job of a type has been queued. An empty queue reports 0;
+      # a busy one moves. An hour without a worker picking it up means jobservice is stuck or
+      # far too small (jobservice.workers).
+      - alert: HarborJobQueueStalled
+        expr: max by (stack, job, type) (harbor_task_queue_latency) > 3600
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Harbor {{ $labels.stack }}: {{ $labels.type }} jobs are not being picked up'
+          description: 'The oldest {{ $labels.type }} job of Harbor {{ $labels.stack }} has waited {{ $value | humanizeDuration }} for a worker.'
+      # A project's storage against its quota. Unlimited is -1, which the `> 0` filter drops.
+      # At 100% Harbor refuses pushes to that project only, and a quota is a limit somebody
+      # set, so this warns ahead of it rather than paging at it.
+      - alert: HarborProjectQuotaNearlyFull
+        expr: |
+          max by (stack, job, project_name) (harbor_project_quota_usage_byte)
+            / max by (stack, job, project_name) (harbor_project_quota_byte > 0)
+            > 0.9
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Harbor {{ $labels.stack }}: project {{ $labels.project_name }} is near its quota'
+          description: 'Project {{ $labels.project_name }} of Harbor {{ $labels.stack }} has used {{ $value | humanizePercentage }} of its storage quota; at 100% Harbor refuses pushes to it.'

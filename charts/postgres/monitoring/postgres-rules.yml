@@ -10,6 +10,11 @@
 # re-rates the mixin's PostgreSQLDown and PostgreSQLMaxConnectionsReached (warning) to
 # critical and its PostgresHasExporterErrors (critical) to warning.
 #
+# Every selector leaves out the postgres-patroni chart's exporters, which its collector
+# relays (job <release>_postgres-patroni-metrics): that chart ships its own rules for them,
+# by peer and rated for a cluster, where one peer down is a warning. So both files can be
+# loaded into one Prometheus without either alert firing twice.
+#
 # Validate (from the repo root):
 #   docker run --rm --entrypoint promtool -v "$PWD/charts/postgres:/chart:ro" \
 #     "prom/prometheus:$(sed -n 's/^appVersion: *"\(.*\)"$/\1/p' charts/prometheus-stack/Chart.yaml)" \
@@ -18,7 +23,7 @@ groups:
   - name: postgres
     rules:
       - alert: PostgreSQLDown
-        expr: pg_up != 1
+        expr: pg_up{job!~".+_postgres-patroni-metrics"} != 1
         for: 5m
         labels:
           severity: critical
@@ -32,12 +37,12 @@ groups:
       # catches. The first still serves an exporter that logs in as a superuser.
       - alert: PostgreSQLMaxConnectionsReached
         expr: |
-          sum by (stack, job, instance) (pg_stat_activity_count)
+          sum by (stack, job, instance) (pg_stat_activity_count{job!~".+_postgres-patroni-metrics"})
             >=
-          sum by (stack, job, instance) (pg_settings_max_connections)
-            - sum by (stack, job, instance) (pg_settings_superuser_reserved_connections)
+          sum by (stack, job, instance) (pg_settings_max_connections{job!~".+_postgres-patroni-metrics"})
+            - sum by (stack, job, instance) (pg_settings_superuser_reserved_connections{job!~".+_postgres-patroni-metrics"})
           or
-          max by (stack, job, instance) (pg_up == 1 unless on (stack, job, instance) pg_scrape_collector_success)
+          max by (stack, job, instance) (pg_up{job!~".+_postgres-patroni-metrics"} == 1 unless on (stack, job, instance) pg_scrape_collector_success{job!~".+_postgres-patroni-metrics"})
         for: 1m
         labels:
           severity: critical
@@ -46,11 +51,11 @@ groups:
           description: 'For a minute, every slot outside superuser_reserved_connections has been taken, so roles that are not superusers cannot connect; superusers still can. An exporter that is not a superuser, like this chart''s, then reports pg_up 1 with no collector metrics.'
       - alert: PostgreSQLHighConnections
         expr: |
-          sum by (stack, job, instance) (pg_stat_activity_count)
+          sum by (stack, job, instance) (pg_stat_activity_count{job!~".+_postgres-patroni-metrics"})
             >
           (
-            sum by (stack, job, instance) (pg_settings_max_connections)
-              - sum by (stack, job, instance) (pg_settings_superuser_reserved_connections)
+            sum by (stack, job, instance) (pg_settings_max_connections{job!~".+_postgres-patroni-metrics"})
+              - sum by (stack, job, instance) (pg_settings_superuser_reserved_connections{job!~".+_postgres-patroni-metrics"})
           ) * 0.8
         for: 10m
         labels:
@@ -59,7 +64,7 @@ groups:
           summary: 'PostgreSQL behind {{ $labels.job }} is above 80% of its connection limit'
           description: '{{ $value }} connections have been open for 10 minutes, more than 80% of max_connections minus superuser_reserved_connections.'
       - alert: PostgresHasHighDeadLocks
-        expr: rate(pg_stat_database_deadlocks{datname!~"template.*"}[5m]) * 60 > 5
+        expr: rate(pg_stat_database_deadlocks{job!~".+_postgres-patroni-metrics", datname!~"template.*"}[5m]) * 60 > 5
         for: 5m
         labels:
           severity: warning
@@ -67,7 +72,7 @@ groups:
           summary: 'Deadlocks in database {{ $labels.datname }} behind {{ $labels.job }}'
           description: 'Database {{ $labels.datname }} has had more than 5 deadlocks a minute for 5 minutes, {{ $value | humanize }} now. Each one aborts a transaction.'
       - alert: PostgresHasExporterErrors
-        expr: pg_scrape_collector_success == 0
+        expr: pg_scrape_collector_success{job!~".+_postgres-patroni-metrics"} == 0
         for: 30m
         labels:
           severity: warning

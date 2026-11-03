@@ -1,0 +1,18 @@
+# Metrics on: core, jobservice, the registry and the exporter join monitoring with exactly
+# the two discovery labels; nothing else does. `labels` lands on nginx, which is not scraped.
+# The e2e case scrapes all four from the monitoring overlay.
+exposure:
+  mode: published
+publish:
+  port: 18080
+externalURL: http://127.0.0.1:18080
+persistence:
+  nodeLabel: ""
+# The throwaway PostgreSQL ci/e2e-setup.sh stands up, on an overlay of its own.
+database:
+  host: harbor-e2e-db
+  network: harbor-e2e-db-net
+metrics:
+  enabled: true
+labels:
+  team: registry

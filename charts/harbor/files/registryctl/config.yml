@@ -1,0 +1,7 @@
+# registryctl, from upstream's docker-compose installer
+# (goharbor/harbor make/photon/prepare/templates/registryctl/config.yml.jinja) without
+# internal TLS. registry_config is the file the start-up wrapper writes.
+protocol: "http"
+port: 8080
+log_level: info
+registry_config: "/etc/registry/config.yml"

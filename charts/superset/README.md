@@ -130,7 +130,8 @@ has no compiler, so `mysqlclient` cannot be installed at runtime. If your derive
 outage) from every task start:
 
 ```dockerfile
-FROM apache/superset:6.1.0   # match the appVersion in Chart.yaml
+# <appVersion> is the one in Chart.yaml.
+FROM apache/superset:<appVersion>
 USER root
 RUN uv pip install psycopg2-binary==2.9.6 Authlib
 USER superset
@@ -139,7 +140,7 @@ USER superset
 ```yaml
 image:
   repository: registry.example.com/superset
-  tag: 6.1.0-drivers
+  tag: <appVersion>-drivers
 python:
   installDrivers: false
 ```

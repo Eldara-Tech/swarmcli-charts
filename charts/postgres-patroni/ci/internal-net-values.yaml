@@ -1,0 +1,5 @@
+# Chart-managed client overlay, and IPsec on the data plane of both overlays the chart
+# creates, so replication does not cross between nodes in the clear.
+network:
+  external: false
+  encrypted: true

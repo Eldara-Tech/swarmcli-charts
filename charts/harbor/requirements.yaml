@@ -1,0 +1,60 @@
+# yamllint disable-file
+# External resources this chart needs. Authoritative: every external network/secret the
+# rendered stack references must be listed here (swarmcli pre-flights it;
+# scripts/requirements-check.sh enforces it at PR time). Entries are declared
+# unconditionally where they can be; one a given configuration never references is inert.
+# The `with` below is the exception: storage.s3.network is "" unless an S3 store needs
+# joining, and an empty name is not a network. It is control flow, hence the disable-file.
+networks:
+  - name: "{{ .Values.database.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "Overlay PostgreSQL is reachable on (database.network); provided by the postgres chart/operator, e.g. the postgres chart's postgres-net"
+  - name: "{{ .Values.exposure.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "exposure.mode=traefik or none only - the edge proxy's ingress overlay; provided by the proxy stack/operator"
+{{- with .Values.storage.s3.network }}
+  - name: "{{ . }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "storage.type=s3 only - the overlay the S3 endpoint is reachable on (storage.s3.network), e.g. the rustfs chart's rustfs-net"
+{{- end }}
+  - name: "{{ .Values.metrics.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: true
+    description: "Overlay core, jobservice, the registry and the exporter share with Prometheus (when metrics.enabled); the prometheus-stack chart scrapes on it by default"
+secrets:
+  - name: "{{ .Values.database.passwordSecret }}"
+    description: "PostgreSQL password of database.username. Pre-create: printf '%s' 'S3cr3t' | docker secret create harbor-db-password -"
+  - name: "{{ .Values.admin.passwordSecret }}"
+    description: "Initial password of Harbor's admin. Pre-create: printf '%s' 'S3cr3t' | docker secret create harbor-admin-password -"
+  - name: "{{ .Values.secrets.core }}"
+    description: "Shared secret core, jobservice and registryctl authenticate each other with. Pre-create: openssl rand -hex 8 | tr -d '\\n' | docker secret create harbor-core-secret -"
+  - name: "{{ .Values.secrets.jobservice }}"
+    description: "Shared secret jobservice authenticates core with. Pre-create: openssl rand -hex 8 | tr -d '\\n' | docker secret create harbor-jobservice-secret -"
+  - name: "{{ .Values.secrets.registryHttp }}"
+    description: "The registry's upload-state signing secret. Pre-create: openssl rand -hex 8 | tr -d '\\n' | docker secret create harbor-registry-http-secret -"
+  - name: "{{ .Values.secrets.csrfKey }}"
+    description: "CSRF key, exactly 32 characters. Pre-create: openssl rand -hex 16 | tr -d '\\n' | docker secret create harbor-csrf-key -"
+  - name: "{{ .Values.secrets.secretKey }}"
+    description: "Encryption key for secrets Harbor stores, exactly 16 bytes, never rotated. Pre-create: openssl rand -hex 8 | tr -d '\\n' | docker secret create harbor-secret-key -"
+  - name: "{{ .Values.secrets.tokenKey }}"
+    description: "RSA private key that signs registry tokens. Pre-create: openssl genrsa -traditional 4096 | docker secret create harbor-token-key -"
+  - name: "{{ .Values.secrets.registryPassword }}"
+    description: "Password core and jobservice log in to the registry with (README, Prerequisites, creates it with its htpasswd line)"
+  - name: "{{ .Values.secrets.registryHtpasswd }}"
+    description: "bcrypt htpasswd line of harbor_registry_user for that password (README, Prerequisites)"
+  - name: "{{ .Values.storage.s3.accessKeySecret }}"
+    description: "storage.type=s3 only - the S3 access key id. Pre-create: printf '%s' '<key id>' | docker secret create harbor-s3-access-key -"
+  - name: "{{ .Values.storage.s3.secretKeySecret }}"
+    description: "storage.type=s3 only - the S3 secret key. Pre-create: printf '%s' '<secret>' | docker secret create harbor-s3-secret-key -"
+  - name: "{{ .Values.metrics.database.passwordSecret }}"
+    description: "metrics.enabled only - password of the exporter's read-only database role (README, Metrics). Pre-create: printf '%s' 'S3cr3t' | docker secret create harbor-exporter-db-password -"
+  - name: "{{ .Values.oidc.clientSecretSecret }}"
+    description: "oidc.enabled only - the OIDC client secret (Keycloak: the client's Credentials tab). Pre-create: printf '%s' '<client secret>' | docker secret create harbor-oidc-client-secret -"
+configs: []

@@ -80,6 +80,24 @@ include:
   # the monitoring overlay, which proves the one-shot created a pg_monitor role whose password
   # survived the secret's quoting traps and that every default collector accepts.
   - { chart: postgres,      cases: "",                                                                                timeout: 8m  }
+  # postgres-patroni: the fixtures that converge on ONE node. ci/e2e-setup.sh labels it with
+  # every peer label, so the pinned default shape schedules there: not HA, but a real etcd
+  # quorum and real streaming replicas. Convergence proves little here, so ci/e2e-check.sh
+  # asserts one leader with every other peer streaming, routing by role through both proxy
+  # ports, nothing behind the proxy reachable from the client overlay, and a failover of
+  # the leader through the same endpoint. bind-mount proves the uid-26 host dirs work;
+  # two-peers the shape where node label 3 carries only etcd; `metrics` scrapes every
+  # exporter and the Patroni/etcd collector from the monitoring overlay and runs promtool.
+  # internal-net (an IPsec overlay), five, unpinned and rejoin (ci/e2e-render-only) are
+  # covered by charts.yml.
+  - { chart: postgres-patroni, cases: "default ephemeral bind-mount published two-peers metrics",                    timeout: 10m }
+  # postgres-patroni lifecycle, a job of its own: an upgrade rolling every peer and etcd
+  # member one at a time under a steady writer (no acknowledged write may be lost), a leader
+  # crash, etcd without quorum (failsafe_mode keeps writes going), a replica rebuilt from an
+  # empty volume, a full stop, an etcd member replaced through the README's runbook, and etcd
+  # rebuilt from empty under a running primary. It drives `swarmcli charts upgrade` itself;
+  # its fixture shortens the health windows. ~11 minutes locally.
+  - { chart: postgres-patroni, name: "postgres-patroni lifecycle", cases: "lifecycle",                                timeout: 25m }
   # mongodb: EVERY fixture (cases: "" => no filter). ci/e2e-setup.sh creates the three dummy
   # secrets and the data node label; ci/e2e-check.sh then connects from a throwaway client
   # container on the release's overlay, so `replica-set` proves clients can follow replica-set
@@ -187,8 +205,29 @@ include:
   # traefik chart; `console-edge` routes only the console through it and proves the S3 host is
   # not routed; `oidc` proves single sign-on against a stub provider (discovery, the login
   # redirect and its callback, the client secret reaching the process). traefik (labels only)
-  # and bind-mount are covered by charts.yml and run in a full local `make e2e`.
-  - { chart: rustfs,        cases: "default buckets ephemeral published edge console-edge oidc",                     timeout: 6m  }
+  # and bind-mount are covered by charts.yml and run in a full local `make e2e`. `metrics`
+  # scrapes the OpenTelemetry Collector RustFS pushes to from the monitoring overlay, as
+  # Prometheus would, for every metric the alert rules and dashboard read, and runs promtool.
+  - { chart: rustfs,        cases: "default buckets ephemeral published edge console-edge oidc metrics",             timeout: 6m  }
+  # rustfs distributed: the distributed-* fixtures, the same checks on four peers, on ONE
+  # node — ci/e2e-setup.sh labels it with every peer label, so the pinned default shape
+  # schedules there: not HA, but one real erasure-coded cluster. Four converged peers prove
+  # nothing about that, so ci/e2e-check-distributed.sh asserts every peer reports one erasure
+  # set of 4 drives with all 4 peers online, and that an object written through the shared
+  # alias reads back through every peer. `distributed-edge` proves from Traefik's access log
+  # that the peers' identical routers merged into one service balancing over all four;
+  # `distributed-console-edge` that its sticky cookie keeps a browser on one peer, which
+  # single sign-on needs. distributed-published and distributed-multi-drive are
+  # ci/e2e-render-only (four peers cannot bind one node's port, and every path on one node
+  # shares a disk, which RustFS refuses); distributed-traefik, -bind-mount and -unpinned are
+  # covered by charts.yml and run in a full local `make e2e`. Each install waits out the 2m
+  # monitor window, hence the 6m budget.
+  - { chart: rustfs, name: "rustfs distributed", cases: "distributed-default distributed-buckets distributed-ephemeral distributed-edge distributed-console-edge distributed-oidc distributed-metrics", timeout: 6m }
+  # rustfs distributed lifecycle, a job of its own: `swarmcli charts upgrade` rolling every
+  # peer one at a time while a client keeps writing through the shared alias (no write may
+  # fail, some peer must report the cluster writable at every sample, and the new tasks must
+  # start a monitor window apart), then every peer stopped together and started again.
+  - { chart: rustfs, name: "rustfs distributed lifecycle", cases: "distributed-lifecycle",                          timeout: 6m  }
   # gitlab: ONE fixture. GitLab CE is a multi-gigabyte monolith (Postgres, Redis, Gitaly,
   # Puma, Sidekiq in one container) whose documented baseline is 8 vCPU / 16 GB, so the
   # runner boots exactly the case that carries the most signal per minute: `minimal` is the
@@ -224,3 +263,10 @@ include:
   # published, loki and extras run in a local `make e2e`. Six services and six images per
   # fixture, hence the 10m convergence budget.
   - { chart: prometheus-stack, cases: "default minimal discovery edge ephemeral alertmanager-config", timeout: 10m }
+  # harbor: the three fixtures that deploy (ci/e2e-render-only lists why the rest do not), each
+  # against the throwaway PostgreSQL its ci/e2e-setup.sh stands up, with nginx published.
+  # `published` pushes and pulls an image through nginx, core and the registry and has Trivy
+  # scan it; `metrics` scrapes the four endpoints from the monitoring overlay and runs
+  # promtool; `oidc` follows a login to a stub provider. Nine images on the first pull, and
+  # core migrates an empty database before it answers.
+  - { chart: harbor,        cases: "published metrics oidc",                                                          timeout: 15m }

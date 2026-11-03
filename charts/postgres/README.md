@@ -1,6 +1,6 @@
 # postgres
 
-Single-instance PostgreSQL 18 for Docker Swarm: persistent (data on a node-local named
+Single-instance PostgreSQL 18 for Docker Swarm: persistent (data on a node-local named <!-- appversion-pin -->
 volume), authenticated via an external Swarm secret, pinned to one node, and reachable by
 other stacks over a shared overlay. Not Traefik-routed (PostgreSQL is TCP); publishes no
 port by default.
@@ -247,7 +247,7 @@ docker exec -it $(docker ps -q -f label=com.docker.swarm.service.name=postgres_p
 - **One mount, a version-namespaced data directory.** The volume (or host path) is mounted at
   `/var/lib/postgresql` — the *parent* — and the data directory itself is
   `/var/lib/postgresql/<major>/docker`, derived from `image.tag` (or `appVersion`) and rendered
-  as `PGDATA`. That is the postgres 18+ image's own default layout, and the image's documented
+  as `PGDATA`. That is the postgres 18+ image's own default layout, and the image's documented <!-- appversion-pin -->
   opt-in for 17 and older, so **one mount contract serves every major**: `image.tag: "15"` needs
   no other change. Keeping `PGDATA` *below* the mountpoint is also what makes host-path
   persistence safe (see below). A tag with no leading digits (`postgres:alpine`, a custom image)
@@ -255,7 +255,7 @@ docker exec -it $(docker ps -q -f label=com.docker.swarm.service.name=postgres_p
   is the explicit escape hatch.
 - **Major upgrades are not automatic.** Bumping the major against an existing volume — via
   `image.tag`, or by upgrading to a chart whose `appVersion` moved — makes the container
-  **refuse to start**: PostgreSQL 18+ images detect the older cluster still sitting under the
+  **refuse to start**: PostgreSQL 18+ images detect the older cluster still sitting under the <!-- appversion-pin -->
   mount and exit with a `pg_upgrade` error rather than initialise an empty database next to it.
   Your data is safe, but the service stays down until you migrate it (`pg_upgrade`, or a
   `pg_dump`/restore into a fresh release). Treat a major bump as a planned maintenance, not a
@@ -291,9 +291,9 @@ docker exec -it $(docker ps -q -f label=com.docker.swarm.service.name=postgres_p
 ## Using it as an application backend
 
 - **[keycloak](../keycloak)** — `database.vendor: postgres`, wiring as shown under
-  [Connecting](#connecting). Keycloak 26.5+ supports PostgreSQL 14–18 and tests against 18, so
+  [Connecting](#connecting). Keycloak 26.5+ supports PostgreSQL 14–18 and tests against 18, so <!-- appversion-pin -->
   the chart default matches.
-- **superset** — the chart default (18) works: superset's e2e deploys Superset against it on
+- **superset** — the chart default (18) works: superset's e2e deploys Superset against it on <!-- appversion-pin -->
   every push. Superset's older docs stopped at PostgreSQL **15**, which was documentation lag
   rather than a ceiling; its 6.x docs publish no numbered ceiling at all and upstream's own
   compose runs 17 — see [PostgreSQL versions](../superset/README.md#postgresql-versions). To stay

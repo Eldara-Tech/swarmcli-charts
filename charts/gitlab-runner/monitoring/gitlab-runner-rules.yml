@@ -4,10 +4,10 @@
 # There is no upstream mixin. These are this chart's, built on the metrics GitLab documents in
 # https://docs.gitlab.com/runner/monitoring/ and
 # https://docs.gitlab.com/runner/fleet_scaling/#monitoring-runners, and checked against the
-# gitlab-runner v19.4.0 source.
+# gitlab-runner v19.5.0 source.
 # GitLabRunnerDisabled reads gitlab_runner_worker_feed_failures_total, which the docs do not
-# list: a runner that GitLab refuses 3 times stops asking for jobs for an hour, so the API
-# counter goes quiet while this one counts every poll it skips.
+# list: a runner that GitLab refuses 3 times stops asking for jobs, backing off from 30 seconds
+# to an hour, so the API counter goes quiet while this one counts every poll it skips.
 # Only GitLabRunnerDisabled is critical: the task runs no jobs. JobRequestsFailing stays a
 # warning, since it fires from half the requests failing and a GitLab outage alerts on its own.
 # Each alert is per runner task (`instance`), under the `stack` and `job` labels
@@ -29,7 +29,7 @@ groups:
           severity: critical
         annotations:
           summary: '{{ $labels.job }} has stopped asking GitLab for jobs'
-          description: 'Runner task {{ $labels.instance }} of {{ $labels.job }} has skipped its job polls for 10 minutes: after 3 job requests failed outright, usually a 403 for its token, it disables itself for an hour at a time. Check the runner in GitLab and the token secret.'
+          description: 'Runner task {{ $labels.instance }} of {{ $labels.job }} has skipped its job polls for 10 minutes: after 3 job requests failed outright, usually a 403 for its token, it disables itself for 30 seconds at first, doubling up to an hour. Check the runner in GitLab and the token secret.'
       # Unreachable GitLab, 5xx, 429. The runner keeps polling through these, unlike a 403.
       - alert: GitLabRunnerJobRequestsFailing
         expr: |

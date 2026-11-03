@@ -103,7 +103,7 @@ cache:
   # Prefix inside the bucket. Empty uses the runner's own layout.
   path: ""
   s3:
-    # host:port of the endpoint, e.g. s3.amazonaws.com or minio:9000. Required when enabled.
+    # host:port of the endpoint, no scheme, e.g. s3.amazonaws.com or minio:9000. Required when enabled.
     server: ""
     bucket: gitlab-runner-cache
     # S3 region. AWS needs it; MinIO ignores it.

@@ -1,0 +1,32 @@
+# jobservice, from upstream's docker-compose installer
+# (goharbor/harbor make/photon/prepare/templates/jobservice/config.yml.jinja) without
+# internal TLS, with the database job logger.
+# config-metrics.yml is the same file with metrics on; keep the two in step.
+protocol: "http"
+port: 8080
+
+worker_pool:
+  # jobservice.workers, through JOB_SERVICE_POOL_WORKERS, overrides this.
+  workers: 10
+  backend: "redis"
+  redis_pool:
+    # redis_url comes from JOB_SERVICE_POOL_REDIS_URL, which names <release>_valkey.
+    namespace: "harbor_job_service_namespace"
+    idle_timeout_second: 3600
+
+# Job logs go to the database, so jobservice keeps no volume.
+job_loggers:
+  - name: "DB"
+    level: "INFO"
+    sweeper:
+      duration: 14  # days
+
+loggers:
+  - name: "STD_OUTPUT"
+    level: "INFO"
+
+reaper:
+  max_update_hours: 24
+  max_dangling_hours: 168
+
+max_retrieve_size_mb: 10

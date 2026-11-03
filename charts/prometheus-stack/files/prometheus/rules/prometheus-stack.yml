@@ -10,8 +10,11 @@
 groups:
   - name: prometheus-stack.targets
     rules:
+      # Only the targets Prometheus scrapes itself. A collector that relays other targets'
+      # `up` (the postgres-patroni chart's) serves theirs under exported_job, and the chart
+      # it belongs to alerts on them by name; here they would read as the collector down.
       - alert: TargetDown
-        expr: up == 0
+        expr: up{exported_job=""} == 0
         for: 5m
         labels:
           severity: warning

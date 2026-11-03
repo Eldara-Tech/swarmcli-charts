@@ -52,6 +52,11 @@ out="$(docker run --rm --network "$net" -e HOME=/tmp --entrypoint mongosh "$imag
 out="$(client root:test-root admin 'print(db.runCommand({ connectionStatus: 1 }).authInfo.authenticatedUserRoles.map(r => r.role + "@" + r.db).join())')"
 [ "$out" = "root@admin" ] || fail "root did not authenticate as root@admin (got: $out)"
 
+# TCMalloc's per-CPU caches are off (GLIBC_TUNABLES): with them on, mongod refuses to start on Linux
+# 6.19 through 7.0.13. Asserted directly, since the runner's kernel may be outside that range.
+out="$(client root:test-root admin 'print(db.serverStatus().tcmalloc.usingPerCPUCaches)')"
+[ "$out" = "false" ] || fail "TCMalloc per-CPU caches are on, which mongod refuses on Linux 6.19-7.0.13 (got: $out)"
+
 if [ "$case" = "no-appuser" ]; then
   if out="$(client app:test-app app 'print("AUTHENTICATED")' 2>&1)"; then
     fail "app user exists although auth.appUser.enabled is false ($out)"

@@ -108,6 +108,23 @@ if [ "$want_metrics" = 1 ]; then
   done
   if grep -E '^gitlab_runner_version_info\{' <<<"$scrape" >/dev/null; then
     note "metrics: gitlab_runner_version_info scraped from the monitoring overlay on :$mport"
+    # Every metric the shipped alerts and dashboard read must exist in this runner release,
+    # or a rename upstream leaves them silently empty. Three appear only once a job has run,
+    # which no fixture does: the two per-job histograms and the job-failure collector. Counted,
+    # so a loop over no names fails rather than passing as clean.
+    checked=0 missing=0
+    for m in $(grep -ohE 'gitlab_runner_[a-z_]+' "$dir"/monitoring/* | sed -E 's/_(bucket|sum|count)$//' | sort -u); do
+      case "$m" in gitlab_runner_job_duration_seconds|gitlab_runner_job_queue_duration_seconds|gitlab_runner_failed_jobs_total) continue ;; esac
+      checked=$((checked + 1))
+      grep -E "^${m}(_bucket)?[{ ]" <<<"$scrape" >/dev/null && continue
+      bad "monitoring/ reads $m, which this runner release does not export"
+      missing=1
+    done
+    if [ "$checked" = 0 ]; then
+      bad "found no metric names in $dir/monitoring/ to check against the scrape"
+    elif [ "$missing" = 0 ]; then
+      note "metrics: all $checked metrics monitoring/ reads before any job runs are exported"
+    fi
   else
     bad "no gitlab_runner_version_info at http://${svc}:${mport}/metrics from the monitoring overlay"
     sed -n '1,5p' <<<"$scrape" | sed 's/^/    /'

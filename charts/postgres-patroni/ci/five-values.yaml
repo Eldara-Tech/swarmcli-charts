@@ -1,0 +1,5 @@
+# Five peers and five etcd members, the largest shape: etcd survives losing two.
+cluster:
+  peers: 5
+etcd:
+  members: 5

@@ -1,0 +1,6 @@
+# Host-path persistence: the registry and Valkey bind-mount host directories on a
+# differently named data node, which the host-mount acknowledgment in Chart.yaml covers.
+persistence:
+  registryPath: /srv/harbor/registry
+  valkeyPath: /srv/harbor/valkey
+  nodeLabel: harbor-node

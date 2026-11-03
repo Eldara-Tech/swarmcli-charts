@@ -1,0 +1,3 @@
+# Defaults: Traefik routes harbor.example.com to nginx over TLS, the registry stores layers
+# on a volume of the harbor-data node, Trivy is on, metrics and OIDC are off.
+{}

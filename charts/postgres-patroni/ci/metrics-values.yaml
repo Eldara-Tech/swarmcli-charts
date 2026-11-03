@@ -1,0 +1,9 @@
+# Metrics: a postgres_exporter per peer and the collector relaying Patroni and etcd, on the
+# monitoring overlay and labelled for Swarm service discovery, plus the one-shot that creates
+# the exporters' role. The peers and etcd members must render exactly as they do without it.
+# `labels` is set to prove it stays off every service that opts in: their deploy labels are
+# readable through Prometheus.
+metrics:
+  enabled: true
+labels:
+  team: db

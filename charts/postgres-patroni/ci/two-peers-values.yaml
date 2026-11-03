@@ -1,0 +1,4 @@
+# Two PostgreSQL peers beside three etcd members: etcd holds the quorum, so a primary
+# and one replica already fail over. Node label 3 then carries only etcd member 3.
+cluster:
+  peers: 2

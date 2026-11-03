@@ -1,0 +1,4 @@
+# The chart defaults: 4 peers of one drive each, persisted and pinned (ci/e2e-setup.sh labels
+# the single CI node with every peer's label), overlay-only, no buckets, no console.
+# ci/e2e-check-distributed.sh reaches the cluster as a neighbouring stack would, on network.name.
+mode: distributed

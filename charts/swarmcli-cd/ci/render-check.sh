@@ -155,5 +155,45 @@ if [ -n "$redirect" ]; then
   esac
 fi
 
+# 15. The login's names (#313) and role groups (swarmcli-cd#341) reach the controller when
+#     set, and are absent otherwise so the controller's own defaults apply.
+if [ "$case" = "listener-tls-sso" ]; then
+  [ "$(env_of SWARMCLI_CD_ADMIN_USERNAME)" = "ops" ] || bad "SWARMCLI_CD_ADMIN_USERNAME is not auth.adminUsername"
+  [ "$(env_of SWARMCLI_CD_OIDC_NAME)" = "Keycloak" ] || bad "SWARMCLI_CD_OIDC_NAME is not sso.displayName"
+  [ "$(env_of SWARMCLI_CD_OIDC_ADMIN_GROUP)" = "/cd/admin" ] || bad "SWARMCLI_CD_OIDC_ADMIN_GROUP is not sso.adminGroup"
+  [ "$(env_of SWARMCLI_CD_OIDC_READONLY_GROUP)" = "/cd/readonly" ] || bad "SWARMCLI_CD_OIDC_READONLY_GROUP is not sso.readonlyGroup"
+else
+  for v in SWARMCLI_CD_ADMIN_USERNAME SWARMCLI_CD_OIDC_NAME SWARMCLI_CD_OIDC_ADMIN_GROUP SWARMCLI_CD_OIDC_READONLY_GROUP; do
+    [ "$(yq -r ".services.controller.environment | has(\"$v\")" "$out")" = "false" ] \
+      || bad "$v is rendered although its value is unset"
+  done
+fi
+if [ "$case" = "default" ]; then
+  chart="$(cd "$(dirname "$0")/.." && pwd)"
+  tmp="$(mktemp)"
+  trap 'rm -f "$tmp" "$tmp.err"' EXIT
+  refused() {
+    local want="$1"; shift
+    if "${SWARMCLI:?render-check needs SWARMCLI to render the refusals}" charts template ci "$chart" "$@" >"$tmp" 2>"$tmp.err"; then
+      bad "rendered with $* — it must be refused"
+    elif ! grep -F "$want" "$tmp.err" >/dev/null; then
+      bad "$* failed, but not with \"$want\": $(tr '\n' ' ' <"$tmp.err")"
+    fi
+  }
+  refused "auth.adminUsername must not contain ':'" --set auth.adminUsername=ops:1
+  refused 'sso.displayName configures nothing on its own' --set sso.displayName=Keycloak
+  refused 'sso.adminGroup and sso.readonlyGroup configure nothing on their own' --set sso.adminGroup=cd-admins
+  refused 'sso.adminGroup and sso.readonlyGroup configure nothing on their own' --set sso.readonlyGroup=cd-viewers
+  if "$SWARMCLI" charts template ci "$chart" --set sso.issuer=https://sso.example.com/realms/ops \
+       --set sso.clientId=cd --set sso.redirectURL=https://cd.example.com/auth/callback >"$tmp" 2>"$tmp.err"; then
+    for v in SWARMCLI_CD_OIDC_NAME SWARMCLI_CD_OIDC_ADMIN_GROUP SWARMCLI_CD_OIDC_READONLY_GROUP; do
+      [ "$(yq -r ".services.controller.environment | has(\"$v\")" "$tmp")" = "false" ] \
+        || bad "$v is rendered with sso but without its value"
+    done
+  else
+    bad "sso without sso.displayName was refused: $(tr '\n' ' ' <"$tmp.err")"
+  fi
+fi
+
 [ "$fail" -eq 0 ] || exit 1
-echo "  placement: manager pin + node pin consistent; secrets by file path; self-update reverts; TLS probe consistent ($case)"
+echo "  placement: manager pin + node pin consistent; secrets by file path; self-update reverts; TLS probe consistent; login names and role groups ($case)"

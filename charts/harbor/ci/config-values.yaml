@@ -1,0 +1,5 @@
+# System settings without OIDC: CONFIG_OVERWRITE_JSON is set directly, with no placeholder
+# and no wrapper substitution. A `$` must survive compose's interpolation.
+config:
+  project_creation_restriction: adminonly
+  robot_name_prefix: robot$

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
-# Render assertions for the rustfs chart. scripts/test-charts.sh runs this after a
-# successful render:
+# Render assertions for the rustfs chart in standalone mode; a distributed-* case goes to
+# ci/render-check-distributed.sh. scripts/test-charts.sh runs this after a successful
+# render:
 #   $1 = the rendered stack file   $2 = the fixture case name
 # Exit 0 = OK. Data-only (no deploy), so it rides charts.yml / make test.
 #
@@ -19,6 +20,10 @@
 #   * The OIDC client secret has no _FILE form in RustFS, so the wrapper exports it; it
 #     must never reach environment:, and RustFS must be told the callback base and the
 #     provider's origin, or SSO silently disappears or follows a client's Host header.
+#   * Metrics are opt-in, through a collector of their own: RustFS never joins the metrics
+#     overlay (everything on it could reach the S3 port), the collector carries exactly the
+#     two discovery labels, and RustFS pushes only metrics, keeping its log on stdout. Any
+#     OTLP endpoint makes RustFS drop its stdout log unless LOG_STDOUT_ENABLED says otherwise.
 #
 # No check pipes into `grep -q` (scripts/lint.sh enforces it): match with `grep … >/dev/null`
 # or a here-string.
@@ -26,6 +31,8 @@ set -euo pipefail
 
 rendered="${1:?rendered stack file}"
 case="${2:-}"
+# mode: distributed has checks of its own, for the same case names without the prefix.
+case "$case" in distributed-*) exec "$(dirname "$0")/render-check-distributed.sh" "$rendered" "${case#distributed-}" ;; esac
 
 if ! command -v yq >/dev/null 2>&1 || ! yq --version 2>&1 | grep -F mikefarah >/dev/null; then
   echo "    ERROR: mikefarah yq v4 is required by render-check.sh (a skipped check reads exactly like a passing one)" >&2
@@ -110,6 +117,11 @@ grep -Fx rustfs-net <<<"$nets" >/dev/null || bad "the service is not on network.
 # ── the console: a second listener with the full API, only when asked for ─────────────
 case "$case" in traefik|published|console-edge|oidc) console=1 ;; *) console="" ;; esac
 labels="$(q "$svc.deploy.labels[]")"
+# Distributed mode's deploy labels never reach the standalone service: the rollout label
+# spaces peers, and the sticky cookie keeps a browser on one of several.
+if grep -E 'com\.swarmcli\.rollout|\.sticky\.' <<<"$labels" >/dev/null; then
+  bad "case $case: the standalone service carries distributed mode's rollout label or sticky cookie"
+fi
 if [ -n "$console" ]; then
   [ "$(env_ RUSTFS_CONSOLE_ENABLE)" = "true" ] || bad "case $case: console.enabled but RUSTFS_CONSOLE_ENABLE is not true"
   [ "$(env_ RUSTFS_CONSOLE_ADDRESS)" = ":9001" ] || bad "case $case: the console does not listen on :9001"
@@ -205,6 +217,9 @@ if [ "$case" = "oidc" ]; then
   [ "$(env_ RUSTFS_IDENTITY_OPENID_CLIENT_ID)" = "rustfs-e2e" ] || bad "case $case: RUSTFS_IDENTITY_OPENID_CLIENT_ID is not console.oidc.clientId"
   [ "$(env_ RUSTFS_IDENTITY_OPENID_DISPLAY_NAME)" = "SSO" ] \
     || bad "case $case: RUSTFS_IDENTITY_OPENID_DISPLAY_NAME is not the default console.oidc.displayName, SSO (got '$(env_ RUSTFS_IDENTITY_OPENID_DISPLAY_NAME)') — the button would read 'Login with default'"
+  got="$(for v in SCOPES GROUPS_CLAIM ROLES_CLAIM EMAIL_CLAIM USERNAME_CLAIM; do env_ "RUSTFS_IDENTITY_OPENID_$v"; done | paste -sd ' ' -)"
+  [ "$got" = "openid,profile,email groups roles email preferred_username" ] \
+    || bad "case $case: the scopes and claims are not console.oidc.*'s defaults (got '$got')"
   [ "$(env_ RUSTFS_BROWSER_REDIRECT_URL)" = "https://rustfs-console.e2e.test" ] \
     || bad "case $case: RUSTFS_BROWSER_REDIRECT_URL is not derived from console.ingress (got '$(env_ RUSTFS_BROWSER_REDIRECT_URL)') — the login would fail"
   [ "$(env_ RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC)" = "off" ] \
@@ -218,7 +233,9 @@ if [ "$case" = "oidc" ]; then
     || bad "case $case: the wrapper does not export the client secret from /run/secrets/rustfs-oidc-client-secret, refusing an empty one"
 else
   for v in RUSTFS_IDENTITY_OPENID_CONFIG_URL RUSTFS_IDENTITY_OPENID_CLIENT_ID RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC \
-           RUSTFS_IDENTITY_OPENID_DISPLAY_NAME RUSTFS_BROWSER_REDIRECT_URL RUSTFS_OUTBOUND_ALLOW_ORIGINS; do
+           RUSTFS_IDENTITY_OPENID_DISPLAY_NAME RUSTFS_BROWSER_REDIRECT_URL RUSTFS_OUTBOUND_ALLOW_ORIGINS \
+           RUSTFS_IDENTITY_OPENID_SCOPES RUSTFS_IDENTITY_OPENID_GROUPS_CLAIM RUSTFS_IDENTITY_OPENID_ROLES_CLAIM \
+           RUSTFS_IDENTITY_OPENID_EMAIL_CLAIM RUSTFS_IDENTITY_OPENID_USERNAME_CLAIM; do
     [ "$(env_ "$v")" = "null" ] || bad "case $case: $v is set although oidc is off"
   done
   [ "$(q "$svc.secrets | length")" = "2" ] || bad "case $case: a third secret is mounted although oidc is off"
@@ -273,6 +290,58 @@ if [ "$case" = "buckets" ]; then
   grep -Fx 'node.role == manager' <<<"$constraints" >/dev/null || bad "case $case: placement.constraints was not applied"
 fi
 
+# ── metrics: a collector RustFS pushes to, the only service on the metrics overlay ────
+m='.services."rustfs-metrics"'
+services="$(q '.services | keys | join(" ")')"
+obs="RUSTFS_OBS_ENDPOINT RUSTFS_OBS_TRACES_EXPORT_ENABLED RUSTFS_OBS_LOGS_EXPORT_ENABLED RUSTFS_OBS_LOG_STDOUT_ENABLED"
+if [ "$case" != "metrics" ]; then
+  [ "$services" = "rustfs" ] || bad "case $case: services are '$services'; metrics must be opt-in"
+  [ "$(q '.networks.monitoring')" = "null" ] || bad "case $case: the monitoring overlay is declared although metrics are off"
+  for v in $obs; do
+    [ "$(env_ "$v")" = "null" ] || bad "case $case: $v is set although metrics are off"
+  done
+else
+  [ "$services" = "rustfs rustfs-metrics" ] || bad "services are '$services', expected rustfs and rustfs-metrics"
+  if grep -Fx monitoring <<<"$nets" >/dev/null; then bad "RustFS joins the monitoring overlay; everything on it could reach the S3 port"; fi
+  [ "$(q '.networks.monitoring.external')" = "true" ] || bad "the monitoring overlay is not declared external"
+  # RustFS appends /v1/metrics to the root endpoint. A per-signal endpoint alone would make it
+  # dump every metric to stdout, and any endpoint drops its stdout log unless told otherwise.
+  [ "$(env_ RUSTFS_OBS_ENDPOINT)" = "http://ci-rustfs-metrics:4318" ] \
+    || bad "RUSTFS_OBS_ENDPOINT is not the collector's alias on rustfs-net (got '$(env_ RUSTFS_OBS_ENDPOINT)')"
+  [ "$(env_ RUSTFS_OBS_TRACES_EXPORT_ENABLED)" = "false" ] || bad "trace export is not off; the collector has no traces pipeline"
+  [ "$(env_ RUSTFS_OBS_LOGS_EXPORT_ENABLED)" = "false" ] || bad "log export is not off; the server log would leave docker service logs"
+  [ "$(env_ RUSTFS_OBS_LOG_STDOUT_ENABLED)" = "true" ] \
+    || bad "RUSTFS_OBS_LOG_STDOUT_ENABLED is not true: with an OTLP endpoint set, RustFS (environment production) would stop logging to stdout"
+  [ "$(q "$m.image")" = "otel/opentelemetry-collector:$(yq -r '.metrics.image.tag' "$(dirname "$0")/../values.yaml")" ] \
+    || bad "the collector image is not values.yaml's metrics.image (got '$(q "$m.image")')"
+  [ "$(q "$m.command | join(\" \")")" = "--config=env:COLLECTOR_CONFIG" ] || bad "the collector does not read its config from COLLECTOR_CONFIG"
+  cfg="$(q "$m.environment.COLLECTOR_CONFIG")"
+  [ "$(yq -r '.receivers.otlp.protocols.http.endpoint' <<<"$cfg")" = "0.0.0.0:4318" ] \
+    || bad "the collector does not receive OTLP/HTTP on 0.0.0.0:4318, where RUSTFS_OBS_ENDPOINT points"
+  [ "$(yq -r '.receivers.otlp.protocols | keys | join(" ")' <<<"$cfg")" = "http" ] || bad "the collector receives more than OTLP/HTTP"
+  [ "$(yq -r '.exporters.prometheus.endpoint' <<<"$cfg")" = "0.0.0.0:8889" ] \
+    || bad "the collector's prometheus exporter does not listen on 0.0.0.0:8889, the port the discovery label names"
+  [ "$(yq -r '.service.pipelines | keys | join(" ")' <<<"$cfg")" = "metrics" ] \
+    && [ "$(yq -r '.service.pipelines.metrics.receivers | join(" ")' <<<"$cfg")" = "otlp" ] \
+    && [ "$(yq -r '.service.pipelines.metrics.exporters | join(" ")' <<<"$cfg")" = "prometheus" ] \
+    || bad "the collector's only pipeline is not metrics: otlp -> prometheus"
+  # Anything on either network can push unauthenticated, so the collector is bounded: the
+  # memory_limiter first in the pipeline, refusing pushes below the service's memory limit.
+  [ "$(yq -r '.service.pipelines.metrics.processors[0]' <<<"$cfg")" = "memory_limiter" ] \
+    || bad "memory_limiter is not the first processor of the collector's pipeline"
+  [ "$(yq -r '.processors.memory_limiter | [.check_interval, .limit_mib, .spike_limit_mib] | join(" ")' <<<"$cfg")" = "1s 200 50" ] \
+    || bad "the memory_limiter is not check_interval 1s, limit_mib 200, spike_limit_mib 50"
+  [ "$(q "$m.deploy.resources.limits.memory")" = "256M" ] \
+    || bad "the collector's memory limit is not 256M, above its memory_limiter's 200 MiB (got '$(q "$m.deploy.resources.limits.memory")')"
+  # Every deploy label of an opted-in service is readable through Prometheus's targets API.
+  [ "$(q "$m.deploy.labels | join(\" \")")" = "prometheus.io/scrape=true prometheus.io/port=8889" ] \
+    || bad "collector deploy labels are '$(q "$m.deploy.labels | join(\" \")")', expected exactly the two discovery labels"
+  [ "$(q "$m.networks | keys | join(\" \")")" = "monitoring rustfs-net" ] || bad "the collector is not on exactly rustfs-net and monitoring"
+  [ "$(q "$m.networks.\"rustfs-net\".aliases | join(\" \")")" = "ci-rustfs-metrics" ] \
+    || bad "the collector's alias on rustfs-net is not ci-rustfs-metrics, the name RustFS dials"
+  [ "$(q "$m.ports // [] | length")" = "0" ] || bad "the collector publishes a port; neither of its listeners authenticates"
+fi
+
 # ── refusals and one-off renders (from the default fixture only) ──────────────────────
 if [ "$case" = "default" ]; then
   chart="$(cd "$(dirname "$0")/.." && pwd)"
@@ -292,6 +361,40 @@ if [ "$case" = "default" ]; then
       || bad "release my_s3.x does not get the alias my-s3-x-rustfs: '_' and '.' must become '-'"
   else
     bad "release my_s3.x was refused: $(tr '\n' ' ' <"$tmp.err")"
+  fi
+  refused 'metrics.network must differ from network.name and exposure.network' --set metrics.enabled=true --set metrics.network=rustfs-net
+  refused 'metrics.network must differ from network.name and exposure.network' --set metrics.enabled=true --set metrics.network=traefik-public
+  # Distributed mode's host paths are refused rather than ignored, and so is an unknown mode.
+  refused 'persistence.volumePaths is for mode: distributed' --set 'persistence.volumePaths[0]=/srv/rustfs'
+  # A line break in the host path would start keys of the service itself.
+  printf '%s\n' 'persistence:' '  volumePath: "/srv/x:/data\n    cap_add: [SYS_ADMIN]\n    z"' >"$tmp.values"
+  refused 'persistence.volumePath must be one line' -f "$tmp.values"
+  refused '/mode' --set mode=cluster
+  # Standalone carries none of distributed mode's wiring.
+  render && [ "$(yq -r "$svc.environment | has(\"RUSTFS_VOLUMES\") or has(\"RUSTFS_LOCAL_ENDPOINT_HOST\")" "$tmp")" = "false" ] \
+    && [ "$(yq -r "$svc.deploy | has(\"endpoint_mode\") or has(\"labels\")" "$tmp")" = "false" ] \
+    || bad "the standalone render carries distributed mode's volume list, endpoint_mode or rollout label: $(tr '\n' ' ' <"$tmp.err")"
+  # While metrics are on, the chart owns RustFS's OTLP wiring; while they are off, extraEnv may set it.
+  for k in RUSTFS_OBS_ENDPOINT RUSTFS_OBS_METRIC_ENDPOINT RUSTFS_OBS_TRACE_ENDPOINT RUSTFS_OBS_LOG_ENDPOINT \
+           RUSTFS_OBS_TRACES_EXPORT_ENABLED RUSTFS_OBS_LOGS_EXPORT_ENABLED RUSTFS_OBS_LOG_STDOUT_ENABLED; do
+    refused "extraEnv: $k is set by the chart while metrics.enabled" --set metrics.enabled=true --set "extraEnv.$k=x"
+  done
+  # ...and the three that would break the push: a stdout copy of every metric, no push, or a
+  # push less often than the collector's 5-minute expiry.
+  for k in RUSTFS_OBS_USE_STDOUT RUSTFS_OBS_METRICS_EXPORT_ENABLED RUSTFS_OBS_METER_INTERVAL; do
+    refused "extraEnv: $k cannot be set while metrics.enabled" --set metrics.enabled=true --set "extraEnv.$k=x"
+    render --set "extraEnv.$k=x" && [ "$(yq -r "$svc.environment.$k" "$tmp")" = "x" ] \
+      || bad "extraEnv.$k with metrics off was refused or not passed on: $(tr '\n' ' ' <"$tmp.err")"
+  done
+  render --set extraEnv.RUSTFS_OBS_ENDPOINT=http://otel:4318 \
+    && [ "$(yq -r "$svc.environment.RUSTFS_OBS_ENDPOINT" "$tmp")" = "http://otel:4318" ] \
+    || bad "extraEnv.RUSTFS_OBS_ENDPOINT with metrics off was refused or not passed on: $(tr '\n' ' ' <"$tmp.err")"
+  if "${SWARMCLI:?render-check needs SWARMCLI to render the refusals}" charts template my_s3.x "$chart" --set metrics.enabled=true >"$tmp" 2>"$tmp.err"; then
+    [ "$(yq -r '.services."rustfs-metrics".networks."rustfs-net".aliases[]' "$tmp")" = "my-s3-x-rustfs-metrics" ] \
+      && [ "$(yq -r "$svc.environment.RUSTFS_OBS_ENDPOINT" "$tmp")" = "http://my-s3-x-rustfs-metrics:4318" ] \
+      || bad "release my_s3.x: the collector alias or RustFS's endpoint is not my-s3-x-rustfs-metrics"
+  else
+    bad "release my_s3.x with metrics on was refused: $(tr '\n' ' ' <"$tmp.err")"
   fi
   refused 'console.ingress.host is required' --set console.enabled=true --set console.exposure.mode=traefik
   refused 'console.ingress.host must differ from ingress.host' --set exposure.mode=traefik --set console.enabled=true \
@@ -356,7 +459,18 @@ if [ "$case" = "default" ]; then
            MINIO_IDENTITY_OPENID_REDIRECT_URI; do
     refused "extraEnv: $k: use the RUSTFS_IDENTITY_OPENID_ spelling" "${kco[@]}" --set "extraEnv.$k=x"
   done
-  tune="SCOPES CLAIM_NAME CLAIM_PREFIX ROLE_POLICY GROUPS_CLAIM ROLES_CLAIM EMAIL_CLAIM USERNAME_CLAIM HIDE_FROM_UI"
+  # The scopes and the other claims are console.oidc.*, so extraEnv refuses them by that name.
+  for t in SCOPES:scopes GROUPS_CLAIM:groupsClaim ROLES_CLAIM:rolesClaim EMAIL_CLAIM:emailClaim USERNAME_CLAIM:usernameClaim; do
+    refused "extraEnv: RUSTFS_IDENTITY_OPENID_${t%%:*} is set by the chart from console.oidc.${t#*:}" \
+      "${kco[@]}" --set "extraEnv.RUSTFS_IDENTITY_OPENID_${t%%:*}=x"
+  done
+  refused 'console.oidc.scopes must include openid' "${kco[@]}" --set console.oidc.scopes=profile
+  refused 'console.oidc.scopes must include openid' "${kco[@]}" --set console.oidc.scopes=
+  printf '%s\n' 'console:' '  oidc:' '    scopes: "profile, openid"' '    groupsClaim: rustfs_policies' '    rolesClaim: ""' >"$tmp.values"
+  render "${kco[@]}" -f "$tmp.values" \
+    && [ "$(yq -r "$svc.environment | [.RUSTFS_IDENTITY_OPENID_SCOPES, .RUSTFS_IDENTITY_OPENID_GROUPS_CLAIM, .RUSTFS_IDENTITY_OPENID_ROLES_CLAIM] | join(\"|\")" "$tmp")" = "profile, openid|rustfs_policies|" ] \
+    || bad "console.oidc.scopes / groupsClaim / rolesClaim were refused or not passed on: $(tr '\n' ' ' <"$tmp.err")"
+  tune="CLAIM_NAME CLAIM_PREFIX ROLE_POLICY HIDE_FROM_UI"
   sets=(); for t in $tune; do sets+=(--set "extraEnv.RUSTFS_IDENTITY_OPENID_$t=x"); done
   if render "${kco[@]}" "${sets[@]}"; then
     for k in $(printf 'RUSTFS_IDENTITY_OPENID_%s ' $tune); do

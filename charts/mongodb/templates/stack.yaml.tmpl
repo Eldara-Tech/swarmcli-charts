@@ -91,6 +91,11 @@ services:
     environment:
       MONGO_INITDB_ROOT_USERNAME: {{ .Values.auth.rootUsername | quote }}
       MONGO_INITDB_ROOT_PASSWORD_FILE: /run/secrets/{{ .Values.auth.rootSecretName }}
+      # The image sets glibc.pthread.rseq=0 so TCMalloc can use per-CPU caches, and with those on
+      # mongod refuses to start on Linux 6.19 through 7.0.13 (SERVER-121912); Ubuntu reports every
+      # 7.0 kernel as 7.0.0-N, so its hosts never clear that check. rseq=1 leaves rseq to glibc and
+      # TCMalloc on per-thread caches, which mongod accepts on every kernel.
+      GLIBC_TUNABLES: glibc.pthread.rseq=1
 
 {{- if .Values.auth.appUser.enabled }}
     # The image has no *_FILE variable for a non-root user, so this wrapper writes a first-init

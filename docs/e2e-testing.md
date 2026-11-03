@@ -262,6 +262,25 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
     `cluster.forceBootstrap` through the README's `--wsrep-recover` runbook, then
     clearing it;
   - a crash of every peer, recovered by an election.
+- **postgres-patroni** — the four dummy secrets (superuser, replication, REST API, exporter) + a node
+  label for EVERY peer (`postgres-patroni-1` … `-5`) on the single CI node, so the pinned
+  fixtures schedule every peer and etcd member there, and for `bind-mount` the host dirs,
+  owned by the image's postgres uid (26). `ci/e2e-check.sh` asserts one Patroni leader with
+  every other peer streaming and one etcd cluster with one leader, a write through the
+  proxy's primary port read back from every replica through its replica port, that nothing
+  behind the proxy resolves on the client overlay and that the REST API refuses an
+  unauthenticated write; then it stops the leader and asserts writes through the same
+  endpoint resume on a new one and the old leader rejoins with every row. The `metrics`
+  fixture scrapes every exporter (`pg_up 1`, every collector succeeding) and the collector
+  relaying Patroni and etcd (every target up, one primary, a leader on every member) from
+  the `monitoring` overlay, checks the exporters' role and that nothing behind them resolves
+  there, and runs promtool on the shipped rules. The `lifecycle`
+  fixture runs as a job of its own (`e2e (postgres-patroni lifecycle)`): an upgrade rolling
+  every peer and etcd member one at a time under a steady writer, losing no acknowledged
+  write, with each new task started a monitor window after the one before; a leader crash;
+  etcd without quorum (`failsafe_mode` keeps writes going); a replica rebuilt from an empty
+  volume; a full stop; an etcd member replaced through the README's `etcdctl member add`
+  runbook; and etcd rebuilt from empty volumes under a running primary.
 - **keycloak** — the two operator secrets + the DB/ingress overlays + a throwaway
   co-located backend on `keycloak-db-net` — MariaDB, or PostgreSQL for the `postgres` fixture —
   because Keycloak attaches its DB overlay unconditionally and `/health/ready` only passes once
@@ -309,6 +328,15 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   empty key set on `rustfs-net`), up before install because RustFS discovers it only at
   start. `ci/e2e-check.sh` signs its requests with the same key pair and also proves the
   public default `rustfsadmin` pair is refused, because RustFS converges just as well on it.
+  The `distributed-*` fixtures (`mode: distributed`) get the same, but instead of
+  `rustfs-data` a node label for EVERY peer (`rustfs-1` … `-6`) on the single CI node, so the pinned default fixture
+  schedules all four peers there: not HA, but one real erasure-coded cluster.
+  `ci/e2e-check-distributed.sh` asserts one cluster rather than four stores (every peer's
+  admin API reports one erasure set of 4 drives, all 4 peers online), an object written
+  through the shared alias read back through every peer, and for `distributed-edge` that
+  Traefik balanced over all four peers, from its access log. `distributed-lifecycle` runs as
+  a job of its own: an upgrade rolling every peer one at a time while a client keeps writing,
+  then every peer stopped together and started again.
 - **seaweedfs** — the two S3 credential secrets (the secret key carries a `/` and a `+`), the
   admin UI's password secret + the `seaweedfs-data` node label + the `seaweedfs-net` client
   overlay for every fixture; per fixture, the bind-mount host dir and its node label, and a real
@@ -377,6 +405,21 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   `ci/e2e-check.sh` runs a source-faker connection check, the one request that crosses the
   server, Temporal, the workload launcher, FakeK8s's Postgres-backed dataplane credentials,
   Docker and S3.
+- **harbor** — the ten operator secrets (the secret key at exactly 16 bytes, the CSRF key at
+  32, and the registry's htpasswd line hashed by httpd's `htpasswd` from the same password
+  the registry-password secret holds) + a throwaway PostgreSQL, `harbor-e2e-db`, on an overlay
+  of its own, `harbor-e2e-db-net`, which the e2e fixtures point `database.*` at; for `oidc`,
+  also the client secret and a busybox stub OpenID provider on that overlay, the one network
+  core shares with it; for `metrics`, the exporter's read-only role, created with the README's
+  grants before Harbor's first start. Convergence is a weak signal: every service passes its healthcheck long
+  before it can reach the others, so `ci/e2e-check.sh` first waits for Harbor's health API to
+  report every component healthy. Then `published` pushes an image with docker through nginx,
+  core and the registry, reads it back through the API, pulls it again and has Trivy scan it;
+  `metrics` scrapes core, jobservice, the registry and the exporter from the `monitoring`
+  overlay (the exporter's project count proves its role can read core's tables) and runs
+  promtool on `monitoring/`; `oidc` follows a login to the stub provider's
+  authorization endpoint and checks that `CONFIG_OVERWRITE_JSON` applied the settings and made
+  them read-only.
 
 `whoami` and `swarm-cronjob` converge solo and ship no hooks.
 
