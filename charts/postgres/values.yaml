@@ -50,7 +50,7 @@ persistence:
   nodeLabel: postgres-data
   # PGDATA — the data directory INSIDE the mount above. Leave empty ("") and the chart derives
   # /var/lib/postgresql/<major>/docker from the image tag (falling back to appVersion). That is
-  # the postgres:18+ image's own default layout, and the image's documented opt-in for 17 and
+  # the postgres:18+ image's own default layout, and the image's documented opt-in for 17 and  # appversion-pin
   # older, so a single mount contract serves every major: `image.tag: "15"` needs no other
   # change. Keeping PGDATA one level BELOW the mount is also what makes host-path persistence
   # safe (initdb refuses a mountpoint that is non-empty or cannot be chowned).

@@ -39,6 +39,16 @@ echo "Cloning swarmcli ($REF) ..." >&2
 git clone --depth 1 --branch "$REF" "$REPO_URL" "$SRC" >&2
 
 echo "Building swarmcli ..." >&2
-( cd "$SRC" && go build -o "$DEST/swarmcli" . )
+# proxy.golang.org now and then resets a module download mid-stream ("stream error: ...
+# INTERNAL_ERROR; received from peer"), which failed whole e2e jobs (#314, #315). Fetch the
+# modules with retries, so the build only compiles.
+( cd "$SRC"
+  for try in 1 2 3; do
+    go mod download && break
+    [ "$try" = 3 ] && exit 1
+    echo "go mod download failed, retrying in 10s ..." >&2
+    sleep 10
+  done
+  go build -o "$DEST/swarmcli" . )
 
 echo "$DEST/swarmcli"

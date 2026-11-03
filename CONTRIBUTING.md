@@ -249,10 +249,12 @@ the three rules that keep it working:
 - Never echo the appVersion into prose — not a `values.yaml` comment, not the
   README values table. Renovate edits `Chart.yaml` and touches neither, so the
   number drifts on the first bump. Say "defaults to `appVersion` in Chart.yaml".
-  Lint also fails when the README or `values.yaml` still names a version this
-  chart's `appVersion` used to be, so a bump alone can fail it. A deliberate
-  historical mention takes `appversion-ok` on that line (`<!-- appversion-ok -->` in
-  Markdown, `# appversion-ok` in YAML).
+  Lint fails when the README or `values.yaml` names the current `appVersion`, and
+  when it names one the `appVersion` used to be. A deliberate historical mention
+  takes `appversion-ok` on that line (`<!-- appversion-ok -->` in Markdown,
+  `# appversion-ok` in YAML), and passes both. Prose that must change with every
+  bump takes `appversion-pin` instead: it passes until the bump, whose PR then fails
+  until someone updates the line.
 
 `make new-chart` scaffolds all of this correctly. A chart whose `image.repository`
 you change must have its renovate comment changed to match, or lint fails.

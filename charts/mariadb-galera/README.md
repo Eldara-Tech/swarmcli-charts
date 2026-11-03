@@ -464,8 +464,8 @@ refuses the chart; forced through with `--skip-compat-check`, it updates every p
 together, a full stop with no peer holding `safe_to_bootstrap: 1`.
 
 Every peer can also restart without you changing the image. By default Swarm resolves
-`mariadb:12.3` to a digest at every deploy, so once upstream re-tags `12.3` with a
-patch release, the next upgrade of any value changes every peer. Upgrade with
+the series tag (`mariadb:<appVersion>`) to a digest at every deploy, so once upstream
+re-tags it with a patch release, the next upgrade of any value changes every peer. Upgrade with
 `--resolve-image changed`: it keeps the digest the cluster already runs while the
 image is unchanged, and resolves a fresh one when you change it on purpose.
 
