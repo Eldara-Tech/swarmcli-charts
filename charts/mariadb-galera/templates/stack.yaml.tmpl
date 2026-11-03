@@ -17,6 +17,13 @@
 {{- if and .Values.network.encrypted .Values.network.external -}}
 {{- fail "network.encrypted only applies to a chart-managed overlay: an external network's driver options are fixed when it is created, so setting this on external:true would silently not encrypt anything. Either set network.external: false, or pre-create the overlay yourself with `docker network create --opt encrypted`." -}}
 {{- end -}}
+{{- $singleWriter := eq .Values.proxy.routing "single-writer" -}}
+{{- if and $singleWriter (not .Values.proxy.enabled) -}}
+{{- fail "proxy.routing: single-writer is a mode of the proxy, so it needs proxy.enabled: true. Without the proxy, clients reach every peer through network.clientAlias and nothing picks a writer." -}}
+{{- end -}}
+{{- if and .Values.events.failover.enabled (not .Values.events.failover.events) -}}
+{{- fail "events.failover.enabled is on but events.failover.events lists no event. Name each recurring event to keep on the writer as \"<schema>.<event>\"; events not listed are never touched." -}}
+{{- end -}}
 {{- if and .Values.metrics.enabled (eq .Values.metrics.network .Values.network.name) -}}
 {{- fail "metrics.network must differ from network.name: the exporters join both, and the point of a separate metrics overlay is that Prometheus never shares one with the peers' SQL and Galera ports." -}}
 {{- end -}}
@@ -366,6 +373,10 @@ services:
         # in HAProxy's backend state.
         socat TCP-LISTEN:{{ $.Values.proxy.checkPort }},fork,reuseaddr EXEC:/usr/local/bin/galera-synced-check 2>/dev/null &
 {{- end }}
+        # --server-id is the peer's own number. At start-up a Galera peer disables every
+        # scheduled event whose originator is not its server_id, which is what keeps a
+        # peer rebuilt by a state transfer from running the events it copied from its
+        # donor. With one server_id on every peer, both would run them.
         exec docker-entrypoint.sh mariadbd \
           --wsrep-on=ON \
           --wsrep-provider=/usr/lib/galera/libgalera_smm.so \
@@ -373,6 +384,7 @@ services:
           --wsrep-cluster-address="$$GCOMM" \
           --wsrep-node-name={{ $name }} \
           --wsrep-node-address="$$SELF_ADDR" \
+          --server-id={{ $n }} \
           --wsrep-sst-method=mariabackup \
           --wsrep-sst-auth=mysql: \
           --binlog-format=ROW \
@@ -606,6 +618,236 @@ services:
         condition: on-failure
 {{- end }}
 
+{{- if .Values.events.failover.enabled }}
+
+  # Scheduled-event failover (README.md § Event failover). Every 5s it finds the writer,
+  # the lowest-numbered Synced peer, which is the rule proxy.routing: single-writer
+  # routes by, and makes it the one peer that runs each listed event: first off on
+  # every other peer it can reach, locally, then on on the writer, which Galera
+  # replicates as off everywhere else. Each ALTER names the event's own definer and
+  # character set, which a bare ALTER EVENT replaces with root and the session's.
+  # Events not listed are never touched: a peer holds an event someone disabled on
+  # purpose exactly as it holds one another peer runs, so nothing can tell them apart.
+  #
+  # It logs in as root over the overlay, like the exporter-user one-shot, because
+  # ALTER DEFINER needs SET USER. One replica, replaced stop-first, so that two never
+  # race each other's ALTERs.
+  {{ $prefix }}-events:
+    image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
+
+    networks:
+      - {{ .Values.network.name }}
+
+    secrets:
+      - {{ .Values.auth.rootSecretName }}
+
+    entrypoint:
+      - /bin/bash
+      - -c
+    command:
+      - |-
+        set -u
+        # PID 1 ignores SIGTERM unless it traps it; without this every update waits out
+        # the stop grace period and is then killed.
+        trap 'exit 0' TERM INT
+        PEERS=({{ $peerList }})
+        EVENTS='{{ join " " .Values.events.failover.events }}'
+        MYSQL_PWD="$$(cat /run/secrets/{{ .Values.auth.rootSecretName }})"
+        export MYSQL_PWD
+        log() { echo "mariadb-galera-events: $$*"; }
+        # Logs a condition once, and again only once it has changed.
+        declare -A noted
+        note() { [ "$${noted[$$1]:-}" = "$$2" ] || { [ -z "$$2" ] || log "$$2"; noted[$$1]="$$2"; }; }
+        # Bounded, so that a peer dying mid-query, or a donor's backup lock holding an
+        # ALTER, never stalls the loop and with it every event's failover.
+        sql() { timeout 10 mariadb -h "$$1" -uroot -N -B --connect-timeout=2 <<<"$$2"; }
+        # A SQL string literal, escaped the way the image's entrypoint escapes passwords.
+        lit() { local s="$$1"; s="$${s//\\/\\\\}"; s="$${s//\'/\\\'}"; printf "'%s'" "$$s"; }
+{{- if .Values.metrics.enabled }}
+        cat > /usr/local/bin/events-metrics <<'SERVE'
+        #!/bin/bash
+        while IFS= read -r -t 2 l && [ -n "$${l%$$'\r'}" ]; do :; done
+        body="$$(cat /tmp/events.prom 2>/dev/null)"
+        printf 'HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s\n' "$$(($${#body} + 1))" "$$body"
+        SERVE
+        chmod +x /usr/local/bin/events-metrics
+        socat TCP-LISTEN:9104,fork,reuseaddr,max-children=4 EXEC:/usr/local/bin/events-metrics 2>/dev/null &
+{{- end }}
+
+        prev=0
+        lastw=0
+        declare -A last
+        takeovers=0 errors=0 missed=0
+        while :; do
+          synced=()
+          writer=0
+          for i in "$${!PEERS[@]}"; do
+            s="$$(sql "$${PEERS[i]}" "SELECT VARIABLE_VALUE FROM information_schema.GLOBAL_STATUS WHERE VARIABLE_NAME = 'WSREP_LOCAL_STATE'" 2>/dev/null || true)"
+            if [ "$$s" = 4 ]; then
+              synced+=("$$((i + 1))")
+              [ "$$writer" != 0 ] || writer=$$((i + 1))
+            fi
+          done
+          if [ "$$writer" != "$$prev" ]; then
+            if [ "$$writer" = 0 ]; then log 'no peer is Synced, so no peer runs the listed events'
+            elif [ "$$prev" = 0 ]; then log "peer $$writer is the writer"
+            else log "peer $$writer is the writer, was peer $$prev"; fi
+          fi
+          misplaced=0
+          scheduler_off=0
+          if [ "$$writer" != 0 ]; then
+            w="$${PEERS[writer - 1]}"
+            # A run due while the writer changed was skipped: MariaDB never makes one up.
+            # Also after a stretch with no writer at all, measured from the last writer.
+            if [ "$$lastw" != 0 ] && [ "$$prev" != "$$writer" ]; then
+              for e in $$EVENTS; do
+                [ -n "$${last[$$e]:-}" ] || continue
+                IFS=$$'\x1f' read -r at value unit tz <<<"$${last[$$e]}"
+                [[ $$unit =~ ^[A-Z_]+$$ ]] || continue
+                # Fresher from the old writer itself at a failback, while it is still Synced:
+                # the last check's value may be a run behind. Not after it was lost: a peer
+                # cut off from the cluster still records the runs it could not do.
+                if [ "$$prev" != 0 ] && [[ " $${synced[*]} " == *" $$prev "* ]]; then
+                  fresh="$$(sql "$${PEERS[prev - 1]}" "SELECT IFNULL(LAST_EXECUTED, '') FROM information_schema.EVENTS WHERE EVENT_SCHEMA = $$(lit "$${e%%.*}") AND EVENT_NAME = $$(lit "$${e#*.}")" 2>/dev/null || true)"
+                  [[ ! "$$fresh" > "$$at" ]] || at="$$fresh"
+                fi
+                next="TIMESTAMP($$(lit "$$at")) + INTERVAL $$(lit "$${value//\'/}") $$unit"
+                due="$$(sql "$$w" "SELECT IF($$next <= CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', $$(lit "$$tz")), $$next, '')" 2>/dev/null || true)"
+                if [ -n "$$due" ]; then
+                  missed=$$((missed + 1))
+                  log "$$e was due at $$due ($$tz) while the writer changed from peer $$lastw to peer $$writer, and may not have run, or not to the end. MariaDB does not make up a missed run: check, and run it by hand if it is needed"
+                fi
+              done
+            fi
+            sched="$$(sql "$$w" 'SELECT @@event_scheduler' 2>/dev/null || true)"
+            if [ -n "$$sched" ] && [ "$$sched" != ON ]; then
+              scheduler_off=1
+              note scheduler "event_scheduler is $$sched on peer $$writer, so the listed events do not run at all: add --event-scheduler=ON to extraArgs"
+            elif [ "$$sched" = ON ]; then
+              note scheduler ''
+            fi
+            for e in $$EVENTS; do
+              schema="$${e%%.*}" name="$${e#*.}"
+              where="EVENT_SCHEMA = $$(lit "$$schema") AND EVENT_NAME = $$(lit "$$name")"
+              # One field separator that no value contains: read with a whitespace IFS, an empty
+              # field would shift every field after it.
+              row="$$(sql "$$w" "SELECT CONCAT_WS(CHAR(31), EVENT_TYPE, STATUS, DEFINER, CHARACTER_SET_CLIENT, COLLATION_CONNECTION, ORIGINATOR, IFNULL(LAST_EXECUTED, ''), IFNULL(INTERVAL_VALUE, ''), IFNULL(INTERVAL_FIELD, ''), TIME_ZONE) FROM information_schema.EVENTS WHERE $$where" 2>/dev/null || true)"
+              if [ -z "$$row" ]; then
+                misplaced=$$((misplaced + 1)); note "$$e" "$$e does not exist on peer $$writer, the writer; nothing runs it there"; continue
+              fi
+              IFS=$$'\x1f' read -r type status definer cs cc originator at value unit tz <<<"$$row"
+              if [ "$$type" != RECURRING ]; then
+                misplaced=$$((misplaced + 1)); note "$$e" "$$e is a one-time event, which would run again on another peer, so it is left where it is"; continue
+              fi
+              note "$$e" ''
+              as="SET SESSION character_set_client = $$cs, collation_connection = $$cc, lock_wait_timeout = 5; ALTER DEFINER = $$(lit "$${definer%@*}")@$$(lit "$${definer##*@}") EVENT \`$$schema\`.\`$$name\`"
+              # Off on every other peer first, so that no two peers run it at once. Locally
+              # (wsrep_on off), which also reaches a peer outside the primary component, and
+              # a donor, which still runs its events while it is not Synced.
+              enabled=0
+              for i in "$${!PEERS[@]}"; do
+                [ "$$(sql "$${PEERS[i]}" "SELECT STATUS FROM information_schema.EVENTS WHERE $$where" 2>/dev/null)" = ENABLED ] || continue
+                [[ " $${synced[*]} " != *" $$((i + 1)) "* ]] || enabled=$$((enabled + 1))
+                [ "$$((i + 1))" != "$$writer" ] || continue
+                if out="$$(sql "$${PEERS[i]}" "SET SESSION wsrep_on = OFF; $$as DISABLE ON SLAVE" 2>&1)"; then
+                  log "$$e: turned off on peer $$((i + 1)), to turn it on on the writer, peer $$writer"
+                else
+                  # Not an error: a peer shutting down refuses it, and one that keeps the
+                  # event on shows as misplaced.
+                  log "$$e: could not turn it off on peer $$((i + 1)): $$out"
+                fi
+              done
+              [ "$$enabled" = 1 ] && [ "$$status" = ENABLED ] || misplaced=$$((misplaced + 1))
+              if [ "$$status" != ENABLED ]; then
+                # Replicated: every other peer then holds it SLAVESIDE_DISABLED.
+                if out="$$(sql "$$w" "$$as ENABLE" 2>&1)"; then
+                  takeovers=$$((takeovers + 1)); log "$$e: now runs on peer $$writer (it ran on the peer with server_id $$originator)"
+                else
+                  errors=$$((errors + 1)); log "$$e: could not turn it on on peer $$writer: $$out"
+                fi
+              fi
+              # The latest run seen on any writer: LAST_EXECUTED is each peer's own, and a
+              # peer that stood in, or was rebuilt, can hold one from long ago.
+              old="$${last[$$e]:-}"
+              if [ -n "$$at" ] && [[ "$$at" > "$${old%%$$'\x1f'*}" ]]; then last[$$e]="$$at"$$'\x1f'"$$value"$$'\x1f'"$$unit"$$'\x1f'"$$tz"; fi
+            done
+          fi
+          prev="$$writer"
+          [ "$$writer" = 0 ] || lastw="$$writer"
+{{- if .Values.metrics.enabled }}
+          {
+            echo '# HELP mariadb_galera_events_writer_peer The peer the listed events run on, the lowest-numbered Synced peer; 0 when none is.'
+            echo '# TYPE mariadb_galera_events_writer_peer gauge'
+            echo "mariadb_galera_events_writer_peer $$writer"
+            echo '# HELP mariadb_galera_events_misplaced Listed events not running on the writer alone at the last check.'
+            echo '# TYPE mariadb_galera_events_misplaced gauge'
+            echo "mariadb_galera_events_misplaced $$misplaced"
+            echo '# HELP mariadb_galera_events_scheduler_off 1 while event_scheduler is not ON on the writer.'
+            echo '# TYPE mariadb_galera_events_scheduler_off gauge'
+            echo "mariadb_galera_events_scheduler_off $$scheduler_off"
+            echo '# HELP mariadb_galera_events_takeovers_total Listed events turned on on a new writer.'
+            echo '# TYPE mariadb_galera_events_takeovers_total counter'
+            echo "mariadb_galera_events_takeovers_total $$takeovers"
+            echo '# HELP mariadb_galera_events_errors_total Failed attempts to turn a listed event on on the writer.'
+            echo '# TYPE mariadb_galera_events_errors_total counter'
+            echo "mariadb_galera_events_errors_total $$errors"
+            echo '# HELP mariadb_galera_events_missed_runs_total Runs that fell due while the writer changed and may not have run.'
+            echo '# TYPE mariadb_galera_events_missed_runs_total counter'
+            echo "mariadb_galera_events_missed_runs_total $$missed"
+          } > /tmp/events.prom.new && mv /tmp/events.prom.new /tmp/events.prom
+{{- end }}
+          sleep 5
+        done
+
+    deploy:
+      replicas: 1
+      update_config:
+        order: stop-first
+{{- if .Values.placement.constraints }}
+      placement:
+        constraints:
+{{- range .Values.placement.constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- if .Values.metrics.enabled }}
+
+  # The controller's metrics, relayed onto the metrics overlay. The controller holds
+  # the root password, so like the exporter-user one-shot it stays off that overlay;
+  # this relay holds no secret, carries the discovery labels, and forwards each scrape
+  # to the controller over the Galera overlay.
+  {{ $prefix }}-events-metrics:
+    image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
+
+    networks:
+      - {{ .Values.network.name }}
+      - {{ .Values.metrics.network }}
+
+    entrypoint:
+      - socat
+    command:
+      - TCP-LISTEN:9104,fork,reuseaddr,max-children=4
+      - TCP:tasks.{{ .Release.Name }}_{{ $prefix }}-events:9104
+
+    deploy:
+      replicas: 1
+{{- if .Values.placement.constraints }}
+      placement:
+        constraints:
+{{- range .Values.placement.constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+      labels:
+        - "prometheus.io/scrape=true"
+        - "prometheus.io/port=9104"
+{{- end }}
+{{- end }}
+
 {{- if .Values.proxy.enabled }}
 
   {{ $prefix }}-proxy:
@@ -644,12 +886,19 @@ services:
       - >-
         set -eu;
         printf '%s\n' "$$HAPROXY_CFG" > /tmp/haproxy.cfg;
+{{- if $singleWriter }}
+        printf '%s\n' "$$HAPROXY_LUA" > /tmp/single-writer.lua;
+{{- end }}
         exec haproxy -f /tmp/haproxy.cfg -db
     environment:
       HAPROXY_CFG: |
         global
           log stdout format raw local0
           maxconn 4096
+{{- if $singleWriter }}
+          tune.lua.bool-sample-conversion normal
+          lua-load /tmp/single-writer.lua
+{{- end }}
         # Docker's embedded DNS, asked again while the proxy runs. Without this,
         # HAProxy looks each peer up once at start, keeps that address for its whole
         # life, and refuses to start while any peer is not yet in DNS. In CI a replica
@@ -673,10 +922,46 @@ services:
           # listening but not Synced.
           option httpchk GET /
           http-check expect status 200
+{{- if $singleWriter }}
+          # Single-writer: each new connection goes to the first server that is up, in
+          # the order below, so every replica picks the lowest-numbered Synced peer.
+          # on-marked-down closes a lost writer's connections at once; the Lua task
+          # closes the ones left on a peer that is no longer the first one up.
+          # init-state down: a replica that just started, or a peer just resolved at a
+          # new address, waits for a passed check, so a Donor peer 1 is never "up" for
+          # the 2s before its first one.
+          balance first
+{{- end }}
           # Each peer at its task address, the name the peers dial each other by,
           # so no service VIP sits between the proxy and the peer it checks.
 {{- range $i := until $peers }}
-          server {{ printf "%s-%d" $prefix (add1 $i) }} {{ index $addrs $i }}:{{ $.Values.exposure.port }} check port {{ $.Values.proxy.checkPort }}
+          server {{ printf "%s-%d" $prefix (add1 $i) }} {{ index $addrs $i }}:{{ $.Values.exposure.port }} check port {{ $.Values.proxy.checkPort }}{{ if $singleWriter }} init-state down on-marked-down shutdown-sessions{{ end }}
+{{- end }}
+{{- if $singleWriter }}
+      # When the writer changes back to a lower-numbered peer, `balance first` sends new
+      # connections there but leaves the old ones where they are, and HAProxy's own
+      # on-marked-up shutdown-backup-sessions covers only a return of the first server.
+      # So once a second this closes the connections held to any server but the first
+      # one up, whichever peer comes back.
+      HAPROXY_LUA: |
+        core.register_task(function()
+          while true do
+            local servers = {}
+            for _, sv in pairs(core.backends["galera"].servers) do servers[#servers + 1] = sv end
+            table.sort(servers, function(a, b) return tonumber(a:get_puid()) < tonumber(b:get_puid()) end)
+            local writer
+            for _, sv in ipairs(servers) do
+              if writer == nil and sv:get_stats().status:sub(1, 2) == "UP" then
+                writer = sv
+              elseif sv:get_cur_sess() > 0 then
+                core.Warning(string.format("single-writer: closing %d connection(s) to %s; the writer is %s",
+                  sv:get_cur_sess(), sv:get_name(), writer and writer:get_name() or "none"))
+                sv:shut_sess()
+              end
+            end
+            core.msleep(1000)
+          end
+        end)
 {{- end }}
 
     healthcheck:

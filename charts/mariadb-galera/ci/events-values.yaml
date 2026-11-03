@@ -1,0 +1,8 @@
+# Scheduled events through restarts and a full state transfer, driven by
+# ci/e2e-check.sh: every peer runs the event scheduler, and peer 1 is every joiner's
+# preferred donor (the trailing comma lets peer 1 itself fall back to any), so a peer
+# rebuilt from an empty volume copies the event peer 1 runs. Proves that peer's own
+# server_id keeps it from running that event as well.
+extraArgs:
+  - "--event-scheduler=ON"
+  - "--wsrep-sst-donor=mariadb-galera-1,"

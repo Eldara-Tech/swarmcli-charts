@@ -73,6 +73,12 @@ include:
   # through the README's --wsrep-recover runbook. It drives `swarmcli charts upgrade`
   # itself; its fixture shortens the health windows to keep each rollout to ~2.5 minutes.
   - { chart: mariadb-galera, name: "mariadb-galera lifecycle", cases: "lifecycle",                                    timeout: 25m }
+  # mariadb-galera writer and scheduled events, a job of its own: `events` keeps an event on
+  # its one owner through restarts and a full state transfer from that owner (unique
+  # server_ids); `single-writer` drives the proxy's writer through two failures and two
+  # returns with connections held open, the events controller moving a listed event along,
+  # and an app stack reaching the proxy over the overlay.
+  - { chart: mariadb-galera, name: "mariadb-galera events", cases: "events single-writer",                            timeout: 25m }
   # postgres: EVERY fixture (cases: "" => no filter). bind-mount is included, unlike
   # mariadb's: PGDATA sits one level below the mount (/var/lib/postgresql/<major>/docker),
   # so initdb never has to chown or empty the bind-mounted mountpoint itself. legacy-major

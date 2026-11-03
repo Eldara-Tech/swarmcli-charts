@@ -125,12 +125,34 @@
           "description": "Port the Synced responder listens on inside each peer; never published.",
           "type": "integer", "minimum": 1, "maximum": 65535
         },
+        "routing": {
+          "description": "multi-primary: any Synced peer. single-writer: only the lowest-numbered Synced peer, from every proxy replica.",
+          "enum": ["multi-primary", "single-writer"]
+        },
         "resources": {
           "type": "object",
           "properties": {
             "limits": {
               "type": "object",
               "properties": { "memory": { "type": "string" } }
+            }
+          }
+        }
+      }
+    },
+    "events": {
+      "type": "object",
+      "properties": {
+        "failover": {
+          "description": "Keeps each listed recurring event running on the writer, the lowest-numbered Synced peer, alone.",
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "events": {
+              "description": "\"<schema>.<event>\" with unquoted names, one per event.",
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "type": "string", "pattern": "^[A-Za-z0-9_]+\\.[A-Za-z0-9_]+$" }
             }
           }
         }
@@ -160,7 +182,11 @@
       "description": "How long Swarm waits for a peer to stop before killing it, e.g. 5m.",
       "type": "string", "minLength": 1
     },
-    "extraArgs": { "type": "array", "items": { "type": "string" } },
+    "extraArgs": {
+      "description": "Extra mariadbd flags for every peer. Not --server-id: the chart gives each peer its own, and one value on every peer lets a peer rebuilt by a state transfer run its donor's scheduled events too.",
+      "type": "array",
+      "items": { "type": "string", "not": { "pattern": "^--server[-_]id" } }
+    },
     "labels": { "type": "object" }
   }
 }

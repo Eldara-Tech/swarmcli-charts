@@ -79,3 +79,36 @@ groups:
         annotations:
           summary: 'Galera cluster {{ $labels.stack }} lost a member'
           description: 'Cluster {{ $labels.stack }} has {{ $value }} member(s), fewer than it had in the last day.'
+      # Scheduled-event failover (events.failover), from the controller's own metrics,
+      # which its relay serves on the metrics overlay. Each names what the controller log
+      # spells out per event.
+      - alert: GaleraEventsMisplaced
+        expr: mariadb_galera_events_misplaced > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Listed events in {{ $labels.stack }} do not run on the writer alone'
+          description: '{{ $value }} event(s) in events.failover.events have not run on the writer alone for 2 minutes: missing, one-time, or on elsewhere too. The events controller log names each one.'
+      - alert: GaleraEventTakeoverFailing
+        expr: increase(mariadb_galera_events_errors_total[10m]) > 2
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Event failover in {{ $labels.stack }} is failing'
+          description: 'The events controller failed again and again in the last 10 minutes to turn a listed event on on the writer; its log says which and why. Until it succeeds the event runs on no peer.'
+      - alert: GaleraEventRunMissed
+        expr: increase(mariadb_galera_events_missed_runs_total[1h]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: 'A scheduled event in {{ $labels.stack }} may have missed a run'
+          description: 'A listed event fell due while the writer changed, and MariaDB does not make up a missed run. The events controller log names the event and when it was due: check, and run it by hand if it is needed.'
+      - alert: GaleraEventSchedulerOff
+        expr: mariadb_galera_events_scheduler_off == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'event_scheduler is off on the writer of {{ $labels.stack }}'
+          description: 'No listed event runs while event_scheduler is not ON on the writer: add --event-scheduler=ON to extraArgs.'

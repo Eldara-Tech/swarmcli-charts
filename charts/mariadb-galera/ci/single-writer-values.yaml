@@ -1,0 +1,21 @@
+# Single-writer routing with scheduled-event failover: every proxy replica sends every
+# connection to the lowest-numbered Synced peer and closes the connections it holds
+# to any other, and the events controller keeps the listed event running on that same
+# peer alone. ci/e2e-check.sh drives the writer through failure, failback and a return
+# of a peer that is not the first, holding connections open across each change and
+# counting which peer ran the event every second, then rebuilds a peer by a full state
+# transfer from the writer, its preferred donor here. The metrics relay is on too, so
+# the check can scrape the controller over the monitoring overlay.
+proxy:
+  enabled: true
+  routing: single-writer
+events:
+  failover:
+    enabled: true
+    events:
+      - e2e_galera.tick
+metrics:
+  enabled: true
+extraArgs:
+  - "--event-scheduler=ON"
+  - "--wsrep-sst-donor=mariadb-galera-1,"

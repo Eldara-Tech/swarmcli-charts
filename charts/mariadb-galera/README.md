@@ -71,6 +71,10 @@ Apps join the same overlay and connect to **`mariadb`**, a DNS alias every peer
 shares, so connections spread across the peers:
 
 ```yaml
+services:
+  app:
+    networks: [mariadb-galera-net]
+
 networks:
   mariadb-galera-net:
     external: true
@@ -79,6 +83,9 @@ networks:
 ```
 mysql://app:<password>@mariadb:3306/app
 ```
+
+That is all an app in another stack needs. The overlay is attachable, and the SQL
+port stays unpublished (`exposure.enabled: false`, the default).
 
 Any peer accepts writes, so nothing needs to find a leader. The alias is also
 health-aware, which is worth being precise about because it is easy to assume
@@ -124,13 +131,14 @@ The proxy reaches each peer at its task address (`tasks.<release>_<peer>`, see
 below), and looks it up through Docker's DNS while it runs rather than once at
 start. So it starts before any peer is up, and follows a peer Swarm reschedules.
 
-Connections are spread across all `Synced` peers. Galera is multi-primary so that is
-correct, but writing the same rows from several peers at once raises certification
-conflicts; an application with heavy write contention on the same keys may prefer to
-funnel writes to one peer, which this chart does not currently express.
+Connections are spread across all `Synced` peers by default. Galera is multi-primary,
+so that is correct. But writing the same rows from several peers at once fails
+certification, and the application sees deadlock errors (1213) it has to retry. An
+application that does not retry them wants `proxy.routing: single-writer`, below.
 
 Individual peers are addressable as `mariadb-galera-1`, `mariadb-galera-2`, … if
-you want to pin reads to one.
+you want to pin reads to one. Those names bypass the proxy, so under single-writer
+routing they are for diagnostics only, never for writes.
 
 Peers address *each other* differently, and it is worth knowing why. They find one
 another through `tasks.<release>_<peer>`, the name Swarm publishes for a service's
@@ -150,6 +158,46 @@ With `proxy.enabled` as well, the port is published on the proxy instead, throug
 the ingress mesh: port 3306 on any node reaches the proxy, which routes to a
 `Synced` peer. The peers then publish nothing, so no external client can bypass
 the proxy's health checks, and `exposure.mode` does not apply.
+
+### Single-writer routing (`proxy.routing`)
+
+`proxy.routing: single-writer` has the proxy send every connection to one peer, the
+**writer**: the lowest-numbered `Synced` peer. Writes then queue on that peer's row
+locks, as on a standalone MariaDB, instead of failing certification when two peers
+change the same row.
+
+```bash
+swarmcli charts install db swarmcli-charts/mariadb-galera \
+  --set proxy.enabled=true --set proxy.routing=single-writer
+```
+
+Every proxy replica applies the same rule, so they all pick the same writer without
+sharing any state. It moves like this:
+
+- **Failover.** A writer that stops answering, or stops being `Synced` (as when it
+  donates a state transfer), is marked down after three failed checks 2s apart. Its
+  connections are closed then, and new ones go to the next peer.
+- **Failback.** Once a lower-numbered peer is `Synced` again and has passed two
+  checks 2s apart, new connections go to it, and those still open to the peer that
+  stood in are closed within the next second: about 5s in all. That second
+  interruption is what keeps every replica on the same writer.
+- **Existing connections** therefore never stay on a peer that is no longer the
+  writer. The application sees the connection close, reconnects, and lands on the
+  writer. A transaction open on a closed connection is rolled back, and only the
+  application knows whether to run it again.
+
+Each replica checks the peers on its own, so for a few seconds around a change (up
+to the 6s a mark-down takes) two replicas can route to different peers.
+
+The writer is picked by HAProxy's `balance first`. On its own that would leave
+connections open to the old writer at failback, and HAProxy's `on-marked-up
+shutdown-backup-sessions` covers only the return of the first server, not a peer
+further down. So a small Lua task in the proxy closes them for whichever peer
+returns, and logs each time it does: `single-writer: closing <n> connection(s) to
+<peer>; the writer is <peer>`.
+
+Apps must connect through `mariadb` (or `mariadb-galera-proxy` when
+`network.clientAlias` is `""`). A peer's own name bypasses all of this.
 
 ## Metrics
 
@@ -242,7 +290,10 @@ git*, shows where to list the two files.
   (Apache-2.0); OutOfSync leaves out a donor, which keeps serving during a state
   transfer. Then one alert per cluster: `GaleraQuorumAtRisk` while fewer than 3
   members remain, so the next failure loses quorum, and `GaleraClusterShrunk` while a
-  cluster has fewer members than it had in the last day.
+  cluster has fewer members than it had in the last day. With `events.failover`
+  on, four more from its controller: `GaleraEventsMisplaced`,
+  `GaleraEventTakeoverFailing`, `GaleraEventRunMissed` and `GaleraEventSchedulerOff`
+  (see *Event failover*).
 - **Dashboard** (`galera-dashboard.json`, uid `galera`): members, Synced peers,
   primary component, peer state, flow control, write-set queues and traffic,
   certification conflicts, plus connections, queries and buffer-pool hits. Pick a
@@ -280,6 +331,7 @@ every target, and the alerts carry it. Another Prometheus needs the same relabel
 | `proxy.image.tag` | `3.4` | Proxy image tag (a concrete pin; Renovate maintains it). |
 | `proxy.replicas` | `2` | Proxy replicas — stateless, so more than one is safe and recommended. |
 | `proxy.checkPort` | `9200` | Port the Synced responder listens on inside each peer; never published. |
+| `proxy.routing` | `multi-primary` | `single-writer` = every connection to the lowest-numbered `Synced` peer. See *Single-writer routing*. |
 | `proxy.resources.limits.memory` | `""` | Proxy memory limit. Rendered only when set. |
 | `metrics.enabled` | `false` | One mysqld_exporter per peer, labelled for Prometheus service discovery. See *Metrics*. |
 | `metrics.image.repository` | `prom/mysqld-exporter` | Exporter image. |
@@ -291,6 +343,8 @@ every target, and the alerts carry it. Another Prometheus needs the same relabel
 | `exposure.port` | `3306` | Published port. |
 | `exposure.protocol` | `tcp` | Published protocol. |
 | `exposure.mode` | `host` | Only `host` is valid — see *Connecting*. Unused when `proxy.enabled`. |
+| `events.failover.enabled` | `false` | Keep each listed event running on the writer alone. See *Event failover*. |
+| `events.failover.events` | `[]` | `<schema>.<event>` per recurring event to keep on the writer. |
 | `resources.limits.memory` | `""` | Per-peer memory limit, e.g. `512M`. Rendered only when set. |
 | `healthcheck.enabled` | `true` | Container healthcheck — `healthcheck.sh --su-mysql --connect --galera_ready`. |
 | `healthcheck.interval` | `10s` | Probe interval. |
@@ -326,6 +380,11 @@ endpoint will log in to any address it is handed with the exporter's credentials
 a rogue server on that overlay can capture a login attempt: give the user a long
 random password, as above. The one-shot that creates it holds the root password and
 stays off `metrics.network`.
+
+`events.failover` adds a controller that logs in as root over the Galera overlay:
+moving an event while keeping its definer takes `ALTER DEFINER`, which needs the
+SET USER privilege. It too stays off `metrics.network`. With `metrics.enabled` a relay
+that holds no secret forwards its metrics there.
 
 ## Operating notes
 
@@ -487,6 +546,139 @@ standalone MariaDB:
 - Writes are certified cluster-wide, so a transaction can be rolled back on commit
   as a deadlock even when nothing local conflicted. Applications must retry.
 - `LOCK TABLES`, `GET_LOCK()` and other explicit locking are not cluster-aware.
+
+### Scheduled events
+
+Events run only where `event_scheduler` is on, so set `--event-scheduler=ON` in
+`extraArgs`. Each event then runs on one peer: the one whose copy is `ENABLED`,
+which is the peer it was created or last altered on. Every other peer holds it as
+`SLAVESIDE_DISABLED`, and the `ORIGINATOR` column in `information_schema.EVENTS`
+names the peer that runs it.
+
+Peer N runs with `server_id` N, which keeps it that way through a state
+transfer. At start-up a peer disables every event whose originator is not its own
+`server_id`. A peer rebuilt from a donor therefore does not also run the donor's
+events, as it would if every peer shared one `server_id`. (MariaDB's guide to
+replicating *out* of a Galera cluster suggests one `server_id` on every node. This
+chart sets up no such replication, and under `wsrep_gtid_mode` the GTIDs take the
+bootstrap peer's `server_id` anyway.)
+
+MariaDB never runs a missed occurrence later, and an event stops when the peer
+running it stops: no other peer takes it over unless you turn on *Event failover*
+below.
+
+**Upgrading from a chart where every peer ran `server_id` 1** (mariadb-galera 0.2.5
+and earlier):
+an event created through peer 2 or higher is disabled when that peer restarts with
+its own `server_id`, and then runs nowhere. Before upgrading, note what each peer
+runs:
+
+```sql
+SELECT EVENT_SCHEMA, EVENT_NAME, DEFINER FROM information_schema.EVENTS WHERE STATUS = 'ENABLED';
+```
+
+An event that peer 1 lists as well was a copy, and running it twice is what the
+new `server_id`s stop. After the upgrade, re-enable each of the others on the peer
+that should run it, naming its definer: without `DEFINER=`, `ALTER EVENT` makes
+the user who runs it the definer.
+
+```sql
+ALTER DEFINER = '<user>'@'<host>' EVENT <schema>.<event> ENABLE;
+```
+
+### Event failover
+
+`events.failover` keeps each event you list running on exactly one peer, the
+**writer**: the lowest-numbered `Synced` peer. That is the peer
+`proxy.routing: single-writer` sends every connection to, so the events follow the
+application's writes. It works without the proxy too.
+
+```yaml
+events:
+  failover:
+    enabled: true
+    events: [app.weekly_closing, app.process_pv]
+extraArgs:
+  - "--event-scheduler=ON"
+```
+
+One controller replica checks every 5s. When the writer changes, it does two things
+for each listed event, in this order:
+
+1. It turns the event off on every other peer it can reach. This change is local to
+   each peer, so it also reaches a peer outside the primary component, and a donor,
+   which is not `Synced` but still runs its events.
+2. It turns the event on on the writer. Galera replicates that, and every other peer
+   then holds the event `SLAVESIDE_DISABLED`.
+
+Both steps name the event's own definer and character set, because a bare
+`ALTER EVENT` would make root the definer. Each step is logged, e.g.
+`app.weekly_closing: now runs on peer 2`.
+
+What each case comes to:
+
+- **Writer fails.** The event moves to the next peer within about 5s. A peer cut off
+  from the cluster cannot commit, so it cannot run the event twice. When it rejoins,
+  it picks up the move from the others before it serves again.
+- **Writer recovers** and is `Synced` again. The event moves back, turned off on the
+  peer that stood in before it is turned on again.
+- **Peer restart or full state transfer.** A rebuilt peer starts with the event
+  disabled (see *Scheduled events*). If that peer is the writer, the controller turns
+  the event on again.
+- **Missed runs.** A run that fell due while the writer changed is skipped, and
+  MariaDB never makes one up. The controller logs it, e.g. `app.weekly_closing was
+  due at 2026-11-08 02:00:00 (Europe/Budapest) while the writer changed from peer 1
+  to peer 2, and may not have run, or not to the end`. Check, and run the job by hand
+  if it is needed. Write such jobs so that running them again is harmless. The
+  controller measures from the last run it saw on a writer, so it cannot tell after
+  it restarted itself; after an outage that took it down too, check by hand.
+- **A run in progress** on the old writer is not stopped. It finishes there, and the
+  new writer's first run is the next scheduled one. The two overlap only if a run
+  lasts longer than its own interval, which MariaDB allows even without failover.
+
+**Which events to list.** Every recurring event the cluster runs today. Ask the peer
+that runs them, before you take a dump:
+
+```sql
+SELECT CONCAT(EVENT_SCHEMA, '.', EVENT_NAME) FROM information_schema.EVENTS
+WHERE STATUS = 'ENABLED' AND EVENT_TYPE = 'RECURRING';
+```
+
+On any other peer, an enabled event and one disabled on purpose look the same
+(`SLAVESIDE_DISABLED`), and so does a dump taken there. Listed events are turned on
+on the writer whatever the dump said.
+
+Only listed events are ever touched. That is how an event disabled on purpose stays
+disabled: a peer holds it `SLAVESIDE_DISABLED`, exactly as it holds one that another
+peer runs, so nothing can tell the two apart. List recurring (`EVERY`) events only.
+The controller leaves a one-time (`AT`) event alone and logs why, because turned on
+on another peer it would run a second time. To stop a listed event for good, remove
+it from the list first.
+
+With `metrics.enabled`, the controller's state reaches Prometheus through a relay on
+`metrics.network`, alongside the exporters: `mariadb_galera_events_writer_peer`,
+`_misplaced`, `_scheduler_off`, and the counters `_takeovers_total`, `_errors_total`
+and `_missed_runs_total`. `monitoring/galera-rules.yml` alerts on them:
+
+- `GaleraEventsMisplaced`: a listed event is missing, one-time, or not running on
+  the writer alone.
+- `GaleraEventTakeoverFailing`: turning an event on on the writer keeps failing.
+  A turn-off that fails, as on a peer shutting down, is only logged: a peer that
+  keeps the event on shows up as misplaced.
+- `GaleraEventRunMissed`: a run may have been missed.
+- `GaleraEventSchedulerOff`: `event_scheduler` is off on the writer.
+
+Without metrics, the same conditions are in the controller's log
+(`docker service logs <release>_mariadb-galera-events`).
+
+**Manual takeover**, e.g. while the controller is down. On the peer that should run
+the event, using the definer and character set that `information_schema.EVENTS`
+shows for it:
+
+```sql
+SET SESSION character_set_client = <CHARACTER_SET_CLIENT>, collation_connection = <COLLATION_CONNECTION>;
+ALTER DEFINER = '<user>'@'<host>' EVENT <schema>.<event> ENABLE;
+```
 
 ### Scaling the cluster
 

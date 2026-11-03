@@ -144,6 +144,241 @@ if [ -n "$exporters" ]; then
   metrics_ok=", $n_exp exporters scraped on monitoring, alert rules pass promtool"
 fi
 
+# With the single-writer fixture: every proxy replica sends every connection to the
+# lowest-numbered Synced peer, and a connection held open across a change of writer
+# is closed rather than left on the old one. Driven through the writer's loss, the
+# next peer's loss too, the return of that next peer while the last one stands in (the
+# return HAProxy's own options leave connections behind on), and the writer's own
+# return. Then an app in a stack of its own reaches the proxy over the overlay with
+# no port published.
+if [ "$case" = single-writer ]; then
+  proxy="$(printf '%s\n' "$all_svcs" | { grep -E -- '-proxy$' || true; })"
+  [ -n "$proxy" ] || { echo "  no proxy service in stack ${release}"; exit 1; }
+  net="$(docker service inspect "$proxy" --format '{{range .Spec.TaskTemplate.Networks}}{{.Target}}{{end}}' | sed -n 1p)"
+  netname="$(docker network inspect --format '{{.Name}}' "$net")"
+  pw="$(docker exec "$first" sh -c 'cat /run/secrets/mariadb_galera_root_password')"
+  p1="$(printf '%s\n' $peers | sed -n 1p)"; h1="${p1##*_}"
+  p2="$(printf '%s\n' $peers | sed -n 2p)"; h2="${p2##*_}"
+  p3="$(printf '%s\n' $peers | sed -n 3p)"; h3="${p3##*_}"
+  app="${release}-app"
+  trap 'docker rm -f $(docker ps -aq -f "label=e2e-galera-held=$release") >/dev/null 2>&1; docker stack rm "$app" >/dev/null 2>&1 || true' EXIT
+  proxy_log() {
+    for c in $(docker ps -q -f "label=com.docker.swarm.service.name=$proxy"); do
+      echo "    proxy container $c:"
+      docker logs "$c" 2>&1 | { grep -vE '^[0-9.]+:[0-9]+ \[' || true; } | tail -n 20 | sed 's/^/      /'
+    done
+  }
+  stop_peer() {
+    docker service scale --detach "$1=0" >/dev/null
+    for _ in $(seq 1 60); do
+      [ -z "$(cid_of "$1")" ] && return 0
+      sleep 2
+    done
+    echo "  $1: did not stop"; exit 1
+  }
+  start_peer() {
+    local c state=""
+    docker service scale --detach "$1=1" >/dev/null
+    for _ in $(seq 1 90); do
+      c="$(cid_of "$1")"
+      state="$( [ -n "$c" ] && status_of "$c" 'WSREP_LOCAL_STATE_COMMENT' 2>/dev/null || true)"
+      [ "$state" = Synced ] && return 0
+      sleep 5
+    done
+    echo "  $1: did not rejoin (state '$state')"; exit 1
+  }
+  # The peer each proxy replica sends a new connection to, asked of each task directly.
+  writers() {
+    local c ip
+    for c in $(docker ps -q -f "label=com.docker.swarm.service.name=$proxy"); do
+      ip="$(docker inspect --format "{{(index .NetworkSettings.Networks \"$netname\").IPAddress}}" "$c")"
+      docker run --rm --network "$net" -e MYSQL_PWD="$pw" mariadb:12.3 \
+        mariadb -h "$ip" -uroot -N -B -e 'SELECT @@hostname' 2>&1 || true
+    done
+  }
+  routes_to() {  # routes_to <peer host> <when>: every replica, within 60s
+    local got=""
+    for _ in $(seq 1 30); do
+      got="$(writers | sort -u | tr '\n' ' ')"
+      [ "$got" = "$1 " ] && return 0
+      sleep 2
+    done
+    echo "  $2: the proxy replicas route to '$got', expected $1 from every one"
+    proxy_log; exit 1
+  }
+  # Opens a connection through the client alias and holds it open; prints its container.
+  hold() {
+    local c
+    c="$(docker run -d --label "e2e-galera-held=$release" --network "$net" -e MYSQL_PWD="$pw" mariadb:12.3 \
+      mariadb --unbuffered -h mariadb -uroot -N -B -e 'SELECT @@hostname; SELECT SLEEP(3600)')"
+    for _ in $(seq 1 15); do
+      [ -n "$(docker logs "$c" 2>&1)" ] && break
+      sleep 1
+    done
+    echo "$c"
+  }
+  on() {  # on <held container> <peer host>
+    local got
+    got="$(docker logs "$1" 2>&1 | sed -n 1p)"
+    [ "$got" = "$2" ] || { echo "  a connection opened through the proxy landed on '$got', expected $2"; proxy_log; exit 1; }
+  }
+  closed() {  # closed <held container> <when>: within 30s
+    for _ in $(seq 1 30); do
+      [ "$(docker inspect --format '{{.State.Running}}' "$1")" = false ] && return 0
+      sleep 1
+    done
+    echo "  $2: a connection held open to the old writer was not closed"; proxy_log; exit 1
+  }
+  # The Lua task, not the peer, closed what was left on <from>: a stopped peer drops its
+  # own connections, so a closed one alone proves nothing about the proxy.
+  lua_closed() {  # lua_closed <from host> <writer host> <when>
+    local c
+    for c in $(docker ps -q -f "label=com.docker.swarm.service.name=$proxy"); do
+      docker logs "$c" 2>&1 | grep -E "single-writer: closing [0-9]+ connection\(s\) to $1; the writer is $2" >/dev/null && return 0
+    done
+    echo "  $3: no proxy replica logged closing the connections left on $1"; proxy_log; exit 1
+  }
+  # The events controller keeps the listed event on the peer the proxy writes to. It
+  # runs every second and records which peer ran it. A second event, disabled on purpose
+  # and not listed, must never run anywhere. Both belong to the app user, which every
+  # move of the event must keep as its definer.
+  ctl="$(printf '%s\n' "$all_svcs" | { grep -E -- '-events$' || true; })"
+  [ -n "$ctl" ] || { echo "  no events controller in stack ${release}"; exit 1; }
+  ctl_log() { docker service logs --raw "$ctl" 2>&1 | tail -n 15 | sed 's/^/    /'; }
+  ticks_on() {  # ticks_on <svc> <peer host> <when>: the event's last 3s, asked of <svc>
+    local got=""
+    for _ in $(seq 1 20); do
+      got="$(q "$(cid_of "$1")" "SELECT IFNULL(GROUP_CONCAT(DISTINCT peer ORDER BY peer), '') FROM e2e_galera.ticks WHERE at > NOW(6) - INTERVAL 3 SECOND" 2>/dev/null || true)"
+      [ "$got" = "$2" ] && return 0
+      sleep 2
+    done
+    echo "  $3: the event ran on '$got' in the last 3s, expected $2 alone, the peer the proxy writes to"; ctl_log; exit 1
+  }
+  q "$(cid_of "$p1")" "CREATE TABLE e2e_galera.ticks (id INT AUTO_INCREMENT PRIMARY KEY, peer VARCHAR(64) NOT NULL, at DATETIME(6) NOT NULL DEFAULT NOW(6));
+    GRANT ALL ON e2e_galera.* TO 'app'@'%';
+    CREATE DEFINER = 'app'@'%' EVENT e2e_galera.tick ON SCHEDULE EVERY 1 SECOND DO INSERT INTO e2e_galera.ticks (peer) VALUES (@@hostname);
+    CREATE DEFINER = 'app'@'%' EVENT e2e_galera.off ON SCHEDULE EVERY 1 SECOND DISABLE DO INSERT INTO e2e_galera.ticks (peer) VALUES ('off')" >/dev/null
+
+  routes_to "$h1" "after install"
+  ticks_on "$p1" "$h1" "after install"
+  # A writer that stays up but is not Synced: desynced, as a donor is. mariadbd keeps a
+  # connection to it open, so only the proxy can close it, and the event must move too.
+  c0="$(hold)"; on "$c0" "$h1"
+  q "$(cid_of "$p1")" 'SET GLOBAL wsrep_desync = ON' >/dev/null
+  closed "$c0" "after $h1 desynced"
+  routes_to "$h2" "with $h1 desynced"
+  ticks_on "$p2" "$h2" "with $h1 desynced"
+  c0="$(hold)"; on "$c0" "$h2"
+  q "$(cid_of "$p1")" 'SET GLOBAL wsrep_desync = OFF' >/dev/null
+  closed "$c0" "after $h1 was Synced again"
+  lua_closed "$h2" "$h1" "after $h1 was Synced again"
+  routes_to "$h1" "after $h1 was Synced again"
+  ticks_on "$p1" "$h1" "after $h1 was Synced again"
+  c1="$(hold)"; on "$c1" "$h1"
+  stop_peer "$p1"
+  closed "$c1" "after $h1 stopped"
+  routes_to "$h2" "with $h1 stopped"
+  ticks_on "$p2" "$h2" "with $h1 stopped"
+  c2="$(hold)"; on "$c2" "$h2"
+  stop_peer "$p2"
+  closed "$c2" "after $h2 stopped"
+  routes_to "$h3" "with $h1 and $h2 stopped"
+  ticks_on "$p3" "$h3" "with $h1 and $h2 stopped"
+  c3="$(hold)"; on "$c3" "$h3"
+  start_peer "$p2"
+  closed "$c3" "after $h2 came back while $h3 stood in"
+  lua_closed "$h3" "$h2" "after $h2 came back while $h3 stood in"
+  routes_to "$h2" "after $h2 came back"
+  ticks_on "$p2" "$h2" "after $h2 came back"
+  c4="$(hold)"; on "$c4" "$h2"
+  start_peer "$p1"
+  closed "$c4" "after $h1 came back"
+  lua_closed "$h2" "$h1" "after $h1 came back"
+  routes_to "$h1" "after $h1 came back"
+  ticks_on "$p1" "$h1" "after $h1 came back"
+
+  # A full state transfer from the writer, its preferred donor in this fixture: the
+  # writer is not Synced while it donates, and the rebuilt peer arrives holding the
+  # writer's ENABLED copy of the event. Neither may run it twice.
+  stop_peer "$p3"
+  for c in $(docker ps -aq -f "label=com.docker.swarm.service.name=$p3"); do docker rm -f "$c" >/dev/null; done
+  docker volume rm "$(docker volume ls -q --filter "label=com.docker.stack.namespace=${release}" | sort | tail -1)" >/dev/null
+  start_peer "$p3"
+  docker logs "$(cid_of "$p3")" 2>&1 | grep -E "Selected [0-9]+\.[0-9]+ \($h1\)" >/dev/null \
+    || { echo "  $p3 did not take its state from $h1, so the donor step tests nothing"; exit 1; }
+  routes_to "$h1" "after $p3 was rebuilt from $h1"
+  ticks_on "$p1" "$h1" "after $p3 was rebuilt from $h1"
+
+  # Through all four changes of writer: never two peers in the same second, the disabled
+  # event never ran, and the definer is still the app user on every peer.
+  got="$(q "$(cid_of "$p1")" "SET SESSION wsrep_sync_wait=1; SELECT COUNT(*) FROM (SELECT FLOOR(UNIX_TIMESTAMP(at)) s FROM e2e_galera.ticks GROUP BY s HAVING COUNT(DISTINCT peer) > 1) d")"
+  [ "$got" = 0 ] || { echo "  in $got second(s) the event ran on two peers at once"; ctl_log; exit 1; }
+  got="$(q "$(cid_of "$p1")" "SELECT COUNT(*) FROM e2e_galera.ticks WHERE peer = 'off'")"
+  [ "$got" = 0 ] || { echo "  the event disabled on purpose ran $got time(s)"; ctl_log; exit 1; }
+  for p in $peers; do
+    got="$(q "$(cid_of "$p")" "SELECT GROUP_CONCAT(DISTINCT DEFINER) FROM information_schema.EVENTS WHERE EVENT_SCHEMA = 'e2e_galera'")"
+    [ "$got" = 'app@%' ] || { echo "  $p: the events' definer is '$got', expected app@%"; exit 1; }
+  done
+  docker service logs --raw "$ctl" 2>&1 | grep -F 'e2e_galera.tick was due at' >/dev/null \
+    || { echo "  the controller logged no run that fell due while the writer was lost"; ctl_log; exit 1; }
+  # Its state where Prometheus would scrape it: through the relay, on the metrics overlay.
+  # Polled, because the pass that moves an event counts it misplaced until the next one.
+  m=""
+  for _ in $(seq 1 10); do
+    m="$(docker run --rm --network monitoring curlimages/curl:latest -sSf "http://${ctl}-metrics:9104/metrics" 2>&1 || true)"
+    grep -Fx 'mariadb_galera_events_writer_peer 1' <<<"$m" >/dev/null \
+      && grep -Fx 'mariadb_galera_events_misplaced 0' <<<"$m" >/dev/null && break
+    sleep 3
+  done
+  # Turning it off on a peer that is shutting down may fail, harmlessly; turning it on
+  # on the writer must not.
+  if docker service logs --raw "$ctl" 2>&1 | grep -F 'could not turn it on' >/dev/null; then
+    echo "  the controller failed to turn the event on on a writer:"; ctl_log; exit 1
+  fi
+  for want_m in 'mariadb_galera_events_writer_peer 1' 'mariadb_galera_events_misplaced 0'; do
+    grep -Fx "$want_m" <<<"$m" >/dev/null || { echo "  the controller's metrics lack '$want_m':"; grep -v '^#' <<<"$m" | sed 's/^/    /'; exit 1; }
+  done
+  got="$(sed -n 's/^mariadb_galera_events_takeovers_total //p' <<<"$m")"
+  [ "${got:-0}" -ge 6 ] || { echo "  the controller counted '$got' takeovers through six changes of writer"; exit 1; }
+
+  # An app in a stack of its own, as a user deploys one: the client alias over the
+  # shared overlay, its password from the secret. The chart publishes no port.
+  for s in $all_svcs; do
+    [ "$(docker service inspect --format '{{len .Spec.EndpointSpec.Ports}}' "$s")" = 0 ] \
+      || { echo "  $s publishes a port; this case must reach the cluster without one"; exit 1; }
+  done
+  docker stack deploy --detach=true -c - "$app" >/dev/null <<EOF
+version: "3.9"
+services:
+  client:
+    image: mariadb:12.3
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - 'export MYSQL_PWD="\$\$(cat /run/secrets/mariadb_galera_root_password)"; until mariadb -h mariadb -uroot -N -B -e "SELECT @@hostname"; do sleep 2; done; sleep 3600'
+    networks: [galera]
+    secrets: [mariadb_galera_root_password]
+    deploy:
+      restart_policy: { condition: none }
+networks:
+  galera:
+    external: true
+    name: $netname
+secrets:
+  mariadb_galera_root_password:
+    external: true
+EOF
+  got=""
+  for _ in $(seq 1 45); do
+    got="$(docker service logs --raw "${app}_client" 2>/dev/null | grep -vE '^ERROR' | sed -n 1p || true)"
+    [ -n "$got" ] && break
+    sleep 2
+  done
+  [ "$got" = "$h1" ] || { echo "  an app in stack $app reached '$got' through the overlay, expected the writer $h1"; docker service logs --tail 5 "${app}_client" 2>&1 | sed 's/^/    /'; exit 1; }
+
+  echo "  ${release}: $want peers, all Synced, every proxy replica routed to the lowest-numbered Synced peer through a desync, two failures and their returns, closing each connection held open to an old writer, the listed event followed it with never two peers at once and the disabled one never ran, and an app stack reached it over the overlay with no port published$metrics_ok OK"
+  exit 0
+fi
+
 # With the proxy fixture, the thing worth proving is not that the cluster formed —
 # the assertions above already did that — but that the CLIENT ENDPOINT keeps
 # working while a peer is gone. That is the claim the proxy exists to make, and it
@@ -608,4 +843,83 @@ if [ "$case" = lifecycle ]; then
   lifecycle_ok=", rejoined, re-synced a rebuilt peer 1, rolled an all-peer upgrade with quorum kept, elected a peer after a full stop and after a crash, and forced one with a peer lost"
 fi
 
-echo "  ${release}: $want peers, all Synced, cross-peer write replicated$metrics_ok$recovery_ok$lifecycle_ok OK"
+# With the events fixture: a scheduled event keeps running on the one peer that owns
+# it, through restarts and through a full state transfer FROM that peer. Every peer
+# runs the scheduler, and peer 1 is every joiner's preferred donor, so a peer rebuilt
+# from an empty volume copies peer 1's ENABLED event. Only its own server_id keeps it
+# from running the event as well (README, Scheduled events).
+events_ok=""
+if [ "$case" = events ]; then
+  p1="$(printf '%s\n' $peers | sed -n 1p)"
+  p2="$(printf '%s\n' $peers | sed -n 2p)"
+  p3="$(printf '%s\n' $peers | tail -1)"
+  owner="${p1##*_}"
+  stop_peer() {
+    docker service scale --detach "$1=0" >/dev/null
+    for _ in $(seq 1 60); do
+      [ -z "$(cid_of "$1")" ] && return 0
+      sleep 2
+    done
+    echo "  $1: did not stop"; exit 1
+  }
+  wait_cluster() {  # wait_cluster <svc> <what>: every member present, <svc> Synced
+    local c size="" state=""
+    for _ in $(seq 1 90); do
+      c="$(cid_of "$1")"
+      size="$( [ -n "$c" ] && status_of "$c" 'WSREP_CLUSTER_SIZE' 2>/dev/null || true)"
+      state="$( [ -n "$c" ] && status_of "$c" 'WSREP_LOCAL_STATE_COMMENT' 2>/dev/null || true)"
+      [ "$size" = "$want" ] && [ "$state" = Synced ] && return 0
+      sleep 5
+    done
+    echo "  $2: $1 is '$state' in a cluster of '$size', expected Synced in $want"
+    docker service ps --no-trunc --format '    {{.Name}} {{.CurrentState}} {{.Error}}' "$1" 2>&1 | sed -n 1,5p
+    exit 1
+  }
+  restart() {  # restart <svc>: a new task, Synced in the whole cluster
+    local old t
+    old="$(docker service ps -q --filter desired-state=running "$1" | sed -n 1p)"
+    docker service update --detach --force "$1" >/dev/null
+    for _ in $(seq 1 60); do
+      t="$(docker service ps -q --filter desired-state=running "$1" | sed -n 1p)"
+      [ -n "$t" ] && [ "$t" != "$old" ] && break
+      sleep 2
+    done
+    wait_cluster "$1" "after restarting $1"
+  }
+  now() { q "$(cid_of "$p1")" 'SELECT NOW(6)'; }
+  # Which peers ran the event since $1: it must be the owner alone, and it must have run.
+  ran_since() {
+    local got
+    sleep 6
+    got="$(q "$(cid_of "$p1")" "SET SESSION wsrep_sync_wait=1; SELECT GROUP_CONCAT(DISTINCT peer ORDER BY peer) FROM e2e_galera.ticks WHERE at > '$1'")"
+    [ "$got" = "$owner" ] || { echo "  $2: the event ran on '$got', expected $owner alone"; exit 1; }
+  }
+
+  q "$(cid_of "$p1")" "CREATE TABLE e2e_galera.ticks (id INT AUTO_INCREMENT PRIMARY KEY, peer VARCHAR(64) NOT NULL, at DATETIME(6) NOT NULL DEFAULT NOW(6));
+    CREATE EVENT e2e_galera.tick ON SCHEDULE EVERY 1 SECOND DO INSERT INTO e2e_galera.ticks (peer) VALUES (@@hostname)" >/dev/null
+  ran_since "$(now)" "after creating the event on $owner"
+
+  # A restarted peer that does not own the event leaves it alone, and the owner, once
+  # restarted, runs it again.
+  restart "$p2"
+  ran_since "$(now)" "after restarting $p2"
+  restart "$p1"
+  ran_since "$(now)" "after restarting $p1"
+
+  # A full state transfer from the owner. The joiner's copy of the event arrives
+  # ENABLED, exactly as the owner holds it; at start-up the joiner must disable it.
+  stop_peer "$p3"
+  for c in $(docker ps -aq -f "label=com.docker.swarm.service.name=$p3"); do docker rm -f "$c" >/dev/null; done
+  docker volume rm "$(docker volume ls -q --filter "label=com.docker.stack.namespace=${release}" | sort | tail -1)" >/dev/null
+  docker service scale --detach "$p3=1" >/dev/null
+  wait_cluster "$p3" "after rebuilding $p3 from an empty volume"
+  docker logs "$(cid_of "$p3")" 2>&1 | grep -E "Selected [0-9]+\.[0-9]+ \($owner\)" >/dev/null \
+    || { echo "  $p3 did not take its state from $owner, so this case tests nothing"; exit 1; }
+  st="$(q "$(cid_of "$p3")" "SELECT STATUS FROM information_schema.EVENTS WHERE EVENT_SCHEMA = 'e2e_galera' AND EVENT_NAME = 'tick'")"
+  [ "$st" = SLAVESIDE_DISABLED ] \
+    || { echo "  $p3 holds the event as '$st' after a state transfer from $owner, expected SLAVESIDE_DISABLED"; exit 1; }
+  ran_since "$(now)" "after rebuilding $p3 by a state transfer from $owner"
+  events_ok=", the event ran on $owner alone through restarts and a full state transfer from it"
+fi
+
+echo "  ${release}: $want peers, all Synced, cross-peer write replicated$metrics_ok$recovery_ok$lifecycle_ok$events_ok OK"

@@ -180,6 +180,17 @@ proxy:
     tag: "3.4"
   replicas: 2
   checkPort: 9200
+  # Which peer a new connection goes to.
+  #   multi-primary: any Synced peer, in turn. Every peer accepts writes, but writes
+  #     to the same rows on two peers at once fail certification, and the application
+  #     sees deadlock errors (1213) it has to retry.
+  #   single-writer: every proxy replica sends every connection to the writer, the
+  #     lowest-numbered Synced peer, and closes the connections it holds to any other
+  #     peer. So when the writer changes, existing connections are closed rather than
+  #     left writing to the old one: within seconds of losing the writer, and within
+  #     about 5s of a lower-numbered peer being Synced again (failback). README.md §
+  #     Single-writer routing.
+  routing: multi-primary
   resources:
     limits:
       memory: ""
@@ -212,6 +223,28 @@ metrics:
   # it, never the peers, so Galera's ports stay off it. requirements.yaml declares
   # it autoCreate:true.
   network: monitoring
+
+# Scheduled-event failover. MariaDB runs an event only on the peer it was created or
+# last altered on, and no other peer takes over when that one stops. With this on, a
+# one-replica controller keeps each event listed below running on exactly one peer,
+# the writer: the lowest-numbered Synced peer, the same peer proxy.routing:
+# single-writer sends connections to. On a change of writer it turns the event off on
+# the old one before turning it on on the new one, keeping its definer, and logs any
+# run that fell due in between: MariaDB never makes up a missed run.
+#
+# Off by default, and nothing below renders while it is off. Turning it on adds a
+# service and leaves the peers' own specs untouched, so it never restarts a peer.
+#
+# events lists "<schema>.<event>", unquoted names. Only recurring (EVERY) events: a
+# one-time (AT) event turned on on another peer would run a second time, so the
+# controller leaves one alone and logs why. Events not listed are never touched, which
+# is how an event disabled on purpose stays disabled. The peers need
+# --event-scheduler=ON in extraArgs. With metrics.enabled the controller's state is
+# scraped too (README.md § Event failover).
+events:
+  failover:
+    enabled: false
+    events: []
 
 # Swarm deploy resource limits per peer (optional). Rendered only when
 # limits.memory is set.
@@ -256,7 +289,9 @@ stopGracePeriod: 5m
 
 # Arbitrary extra mariadbd flags, appended verbatim after the chart's own. Each
 # entry is a full flag string, e.g. "--max-connections=200". Galera tuning goes
-# here too, e.g. "--wsrep-provider-options=gcache.size=1G".
+# here too, e.g. "--wsrep-provider-options=gcache.size=1G". The one flag refused here
+# is --server-id: peer N already runs with server_id N, and one value on every peer
+# lets a peer rebuilt by a state transfer run its donor's scheduled events too.
 extraArgs: []
 
 # Extra deploy labels (key: value), applied to every peer.

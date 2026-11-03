@@ -126,3 +126,74 @@ tests:
             exp_annotations:
               summary: 'Galera cluster db lost a member'
               description: 'Cluster db has 2 member(s), fewer than it had in the last day.'
+
+  # The events controller of cluster db: an event goes missing at 2m, turning one on
+  # fails on every pass from 3m and a run is missed at 4m, and the scheduler is off from
+  # the start. Cluster ok takes over twice and fails once, both routine (a writer lost
+  # mid-ALTER is retried on the next), and must raise nothing.
+  - interval: 1m
+    input_series:
+      - series: 'mariadb_galera_events_misplaced{job="db_mariadb-galera-events-metrics",stack="db"}'
+        values: '0 0 1x10'
+      - series: 'mariadb_galera_events_errors_total{job="db_mariadb-galera-events-metrics",stack="db"}'
+        values: '0 0 0 1+1x9'
+      - series: 'mariadb_galera_events_missed_runs_total{job="db_mariadb-galera-events-metrics",stack="db"}'
+        values: '0 0 0 0 1x8'
+      - series: 'mariadb_galera_events_scheduler_off{job="db_mariadb-galera-events-metrics",stack="db"}'
+        values: '1x12'
+      - series: 'mariadb_galera_events_misplaced{job="ok_mariadb-galera-events-metrics",stack="ok"}'
+        values: '0x12'
+      - series: 'mariadb_galera_events_errors_total{job="ok_mariadb-galera-events-metrics",stack="ok"}'
+        values: '0 0 1x10'
+      - series: 'mariadb_galera_events_missed_runs_total{job="ok_mariadb-galera-events-metrics",stack="ok"}'
+        values: '0x12'
+      - series: 'mariadb_galera_events_takeovers_total{job="ok_mariadb-galera-events-metrics",stack="ok"}'
+        values: '0 1 1 2x9'
+      - series: 'mariadb_galera_events_scheduler_off{job="ok_mariadb-galera-events-metrics",stack="ok"}'
+        values: '0x12'
+
+    alert_rule_test:
+      # A minute after going missing, the 2m `for` has not passed yet.
+      - eval_time: 3m
+        alertname: GaleraEventsMisplaced
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: GaleraEventsMisplaced
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: db_mariadb-galera-events-metrics
+              stack: db
+            exp_annotations:
+              summary: 'Listed events in db do not run on the writer alone'
+              description: '1 event(s) in events.failover.events have not run on the writer alone for 2 minutes: missing, one-time, or on elsewhere too. The events controller log names each one.'
+      - eval_time: 6m
+        alertname: GaleraEventTakeoverFailing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: db_mariadb-galera-events-metrics
+              stack: db
+            exp_annotations:
+              summary: 'Event failover in db is failing'
+              description: 'The events controller failed again and again in the last 10 minutes to turn a listed event on on the writer; its log says which and why. Until it succeeds the event runs on no peer.'
+      - eval_time: 6m
+        alertname: GaleraEventRunMissed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: db_mariadb-galera-events-metrics
+              stack: db
+            exp_annotations:
+              summary: 'A scheduled event in db may have missed a run'
+              description: 'A listed event fell due while the writer changed, and MariaDB does not make up a missed run. The events controller log names the event and when it was due: check, and run it by hand if it is needed.'
+      - eval_time: 6m
+        alertname: GaleraEventSchedulerOff
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: db_mariadb-galera-events-metrics
+              stack: db
+            exp_annotations:
+              summary: 'event_scheduler is off on the writer of db'
+              description: 'No listed event runs while event_scheduler is not ON on the writer: add --event-scheduler=ON to extraArgs.'
