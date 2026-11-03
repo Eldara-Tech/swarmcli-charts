@@ -1,0 +1,7 @@
+# Single-writer routing: every proxy replica sends every connection to the
+# lowest-numbered Synced peer and closes the connections it holds to any other.
+# ci/e2e-check.sh drives the writer through failure, failback and a return of a
+# peer that is not the first, holding connections open across each change.
+proxy:
+  enabled: true
+  routing: single-writer

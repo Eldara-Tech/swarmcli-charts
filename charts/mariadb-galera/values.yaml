@@ -180,6 +180,17 @@ proxy:
     tag: "3.4"
   replicas: 2
   checkPort: 9200
+  # Which peer a new connection goes to.
+  #   multi-primary: any Synced peer, in turn. Every peer accepts writes, but writes
+  #     to the same rows on two peers at once fail certification, and the application
+  #     sees deadlock errors (1213) it has to retry.
+  #   single-writer: every proxy replica sends every connection to the writer, the
+  #     lowest-numbered Synced peer, and closes the connections it holds to any other
+  #     peer. So when the writer changes, existing connections are closed rather than
+  #     left writing to the old one: within seconds of losing the writer, and within a
+  #     second of a lower-numbered peer being Synced again (failback). README.md §
+  #     Single-writer routing.
+  routing: multi-primary
   resources:
     limits:
       memory: ""

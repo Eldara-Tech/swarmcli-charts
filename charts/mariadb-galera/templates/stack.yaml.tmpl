@@ -17,6 +17,10 @@
 {{- if and .Values.network.encrypted .Values.network.external -}}
 {{- fail "network.encrypted only applies to a chart-managed overlay: an external network's driver options are fixed when it is created, so setting this on external:true would silently not encrypt anything. Either set network.external: false, or pre-create the overlay yourself with `docker network create --opt encrypted`." -}}
 {{- end -}}
+{{- $singleWriter := eq .Values.proxy.routing "single-writer" -}}
+{{- if and $singleWriter (not .Values.proxy.enabled) -}}
+{{- fail "proxy.routing: single-writer is a mode of the proxy, so it needs proxy.enabled: true. Without the proxy, clients reach every peer through network.clientAlias and nothing picks a writer." -}}
+{{- end -}}
 {{- if and .Values.metrics.enabled (eq .Values.metrics.network .Values.network.name) -}}
 {{- fail "metrics.network must differ from network.name: the exporters join both, and the point of a separate metrics overlay is that Prometheus never shares one with the peers' SQL and Galera ports." -}}
 {{- end -}}
@@ -649,12 +653,19 @@ services:
       - >-
         set -eu;
         printf '%s\n' "$$HAPROXY_CFG" > /tmp/haproxy.cfg;
+{{- if $singleWriter }}
+        printf '%s\n' "$$HAPROXY_LUA" > /tmp/single-writer.lua;
+{{- end }}
         exec haproxy -f /tmp/haproxy.cfg -db
     environment:
       HAPROXY_CFG: |
         global
           log stdout format raw local0
           maxconn 4096
+{{- if $singleWriter }}
+          tune.lua.bool-sample-conversion normal
+          lua-load /tmp/single-writer.lua
+{{- end }}
         # Docker's embedded DNS, asked again while the proxy runs. Without this,
         # HAProxy looks each peer up once at start, keeps that address for its whole
         # life, and refuses to start while any peer is not yet in DNS. In CI a replica
@@ -678,10 +689,43 @@ services:
           # listening but not Synced.
           option httpchk GET /
           http-check expect status 200
+{{- if $singleWriter }}
+          # Single-writer: each new connection goes to the first server that is up, in
+          # the order below, so every replica picks the lowest-numbered Synced peer.
+          # on-marked-down closes a lost writer's connections at once; the Lua task
+          # closes the ones left on a peer that is no longer the first one up.
+          balance first
+{{- end }}
           # Each peer at its task address, the name the peers dial each other by,
           # so no service VIP sits between the proxy and the peer it checks.
 {{- range $i := until $peers }}
-          server {{ printf "%s-%d" $prefix (add1 $i) }} {{ index $addrs $i }}:{{ $.Values.exposure.port }} check port {{ $.Values.proxy.checkPort }}
+          server {{ printf "%s-%d" $prefix (add1 $i) }} {{ index $addrs $i }}:{{ $.Values.exposure.port }} check port {{ $.Values.proxy.checkPort }}{{ if $singleWriter }} on-marked-down shutdown-sessions{{ end }}
+{{- end }}
+{{- if $singleWriter }}
+      # When the writer changes back to a lower-numbered peer, `balance first` sends new
+      # connections there but leaves the old ones where they are, and HAProxy's own
+      # on-marked-up shutdown-backup-sessions covers only a return of the first server.
+      # So once a second this closes the connections held to any server but the first
+      # one up, whichever peer comes back.
+      HAPROXY_LUA: |
+        core.register_task(function()
+          while true do
+            local servers = {}
+            for _, sv in pairs(core.backends["galera"].servers) do servers[#servers + 1] = sv end
+            table.sort(servers, function(a, b) return tonumber(a:get_puid()) < tonumber(b:get_puid()) end)
+            local writer
+            for _, sv in ipairs(servers) do
+              if writer == nil and sv:get_stats().status:sub(1, 2) == "UP" then
+                writer = sv
+              elseif sv:get_cur_sess() > 0 then
+                core.Warning(string.format("single-writer: closing %d connection(s) to %s; the writer is %s",
+                  sv:get_cur_sess(), sv:get_name(), writer and writer:get_name() or "none"))
+                sv:shut_sess()
+              end
+            end
+            core.msleep(1000)
+          end
+        end)
 {{- end }}
 
     healthcheck:

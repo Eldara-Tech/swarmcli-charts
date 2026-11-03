@@ -144,6 +144,147 @@ if [ -n "$exporters" ]; then
   metrics_ok=", $n_exp exporters scraped on monitoring, alert rules pass promtool"
 fi
 
+# With the single-writer fixture: every proxy replica sends every connection to the
+# lowest-numbered Synced peer, and a connection held open across a change of writer
+# is closed rather than left on the old one. Driven through the writer's loss, the
+# next peer's loss too, the return of that next peer while the last one stands in (the
+# return HAProxy's own options leave connections behind on), and the writer's own
+# return. Then an app in a stack of its own reaches the proxy over the overlay with
+# no port published.
+if [ "$case" = single-writer ]; then
+  proxy="$(printf '%s\n' "$all_svcs" | grep -E -- '-proxy$')"
+  net="$(docker service inspect "$proxy" --format '{{range .Spec.TaskTemplate.Networks}}{{.Target}}{{end}}' | sed -n 1p)"
+  netname="$(docker network inspect --format '{{.Name}}' "$net")"
+  pw="$(docker exec "$first" sh -c 'cat /run/secrets/mariadb_galera_root_password')"
+  p1="$(printf '%s\n' $peers | sed -n 1p)"; h1="${p1##*_}"
+  p2="$(printf '%s\n' $peers | sed -n 2p)"; h2="${p2##*_}"
+  p3="$(printf '%s\n' $peers | sed -n 3p)"; h3="${p3##*_}"
+  app="${release}-app"
+  trap 'docker rm -f $(docker ps -aq -f "label=e2e-galera-held=$release") >/dev/null 2>&1; docker stack rm "$app" >/dev/null 2>&1 || true' EXIT
+  proxy_log() {
+    for c in $(docker ps -q -f "label=com.docker.swarm.service.name=$proxy"); do
+      echo "    proxy container $c:"
+      docker logs "$c" 2>&1 | { grep -vE '^[0-9.]+:[0-9]+ \[' || true; } | tail -n 20 | sed 's/^/      /'
+    done
+  }
+  stop_peer() {
+    docker service scale --detach "$1=0" >/dev/null
+    for _ in $(seq 1 60); do
+      [ -z "$(cid_of "$1")" ] && return 0
+      sleep 2
+    done
+    echo "  $1: did not stop"; exit 1
+  }
+  start_peer() {
+    local c state=""
+    docker service scale --detach "$1=1" >/dev/null
+    for _ in $(seq 1 90); do
+      c="$(cid_of "$1")"
+      state="$( [ -n "$c" ] && status_of "$c" 'WSREP_LOCAL_STATE_COMMENT' 2>/dev/null || true)"
+      [ "$state" = Synced ] && return 0
+      sleep 5
+    done
+    echo "  $1: did not rejoin (state '$state')"; exit 1
+  }
+  # The peer each proxy replica sends a new connection to, asked of each task directly.
+  writers() {
+    local c ip
+    for c in $(docker ps -q -f "label=com.docker.swarm.service.name=$proxy"); do
+      ip="$(docker inspect --format "{{(index .NetworkSettings.Networks \"$netname\").IPAddress}}" "$c")"
+      docker run --rm --network "$net" -e MYSQL_PWD="$pw" mariadb:12.3 \
+        mariadb -h "$ip" -uroot -N -B -e 'SELECT @@hostname' 2>&1 || true
+    done
+  }
+  routes_to() {  # routes_to <peer host> <when>: every replica, within 60s
+    local got=""
+    for _ in $(seq 1 30); do
+      got="$(writers | sort -u | tr '\n' ' ')"
+      [ "$got" = "$1 " ] && return 0
+      sleep 2
+    done
+    echo "  $2: the proxy replicas route to '$got', expected $1 from every one"
+    proxy_log; exit 1
+  }
+  # Opens a connection through the client alias and holds it open; prints its container.
+  hold() {
+    local c
+    c="$(docker run -d --label "e2e-galera-held=$release" --network "$net" -e MYSQL_PWD="$pw" mariadb:12.3 \
+      mariadb --unbuffered -h mariadb -uroot -N -B -e 'SELECT @@hostname; SELECT SLEEP(3600)')"
+    for _ in $(seq 1 15); do
+      [ -n "$(docker logs "$c" 2>&1)" ] && break
+      sleep 1
+    done
+    echo "$c"
+  }
+  on() {  # on <held container> <peer host>
+    local got
+    got="$(docker logs "$1" 2>&1 | sed -n 1p)"
+    [ "$got" = "$2" ] || { echo "  a connection opened through the proxy landed on '$got', expected $2"; proxy_log; exit 1; }
+  }
+  closed() {  # closed <held container> <when>: within 30s
+    for _ in $(seq 1 30); do
+      [ "$(docker inspect --format '{{.State.Running}}' "$1")" = false ] && return 0
+      sleep 1
+    done
+    echo "  $2: a connection held open to the old writer was not closed"; proxy_log; exit 1
+  }
+
+  routes_to "$h1" "after install"
+  c1="$(hold)"; on "$c1" "$h1"
+  stop_peer "$p1"
+  closed "$c1" "after $h1 stopped"
+  routes_to "$h2" "with $h1 stopped"
+  c2="$(hold)"; on "$c2" "$h2"
+  stop_peer "$p2"
+  closed "$c2" "after $h2 stopped"
+  routes_to "$h3" "with $h1 and $h2 stopped"
+  c3="$(hold)"; on "$c3" "$h3"
+  start_peer "$p2"
+  closed "$c3" "after $h2 came back while $h3 stood in"
+  routes_to "$h2" "after $h2 came back"
+  c4="$(hold)"; on "$c4" "$h2"
+  start_peer "$p1"
+  closed "$c4" "after $h1 came back"
+  routes_to "$h1" "after $h1 came back"
+
+  # An app in a stack of its own, as a user deploys one: the client alias over the
+  # shared overlay, its password from the secret. The chart publishes no port.
+  for s in $all_svcs; do
+    [ "$(docker service inspect --format '{{len .Spec.EndpointSpec.Ports}}' "$s")" = 0 ] \
+      || { echo "  $s publishes a port; this case must reach the cluster without one"; exit 1; }
+  done
+  docker stack deploy --detach=true -c - "$app" >/dev/null <<EOF
+version: "3.9"
+services:
+  client:
+    image: mariadb:12.3
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - 'export MYSQL_PWD="\$\$(cat /run/secrets/mariadb_galera_root_password)"; until mariadb -h mariadb -uroot -N -B -e "SELECT @@hostname"; do sleep 2; done; sleep 3600'
+    networks: [galera]
+    secrets: [mariadb_galera_root_password]
+    deploy:
+      restart_policy: { condition: none }
+networks:
+  galera:
+    external: true
+    name: $netname
+secrets:
+  mariadb_galera_root_password:
+    external: true
+EOF
+  got=""
+  for _ in $(seq 1 45); do
+    got="$(docker service logs --raw "${app}_client" 2>/dev/null | grep -vE '^ERROR' | sed -n 1p || true)"
+    [ -n "$got" ] && break
+    sleep 2
+  done
+  [ "$got" = "$h1" ] || { echo "  an app in stack $app reached '$got' through the overlay, expected the writer $h1"; docker service logs --tail 5 "${app}_client" 2>&1 | sed 's/^/    /'; exit 1; }
+
+  echo "  ${release}: $want peers, all Synced, every proxy replica routed to the lowest-numbered Synced peer through two failures and two returns, closing each connection held open to an old writer, and an app stack reached it over the overlay with no port published$metrics_ok OK"
+  exit 0
+fi
+
 # With the proxy fixture, the thing worth proving is not that the cluster formed —
 # the assertions above already did that — but that the CLIENT ENDPOINT keeps
 # working while a peer is gone. That is the claim the proxy exists to make, and it

@@ -36,7 +36,7 @@ if [ "$case_name" = "five-peers" ]; then want_peers=5; fi
 # peers only.
 proxy_svc=""
 all="$(yq -r '.services | keys | .[]' "$f")"
-if [ "$case_name" = "proxy" ] || [ "$case_name" = "proxy-published" ]; then
+if [ "$case_name" = "proxy" ] || [ "$case_name" = "proxy-published" ] || [ "$case_name" = "single-writer" ]; then
   proxy_svc="$(printf '%s\n' "$all" | { grep -E -- '-proxy$' || true; })"
   [ -n "$proxy_svc" ] || err "the proxy fixture rendered no proxy service"
 elif grep -qE -- '-proxy$' <<<"$all"; then
@@ -165,6 +165,31 @@ if [ -n "$proxy_svc" ]; then
     grep -Fq 'galera-synced-check' <<<"$(yq -r ".services.\"$s\".command[0]" "$f")" \
       || err "peer $s does not run the Synced responder the proxy checks"
   done
+
+  # Single-writer: the first server up takes every new connection, a lost one's
+  # connections close at once, and the Lua task closes those left on any server that
+  # is no longer the first one up. Multi-primary must render none of it.
+  lua="$(yq -r ".services.\"$proxy_svc\".environment.HAPROXY_LUA // \"\"" "$f")"
+  pcmd="$(yq -r ".services.\"$proxy_svc\".command[0]" "$f")"
+  if [ "$case_name" = "single-writer" ]; then
+    grep -Eq '^ *balance first$' <<<"$cfg" || err "single-writer proxy does not balance first"
+    for s in $svcs; do
+      grep -Eq "^ *server $s .* on-marked-down shutdown-sessions$" <<<"$cfg" \
+        || err "single-writer proxy keeps connections to $s after marking it down"
+    done
+    # In peer order: `balance first` picks by position, so the order IS the writer rule.
+    [ "$(grep -oE '^ *server [^ ]+' <<<"$cfg" | awk '{print $2}' | tr '\n' ' ')" = "$(echo $svcs) " ] \
+      || err "single-writer proxy servers are not in peer order; another peer than the lowest Synced would be the writer"
+    grep -Eq '^ *lua-load /tmp/single-writer\.lua$' <<<"$cfg" || err "single-writer proxy does not load the Lua task"
+    grep -Fq 'printf '"'"'%s\n'"'"' "$$HAPROXY_LUA" > /tmp/single-writer.lua;' <<<"$pcmd" \
+      || err "single-writer proxy does not write the Lua task where lua-load reads it"
+    grep -Fq 'sv:shut_sess()' <<<"$lua" && grep -Fq 'core.register_task' <<<"$lua" \
+      || err "the single-writer Lua task no longer closes connections in a task of its own"
+  else
+    if grep -Eq '^ *(balance|lua-load) ' <<<"$cfg" || [ -n "$lua" ]; then
+      err "multi-primary proxy renders single-writer settings; it must spread connections over every Synced peer"
+    fi
+  fi
 fi
 
 # The healthcheck must run as the mysql unix user, with --su-mysql FIRST. Any other

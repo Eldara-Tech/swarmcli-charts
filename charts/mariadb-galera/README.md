@@ -71,6 +71,10 @@ Apps join the same overlay and connect to **`mariadb`**, a DNS alias every peer
 shares, so connections spread across the peers:
 
 ```yaml
+services:
+  app:
+    networks: [mariadb-galera-net]
+
 networks:
   mariadb-galera-net:
     external: true
@@ -79,6 +83,9 @@ networks:
 ```
 mysql://app:<password>@mariadb:3306/app
 ```
+
+That is all an app in another stack needs. The overlay is attachable, and the SQL
+port stays unpublished (`exposure.enabled: false`, the default).
 
 Any peer accepts writes, so nothing needs to find a leader. The alias is also
 health-aware, which is worth being precise about because it is easy to assume
@@ -124,13 +131,14 @@ The proxy reaches each peer at its task address (`tasks.<release>_<peer>`, see
 below), and looks it up through Docker's DNS while it runs rather than once at
 start. So it starts before any peer is up, and follows a peer Swarm reschedules.
 
-Connections are spread across all `Synced` peers. Galera is multi-primary so that is
-correct, but writing the same rows from several peers at once raises certification
-conflicts; an application with heavy write contention on the same keys may prefer to
-funnel writes to one peer, which this chart does not currently express.
+Connections are spread across all `Synced` peers by default. Galera is multi-primary,
+so that is correct. But writing the same rows from several peers at once fails
+certification, and the application sees deadlock errors (1213) it has to retry. An
+application that does not retry them wants `proxy.routing: single-writer`, below.
 
 Individual peers are addressable as `mariadb-galera-1`, `mariadb-galera-2`, … if
-you want to pin reads to one.
+you want to pin reads to one. Those names bypass the proxy, so under single-writer
+routing they are for diagnostics only, never for writes.
 
 Peers address *each other* differently, and it is worth knowing why. They find one
 another through `tasks.<release>_<peer>`, the name Swarm publishes for a service's
@@ -150,6 +158,45 @@ With `proxy.enabled` as well, the port is published on the proxy instead, throug
 the ingress mesh: port 3306 on any node reaches the proxy, which routes to a
 `Synced` peer. The peers then publish nothing, so no external client can bypass
 the proxy's health checks, and `exposure.mode` does not apply.
+
+### Single-writer routing (`proxy.routing`)
+
+`proxy.routing: single-writer` has the proxy send every connection to one peer, the
+**writer**: the lowest-numbered `Synced` peer. Writes then queue on that peer's row
+locks, as on a standalone MariaDB, instead of failing certification when two peers
+change the same row.
+
+```bash
+swarmcli charts install db swarmcli-charts/mariadb-galera \
+  --set proxy.enabled=true --set proxy.routing=single-writer
+```
+
+Every proxy replica applies the same rule, so they all pick the same writer without
+sharing any state. It moves like this:
+
+- **Failover.** A writer that stops answering, or stops being `Synced` (as when it
+  donates a state transfer), is marked down after three failed checks 2s apart. Its
+  connections are closed then, and new ones go to the next peer.
+- **Failback.** Once a lower-numbered peer is `Synced` again, new connections go to
+  it, and those still open to the peer that stood in are closed within a second.
+  That second interruption is what keeps every replica on the same writer.
+- **Existing connections** therefore never stay on a peer that is no longer the
+  writer. The application sees the connection close, reconnects, and lands on the
+  writer. A transaction open on a closed connection is rolled back, and only the
+  application knows whether to run it again.
+
+Each replica checks the peers on its own, so for a few seconds around a change (up
+to the 6s a mark-down takes) two replicas can route to different peers.
+
+The writer is picked by HAProxy's `balance first`. On its own that would leave
+connections open to the old writer at failback, and HAProxy's `on-marked-up
+shutdown-backup-sessions` covers only the return of the first server, not a peer
+further down. So a small Lua task in the proxy closes them for whichever peer
+returns, and logs each time it does: `single-writer: closing <n> connection(s) to
+<peer>; the writer is <peer>`.
+
+Apps must connect through `mariadb` (or `mariadb-galera-proxy` when
+`network.clientAlias` is `""`). A peer's own name bypasses all of this.
 
 ## Metrics
 
@@ -280,6 +327,7 @@ every target, and the alerts carry it. Another Prometheus needs the same relabel
 | `proxy.image.tag` | `3.4` | Proxy image tag (a concrete pin; Renovate maintains it). |
 | `proxy.replicas` | `2` | Proxy replicas — stateless, so more than one is safe and recommended. |
 | `proxy.checkPort` | `9200` | Port the Synced responder listens on inside each peer; never published. |
+| `proxy.routing` | `multi-primary` | `single-writer` = every connection to the lowest-numbered `Synced` peer. See *Single-writer routing*. |
 | `proxy.resources.limits.memory` | `""` | Proxy memory limit. Rendered only when set. |
 | `metrics.enabled` | `false` | One mysqld_exporter per peer, labelled for Prometheus service discovery. See *Metrics*. |
 | `metrics.image.repository` | `prom/mysqld-exporter` | Exporter image. |
