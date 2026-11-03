@@ -129,6 +129,15 @@ sso:
   scopes: ""
   pkce: true
 
+# Extra CA certificate(s) Vaultwarden trusts for its OUTBOUND TLS: an SSO provider or SMTP
+# relay whose certificate comes from a private CA, such as an internal Keycloak. The PEM
+# file is an EXTERNAL Swarm config (a CA certificate is not a secret), referenced only while
+# enabled. At start it is appended to the image's own bundle, so public CAs keep working:
+#   docker config create vaultwarden_ca_bundle ./ca.pem
+caBundle:
+  enabled: false
+  configName: vaultwarden_ca_bundle
+
 app:
   # Rendered as ENABLE_WEBSOCKET. (The older WEBSOCKET_ENABLED has been ignored
   # since Vaultwarden 1.29 — websockets share the main HTTP port now.)

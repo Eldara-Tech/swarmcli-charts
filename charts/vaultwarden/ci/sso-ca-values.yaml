@@ -1,0 +1,13 @@
+# Single sign-on against a stub OpenID provider served over https with a certificate from a
+# private CA that ci/e2e-setup.sh generates, and hands over as the vaultwarden_ca_bundle
+# Swarm config. Discovery succeeds only if Vaultwarden trusts that CA, so the login redirect
+# ci/e2e-check.sh asserts proves caBundle; the public CAs must still be in the bundle too.
+ingress:
+  host: vaultwarden-sso.e2e.test
+sso:
+  enabled: true
+  authority: https://vw-e2e-idp-tls:8443/realms/e2e
+  clientId: vaultwarden-e2e
+  scopes: "email profile offline_access"
+caBundle:
+  enabled: true

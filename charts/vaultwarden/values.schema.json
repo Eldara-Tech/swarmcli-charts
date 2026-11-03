@@ -154,6 +154,14 @@
       },
       "required": ["enabled", "authority", "clientId", "clientSecretSecretName", "only", "signupsAllowed", "signupsMatchEmail", "scopes", "pkce"]
     },
+    "caBundle": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "configName": { "type": "string", "minLength": 1 }
+      },
+      "required": ["enabled", "configName"]
+    },
     "app": {
       "type": "object",
       "properties": {

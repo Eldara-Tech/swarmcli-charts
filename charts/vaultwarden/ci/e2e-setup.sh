@@ -12,7 +12,9 @@
 #   * for the postgres/mysql fixtures, the DB overlay plus a throwaway backend named
 #     to match that fixture's database.*.host, with the vaultwarden schema + user
 #     bootstrapped from the image's own env, waited on until it accepts connections;
-#   * for the sso fixture, a stub OpenID provider, waited on until it serves discovery.
+#   * for the sso fixture, a stub OpenID provider, waited on until it serves discovery;
+#   * for the sso-ca fixture, the same stub over https with a certificate from a throwaway
+#     private CA, and that CA as the vaultwarden_ca_bundle Swarm config.
 # ci/e2e-teardown.sh removes everything created here (leaving shared overlays).
 #
 # INVARIANT: the backend's app-user password must equal the vaultwarden_*_password
@@ -119,8 +121,8 @@ fi
 # traefik exposure joins. busybox httpd serves a discovery document and an empty key set,
 # which discovery fetches and needs as a 200 JSON answer. Nobody logs in, so the token and
 # userinfo endpoints never have to answer — but Vaultwarden refuses a discovery document
-# that does not NAME them (sso_client.rs), so both are listed. Its issuer must equal ci/sso-values.yaml's
-# sso.authority byte for byte. The two content types are what discovery checks for. ----
+# that does not NAME them (sso_client.rs), so both are listed. Its issuer must equal
+# ci/sso-values.yaml's sso.authority byte for byte. The two content types are what discovery checks for. ----
 if [ "$case" = "sso" ]; then
   iss=http://vw-e2e-idp:8080/realms/e2e
   discovery="{\"issuer\":\"$iss\",\"authorization_endpoint\":\"$iss/protocol/openid-connect/auth\",\"token_endpoint\":\"$iss/protocol/openid-connect/token\",\"userinfo_endpoint\":\"$iss/protocol/openid-connect/userinfo\",\"jwks_uri\":\"$iss/protocol/openid-connect/certs.json\",\"response_types_supported\":[\"code\"],\"subject_types_supported\":[\"public\"],\"id_token_signing_alg_values_supported\":[\"RS256\"]}"
@@ -139,6 +141,50 @@ if [ "$case" = "sso" ]; then
     sleep 3
   done
   [ "$got" = "200 application/json" ] || { echo "  FAIL: the stub OpenID provider never served its discovery document (last: '$got')"; exit 1; }
+fi
+
+# --- sso-ca fixture only: the same stub, served over https by nginx with a certificate from
+# a private CA generated here, which reaches Vaultwarden as the vaultwarden_ca_bundle config —
+# so discovery, and with it the login redirect, works only if Vaultwarden trusts that CA. The
+# config is recreated every run: it is immutable, and one left over from an earlier run would
+# name a CA the new certificate does not come from. Host openssl, as charts/harbor's hook
+# uses, in forms OpenSSL 3 and LibreSSL (macOS) both accept; the PEMs travel base64-encoded
+# in the stub's environment because a value spanning lines is awkward to pass. --------------
+if [ "$case" = "sso-ca" ]; then
+  iss=https://vw-e2e-idp-tls:8443/realms/e2e
+  discovery="{\"issuer\":\"$iss\",\"authorization_endpoint\":\"$iss/protocol/openid-connect/auth\",\"token_endpoint\":\"$iss/protocol/openid-connect/token\",\"userinfo_endpoint\":\"$iss/protocol/openid-connect/userinfo\",\"jwks_uri\":\"$iss/protocol/openid-connect/certs.json\",\"response_types_supported\":[\"code\"],\"subject_types_supported\":[\"public\"],\"id_token_signing_alg_values_supported\":[\"RS256\"]}"
+  tls="$(mktemp -d)"
+  trap 'rm -rf "$tls"' EXIT
+  printf '[req]\ndistinguished_name=dn\nx509_extensions=v3\nprompt=no\n[dn]\nCN=vaultwarden e2e CA\n[v3]\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\nsubjectKeyIdentifier=hash\n' >"$tls/ca.cnf"
+  printf 'basicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:vw-e2e-idp-tls\n' >"$tls/idp.ext"
+  openssl req -x509 -config "$tls/ca.cnf" -newkey rsa:2048 -nodes -sha256 -days 2 \
+    -keyout "$tls/ca.key" -out "$tls/ca.pem" 2>/dev/null
+  openssl req -new -newkey rsa:2048 -nodes -sha256 -subj /CN=vw-e2e-idp-tls \
+    -keyout "$tls/idp.key" -out "$tls/idp.csr" 2>/dev/null
+  openssl x509 -req -sha256 -days 2 -in "$tls/idp.csr" -CA "$tls/ca.pem" -CAkey "$tls/ca.key" \
+    -CAcreateserial -extfile "$tls/idp.ext" -out "$tls/idp.pem" 2>/dev/null
+  openssl verify -CAfile "$tls/ca.pem" "$tls/idp.pem" >/dev/null \
+    || { echo "  FAIL: the stub's certificate does not verify against the CA generated for it"; exit 1; }
+  docker config rm vaultwarden_ca_bundle >/dev/null 2>&1 || true
+  docker config create vaultwarden_ca_bundle "$tls/ca.pem" >/dev/null
+  docker service rm vw-e2e-idp-tls >/dev/null 2>&1 || true
+  docker service create --detach --name vw-e2e-idp-tls --network traefik-public --env DISCOVERY="$discovery" \
+    --env CERT_B64="$(base64 <"$tls/idp.pem" | tr -d '\n')" --env KEY_B64="$(base64 <"$tls/idp.key" | tr -d '\n')" \
+    nginx:alpine sh -c 'd=/www/realms/e2e && mkdir -p "$d/.well-known" "$d/protocol/openid-connect" &&
+      printf "%s" "$DISCOVERY" > "$d/.well-known/openid-configuration" &&
+      printf "{\"keys\":[]}" > "$d/protocol/openid-connect/certs.json" &&
+      printf "%s" "$CERT_B64" | base64 -d > /etc/nginx/idp.pem && printf "%s" "$KEY_B64" | base64 -d > /etc/nginx/idp.key &&
+      printf "events {}\nhttp { server { listen 8443 ssl; ssl_certificate /etc/nginx/idp.pem; ssl_certificate_key /etc/nginx/idp.key; root /www; default_type application/json; } }\n" > /etc/nginx/nginx.conf &&
+      exec nginx -g "daemon off;"' >/dev/null
+  # -k: this only waits for it to serve. Whether the CA is trusted is Vaultwarden's to prove.
+  got=""
+  for _ in $(seq 1 40); do
+    got="$(docker run --rm --network traefik-public curlimages/curl:latest -sk -o /dev/null -w '%{http_code} %{content_type}' \
+      --max-time 5 "$iss/.well-known/openid-configuration" 2>/dev/null || true)"
+    [ "$got" = "200 application/json" ] && break
+    sleep 3
+  done
+  [ "$got" = "200 application/json" ] || { echo "  FAIL: the https stub OpenID provider never served its discovery document (last: '$got')"; exit 1; }
 fi
 
 # --- edge fixture only: stand up the traefik chart as a REAL edge on traefik-public,

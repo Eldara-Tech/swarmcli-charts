@@ -29,6 +29,7 @@ can switch to **external PostgreSQL or MySQL/MariaDB** without exposing database
 	 printf '%s' '<paste-argon2-phc-here>' | docker secret create vaultwarden_admin_token -
 	 printf 'S3cr3t' | docker secret create vaultwarden_smtp_password -
 	 printf '%s' '<client secret>' | docker secret create vaultwarden_sso_client_secret -   # sso.enabled
+	 docker config create vaultwarden_ca_bundle ./ca.pem   # caBundle.enabled — a CONFIG, not a secret
 	 ```
 
 3. For `exposure.mode=traefik` (default), ensure your Traefik ingress overlay exists
@@ -78,8 +79,9 @@ references, whatever its name. A default install needs:
 `database.type: postgres` adds `vaultwarden_postgres_password` and `postgres-net`,
 `database.type: mysql` adds `vaultwarden_mysql_password` and `mariadb-net`,
 `auth.adminToken.enabled` adds `vaultwarden_admin_token`, `smtp.password.enabled` adds
-`vaultwarden_smtp_password`, and `sso.enabled` adds `vaultwarden_sso_client_secret`. Each
-entry is the name itself, so an override in values needs the same change here. See
+`vaultwarden_smtp_password`, and `sso.enabled` adds `vaultwarden_sso_client_secret` (all
+to `secrets`); `caBundle.enabled` adds `vaultwarden_ca_bundle` to `configs`. Each entry is
+the name itself, so an override in values needs the same change here. See
 [`allow`](https://github.com/Eldara-Tech/swarmcli-cd/blob/main/docs/configuration.md#allow-optional) in the swarmcli-cd docs.
 
 ## Notes
@@ -145,9 +147,31 @@ swarmcli charts install vaultwarden swarmcli-charts/vaultwarden \
 	default collides with the web vault's own expiry check), and add `offline_access` to
 	`sso.scopes` (`"email profile offline_access"`) so it issues refresh tokens; without them a
 	session lasts only as long as the access token.
+- A provider whose certificate comes from a private CA, such as an internal Keycloak, needs
+	that CA: see *Trusting a private CA*.
 - Vaultwarden's further SSO settings (`SSO_AUDIENCE_TRUSTED`, `SSO_MASTER_PASSWORD_POLICY`,
 	`SSO_AUTH_ONLY_NOT_SESSION`, …) go in `extraEnv`. See the
 	[Vaultwarden SSO wiki](https://github.com/dani-garcia/vaultwarden/wiki/Enabling-SSO-support-using-OpenId-Connect).
+
+## Trusting a private CA
+
+Vaultwarden's outbound TLS — the SSO provider, the SMTP relay, the push relay — trusts the
+image's system CAs. For a server whose certificate comes from a private CA, put the CA
+certificate(s), PEM, in a Swarm **config** and turn on `caBundle`:
+
+```bash
+docker config create vaultwarden_ca_bundle ./ca.pem
+swarmcli charts install vaultwarden swarmcli-charts/vaultwarden \
+	--set ingress.host=vault.example.com \
+	--set caBundle.enabled=true
+```
+
+At start the chart appends it to the image's own bundle, writes the result to
+`/tmp/ca-bundle.crt` and points `SSL_CERT_FILE` at it. Do not point `SSL_CERT_FILE` at the
+CA alone through `extraEnv`, one of the options the Vaultwarden wiki gives: both of
+Vaultwarden's TLS clients read that file **instead of** the system store, so every public CA — the push
+relay, HIBP and icon downloads, a public SMTP relay — would stop being trusted. A Swarm
+config cannot be changed in place, so a new CA means a new config name and a redeploy.
 
 ## Values
 
@@ -185,6 +209,8 @@ swarmcli charts install vaultwarden swarmcli-charts/vaultwarden \
 | `sso.signupsMatchEmail` | `true` | `SSO_SIGNUPS_MATCH_EMAIL` — associate it with an existing account of the same email |
 | `sso.scopes` | `""` | `SSO_SCOPES`, besides the implicit `openid`; empty keeps Vaultwarden's default |
 | `sso.pkce` | `true` | `SSO_PKCE` |
+| `caBundle.enabled` | `false` | Add a private CA to Vaultwarden's trust store. See *Trusting a private CA* |
+| `caBundle.configName` | `vaultwarden_ca_bundle` | External Swarm config holding the PEM CA certificate(s) |
 | `app.websocketsEnabled` | `true` | `ENABLE_WEBSOCKET` |
 | `app.signupsAllowed` | `false` | `SIGNUPS_ALLOWED` |
 | `app.rocketWorkers` | `10` | `ROCKET_WORKERS` |

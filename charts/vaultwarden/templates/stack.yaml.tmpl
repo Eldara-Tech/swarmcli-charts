@@ -60,6 +60,16 @@ version: "3.9"
 {{- $secrets = $secrets | uniq }}
 
 {{- $startup := list }}
+{{- /* A private CA is ADDED to the image's trust store, never substituted for it: both of
+       Vaultwarden's TLS clients (reqwest, lettre) load roots through rustls-native-certs,
+       which reads SSL_CERT_FILE INSTEAD of the system store, so pointing it at the CA alone
+       would drop every public CA (push relay, HIBP, icons, a public SMTP relay). A failed
+       cat stops the task rather than starting it without the CA. */}}
+{{- $caFile := "/run/configs/vaultwarden-ca.pem" }}
+{{- if .Values.caBundle.enabled }}
+{{- $startup = append $startup (printf "cat /etc/ssl/certs/ca-certificates.crt %s > /tmp/ca-bundle.crt || exit 1" $caFile) }}
+{{- $startup = append $startup "export SSL_CERT_FILE=/tmp/ca-bundle.crt" }}
+{{- end }}
 {{- if eq $dbType "postgres" }}
 {{- $startup = append $startup (printf "export DATABASE_URL=\"postgresql://%s:$$(cat /run/secrets/%s)@%s:%v/%s?sslmode=%s\"" .Values.database.postgres.username .Values.database.postgres.passwordSecretName .Values.database.postgres.host (.Values.database.postgres.port | int) .Values.database.postgres.name .Values.database.postgres.sslMode) }}
 {{- else if eq $dbType "mysql" }}
@@ -154,6 +164,11 @@ services:
     volumes:
       - {{ .Values.persistence.volumePath | default .Values.persistence.volumeName }}:/data
 {{- end }}
+{{- if .Values.caBundle.enabled }}
+    configs:
+      - source: {{ .Values.caBundle.configName }}
+        target: {{ $caFile }}
+{{- end }}
 {{- if $secrets }}
     secrets:
 {{- range $secrets }}
@@ -242,6 +257,12 @@ services:
 {{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) }}
 volumes:
   {{ .Values.persistence.volumeName }}: {}
+{{- end }}
+
+{{- if .Values.caBundle.enabled }}
+configs:
+  {{ .Values.caBundle.configName }}:
+    external: true
 {{- end }}
 
 {{- if $secrets }}

@@ -98,9 +98,11 @@ fi
 # refuses to start otherwise). Make that request — as the web vault would — and assert it
 # is sent on to the stub's authorization endpoint for the chart's client, with the callback
 # derived from DOMAIN and the configured scopes. Then prove the secret reached Vaultwarden
-# only as a file. --------------------------------------------------------------------------
-if [ "$case" = "sso" ]; then
+# only as a file. sso-ca runs the same checks against the https stub, whose certificate
+# comes from a private CA: there the redirect also proves Vaultwarden trusts caBundle. ------
+if [ "$case" = "sso" ] || [ "$case" = "sso-ca" ]; then
   idp_auth='http://vw-e2e-idp:8080/realms/e2e/protocol/openid-connect/auth?'
+  [ "$case" = "sso-ca" ] && idp_auth='https://vw-e2e-idp-tls:8443/realms/e2e/protocol/openid-connect/auth?'
   cb='redirect_uri=https%3A%2F%2Fvaultwarden-sso.e2e.test%2Fidentity%2Fconnect%2Foidc-signin'
   q='client_id=web&redirect_uri=https%3A%2F%2Fvaultwarden-sso.e2e.test%2Fsso-connector.html&state=e2e-state'
   q="${q}&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256"
@@ -153,6 +155,27 @@ if [ "$case" = "sso" ]; then
     exit 1
   fi
   echo "  sso: the client secret is mounted, read through SSO_CLIENT_SECRET_FILE, and absent from docker inspect"
+fi
+
+# --- sso-ca fixture: discovery over https already proved the private CA is trusted (the
+# redirect above). What it cannot show is that the public CAs still are — the push relay,
+# HIBP, icons and a public SMTP relay depend on them — so count: the bundle PID 1 was handed
+# must be the image's whole system bundle plus the mounted CA. -----------------------------
+if [ "$case" = "sso-ca" ]; then
+  if ! pid1_env "$cid" | grep -xF "SSL_CERT_FILE=/tmp/ca-bundle.crt" >/dev/null; then
+    echo "  FAIL: PID 1 does not carry SSL_CERT_FILE=/tmp/ca-bundle.crt"
+    exit 1
+  fi
+  # grep -c prints 0 itself on no match; empty means the file could not be read at all.
+  certs() { local n; n="$(docker exec "$cid" grep -c 'BEGIN CERTIFICATE' "$1" 2>/dev/null || true)"; echo "${n:-0}"; }
+  sys="$(certs /etc/ssl/certs/ca-certificates.crt)"
+  ca="$(certs /run/configs/vaultwarden-ca.pem)"
+  all="$(certs /tmp/ca-bundle.crt)"
+  if [ "$ca" -lt 1 ] || [ "$sys" -lt 1 ] || [ "$all" -ne $((sys + ca)) ]; then
+    echo "  FAIL: /tmp/ca-bundle.crt holds $all certificates, expected the system bundle's $sys plus the mounted CA's $ca"
+    exit 1
+  fi
+  echo "  sso-ca: the private CA is trusted (discovery over https worked) and the bundle keeps all $sys public CAs beside it"
 fi
 
 # --- edge fixture: prove a request routes THROUGH the stood-up traefik edge. The probe

@@ -154,9 +154,11 @@ include:
   # prove the `$$(cat /run/secrets/…)` wrapper produced a real DATABASE_URL rather than the
   # SQLite fallback. `sso` gets a stub OpenID provider and proves a login is redirected to it
   # for the chart's client and callback — Vaultwarden discovers the provider only then, so
-  # convergence alone proves nothing about it. Excludes bind-mount, ephemeral, none and
-  # secrets — all render-covered by charts.yml and still run in a full local `make e2e`.
-  - { chart: vaultwarden,   cases: "default published postgres mysql edge sso",                                     timeout: 6m  }
+  # convergence alone proves nothing about it. `sso-ca` serves that stub over https with a
+  # certificate from a private CA handed over through caBundle, so the same redirect proves
+  # the CA is trusted. Excludes bind-mount, ephemeral, none and secrets — all render-covered
+  # by charts.yml and still run in a full local `make e2e`.
+  - { chart: vaultwarden,   cases: "default published postgres mysql edge sso sso-ca",                              timeout: 6m  }
   # loki: the seven fixtures that prove something a render cannot. Each one pushes a line to
   # /loki/api/v1/push and reads it back out of query_range, which is where a bad schema,
   # an unwritable store or a compactor that cannot open its working directory actually
