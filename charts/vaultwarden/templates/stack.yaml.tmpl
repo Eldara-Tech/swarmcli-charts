@@ -22,6 +22,9 @@
 {{- if and .Values.sso.enabled (not .Values.sso.clientId) -}}
 {{- fail "sso.clientId is required when sso.enabled=true" -}}
 {{- end -}}
+{{- if and .Values.sso.enabled (hasKey .Values.extraEnv "SSO_CLIENT_SECRET") -}}
+{{- fail "extraEnv.SSO_CLIENT_SECRET cannot be combined with sso.enabled=true: the chart passes the client secret as SSO_CLIENT_SECRET_FILE, and Vaultwarden refuses to start with both. Put it in the sso.clientSecretSecretName Swarm secret instead." -}}
+{{- end -}}
 version: "3.9"
 
 {{- $mode := .Values.exposure.mode }}
@@ -105,8 +108,8 @@ version: "3.9"
 {{- end }}
 {{- /* The client secret needs no export wrapper: Vaultwarden reads <KEY>_FILE for every
        setting itself (util.rs get_env_str_value) and refuses to start if it cannot. It
-       also refuses SSO_CLIENT_SECRET and SSO_CLIENT_SECRET_FILE together, so extraEnv must
-       not set the former. */}}
+       also refuses SSO_CLIENT_SECRET and SSO_CLIENT_SECRET_FILE together, which is why an
+       extraEnv.SSO_CLIENT_SECRET is refused above. */}}
 {{- if .Values.sso.enabled }}
 {{- $env = mergeOverwrite $env (dict
       "SSO_ENABLED" "true"

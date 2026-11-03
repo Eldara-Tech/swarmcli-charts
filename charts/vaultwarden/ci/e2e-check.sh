@@ -124,7 +124,19 @@ if [ "$case" = "sso" ]; then
   done
   echo "  sso: the login redirects to the stub with client_id vaultwarden-e2e, the oidc-signin callback on DOMAIN and the configured scopes"
 
-  assert_env "$cid" "SSO_CLIENT_SECRET_FILE=/run/secrets/vaultwarden_sso_client_secret" "SSO_CLIENT_SECRET_FILE" || exit 1
+  # /identity/connect/authorize answers whether or not SSO is on; prevalidate, which the
+  # web vault calls first, hands out a token only when it is.
+  pre="$(docker exec "$cid" curl -s --max-time 10 http://127.0.0.1:80/identity/sso/prevalidate 2>/dev/null || true)"
+  if ! grep -F '"token":' <<<"$pre" >/dev/null; then
+    echo "  FAIL: /identity/sso/prevalidate handed out no token, so SSO is not enabled in the running config: ${pre:-<empty>}"
+    exit 1
+  fi
+  echo "  sso: enabled in the running config (/identity/sso/prevalidate hands out a token)"
+
+  if ! pid1_env "$cid" | grep -xF "SSO_CLIENT_SECRET_FILE=/run/secrets/vaultwarden_sso_client_secret" >/dev/null; then
+    echo "  FAIL: PID 1 does not carry SSO_CLIENT_SECRET_FILE=/run/secrets/vaultwarden_sso_client_secret"
+    exit 1
+  fi
   if pid1_env "$cid" | grep -E '^SSO_CLIENT_SECRET=' >/dev/null; then
     echo "  FAIL: SSO_CLIENT_SECRET is in PID 1's environment — the secret must only be read from its file"
     exit 1

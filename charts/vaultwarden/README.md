@@ -120,11 +120,13 @@ swarmcli charts install vaultwarden swarmcli-charts/vaultwarden \
 	cannot be used.
 - `sso.authority` is the issuer URL without `/.well-known/openid-configuration`, and must equal
 	the `issuer` of the provider's discovery document exactly, trailing slash included.
-	Vaultwarden contacts the provider at the first login, not at start, so a wrong value shows
-	up as a failed login rather than a task that does not converge.
+	Vaultwarden contacts the provider at the first login, not at start, so an unreachable or
+	mismatched one shows up as a failed login rather than a task that does not converge; only
+	a value that is not a URL at all stops it from starting.
 - The client secret is read by Vaultwarden itself from the mounted secret, through
-	`SSO_CLIENT_SECRET_FILE`, so it never reaches the compose file or `docker inspect`. Do not
-	also set `SSO_CLIENT_SECRET` in `extraEnv`: Vaultwarden refuses to start with both.
+	`SSO_CLIENT_SECRET_FILE`, so it never reaches the compose file or `docker inspect`. An
+	`SSO_CLIENT_SECRET` in `extraEnv` is refused beside `sso.enabled`, since Vaultwarden
+	refuses to start with both.
 - SSO replaces the login step only. Every user still sets and enters a **master password**,
 	which is what decrypts the vault; the provider never sees it.
 - `sso.only: true` refuses email + master password logins entirely.
@@ -132,11 +134,13 @@ swarmcli charts install vaultwarden swarmcli-charts/vaultwarden \
 	`app.signupsAllowed`, which governs only the sign-up form. A `SIGNUPS_DOMAINS_WHITELIST` in
 	`extraEnv` overrides both. With the default `sso.signupsAllowed: true`, anyone the provider
 	authenticates gets an account, so restrict the client at the provider, or turn it off and
-	invite users. `sso.signupsMatchEmail` attaches a first SSO login to an existing account with
+	invite users — which Vaultwarden itself advises with a public provider such as Google or
+	gitlab.com. `sso.signupsMatchEmail` attaches a first SSO login to an existing account with
 	the same email.
 - Settings saved in the admin panel are written to `/data/config.json` and **override** the
 	environment the chart sets, the SSO settings included — and the panel stores the client
-	secret there in plaintext. Leave the SSO settings to the chart.
+	secret there in plaintext, and shows it to anyone holding the admin token. Leave the SSO
+	settings to the chart.
 - Keycloak: raise the client's access token lifespan to at least 10 minutes (the 5-minute
 	default collides with the web vault's own expiry check), and add `offline_access` to
 	`sso.scopes` (`"email profile offline_access"`) so it issues refresh tokens; without them a

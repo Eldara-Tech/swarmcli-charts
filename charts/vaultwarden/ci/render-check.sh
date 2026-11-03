@@ -8,8 +8,9 @@
 #   1. SSO_* appears only when sso.enabled (the `sso` fixture), with every value in place;
 #   2. the client secret reaches Vaultwarden only as SSO_CLIENT_SECRET_FILE, a path to a
 #      mounted secret that is declared external — never as a plaintext SSO_CLIENT_SECRET;
-#   3. sso.enabled without sso.authority or sso.clientId is refused at render time, and an
-#      empty sso.scopes leaves Vaultwarden's own default in charge.
+#   3. sso.enabled without sso.authority or sso.clientId, or beside an
+#      extraEnv.SSO_CLIENT_SECRET, is refused at render time, and an empty sso.scopes leaves
+#      Vaultwarden's own default in charge.
 set -euo pipefail
 
 out="$1"
@@ -81,6 +82,13 @@ printf 'sso:\n  authority: ""\n' >"$tmp/no-authority.yaml"
 refused "sso.authority is required when sso.enabled=true" -f "$tmp/no-authority.yaml"
 printf 'sso:\n  clientId: ""\n' >"$tmp/no-client.yaml"
 refused "sso.clientId is required when sso.enabled=true" -f "$tmp/no-client.yaml"
+# Vaultwarden panics with both SSO_CLIENT_SECRET and its _FILE set; SSO configured wholly
+# through extraEnv, with sso.enabled off, must keep rendering.
+printf 'extraEnv:\n  SSO_CLIENT_SECRET: x\n' >"$tmp/plain.yaml"
+refused "extraEnv.SSO_CLIENT_SECRET cannot be combined" -f "$tmp/plain.yaml"
+printf 'sso:\n  enabled: false\nextraEnv:\n  SSO_ENABLED: "true"\n  SSO_CLIENT_SECRET: x\n' >"$tmp/plain-off.yaml"
+render -f "$tmp/plain-off.yaml" >/dev/null 2>"$tmp/err" \
+  || note "sso: extraEnv.SSO_CLIENT_SECRET was refused with sso.enabled off: $(cat "$tmp/err")"
 printf 'sso:\n  scopes: ""\n' >"$tmp/no-scopes.yaml"
 if render -f "$tmp/no-scopes.yaml" >"$tmp/no-scopes.out" 2>"$tmp/err"; then
   [ "$(yq -r '.services.vaultwarden.environment | has("SSO_SCOPES")' "$tmp/no-scopes.out")" = "false" ] \

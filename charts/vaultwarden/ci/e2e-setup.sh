@@ -116,10 +116,10 @@ if [ "$case" = "postgres" ] || [ "$case" = "mysql" ]; then
 fi
 
 # --- sso fixture only: a stub OpenID provider on traefik-public, the overlay the default
-# traefik exposure joins. busybox httpd serves a discovery document and an empty key set;
-# nobody logs in, so no key, token or userinfo endpoint has to answer — but Vaultwarden
-# refuses a discovery document that does not NAME a token and a userinfo endpoint
-# (sso_client.rs), so both are listed. Its issuer must equal ci/sso-values.yaml's
+# traefik exposure joins. busybox httpd serves a discovery document and an empty key set,
+# which discovery fetches and needs as a 200 JSON answer. Nobody logs in, so the token and
+# userinfo endpoints never have to answer — but Vaultwarden refuses a discovery document
+# that does not NAME them (sso_client.rs), so both are listed. Its issuer must equal ci/sso-values.yaml's
 # sso.authority byte for byte. The two content types are what discovery checks for. ----
 if [ "$case" = "sso" ]; then
   iss=http://vw-e2e-idp:8080/realms/e2e
