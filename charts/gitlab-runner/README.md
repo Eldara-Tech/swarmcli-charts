@@ -229,8 +229,9 @@ git*, shows where to list the two files.
   `runner.limit` where lower); and `GitLabRunnerSystemFailures` while over 10% of its
   jobs fail with `runner_system_failure`, the runner's fault rather than the script's.
   There is no upstream mixin: they are built on the metrics in GitLab's
-  [runner monitoring docs](https://docs.gitlab.com/runner/monitoring/) and checked
-  against the runner's v19.5.0 source.
+  [runner monitoring docs](https://docs.gitlab.com/runner/monitoring/) and the runner's
+  source. The e2e check fails a runner release that stops exporting a metric the alerts or
+  dashboard read, except the three per-job series, which exist only once a job has run.
 - **Dashboard** (`gitlab-runner-dashboard.json`, uid `gitlab-runner`): jobs against
   capacity, jobs by stage, job duration and time in GitLab's queue, jobs started and
   failed by reason, job requests and other API calls by status, skipped polls and
