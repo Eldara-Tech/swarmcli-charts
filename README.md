@@ -39,6 +39,8 @@ Community charts for [SwarmCLI](https://github.com/Eldara-Tech/swarmcli) — a k
 > The Version/App Version badges read the live published
 > [`index.yaml`](https://eldara-tech.github.io/swarmcli-charts/index.yaml), so they
 > track the latest release automatically — there is no number to bump by hand.
+> Every published version, with the app version it deploys and every image it pins,
+> is listed on the [version history page](https://eldara-tech.github.io/swarmcli-charts/).
 
 ## Adding the Repository
 

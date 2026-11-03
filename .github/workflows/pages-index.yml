@@ -103,6 +103,12 @@ jobs:
           echo "=== Generated index.yaml ==="
           cat public/index.yaml
 
+      # The version-history page (#177), rendered from the index just generated, so
+      # the two cannot disagree. It is the site root; `repo add` reads <url>/index.yaml
+      # and never sees it.
+      - name: Generate history page
+        run: ./scripts/generate-history.sh "${{ github.repository }}" public/index.yaml > public/index.html
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:
