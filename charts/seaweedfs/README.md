@@ -211,8 +211,9 @@ free image has no such option, and the chart refuses `admin.oidc` on it. Set
 `image.repository` to `chrislusf/seaweedfs-enterprise`, or a mirror whose name ends in
 `seaweedfs-enterprise`. Its terms are SeaweedFS's: [seaweedfs.com](https://seaweedfs.com/)
 lists it as free for development and testing under 25 TB and priced per TB otherwise. The
-4.48 image needs no key file: it starts with a built-in 25 TB licence, which its log dates
-to expire 31 days after the start. The chart manages no licence. `image.tag` defaults to
+image needs no key file: it starts with a built-in 25 TB licence, which its log dates to
+expire 31 days after the start, and the `admin-oidc` e2e fixture starts it at every
+`appVersion`. The chart manages no licence. `image.tag` defaults to
 the free image's `appVersion`; pin it if Enterprise has not published that tag yet.
 
 With [Keycloak](../keycloak), in your realm:
