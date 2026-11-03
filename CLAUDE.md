@@ -54,7 +54,8 @@ scripts/floor-check.sh       # renders each chart with a REAL binary of its decl
 scripts/floors-runnable-on.sh # lists charts a given swarmcli can run; warns on ahead-of-release (nightly)
 scripts/lint.sh              # chart structure + yamllint + the Renovate pin gates
 scripts/generate-index.sh    # rebuilds the published index.yaml (release path); needs gh + jq + yq
-.github/workflows/           # charts.yml (validate), ci.yml (machinery), integration.yml (repo-flow), nightly.yml (release check), release.yml, pages-index.yml (index deploy)
+scripts/generate-history.sh  # renders the version-history page (index.html) from index.yaml; needs git + jq + yq
+.github/workflows/           # charts.yml (validate), ci.yml (machinery), integration.yml (repo-flow), nightly.yml (release check), release.yml, pages-index.yml (index + history page deploy)
 .github/e2e-matrix.yaml      # per-chart e2e fixture subsets shared by e2e.yml + nightly.yml
 .github/renovate.json        # Renovate config for THIS repo (maintains the chart image pins)
 default.json                 # shareable Renovate preset DOWNSTREAM users extend
