@@ -289,7 +289,10 @@ git*, shows where to list the two files.
   (Apache-2.0); OutOfSync leaves out a donor, which keeps serving during a state
   transfer. Then one alert per cluster: `GaleraQuorumAtRisk` while fewer than 3
   members remain, so the next failure loses quorum, and `GaleraClusterShrunk` while a
-  cluster has fewer members than it had in the last day.
+  cluster has fewer members than it had in the last day. With `events.failover`
+  on, four more from its controller: `GaleraEventsMisplaced`,
+  `GaleraEventTakeoverFailing`, `GaleraEventRunMissed` and `GaleraEventSchedulerOff`
+  (see *Event failover*).
 - **Dashboard** (`galera-dashboard.json`, uid `galera`): members, Synced peers,
   primary component, peer state, flow control, write-set queues and traffic,
   certification conflicts, plus connections, queries and buffer-pool hits. Pick a
@@ -339,6 +342,8 @@ every target, and the alerts carry it. Another Prometheus needs the same relabel
 | `exposure.port` | `3306` | Published port. |
 | `exposure.protocol` | `tcp` | Published protocol. |
 | `exposure.mode` | `host` | Only `host` is valid — see *Connecting*. Unused when `proxy.enabled`. |
+| `events.failover.enabled` | `false` | Keep each listed event running on the writer alone. See *Event failover*. |
+| `events.failover.events` | `[]` | `<schema>.<event>` per recurring event to keep on the writer. |
 | `resources.limits.memory` | `""` | Per-peer memory limit, e.g. `512M`. Rendered only when set. |
 | `healthcheck.enabled` | `true` | Container healthcheck — `healthcheck.sh --su-mysql --connect --galera_ready`. |
 | `healthcheck.interval` | `10s` | Probe interval. |
@@ -374,6 +379,11 @@ endpoint will log in to any address it is handed with the exporter's credentials
 a rogue server on that overlay can capture a login attempt: give the user a long
 random password, as above. The one-shot that creates it holds the root password and
 stays off `metrics.network`.
+
+`events.failover` adds a controller that logs in as root over the Galera overlay:
+moving an event while keeping its definer takes `ALTER DEFINER`, which needs the
+SET USER privilege. It too stays off `metrics.network`. With `metrics.enabled` a relay
+that holds no secret forwards its metrics there.
 
 ## Operating notes
 
@@ -553,7 +563,8 @@ chart sets up no such replication, and under `wsrep_gtid_mode` the GTIDs take th
 bootstrap peer's `server_id` anyway.)
 
 MariaDB never runs a missed occurrence later, and an event stops when the peer
-running it stops: no other peer takes it over.
+running it stops: no other peer takes it over unless you turn on *Event failover*
+below.
 
 **Upgrading from a chart where every peer ran `server_id` 1** (0.2.x and earlier):
 an event created through peer 2 or higher is disabled when that peer restarts with
@@ -570,6 +581,84 @@ that should run it, naming its definer: without `DEFINER=`, `ALTER EVENT` makes
 the user who runs it the definer.
 
 ```sql
+ALTER DEFINER = '<user>'@'<host>' EVENT <schema>.<event> ENABLE;
+```
+
+### Event failover
+
+`events.failover` keeps each event you list running on exactly one peer, the
+**writer**: the lowest-numbered `Synced` peer. That is the peer
+`proxy.routing: single-writer` sends every connection to, so the events follow the
+application's writes. It works without the proxy too.
+
+```yaml
+events:
+  failover:
+    enabled: true
+    events: [app.weekly_closing, app.process_pv]
+extraArgs:
+  - "--event-scheduler=ON"
+```
+
+One controller replica checks every 5s. When the writer changes, it does two things
+for each listed event, in this order:
+
+1. It turns the event off on every other peer it can reach. This change is local to
+   each peer, so it also reaches a peer outside the primary component, and a donor,
+   which is not `Synced` but still runs its events.
+2. It turns the event on on the writer. Galera replicates that, and every other peer
+   then holds the event `SLAVESIDE_DISABLED`.
+
+Both steps name the event's own definer and character set, because a bare
+`ALTER EVENT` would make root the definer. Each step is logged, e.g.
+`app.weekly_closing: now runs on peer 2`.
+
+What each case comes to:
+
+- **Writer fails.** The event moves to the next peer within about 5s. A peer cut off
+  from the cluster cannot commit, so it cannot run the event twice. When it rejoins,
+  it picks up the move from the others before it serves again.
+- **Writer recovers** and is `Synced` again. The event moves back, turned off on the
+  peer that stood in before it is turned on again.
+- **Peer restart or full state transfer.** A rebuilt peer starts with the event
+  disabled (see *Scheduled events*). If that peer is the writer, the controller turns
+  the event on again.
+- **Missed runs.** A run that fell due while the writer changed is skipped, and
+  MariaDB never makes one up. The controller logs it, e.g. `app.weekly_closing was
+  due at 2026-11-08 02:00:00 (Europe/Budapest) while the writer changed from peer 1
+  to peer 2, and may not have run, or not to the end`. Check, and run the job by hand
+  if it is needed. Write such jobs so that running them again is harmless.
+- **A run in progress** on the old writer is not stopped. It finishes there, and the
+  new writer's first run is the next scheduled one. The two overlap only if a run
+  lasts longer than its own interval, which MariaDB allows even without failover.
+
+Only listed events are ever touched. That is how an event disabled on purpose stays
+disabled: a peer holds it `SLAVESIDE_DISABLED`, exactly as it holds one that another
+peer runs, so nothing can tell the two apart. List recurring (`EVERY`) events only.
+The controller leaves a one-time (`AT`) event alone and logs why, because turned on
+on another peer it would run a second time. To stop a listed event for good, remove
+it from the list first.
+
+With `metrics.enabled`, the controller's state reaches Prometheus through a relay on
+`metrics.network`, alongside the exporters: `mariadb_galera_events_writer_peer`,
+`_misplaced`, `_scheduler_off`, and the counters `_takeovers_total`, `_errors_total`
+and `_missed_runs_total`. `monitoring/galera-rules.yml` alerts on them:
+
+- `GaleraEventsMisplaced`: a listed event is missing, one-time, or not running on
+  the writer alone.
+- `GaleraEventTakeoverFailing`: a turn-off or turn-on failed.
+- `GaleraEventRunMissed`: a run may have been missed.
+- `GaleraEventSchedulerOff`: `event_scheduler` is off on the writer.
+
+Without metrics, the same conditions are in the controller's log
+(`docker service logs <release>_mariadb-galera-events`).
+
+**Manual takeover**, e.g. while the controller is down. On the peer that should run
+the event, using the definer and character set that `information_schema.EVENTS`
+shows for it:
+
+```sql
+SET SESSION character_set_client = <CHARACTER_SET_CLIENT>, collation_connection = <COLLATION_CONNECTION>;
 ALTER DEFINER = '<user>'@'<host>' EVENT <schema>.<event> ENABLE;
 ```
 

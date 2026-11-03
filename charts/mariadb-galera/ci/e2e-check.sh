@@ -228,24 +228,85 @@ if [ "$case" = single-writer ]; then
     done
     echo "  $2: a connection held open to the old writer was not closed"; proxy_log; exit 1
   }
+  # The events controller keeps the listed event on the peer the proxy writes to. It
+  # runs every second and records which peer ran it. A second event, disabled on purpose
+  # and not listed, must never run anywhere. Both belong to the app user, which every
+  # move of the event must keep as its definer.
+  ctl="$(printf '%s\n' "$all_svcs" | grep -E -- '-events$')"
+  ctl_log() { docker service logs --raw "$ctl" 2>&1 | tail -n 15 | sed 's/^/    /'; }
+  ticks_on() {  # ticks_on <svc> <peer host> <when>: the event's last 3s, asked of <svc>
+    local got=""
+    for _ in $(seq 1 20); do
+      got="$(q "$(cid_of "$1")" "SELECT IFNULL(GROUP_CONCAT(DISTINCT peer ORDER BY peer), '') FROM e2e_galera.ticks WHERE at > NOW(6) - INTERVAL 3 SECOND" 2>/dev/null || true)"
+      [ "$got" = "$2" ] && return 0
+      sleep 2
+    done
+    echo "  $3: the event ran on '$got' in the last 3s, expected $2 alone, the peer the proxy writes to"; ctl_log; exit 1
+  }
+  q "$(cid_of "$p1")" "CREATE TABLE e2e_galera.ticks (id INT AUTO_INCREMENT PRIMARY KEY, peer VARCHAR(64) NOT NULL, at DATETIME(6) NOT NULL DEFAULT NOW(6));
+    GRANT ALL ON e2e_galera.* TO 'app'@'%';
+    CREATE DEFINER = 'app'@'%' EVENT e2e_galera.tick ON SCHEDULE EVERY 1 SECOND DO INSERT INTO e2e_galera.ticks (peer) VALUES (@@hostname);
+    CREATE DEFINER = 'app'@'%' EVENT e2e_galera.off ON SCHEDULE EVERY 1 SECOND DISABLE DO INSERT INTO e2e_galera.ticks (peer) VALUES ('off')" >/dev/null
 
   routes_to "$h1" "after install"
+  ticks_on "$p1" "$h1" "after install"
   c1="$(hold)"; on "$c1" "$h1"
   stop_peer "$p1"
   closed "$c1" "after $h1 stopped"
   routes_to "$h2" "with $h1 stopped"
+  ticks_on "$p2" "$h2" "with $h1 stopped"
   c2="$(hold)"; on "$c2" "$h2"
   stop_peer "$p2"
   closed "$c2" "after $h2 stopped"
   routes_to "$h3" "with $h1 and $h2 stopped"
+  ticks_on "$p3" "$h3" "with $h1 and $h2 stopped"
   c3="$(hold)"; on "$c3" "$h3"
   start_peer "$p2"
   closed "$c3" "after $h2 came back while $h3 stood in"
   routes_to "$h2" "after $h2 came back"
+  ticks_on "$p2" "$h2" "after $h2 came back"
   c4="$(hold)"; on "$c4" "$h2"
   start_peer "$p1"
   closed "$c4" "after $h1 came back"
   routes_to "$h1" "after $h1 came back"
+  ticks_on "$p1" "$h1" "after $h1 came back"
+
+  # A full state transfer from the writer, its preferred donor in this fixture: the
+  # writer is not Synced while it donates, and the rebuilt peer arrives holding the
+  # writer's ENABLED copy of the event. Neither may run it twice.
+  stop_peer "$p3"
+  for c in $(docker ps -aq -f "label=com.docker.swarm.service.name=$p3"); do docker rm -f "$c" >/dev/null; done
+  docker volume rm "$(docker volume ls -q --filter "label=com.docker.stack.namespace=${release}" | sort | tail -1)" >/dev/null
+  start_peer "$p3"
+  docker logs "$(cid_of "$p3")" 2>&1 | grep -E "Selected [0-9]+\.[0-9]+ \($h1\)" >/dev/null \
+    || { echo "  $p3 did not take its state from $h1, so the donor step tests nothing"; exit 1; }
+  routes_to "$h1" "after $p3 was rebuilt from $h1"
+  ticks_on "$p1" "$h1" "after $p3 was rebuilt from $h1"
+
+  # Through all four changes of writer: never two peers in the same second, the disabled
+  # event never ran, and the definer is still the app user on every peer.
+  got="$(q "$(cid_of "$p1")" "SET SESSION wsrep_sync_wait=1; SELECT COUNT(*) FROM (SELECT FLOOR(UNIX_TIMESTAMP(at)) s FROM e2e_galera.ticks GROUP BY s HAVING COUNT(DISTINCT peer) > 1) d")"
+  [ "$got" = 0 ] || { echo "  in $got second(s) the event ran on two peers at once"; ctl_log; exit 1; }
+  got="$(q "$(cid_of "$p1")" "SELECT COUNT(*) FROM e2e_galera.ticks WHERE peer = 'off'")"
+  [ "$got" = 0 ] || { echo "  the event disabled on purpose ran $got time(s)"; ctl_log; exit 1; }
+  for p in $peers; do
+    got="$(q "$(cid_of "$p")" "SELECT GROUP_CONCAT(DISTINCT DEFINER) FROM information_schema.EVENTS WHERE EVENT_SCHEMA = 'e2e_galera'")"
+    [ "$got" = 'app@%' ] || { echo "  $p: the events' definer is '$got', expected app@%"; exit 1; }
+  done
+  docker service logs --raw "$ctl" 2>&1 | grep -F 'e2e_galera.tick was due at' >/dev/null \
+    || { echo "  the controller logged no run that fell due while the writer was lost"; ctl_log; exit 1; }
+  # Its state where Prometheus would scrape it: through the relay, on the metrics overlay.
+  m="$(docker run --rm --network monitoring curlimages/curl:latest -sSf "http://${ctl}-metrics:9104/metrics" 2>&1 || true)"
+  # Turning it off on a peer that is shutting down may fail, harmlessly; turning it on
+  # on the writer must not.
+  if docker service logs --raw "$ctl" 2>&1 | grep -F 'could not turn it on' >/dev/null; then
+    echo "  the controller failed to turn the event on on a writer:"; ctl_log; exit 1
+  fi
+  for want_m in 'mariadb_galera_events_writer_peer 1' 'mariadb_galera_events_misplaced 0'; do
+    grep -Fx "$want_m" <<<"$m" >/dev/null || { echo "  the controller's metrics lack '$want_m':"; grep -v '^#' <<<"$m" | sed 's/^/    /'; exit 1; }
+  done
+  got="$(sed -n 's/^mariadb_galera_events_takeovers_total //p' <<<"$m")"
+  [ "${got:-0}" -ge 4 ] || { echo "  the controller counted '$got' takeovers through four changes of writer"; exit 1; }
 
   # An app in a stack of its own, as a user deploys one: the client alias over the
   # shared overlay, its password from the secret. The chart publishes no port.
@@ -281,7 +342,7 @@ EOF
   done
   [ "$got" = "$h1" ] || { echo "  an app in stack $app reached '$got' through the overlay, expected the writer $h1"; docker service logs --tail 5 "${app}_client" 2>&1 | sed 's/^/    /'; exit 1; }
 
-  echo "  ${release}: $want peers, all Synced, every proxy replica routed to the lowest-numbered Synced peer through two failures and two returns, closing each connection held open to an old writer, and an app stack reached it over the overlay with no port published$metrics_ok OK"
+  echo "  ${release}: $want peers, all Synced, every proxy replica routed to the lowest-numbered Synced peer through two failures and two returns, closing each connection held open to an old writer, the listed event followed it with never two peers at once and the disabled one never ran, and an app stack reached it over the overlay with no port published$metrics_ok OK"
   exit 0
 fi
 

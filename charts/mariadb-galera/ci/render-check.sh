@@ -44,8 +44,13 @@ elif grep -qE -- '-proxy$' <<<"$all"; then
   # err's fail=1 died with it and this check printed its failure but never failed.
   err "a proxy service is rendered for case '$case_name'; it must be opt-in"
 fi
-if [ "$case_name" != "metrics" ] && grep -qE -- '-exporter-' <<<"$all"; then
+if [ "$case_name" != "metrics" ] && [ "$case_name" != "single-writer" ] && grep -qE -- '-exporter-' <<<"$all"; then
   err "exporter services are rendered for case '$case_name'; metrics must be opt-in"
+fi
+# The events controller, and its metrics relay with metrics on, belong to the
+# single-writer fixture alone: events.failover is opt-in.
+if [ "$case_name" != "single-writer" ] && grep -qE -- '-events(-metrics)?$' <<<"$all"; then
+  err "an events controller is rendered for case '$case_name'; events.failover must be opt-in"
 fi
 svcs="$(printf '%s\n' "$all" | { grep -E -- '^mariadb-galera-[0-9]+$' || true; })"
 n_svcs="$(count "$svcs")"
@@ -190,6 +195,43 @@ if [ -n "$proxy_svc" ]; then
       err "multi-primary proxy renders single-writer settings; it must spread connections over every Synced peer"
     fi
   fi
+fi
+
+# The events controller: one replica replaced stop-first, so two never race each
+# other's ALTERs; every peer in peer order, so its writer is the proxy's; each move
+# keeps the event's definer, turns the old copy off before the new one on, and never
+# touches a one-time event. It holds root, so it stays off the metrics overlay, and the
+# relay that carries its metrics there holds no secret at all.
+if [ "$case_name" = "single-writer" ]; then
+  c="mariadb-galera-events"
+  [ "$(yq -r ".services.\"$c\".deploy.replicas // \"\"" "$f")" = 1 ] \
+    || err "$c: not exactly one replica; two controllers would race each other's ALTERs"
+  [ "$(yq -r ".services.\"$c\".deploy.update_config.order // \"\"" "$f")" = stop-first ] \
+    || err "$c: not replaced stop-first; old and new controller would run at once"
+  ccmd="$(yq -r ".services.\"$c\".command[0] // \"\"" "$f")"
+  [ "$(grep -E '^PEERS=\(' <<<"$ccmd" | sed -E 's/^PEERS=\((.*)\)$/\1/; s/tasks\.[A-Za-z0-9_.-]*_//g')" = "$(echo $svcs)" ] \
+    || err "$c: PEERS does not list every peer at its task address in peer order; its writer would not be the proxy's"
+  grep -Fxq "EVENTS='e2e_galera.tick'" <<<"$ccmd" || err "$c: EVENTS is not the fixture's events.failover.events"
+  grep -Fq 'ALTER DEFINER = $$(lit "$${definer%@*}")@$$(lit "$${definer##*@}")' <<<"$ccmd" \
+    || err "$c: an ALTER EVENT without the event's own DEFINER would make root its definer"
+  grep -Fq 'SET SESSION character_set_client = $$cs, collation_connection = $$cc;' <<<"$ccmd" \
+    || err "$c: ALTER EVENT runs without the event's character set, which it would replace with the session's"
+  off="$( { grep -nF 'SET SESSION wsrep_on = OFF; $$as DISABLE ON SLAVE' <<<"$ccmd" || true; } | cut -d: -f1)"
+  on="$( { grep -nF '"$$as ENABLE"' <<<"$ccmd" || true; } | cut -d: -f1)"
+  [ -n "$off" ] && [ -n "$on" ] && [ "$off" -lt "$on" ] \
+    || err "$c: does not turn an event off on the other peers, locally, before turning it on on the writer"
+  grep -Fq '[ "$$type" != RECURRING ]' <<<"$ccmd" \
+    || err "$c: would move a one-time event, which runs again on the peer it moves to"
+  if yq -r ".services.\"$c\".networks // [] | .[]" "$f" | grep -xF monitoring >/dev/null; then
+    err "$c: joined the metrics overlay while holding the root password"
+  fi
+  r="mariadb-galera-events-metrics"
+  [ "$(yq -r ".services.\"$r\".secrets // [] | length" "$f")" = 0 ] || err "$r: the metrics relay mounts a secret"
+  yq -r ".services.\"$r\".command // [] | join(\" \")" "$f" | grep -Ex 'TCP-LISTEN:9104,fork,reuseaddr TCP:tasks\.[A-Za-z0-9_.-]*_mariadb-galera-events:9104' >/dev/null \
+    || err "$r: does not forward its port to the controller"
+  lbls="$(yq -r ".services.\"$r\".deploy.labels // [] | sort | join(\",\")" "$f")"
+  [ "$lbls" = "prometheus.io/port=9104,prometheus.io/scrape=true" ] \
+    || err "$r: deploy labels are '$lbls', expected exactly the two discovery labels"
 fi
 
 # The healthcheck must run as the mysql unix user, with --su-mysql FIRST. Any other

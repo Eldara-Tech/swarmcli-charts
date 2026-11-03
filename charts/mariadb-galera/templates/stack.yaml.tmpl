@@ -21,6 +21,9 @@
 {{- if and $singleWriter (not .Values.proxy.enabled) -}}
 {{- fail "proxy.routing: single-writer is a mode of the proxy, so it needs proxy.enabled: true. Without the proxy, clients reach every peer through network.clientAlias and nothing picks a writer." -}}
 {{- end -}}
+{{- if and .Values.events.failover.enabled (not .Values.events.failover.events) -}}
+{{- fail "events.failover.enabled is on but events.failover.events lists no event. Name each recurring event to keep on the writer as \"<schema>.<event>\"; events not listed are never touched." -}}
+{{- end -}}
 {{- if and .Values.metrics.enabled (eq .Values.metrics.network .Values.network.name) -}}
 {{- fail "metrics.network must differ from network.name: the exporters join both, and the point of a separate metrics overlay is that Prometheus never shares one with the peers' SQL and Galera ports." -}}
 {{- end -}}
@@ -613,6 +616,219 @@ services:
       # become writable, and Swarm then simply runs it again.
       restart_policy:
         condition: on-failure
+{{- end }}
+
+{{- if .Values.events.failover.enabled }}
+
+  # Scheduled-event failover (README.md § Event failover). Every 5s it finds the writer,
+  # the lowest-numbered Synced peer, which is the rule proxy.routing: single-writer
+  # routes by, and makes it the one peer that runs each listed event: first off on
+  # every other peer it can reach, locally, then on on the writer, which Galera
+  # replicates as off everywhere else. Each ALTER names the event's own definer and
+  # character set, which a bare ALTER EVENT replaces with root and the session's.
+  # Events not listed are never touched: a peer holds an event someone disabled on
+  # purpose exactly as it holds one another peer runs, so nothing can tell them apart.
+  #
+  # It logs in as root over the overlay, like the exporter-user one-shot, because
+  # ALTER DEFINER needs SET USER. One replica, replaced stop-first, so that two never
+  # race each other's ALTERs.
+  {{ $prefix }}-events:
+    image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
+
+    networks:
+      - {{ .Values.network.name }}
+
+    secrets:
+      - {{ .Values.auth.rootSecretName }}
+
+    entrypoint:
+      - /bin/bash
+      - -c
+    command:
+      - |-
+        set -u
+        PEERS=({{ $peerList }})
+        EVENTS='{{ join " " .Values.events.failover.events }}'
+        MYSQL_PWD="$$(cat /run/secrets/{{ .Values.auth.rootSecretName }})"
+        export MYSQL_PWD
+        log() { echo "mariadb-galera-events: $$*"; }
+        # Logs a condition once, and again only once it has changed.
+        declare -A noted
+        note() { [ "$${noted[$$1]:-}" = "$$2" ] || { [ -z "$$2" ] || log "$$2"; noted[$$1]="$$2"; }; }
+        sql() { mariadb -h "$$1" -uroot -N -B --connect-timeout=2 <<<"$$2"; }
+        # A SQL string literal, escaped the way the image's entrypoint escapes passwords.
+        lit() { local s="$$1"; s="$${s//\\/\\\\}"; s="$${s//\'/\\\'}"; printf "'%s'" "$$s"; }
+{{- if .Values.metrics.enabled }}
+        cat > /usr/local/bin/events-metrics <<'SERVE'
+        #!/bin/bash
+        while IFS= read -r -t 2 l && [ -n "$${l%$$'\r'}" ]; do :; done
+        body="$$(cat /tmp/events.prom 2>/dev/null)"
+        printf 'HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s\n' "$$(($${#body} + 1))" "$$body"
+        SERVE
+        chmod +x /usr/local/bin/events-metrics
+        socat TCP-LISTEN:9104,fork,reuseaddr EXEC:/usr/local/bin/events-metrics 2>/dev/null &
+{{- end }}
+
+        prev=0
+        declare -A last
+        takeovers=0 errors=0 missed=0
+        while :; do
+          synced=()
+          writer=0
+          for i in "$${!PEERS[@]}"; do
+            s="$$(sql "$${PEERS[i]}" "SELECT VARIABLE_VALUE FROM information_schema.GLOBAL_STATUS WHERE VARIABLE_NAME = 'WSREP_LOCAL_STATE'" 2>/dev/null || true)"
+            if [ "$$s" = 4 ]; then
+              synced+=("$$((i + 1))")
+              [ "$$writer" != 0 ] || writer=$$((i + 1))
+            fi
+          done
+          if [ "$$writer" != "$$prev" ]; then
+            if [ "$$writer" = 0 ]; then log 'no peer is Synced, so no peer runs the listed events'
+            elif [ "$$prev" = 0 ]; then log "peer $$writer is the writer"
+            else log "peer $$writer is the writer, was peer $$prev"; fi
+          fi
+          misplaced=0
+          scheduler_off=0
+          if [ "$$writer" != 0 ]; then
+            w="$${PEERS[writer - 1]}"
+            # A run due while the writer changed was skipped: MariaDB never makes one up.
+            if [ "$$prev" != 0 ] && [ "$$prev" != "$$writer" ]; then
+              for e in $$EVENTS; do
+                [ -n "$${last[$$e]:-}" ] || continue
+                IFS=$$'\x1f' read -r at value unit tz <<<"$${last[$$e]}"
+                [[ $$unit =~ ^[A-Z_]+$$ ]] || continue
+                # Fresher from the old writer itself while it still answers, as at a failback:
+                # the last check's value may be a run behind.
+                fresh="$$(sql "$${PEERS[prev - 1]}" "SELECT IFNULL(LAST_EXECUTED, '') FROM information_schema.EVENTS WHERE EVENT_SCHEMA = $$(lit "$${e%%.*}") AND EVENT_NAME = $$(lit "$${e#*.}")" 2>/dev/null || true)"
+                [ -z "$$fresh" ] || at="$$fresh"
+                next="TIMESTAMP($$(lit "$$at")) + INTERVAL $$(lit "$${value//\'/}") $$unit"
+                due="$$(sql "$$w" "SELECT IF($$next <= CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', $$(lit "$$tz")), $$next, '')" 2>/dev/null || true)"
+                if [ -n "$$due" ]; then
+                  missed=$$((missed + 1))
+                  log "$$e was due at $$due ($$tz) while the writer changed from peer $$prev to peer $$writer, and may not have run, or not to the end. MariaDB does not make up a missed run: check, and run it by hand if it is needed"
+                fi
+              done
+            fi
+            if [ "$$(sql "$$w" 'SELECT @@event_scheduler' 2>/dev/null)" != ON ]; then
+              scheduler_off=1
+              note scheduler "event_scheduler is not ON on peer $$writer, so the listed events do not run at all: add --event-scheduler=ON to extraArgs"
+            else
+              note scheduler ''
+            fi
+            for e in $$EVENTS; do
+              schema="$${e%%.*}" name="$${e#*.}"
+              where="EVENT_SCHEMA = $$(lit "$$schema") AND EVENT_NAME = $$(lit "$$name")"
+              # One field separator that no value contains: read with a whitespace IFS, an empty
+              # field would shift every field after it.
+              row="$$(sql "$$w" "SELECT CONCAT_WS(CHAR(31), EVENT_TYPE, STATUS, DEFINER, CHARACTER_SET_CLIENT, COLLATION_CONNECTION, ORIGINATOR, IFNULL(LAST_EXECUTED, ''), IFNULL(INTERVAL_VALUE, ''), IFNULL(INTERVAL_FIELD, ''), TIME_ZONE) FROM information_schema.EVENTS WHERE $$where" 2>/dev/null || true)"
+              if [ -z "$$row" ]; then
+                misplaced=$$((misplaced + 1)); note "$$e" "$$e does not exist on peer $$writer, the writer; nothing runs it there"; continue
+              fi
+              IFS=$$'\x1f' read -r type status definer cs cc originator at value unit tz <<<"$$row"
+              if [ "$$type" != RECURRING ]; then
+                misplaced=$$((misplaced + 1)); note "$$e" "$$e is a one-time event, which would run again on another peer, so it is left where it is"; continue
+              fi
+              note "$$e" ''
+              as="SET SESSION character_set_client = $$cs, collation_connection = $$cc; ALTER DEFINER = $$(lit "$${definer%@*}")@$$(lit "$${definer##*@}") EVENT \`$$schema\`.\`$$name\`"
+              # Off on every other peer first, so that no two peers run it at once. Locally
+              # (wsrep_on off), which also reaches a peer outside the primary component, and
+              # a donor, which still runs its events while it is not Synced.
+              enabled=0
+              for i in "$${!PEERS[@]}"; do
+                [ "$$(sql "$${PEERS[i]}" "SELECT STATUS FROM information_schema.EVENTS WHERE $$where" 2>/dev/null)" = ENABLED ] || continue
+                [[ " $${synced[*]} " != *" $$((i + 1)) "* ]] || enabled=$$((enabled + 1))
+                [ "$$((i + 1))" != "$$writer" ] || continue
+                if out="$$(sql "$${PEERS[i]}" "SET SESSION wsrep_on = OFF; $$as DISABLE ON SLAVE" 2>&1)"; then
+                  log "$$e: turned off on peer $$((i + 1)), to turn it on on the writer, peer $$writer"
+                else
+                  errors=$$((errors + 1)); log "$$e: could not turn it off on peer $$((i + 1)): $$out"
+                fi
+              done
+              [ "$$enabled" = 1 ] && [ "$$status" = ENABLED ] || misplaced=$$((misplaced + 1))
+              if [ "$$status" != ENABLED ]; then
+                # Replicated: every other peer then holds it SLAVESIDE_DISABLED.
+                if out="$$(sql "$$w" "$$as ENABLE" 2>&1)"; then
+                  takeovers=$$((takeovers + 1)); log "$$e: now runs on peer $$writer (it ran on the peer with server_id $$originator)"
+                else
+                  errors=$$((errors + 1)); log "$$e: could not turn it on on peer $$writer: $$out"
+                fi
+              fi
+              if [ -n "$$at" ]; then last[$$e]="$$at"$$'\x1f'"$$value"$$'\x1f'"$$unit"$$'\x1f'"$$tz"; fi
+            done
+          fi
+          prev="$$writer"
+{{- if .Values.metrics.enabled }}
+          {
+            echo '# HELP mariadb_galera_events_writer_peer The peer the listed events run on, the lowest-numbered Synced peer; 0 when none is.'
+            echo '# TYPE mariadb_galera_events_writer_peer gauge'
+            echo "mariadb_galera_events_writer_peer $$writer"
+            echo '# HELP mariadb_galera_events_misplaced Listed events not running on the writer alone at the last check.'
+            echo '# TYPE mariadb_galera_events_misplaced gauge'
+            echo "mariadb_galera_events_misplaced $$misplaced"
+            echo '# HELP mariadb_galera_events_scheduler_off 1 while event_scheduler is not ON on the writer.'
+            echo '# TYPE mariadb_galera_events_scheduler_off gauge'
+            echo "mariadb_galera_events_scheduler_off $$scheduler_off"
+            echo '# HELP mariadb_galera_events_takeovers_total Listed events turned on on a new writer.'
+            echo '# TYPE mariadb_galera_events_takeovers_total counter'
+            echo "mariadb_galera_events_takeovers_total $$takeovers"
+            echo '# HELP mariadb_galera_events_errors_total Failed attempts to turn a listed event off or on.'
+            echo '# TYPE mariadb_galera_events_errors_total counter'
+            echo "mariadb_galera_events_errors_total $$errors"
+            echo '# HELP mariadb_galera_events_missed_runs_total Runs that fell due while the writer changed and may not have run.'
+            echo '# TYPE mariadb_galera_events_missed_runs_total counter'
+            echo "mariadb_galera_events_missed_runs_total $$missed"
+          } > /tmp/events.prom.new && mv /tmp/events.prom.new /tmp/events.prom
+{{- end }}
+          sleep 5
+        done
+
+    deploy:
+      replicas: 1
+      update_config:
+        order: stop-first
+{{- if .Values.placement.constraints }}
+      placement:
+        constraints:
+{{- range .Values.placement.constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- if .Values.metrics.enabled }}
+
+  # The controller's metrics, relayed onto the metrics overlay. The controller holds
+  # the root password, so like the exporter-user one-shot it stays off that overlay;
+  # this relay holds no secret, carries the discovery labels, and forwards each scrape
+  # to the controller over the Galera overlay.
+  {{ $prefix }}-events-metrics:
+    image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
+
+    networks:
+      - {{ .Values.network.name }}
+      - {{ .Values.metrics.network }}
+
+    entrypoint:
+      - socat
+    command:
+      - TCP-LISTEN:9104,fork,reuseaddr
+      - TCP:tasks.{{ .Release.Name }}_{{ $prefix }}-events:9104
+
+    deploy:
+      replicas: 1
+{{- if .Values.placement.constraints }}
+      placement:
+        constraints:
+{{- range .Values.placement.constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+      labels:
+        - "prometheus.io/scrape=true"
+        - "prometheus.io/port=9104"
+{{- end }}
 {{- end }}
 
 {{- if .Values.proxy.enabled }}

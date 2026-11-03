@@ -140,6 +140,24 @@
         }
       }
     },
+    "events": {
+      "type": "object",
+      "properties": {
+        "failover": {
+          "description": "Keeps each listed recurring event running on the writer, the lowest-numbered Synced peer, alone.",
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "events": {
+              "description": "\"<schema>.<event>\" with unquoted names, one per event.",
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "type": "string", "pattern": "^[A-Za-z0-9_]+\\.[A-Za-z0-9_]+$" }
+            }
+          }
+        }
+      }
+    },
     "metrics": {
       "description": "One mysqld_exporter per peer, labelled for Docker Swarm service discovery.",
       "type": "object",

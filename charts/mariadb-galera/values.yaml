@@ -224,6 +224,28 @@ metrics:
   # it autoCreate:true.
   network: monitoring
 
+# Scheduled-event failover. MariaDB runs an event only on the peer it was created or
+# last altered on, and no other peer takes over when that one stops. With this on, a
+# one-replica controller keeps each event listed below running on exactly one peer,
+# the writer: the lowest-numbered Synced peer, the same peer proxy.routing:
+# single-writer sends connections to. On a change of writer it turns the event off on
+# the old one before turning it on on the new one, keeping its definer, and logs any
+# run that fell due in between: MariaDB never makes up a missed run.
+#
+# Off by default, and nothing below renders while it is off. Turning it on adds a
+# service and leaves the peers' own specs untouched, so it never restarts a peer.
+#
+# events lists "<schema>.<event>", unquoted names. Only recurring (EVERY) events: a
+# one-time (AT) event turned on on another peer would run a second time, so the
+# controller leaves one alone and logs why. Events not listed are never touched, which
+# is how an event disabled on purpose stays disabled. The peers need
+# --event-scheduler=ON in extraArgs. With metrics.enabled the controller's state is
+# scraped too (README.md § Event failover).
+events:
+  failover:
+    enabled: false
+    events: []
+
 # Swarm deploy resource limits per peer (optional). Rendered only when
 # limits.memory is set.
 resources:
