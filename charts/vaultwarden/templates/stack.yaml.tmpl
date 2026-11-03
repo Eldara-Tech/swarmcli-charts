@@ -14,6 +14,14 @@
 {{- if and .Values.smtp.password.enabled (not .Values.smtp.password.secretName) -}}
 {{- fail "smtp.password.secretName is required when smtp.password.enabled=true" -}}
 {{- end -}}
+{{- /* Vaultwarden refuses to start with SSO on and either of these empty; failing here
+       names the value instead of leaving a task that never converges. */}}
+{{- if and .Values.sso.enabled (not .Values.sso.authority) -}}
+{{- fail "sso.authority is required when sso.enabled=true: the provider's issuer URL, e.g. https://keycloak.example.com/realms/main" -}}
+{{- end -}}
+{{- if and .Values.sso.enabled (not .Values.sso.clientId) -}}
+{{- fail "sso.clientId is required when sso.enabled=true" -}}
+{{- end -}}
 version: "3.9"
 
 {{- $mode := .Values.exposure.mode }}
@@ -45,6 +53,7 @@ version: "3.9"
 {{- if eq $dbType "mysql" }}{{ $secrets = append $secrets .Values.database.mysql.passwordSecretName }}{{- end }}
 {{- if .Values.auth.adminToken.enabled }}{{ $secrets = append $secrets .Values.auth.adminToken.secretName }}{{- end }}
 {{- if .Values.smtp.password.enabled }}{{ $secrets = append $secrets .Values.smtp.password.secretName }}{{- end }}
+{{- if .Values.sso.enabled }}{{ $secrets = append $secrets .Values.sso.clientSecretSecretName }}{{- end }}
 {{- $secrets = $secrets | uniq }}
 
 {{- $startup := list }}
@@ -92,6 +101,25 @@ version: "3.9"
 ) }}
 {{- if .Values.smtp.username }}
 {{- $env = mergeOverwrite $env (dict "SMTP_USERNAME" .Values.smtp.username) }}
+{{- end }}
+{{- end }}
+{{- /* The client secret needs no export wrapper: Vaultwarden reads <KEY>_FILE for every
+       setting itself (util.rs get_env_str_value) and refuses to start if it cannot. It
+       also refuses SSO_CLIENT_SECRET and SSO_CLIENT_SECRET_FILE together, so extraEnv must
+       not set the former. */}}
+{{- if .Values.sso.enabled }}
+{{- $env = mergeOverwrite $env (dict
+      "SSO_ENABLED" "true"
+      "SSO_AUTHORITY" .Values.sso.authority
+      "SSO_CLIENT_ID" .Values.sso.clientId
+      "SSO_CLIENT_SECRET_FILE" (printf "/run/secrets/%s" .Values.sso.clientSecretSecretName)
+      "SSO_ONLY" (ternary "true" "false" .Values.sso.only)
+      "SSO_SIGNUPS_ALLOWED" (ternary "true" "false" .Values.sso.signupsAllowed)
+      "SSO_SIGNUPS_MATCH_EMAIL" (ternary "true" "false" .Values.sso.signupsMatchEmail)
+      "SSO_PKCE" (ternary "true" "false" .Values.sso.pkce)
+) }}
+{{- with .Values.sso.scopes }}
+{{- $env = mergeOverwrite $env (dict "SSO_SCOPES" .) }}
 {{- end }}
 {{- end }}
 {{- /* Vaultwarden REFUSES to boot when /data is not a mount — it prints "No persistent

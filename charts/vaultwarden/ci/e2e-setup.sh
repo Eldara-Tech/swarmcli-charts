@@ -4,14 +4,15 @@
 # charts install`, once per fixture:
 #   $1 = release name   $2 = chart directory   $3 = fixture case name
 # It provisions the external prerequisites swarmcli validates but never creates:
-#   * the four dummy secrets (created for EVERY fixture — a fixture that does not
+#   * the five dummy secrets (created for EVERY fixture — a fixture that does not
 #     reference one leaves it inert, and unconditional creation keeps this simple);
 #   * the persistence node label the data pin needs;
 #   * traefik-public (autoCreate:false in requirements.yaml — the operator/traefik
 #     chart owns it; here we stand in for them);
 #   * for the postgres/mysql fixtures, the DB overlay plus a throwaway backend named
 #     to match that fixture's database.*.host, with the vaultwarden schema + user
-#     bootstrapped from the image's own env, waited on until it accepts connections.
+#     bootstrapped from the image's own env, waited on until it accepts connections;
+#   * for the sso fixture, a stub OpenID provider, waited on until it serves discovery.
 # ci/e2e-teardown.sh removes everything created here (leaving shared overlays).
 #
 # INVARIANT: the backend's app-user password must equal the vaultwarden_*_password
@@ -38,6 +39,10 @@ done
 ADMIN_PHC='$argon2id$v=19$m=65540,t=3,p=4$MmeKRnGK5RW5mJS7h3TOv90eOu7wJ3Ry6xGRW0ycHco$kSJqYRV3Fu2AjjM/dvbFyoIUt74BsAoWXqYIVXaQ+/8'
 docker secret inspect vaultwarden_admin_token >/dev/null 2>&1 \
   || printf '%s' "$ADMIN_PHC" | docker secret create vaultwarden_admin_token - >/dev/null
+# Distinctive rather than "test": ci/e2e-check.sh asserts these bytes are absent from docker
+# inspect, and a value that also occurs in a hostname or an env var would match itself.
+docker secret inspect vaultwarden_sso_client_secret >/dev/null 2>&1 \
+  || printf '%s' 'sw4rm-vw-sso-e2e-secret' | docker secret create vaultwarden_sso_client_secret - >/dev/null
 
 # --- persistence pin -------------------------------------------------------------
 # Label this (single-node) swarm's node so the persistence.nodeLabel constraint
@@ -108,6 +113,32 @@ if [ "$case" = "postgres" ] || [ "$case" = "mysql" ]; then
     fi
     sleep 3
   done
+fi
+
+# --- sso fixture only: a stub OpenID provider on traefik-public, the overlay the default
+# traefik exposure joins. busybox httpd serves a discovery document and an empty key set;
+# nobody logs in, so no key, token or userinfo endpoint has to answer — but Vaultwarden
+# refuses a discovery document that does not NAME a token and a userinfo endpoint
+# (sso_client.rs), so both are listed. Its issuer must equal ci/sso-values.yaml's
+# sso.authority byte for byte. The two content types are what discovery checks for. ----
+if [ "$case" = "sso" ]; then
+  iss=http://vw-e2e-idp:8080/realms/e2e
+  discovery="{\"issuer\":\"$iss\",\"authorization_endpoint\":\"$iss/protocol/openid-connect/auth\",\"token_endpoint\":\"$iss/protocol/openid-connect/token\",\"userinfo_endpoint\":\"$iss/protocol/openid-connect/userinfo\",\"jwks_uri\":\"$iss/protocol/openid-connect/certs.json\",\"response_types_supported\":[\"code\"],\"subject_types_supported\":[\"public\"],\"id_token_signing_alg_values_supported\":[\"RS256\"]}"
+  docker service rm vw-e2e-idp >/dev/null 2>&1 || true
+  docker service create --detach --name vw-e2e-idp --network traefik-public --env DISCOVERY="$discovery" \
+    busybox:1.37 sh -c 'd=/www/realms/e2e && mkdir -p "$d/.well-known" "$d/protocol/openid-connect" &&
+      printf "%s" "$DISCOVERY" > "$d/.well-known/openid-configuration" &&
+      printf "{\"keys\":[]}" > "$d/protocol/openid-connect/certs.json" &&
+      printf ".well-known/openid-configuration:application/json\n.json:application/json\n" > /etc/httpd.conf &&
+      exec httpd -f -v -p 8080 -h /www -c /etc/httpd.conf' >/dev/null
+  got=""
+  for _ in $(seq 1 40); do
+    got="$(docker run --rm --network traefik-public curlimages/curl:latest -s -o /dev/null -w '%{http_code} %{content_type}' \
+      --max-time 5 "$iss/.well-known/openid-configuration" 2>/dev/null || true)"
+    [ "$got" = "200 application/json" ] && break
+    sleep 3
+  done
+  [ "$got" = "200 application/json" ] || { echo "  FAIL: the stub OpenID provider never served its discovery document (last: '$got')"; exit 1; }
 fi
 
 # --- edge fixture only: stand up the traefik chart as a REAL edge on traefik-public,

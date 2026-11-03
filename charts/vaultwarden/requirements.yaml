@@ -29,4 +29,6 @@ secrets:
     description: "auth.adminToken.enabled=true only - ADMIN_TOKEN Argon2id PHC secret"
   - name: "{{ .Values.smtp.password.secretName }}"
     description: "smtp.enabled=true and smtp.password.enabled=true only - SMTP password secret"
+  - name: "{{ .Values.sso.clientSecretSecretName }}"
+    description: "sso.enabled=true only - OpenID Connect client secret, read through SSO_CLIENT_SECRET_FILE"
 configs: []

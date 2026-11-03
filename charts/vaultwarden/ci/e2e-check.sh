@@ -93,6 +93,56 @@ if [ "$case" = "bind-mount" ]; then
   fi
 fi
 
+# --- sso fixture: Vaultwarden discovers the provider at the first authorize request, so
+# convergence proves only that the settings parsed and the secret file was readable (it
+# refuses to start otherwise). Make that request — as the web vault would — and assert it
+# is sent on to the stub's authorization endpoint for the chart's client, with the callback
+# derived from DOMAIN and the configured scopes. Then prove the secret reached Vaultwarden
+# only as a file. --------------------------------------------------------------------------
+if [ "$case" = "sso" ]; then
+  idp_auth='http://vw-e2e-idp:8080/realms/e2e/protocol/openid-connect/auth?'
+  cb='redirect_uri=https%3A%2F%2Fvaultwarden-sso.e2e.test%2Fidentity%2Fconnect%2Foidc-signin'
+  q='client_id=web&redirect_uri=https%3A%2F%2Fvaultwarden-sso.e2e.test%2Fsso-connector.html&state=e2e-state'
+  q="${q}&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256"
+  got="$(docker exec "$cid" curl -s -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 10 \
+    "http://127.0.0.1:80/identity/connect/authorize?${q}" 2>/dev/null || true)"
+  code="${got%% *}"
+  loc="${got#* }"
+  case "$code" in
+    3??) ;;
+    *) echo "  FAIL: /identity/connect/authorize answered '$code', not a redirect — was the stub provider discovered? (docker service logs ${release}_vaultwarden)"; exit 1 ;;
+  esac
+  case "$loc" in
+    "$idp_auth"*) ;;
+    *) echo "  FAIL: the login redirected to '${loc:-<nothing>}', not to the stub's authorization endpoint"; exit 1 ;;
+  esac
+  for want in 'client_id=vaultwarden-e2e' "$cb" 'scope=[^&]*offline_access' 'code_challenge_method=S256'; do
+    if ! grep -E "[?&]${want}(&|\$)" <<<"$loc" >/dev/null; then
+      echo "  FAIL: the authorization request lacks ${want}: $loc"
+      exit 1
+    fi
+  done
+  echo "  sso: the login redirects to the stub with client_id vaultwarden-e2e, the oidc-signin callback on DOMAIN and the configured scopes"
+
+  assert_env "$cid" "SSO_CLIENT_SECRET_FILE=/run/secrets/vaultwarden_sso_client_secret" "SSO_CLIENT_SECRET_FILE" || exit 1
+  if pid1_env "$cid" | grep -E '^SSO_CLIENT_SECRET=' >/dev/null; then
+    echo "  FAIL: SSO_CLIENT_SECRET is in PID 1's environment — the secret must only be read from its file"
+    exit 1
+  fi
+  # Compared against the secret the task mounts, not a known value: setup keeps a secret left
+  # over from an earlier run, which would make a check against the default pass vacuously.
+  sso_secret="$(docker exec "$cid" cat /run/secrets/vaultwarden_sso_client_secret 2>/dev/null || true)"
+  if [ -z "$sso_secret" ]; then
+    echo "  FAIL: the task mounts no (or an empty) /run/secrets/vaultwarden_sso_client_secret"
+    exit 1
+  fi
+  if { docker service inspect "${release}_vaultwarden"; docker inspect "$cid"; } | grep -F -- "$sso_secret" >/dev/null; then
+    echo "  FAIL: the SSO client secret is visible in docker inspect"
+    exit 1
+  fi
+  echo "  sso: the client secret is mounted, read through SSO_CLIENT_SECRET_FILE, and absent from docker inspect"
+fi
+
 # --- edge fixture: prove a request routes THROUGH the stood-up traefik edge. The probe
 # above proved the app serves; now assert it is reachable via the edge with a matching
 # Host header, and that an unknown host 404s. ------------------------------------------

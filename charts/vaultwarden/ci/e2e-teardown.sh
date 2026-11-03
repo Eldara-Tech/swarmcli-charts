@@ -3,9 +3,9 @@
 # e2e teardown for the vaultwarden chart. scripts/e2e-test.sh runs this AFTER the release
 # is uninstalled (best-effort; errors ignored):
 #   $1 = release name   $2 = chart directory   $3 = fixture case name
-# It removes exactly what ci/e2e-setup.sh created — the four secrets, the persistence node
-# label, the bind-mount host dir, and the DB backend plus the overlay this hook OWNS — and
-# LEAVES the shared traefik-public overlay (other releases use it).
+# It removes exactly what ci/e2e-setup.sh created — the five secrets, the persistence node
+# label, the bind-mount host dir, the DB backend plus the overlay this hook OWNS, and the
+# stub OpenID provider — and LEAVES the shared traefik-public overlay (other releases use it).
 set -uo pipefail
 
 dir="$2"
@@ -17,8 +17,13 @@ if [ "$case" = "edge" ]; then
   edge_down
 fi
 
+# sso fixture: the stub OpenID provider (it sits on the shared overlay, which stays).
+if [ "$case" = "sso" ]; then
+  docker service rm vw-e2e-idp >/dev/null 2>&1 || true
+fi
+
 for s in vaultwarden_postgres_password vaultwarden_mysql_password \
-         vaultwarden_admin_token vaultwarden_smtp_password; do
+         vaultwarden_admin_token vaultwarden_smtp_password vaultwarden_sso_client_secret; do
   docker secret rm "$s" >/dev/null 2>&1 || true
 done
 
