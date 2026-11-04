@@ -254,6 +254,24 @@ for s in $svcs; do
   fi
 done
 
+# extraConfig: only the lifecycle fixture sets it. There every peer carries it with each
+# `$` escaped for compose, and writes it to conf.d before anything runs mariadbd. Unset,
+# nothing renders, so upgrading to a chart that has it changes no peer's spec.
+for s in $svcs; do
+  xc="$(yq -r ".services.\"$s\".environment.EXTRA_CONFIG // \"\"" "$f")"
+  cmd="$(yq -r ".services.\"$s\".command[0]" "$f")"
+  write_ln="$({ grep -n -F '> /etc/mysql/conf.d/extra-config.cnf' <<<"$cmd" || true; } | cut -d: -f1 | sed -n 1p)"
+  if [ "$case_name" = "lifecycle" ]; then
+    grep -Fqx 'innodb_buffer_pool_size = 256M' <<<"$xc" || err "$s: EXTRA_CONFIG does not carry the fixture's extraConfig"
+    grep -Fq 'literal $$ survives' <<<"$xc" || err "$s: EXTRA_CONFIG does not escape \`\$\` as \`\$\$\`; compose would interpolate it"
+    first_run="$({ grep -n -E '(gosu mysql|docker-entrypoint\.sh) mariadbd ' <<<"$cmd" || true; } | cut -d: -f1 | sed -n 1p)"
+    [ -n "$write_ln" ] && [ "$write_ln" -lt "${first_run:-0}" ] \
+      || err "$s: does not write EXTRA_CONFIG to /etc/mysql/conf.d/ before its first mariadbd run (line ${write_ln:-none}, mariadbd at ${first_run:-none})"
+  else
+    [ -z "$xc" ] && [ -z "$write_ln" ] || err "$s: renders extraConfig for case '$case_name', which does not set it"
+  fi
+done
+
 # Ports: a peer never publishes in ingress mode (several peers publish the same
 # port), and never Galera's own.
 for s in $svcs; do

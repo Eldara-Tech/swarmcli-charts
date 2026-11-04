@@ -354,6 +354,7 @@ every target, and the alerts carry it. Another Prometheus needs the same relabel
 | `healthcheck.monitor` | `360s` | Rollout failure window; see below. |
 | `stopGracePeriod` | `5m` | How long Swarm waits for a peer to stop cleanly before killing it. |
 | `extraArgs` | `[]` | Extra `mariadbd` flags, appended verbatim. |
+| `extraConfig` | `""` | A my.cnf snippet written to `/etc/mysql/conf.d/` on every peer. InnoDB sizing goes here. See *Server configuration*. |
 | `labels` | `{}` | Extra deploy labels on every peer. |
 
 ## Security note
@@ -679,6 +680,27 @@ shows for it:
 SET SESSION character_set_client = <CHARACTER_SET_CLIENT>, collation_connection = <COLLATION_CONNECTION>;
 ALTER DEFINER = '<user>'@'<host>' EVENT <schema>.<event> ENABLE;
 ```
+
+### Server configuration
+
+`extraConfig` is a my.cnf snippet, section headers included, that every peer writes
+to `/etc/mysql/conf.d/extra-config.cnf` at every start. The chart's own flags and
+`extraArgs` still win over it. Changing it restarts every peer, one at a time.
+
+```yaml
+extraConfig: |
+  [mysqld]
+  innodb_buffer_pool_size = 2G
+```
+
+**Put InnoDB sizing here, not in `extraArgs`.** A state transfer runs mariadb-backup,
+and the state-transfer script forwards some of mariadbd's command-line flags to it
+verbatim. mariadb-backup has no `--innodb-buffer-pool-size`, so as of MariaDB 12.3.3 a <!-- appversion-ok -->
+peer started with that flag cannot rejoin by state transfer, and neither can a peer
+that needs it as its donor: mariadb-backup exits with `unknown variable`. Read from
+`[mysqld]` in a file, the same setting reaches mariadb-backup as `--use-memory`, and
+the transfer works. A cluster that already has the flag in `extraArgs` keeps running
+until a peer needs a full state transfer, so move it before one does.
 
 ### Scaling the cluster
 

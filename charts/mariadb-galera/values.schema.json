@@ -187,6 +187,10 @@
       "type": "array",
       "items": { "type": "string", "not": { "pattern": "^--server[-_]id" } }
     },
+    "extraConfig": {
+      "description": "A my.cnf snippet, with its own section headers, written to /etc/mysql/conf.d/ on every peer. InnoDB sizing such as innodb_buffer_pool_size goes here rather than in extraArgs, which the state transfer forwards to mariadb-backup.",
+      "type": "string"
+    },
     "labels": { "type": "object" }
   }
 }

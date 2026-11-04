@@ -292,7 +292,23 @@ stopGracePeriod: 5m
 # here too, e.g. "--wsrep-provider-options=gcache.size=1G". The one flag refused here
 # is --server-id: peer N already runs with server_id N, and one value on every peer
 # lets a peer rebuilt by a state transfer run its donor's scheduled events too.
+# InnoDB sizing such as innodb_buffer_pool_size goes in extraConfig, not here.
 extraArgs: []
+
+# A my.cnf snippet written to /etc/mysql/conf.d/ on every peer at every start, with
+# its own section headers. The chart's flags and extraArgs win over it. Changing it
+# restarts every peer, one at a time. "" renders nothing.
+#
+# InnoDB sizing such as innodb_buffer_pool_size belongs here, under [mysqld], not in
+# extraArgs. The state-transfer script forwards some of mariadbd's command-line flags
+# to mariadb-backup verbatim, and mariadb-backup does not know
+# --innodb-buffer-pool-size, so as of MariaDB 12.3.3 a peer started with it cannot rejoin  # appversion-ok
+# by state transfer. Read from [mysqld], the same setting reaches mariadb-backup as
+# --use-memory instead. README.md § Server configuration.
+#   extraConfig: |
+#     [mysqld]
+#     innodb_buffer_pool_size = 2G
+extraConfig: ""
 
 # Extra deploy labels (key: value), applied to every peer.
 labels: {}
