@@ -8,3 +8,10 @@
 healthcheck:
   startPeriod: 90s
   monitor: 150s
+# Peer 1, rebuilt from an empty volume, pulls a full state transfer under this, and
+# ci/e2e-check.sh reads the buffer pool size back on every peer. The `$` in the
+# comment line must reach the file as written.
+extraConfig: |
+  [mysqld]
+  # escaping check: a literal $ survives compose
+  innodb_buffer_pool_size = 256M

@@ -144,6 +144,11 @@ services:
       MARIADB_USER: {{ $.Values.auth.appUser.username | quote }}
       MARIADB_PASSWORD_FILE: /run/secrets/{{ $.Values.auth.appUser.secretName }}
 {{- end }}
+{{- with $.Values.extraConfig }}
+      # extraConfig, written to a file by the command below, the way the proxy carries
+      # HAPROXY_CFG. Every `$` is escaped for compose, so the file matches the value.
+      EXTRA_CONFIG: {{ . | replace "$" "$$" | toJson }}
+{{- end }}
 
     # The image's own entrypoint still does all the work; this wrapper only decides
     # ONE thing before handing over — whether this peer joins the others or forms a
@@ -179,6 +184,12 @@ services:
         # permanently. At container start nothing of ours can be running, which is
         # exactly what makes the file meaningless and safe to drop.
         rm -f /var/lib/mysql/wsrep_sst.pid
+{{- if $.Values.extraConfig }}
+        # The image's my.cnf includes conf.d last, so this wins over the image's own
+        # files, and the flags at the end still win over it. Written at every start and
+        # before anything here runs mariadbd, the --wsrep-recover below included.
+        printf '%s\n' "$$EXTRA_CONFIG" > /etc/mysql/conf.d/extra-config.cnf
+{{- end }}
         # This peer's own overlay address, taken from /etc/hosts — where Docker
         # writes the container's hostname — and never from DNS.
         #

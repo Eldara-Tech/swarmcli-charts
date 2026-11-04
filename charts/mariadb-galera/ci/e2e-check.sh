@@ -668,6 +668,15 @@ if [ "$case" = lifecycle ]; then
   wait_cluster "$second" "after rebuilding $first_svc from an empty volume"
   wait_cluster "$first_svc" "after rebuilding $first_svc from an empty volume"
   rows_ok "$first_svc" 1 20
+  # The fixture's extraConfig: every peer runs with its buffer pool, peer 1 included after
+  # that state transfer under it, and the file holds the value as written, `$` and all.
+  for svc in $peers; do
+    c="$(cid_of "$svc")"
+    bp="$(q "$c" 'SELECT @@innodb_buffer_pool_size')"
+    [ "$bp" = 268435456 ] || { echo "  $svc: innodb_buffer_pool_size is $bp, expected 268435456 (256M) from extraConfig"; exit 1; }
+    docker exec "$c" grep -Fqx '# escaping check: a literal $ survives compose' /etc/mysql/conf.d/extra-config.cnf \
+      || { echo "  $svc: /etc/mysql/conf.d/extra-config.cnf does not hold extraConfig as written"; exit 1; }
+  done
 
   # 3. An upgrade that changes every peer, which is what a re-tagged image does. The
   #    peers carry com.swarmcli.rollout=sequential, so swarmcli replaces them one at a
@@ -840,7 +849,7 @@ if [ "$case" = lifecycle ]; then
     || { echo "  the cluster re-formed after a crash, but not through an election"; exit 1; }
   rows_ok "$first_svc" 1 20 30 40
   rm -f "$extra" "$sizes"
-  lifecycle_ok=", rejoined, re-synced a rebuilt peer 1, rolled an all-peer upgrade with quorum kept, elected a peer after a full stop and after a crash, and forced one with a peer lost"
+  lifecycle_ok=", rejoined, re-synced a rebuilt peer 1 with extraConfig's buffer pool, rolled an all-peer upgrade with quorum kept, elected a peer after a full stop and after a crash, and forced one with a peer lost"
 fi
 
 # With the events fixture: a scheduled event keeps running on the one peer that owns
