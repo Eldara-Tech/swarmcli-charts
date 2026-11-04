@@ -1,0 +1,16 @@
+# A state transfer that outlasts the healthcheck's window, driven by ci/e2e-check.sh:
+# peer 3 rejoins empty while a client queries through the proxy, its donors throttled
+# for that one transfer. Swarm must leave it running, since with the proxy on a
+# joiner reports healthy while it receives, and the proxy must route it nothing
+# before it is Synced. No volumes, so a restarted peer is a rebuilt one. The short
+# window (30s + 5s x 3 = 45s) keeps the transfer that must outlast it short too.
+proxy:
+  enabled: true
+persistence:
+  enabled: false
+healthcheck:
+  interval: 5s
+  timeout: 3s
+  retries: 3
+  startPeriod: 30s
+  monitor: 45s

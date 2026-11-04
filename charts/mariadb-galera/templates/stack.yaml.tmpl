@@ -419,8 +419,19 @@ services:
     # can serve slightly stale reads mid-transfer; clients needing causal reads set
     # wsrep_sync_wait, which is what ci/e2e-check.sh demonstrates.
     #
+{{- if $.Values.proxy.enabled }}
+    # A JOINER receiving a state transfer reports healthy too, because the proxy, not
+    # DNS, keeps clients off it: it routes only to a Synced peer. Without this, Swarm
+    # kills a joiner once its transfer outlasts startPeriod + interval x retries, and
+    # the next attempt starts the transfer from scratch. The marker is the one the
+    # SST script creates in the data dir for the transfer and removes at its end;
+    # a transfer killed outright leaves it behind, so it counts only while the
+    # joiner's script runs. [m] keeps pgrep from matching this check's own shell.
+    # procps is in the image because the SST script itself needs `ps`.
+{{- else }}
     # See healthcheck.startPeriod in values.yaml for why that window must still
     # cover a full state transfer on the RECEIVING side.
+{{- end }}
     #
     # --su-mysql is load-bearing and must stay FIRST (the script re-execs itself
     # through gosu, discarding earlier options). Without it the check authenticates
@@ -442,7 +453,11 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
+{{- if $.Values.proxy.enabled }}
+        - test -e /tmp/galera-electing || { test -e /var/lib/mysql/sst_in_progress && pgrep -f 'wsrep_sst_[m]ariabackup --role joiner' >/dev/null; } || exec healthcheck.sh --su-mysql --connect --galera_ready
+{{- else }}
         - test -e /tmp/galera-electing || exec healthcheck.sh --su-mysql --connect --galera_ready
+{{- end }}
       interval: {{ $.Values.healthcheck.interval }}
       timeout: {{ $.Values.healthcheck.timeout }}
       retries: {{ $.Values.healthcheck.retries }}
@@ -938,15 +953,17 @@ services:
           # the order below, so every replica picks the lowest-numbered Synced peer.
           # on-marked-down closes a lost writer's connections at once; the Lua task
           # closes the ones left on a peer that is no longer the first one up.
-          # init-state down: a replica that just started, or a peer just resolved at a
-          # new address, waits for a passed check, so a Donor peer 1 is never "up" for
-          # the 2s before its first one.
           balance first
 {{- end }}
           # Each peer at its task address, the name the peers dial each other by,
           # so no service VIP sits between the proxy and the peer it checks.
+          # init-state down: a replica that just started, or a peer back in DNS, waits
+          # for a passed check. HAProxy otherwise counts it up until its first one,
+          # which would hand connections to a joiner still receiving its state
+          # transfer (published in DNS, see the peers' healthcheck), or to a Donor
+          # peer 1 under single-writer.
 {{- range $i := until $peers }}
-          server {{ printf "%s-%d" $prefix (add1 $i) }} {{ index $addrs $i }}:{{ $.Values.exposure.port }} check port {{ $.Values.proxy.checkPort }}{{ if $singleWriter }} init-state down on-marked-down shutdown-sessions{{ end }}
+          server {{ printf "%s-%d" $prefix (add1 $i) }} {{ index $addrs $i }}:{{ $.Values.exposure.port }} check port {{ $.Values.proxy.checkPort }} init-state down{{ if $singleWriter }} on-marked-down shutdown-sessions{{ end }}
 {{- end }}
 {{- if $singleWriter }}
       # When the writer changes back to a lower-numbered peer, `balance first` sends new

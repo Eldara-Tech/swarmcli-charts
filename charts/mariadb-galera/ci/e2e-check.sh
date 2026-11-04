@@ -379,6 +379,114 @@ EOF
   exit 0
 fi
 
+# With the slow-sst fixture: a joiner whose state transfer outlasts the healthcheck's
+# window (startPeriod + interval x retries) keeps its task and reaches Synced, and the
+# proxy routes it no connection before then, though Swarm publishes it in DNS for the
+# whole transfer. The donors' mariadb-backup is throttled for this one transfer, so it
+# is long without a large dataset. Peer 3 is kept out of DNS until every proxy replica
+# has put it in maintenance, so it comes back the way that, without init-state down,
+# HAProxy counts up before its first check.
+if [ "$case" = slow-sst ]; then
+  proxy="$(printf '%s\n' "$all_svcs" | { grep -E -- '-proxy$' || true; })"
+  [ -n "$proxy" ] || { echo "  no proxy service in stack ${release}"; exit 1; }
+  net="$(docker service inspect "$proxy" --format '{{range .Spec.TaskTemplate.Networks}}{{.Target}}{{end}}' | sed -n 1p)"
+  pw="$(docker exec "$first" sh -c 'cat /run/secrets/mariadb_galera_root_password')"
+  p3="$(printf '%s\n' $peers | tail -n 1)"; h3="${p3##*_}"
+  window="$(docker service inspect "$p3" --format '{{json .Spec.TaskTemplate.ContainerSpec.Healthcheck}}' \
+    | jq '(.StartPeriod + .Interval * .Retries) / 1000000000 | floor')"
+  trap 'docker rm -f $(docker ps -aq -f "label=e2e-galera-client=$release") >/dev/null 2>&1 || true' EXIT
+  replicas() { docker ps -q -f "label=com.docker.swarm.service.name=$proxy"; }
+  # What a proxy replica logged about peer 3 since this case began, client connections
+  # left out: its address, maintenance, and every UP/DOWN with its reason.
+  h3_events() {
+    docker logs "$1" 2>&1 | tail -n +"$(($(sed -n "s/^$1 //p" <<<"$marks") + 1))" \
+      | { grep -vE '^[0-9.]+:[0-9]+ \[' || true; } | { grep -F "galera/$h3 " || true; }
+  }
+  proxy_seen() { for c in $(replicas); do echo "    proxy container $c:"; h3_events "$c" | tail -n 20 | sed 's/^/      /'; done; }
+  # The healthcheck's own condition, asked of the joiner itself.
+  receiving() {
+    docker exec "$1" sh -c "test -e /var/lib/mysql/sst_in_progress && pgrep -f 'wsrep_sst_[m]ariabackup --role joiner' >/dev/null" 2>/dev/null
+  }
+
+  for p in $peers; do
+    [ "$p" = "$p3" ] || docker exec "$(cid_of "$p")" sh -c \
+      'printf "[sst]\ninno-backup-opts=--throttle=4\n" > /etc/mysql/conf.d/zz-e2e-throttle.cnf'
+  done
+  marks="$(for c in $(replicas); do echo "$c $(docker logs "$c" 2>&1 | wc -l | tr -d ' ')"; done)"
+  docker service scale --detach "$p3=0" >/dev/null
+  for _ in $(seq 1 60); do
+    n=0; gone=0
+    for c in $(replicas); do
+      n=$((n + 1))
+      h3_events "$c" | grep -F 'maintenance' >/dev/null && gone=$((gone + 1))
+    done
+    [ "$n" -gt 0 ] && [ "$gone" = "$n" ] && break
+    sleep 2
+  done
+  [ "$n" -gt 0 ] && [ "$gone" = "$n" ] \
+    || { echo "  $gone of $n proxy replicas put $h3 in maintenance after it left DNS"; proxy_seen; exit 1; }
+
+  # A client asking through the proxy every 0.2s which peer answers, and in what state.
+  client="$(docker run -d --label "e2e-galera-client=$release" --network "$net" -e MYSQL_PWD="$pw" \
+    --entrypoint bash mariadb:12.3 -c 'while :; do
+      if o="$(mariadb -h mariadb -uroot --connect-timeout=3 -N -B -e "SELECT @@hostname, VARIABLE_VALUE FROM information_schema.GLOBAL_STATUS WHERE VARIABLE_NAME = '"'"'WSREP_LOCAL_STATE'"'"'" 2>&1)"
+      then echo "ok $o" | tr "\t" " "; else echo "err $o" | sed -n 1p; fi
+      sleep 0.2
+    done')"
+
+  docker service scale --detach "$p3=1" >/dev/null
+  tasks=""; state=""; t0=""; t1=""; t2=""; dns_mid=no
+  for _ in $(seq 1 300); do
+    t="$(docker service ps -q --filter desired-state=running "$p3" | sed -n 1p)"
+    [ -z "$t" ] || [[ " $tasks " == *" $t "* ]] || tasks="$tasks $t"
+    [ "$(echo $tasks | wc -w | tr -d ' ')" -le 1 ] || break
+    c="$(cid_of "$p3")"
+    if [ -n "$c" ]; then
+      if receiving "$c"; then
+        [ -n "$t0" ] || t0=$SECONDS
+        if docker exec "$client" getent hosts "tasks.${release}_$h3" >/dev/null && receiving "$c"; then dns_mid=yes; fi
+      elif [ -n "$t0" ] && [ -z "$t1" ]; then
+        t1=$SECONDS
+      fi
+      state="$(status_of "$c" 'WSREP_LOCAL_STATE_COMMENT' 2>/dev/null || true)"
+      [ "$state" = Synced ] && { t2=$SECONDS; break; }
+    fi
+    sleep 2
+  done
+  synced_after=""; [ -z "$t2" ] || synced_after=", Synced $((t2 - ${t1:-$t2}))s after it"
+  echo "  $p3: transfer seen for $(( ${t1:-$SECONDS} - ${t0:-$SECONDS} ))s$synced_after, task(s):$tasks, state '$state'"
+  [ "$(echo $tasks | wc -w | tr -d ' ')" = 1 ] \
+    || { echo "  Swarm replaced $p3 during its transfer:$tasks"; docker service ps --no-trunc --format '    {{.Name}} {{.CurrentState}} {{.Error}}' "$p3" | sed -n 1,5p; exit 1; }
+  [ "$state" = Synced ] || { echo "  $p3 did not reach Synced"; docker logs --tail 20 "$(cid_of "$p3")" 2>&1 | sed 's/^/    /'; exit 1; }
+  [ -n "$t0" ] && [ -n "$t1" ] || { echo "  never saw $p3 receive a transfer, so this case tests nothing"; exit 1; }
+  [ $((t1 - t0)) -gt "$window" ] \
+    || { echo "  the transfer took $((t1 - t0))s, within the healthcheck's ${window}s window, so this case tests nothing"; exit 1; }
+  [ "$dns_mid" = yes ] \
+    || { echo "  tasks.${release}_$h3 never resolved mid-transfer, so the proxy was never offered the joiner"; exit 1; }
+
+  # Peer 3, Synced, takes connections: proof the client would have seen it earlier.
+  for _ in $(seq 1 30); do
+    docker logs "$client" 2>&1 | grep -E "^ok $h3 " >/dev/null && break
+    sleep 1
+  done
+  log="$(docker logs "$client" 2>&1)"
+  docker rm -f "$client" >/dev/null
+  grep -E "^ok $h3 " <<<"$log" >/dev/null || { echo "  $h3 got no connection through the proxy after it was Synced"; proxy_seen; exit 1; }
+  # A donor answers for the few seconds the proxy takes to mark it down; it is writable
+  # throughout. Only an error, or peer 3 answering before Synced, is a failure.
+  bad="$(grep -E "^err |^ok $h3 [^4]" <<<"$log" || true)"
+  [ -z "$bad" ] || { echo "  through the proxy, a client failed or reached $h3 before it was Synced:"; sort <<<"$bad" | uniq -c | sed -n 1,5p | sed 's/^/    /'; proxy_seen; exit 1; }
+  # Each replica marked peer 3 up first on a passed check, the Synced responder's 200,
+  # never on its return to DNS.
+  for c in $(replicas); do
+    first_up="$(h3_events "$c" | grep -F ' is UP' | sed -n 1p || true)"
+    grep -F 'check passed' <<<"$first_up" >/dev/null \
+      || { echo "  proxy container $c marked $h3 up other than by a passed check: '$first_up'"; proxy_seen; exit 1; }
+  done
+  echo "  ${release}: $want peers, all Synced, cross-peer write replicated, $h3 received a $((t1 - t0))s state transfer (window ${window}s) while in DNS without Swarm replacing it, and the proxy sent it $(grep -cE "^ok $h3 " <<<"$log") of $(wc -l <<<"$log" | tr -d ' ') queries, every one once Synced$metrics_ok OK"
+  exit 0
+fi
+
 # With the proxy fixture, the thing worth proving is not that the cluster formed —
 # the assertions above already did that — but that the CLIENT ENDPOINT keeps
 # working while a peer is gone. That is the claim the proxy exists to make, and it

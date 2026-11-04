@@ -121,6 +121,28 @@ deliberately still calls that peer healthy (see the healthcheck note below), and
 proxy simply declines to route to it. That split is the whole point — one layer
 decides *alive*, the other decides *good to serve*.
 
+The same split lets the proxy protect a peer **receiving** a state transfer. With the
+proxy on, that peer reports healthy for as long as its transfer runs, so Swarm never
+kills it partway through, however long the dataset takes to copy. Without the proxy it
+cannot: Swarm's health also decides who is in the `mariadb` alias, so a joiner fails
+the check until it can serve, and a transfer that outlasts
+`healthcheck.startPeriod + interval × retries` is killed and starts over. Healthy
+means published, so from the start of the transfer:
+
+- `tasks.<release>_<peer>` and the peer's own name lead to it, and a client using
+  either has its connection refused until the transfer is done. Only the proxy is
+  safe to connect through.
+- The proxy routes it nothing until it is `Synced`. Each replica counts a peer up only
+  after a passed check, also when the peer reappears in DNS, where HAProxy would
+  otherwise count it up until its first check.
+- Its exporter shows `mysql_up 0`.
+- An upgrade treats it as up; see *Upgrading the image*.
+
+The exemption lasts only while the peer's transfer script runs. A transfer killed
+outright leaves its `sst_in_progress` marker behind, and that marker alone keeps no
+peer healthy. Once the script ends the peer is back on the ordinary check, with
+`interval × retries` to pass it.
+
 The responder uses `socat`, `gosu` and the `mariadb` client already in the image, so
 it adds no package and no sidecar, and it listens only inside the peer on
 `proxy.checkPort` (never published). The proxy itself is stateless and runs
@@ -350,8 +372,8 @@ every target, and the alerts carry it. Another Prometheus needs the same relabel
 | `healthcheck.interval` | `10s` | Probe interval. |
 | `healthcheck.timeout` | `5s` | Probe timeout. |
 | `healthcheck.retries` | `6` | Failures before unhealthy. |
-| `healthcheck.startPeriod` | `300s` | Grace period — **must exceed your worst-case state transfer**. |
-| `healthcheck.monitor` | `360s` | Rollout failure window; see below. |
+| `healthcheck.startPeriod` | `300s` | Grace period — **without the proxy, must exceed your worst-case state transfer**. |
+| `healthcheck.monitor` | `360s` | Rollout failure window, and how long an upgrade waits on each peer; see below. |
 | `stopGracePeriod` | `5m` | How long Swarm waits for a peer to stop cleanly before killing it. |
 | `extraArgs` | `[]` | Extra `mariadbd` flags, appended verbatim. |
 | `extraConfig` | `""` | A my.cnf snippet written to `/etc/mysql/conf.d/` on every peer. InnoDB sizing goes here. See *Server configuration*. |
@@ -518,6 +540,14 @@ at a time, in order, each healthy and past `healthcheck.monitor` before the next
 and the cluster keeps quorum throughout. An upgrade that changes every peer
 therefore takes about three peer restarts plus three monitor windows. A peer that
 is down is not waited for, so the recovery above still reaches every peer at once.
+
+With the proxy on, a peer receiving a full state transfer counts as healthy, so the
+upgrade moves to the next peer once `healthcheck.monitor` has passed, whether or not
+that transfer has finished. If the next peer is its donor, stopping it aborts the
+transfer. A restarted peer normally catches up from a donor's gcache (IST) in
+seconds, and needs a full transfer only when it missed more writes than
+`gcache.size` holds. If that can happen during your upgrades, raise
+`healthcheck.monitor` past your restore time.
 
 That needs swarmcli 2.2.0 or later, which this chart declares. An older swarmcli
 refuses the chart; forced through with `--skip-compat-check`, it updates every peer
@@ -737,12 +767,13 @@ state transfer replaces the data dir, so a freshly synced peer would fail its ow
 healthcheck forever — reporting `Access denied for user 'root'@'localhost'` while
 being perfectly healthy — until Swarm killed it.
 
-`startPeriod` matters more here than in a single-node chart. A joining peer cannot
-serve until its state transfer finishes, so it fails the check for the whole
-transfer; if the grace period expires first, Swarm kills it mid-transfer and
-restarts it into the same transfer — forever. Raise `startPeriod` (and `monitor`
-with it) well past the time a full restore of your dataset takes.
+Without the proxy, `startPeriod` matters more here than in a single-node chart. A
+joining peer cannot serve until its state transfer finishes, so it fails the check
+for the whole transfer; if the grace period expires first, Swarm kills it
+mid-transfer and restarts it into the same transfer — forever. Raise `startPeriod`
+(and `monitor` with it) well past the time a full restore of your dataset takes.
+With the proxy, the peer receiving a transfer reports healthy while it runs (see *The
+proxy endpoint*), so `startPeriod` need not grow with the data.
 
-That applies to the peer *receiving* a transfer. The peer sending one is covered by
-the choice of `--galera_ready` above, which is why a large donation does not put
-the donor on the same clock.
+The peer sending a transfer is covered by the choice of `--galera_ready` above, in
+either mode, which is why a large donation does not put the donor on the same clock.

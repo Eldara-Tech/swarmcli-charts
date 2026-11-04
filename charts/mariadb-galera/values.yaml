@@ -164,7 +164,8 @@ exposure:
 # own state. With it on, each peer runs a tiny responder that answers 200 only
 # while that peer is Synced, so a peer DONATING a state transfer is taken out of
 # rotation without being killed — the container healthcheck deliberately still
-# calls that peer healthy (see healthcheck below).
+# calls that peer healthy (see healthcheck below). So is a peer RECEIVING one, so
+# Swarm never kills a joiner mid-transfer, however long the transfer runs.
 #
 # The proxy is stateless, so it runs more than one replica and Swarm load-balances
 # across them; it is the one part of this chart that is safe to scale.
@@ -255,19 +256,23 @@ resources:
 # Container healthcheck via the image's healthcheck.sh. --connect tests the TCP
 # port and --galera_ready requires WSREP_READY=ON — connected to a primary
 # component and able to serve — so a peer counts as healthy once it can actually
-# take queries rather than merely listening. The one exception is a peer electing
+# take queries rather than merely listening. One exception is a peer electing
 # while no peer is up, which reports healthy without running mariadbd (README.md §
-# How bootstrapping decides).
+# How bootstrapping decides). The other, only with proxy.enabled, is a peer
+# RECEIVING a state transfer, healthy for as long as it runs: the proxy routes it
+# nothing until it is Synced (README.md § The proxy endpoint).
 #
 # NOT --galera_online (Synced): a peer donating a state transfer is Donor/Desynced
 # for the whole transfer while staying writable, and the strict check would have
 # Swarm kill it mid-transfer. See the template for the full reasoning.
 #
-# startPeriod MUST cover the worst case for a joining peer, which is a full state
-# transfer of the whole dataset from another peer. Until it expires a failing
-# check does not count, so this is what stops Swarm killing a peer in the middle
-# of a transfer and restarting it into the same transfer forever. 120s suits a
-# small dataset; raise it well past your restore time as the data grows.
+# Without the proxy, startPeriod MUST cover the worst case for a joining peer, which
+# is a full state transfer of the whole dataset from another peer. Until it expires a
+# failing check does not count, so this is what stops Swarm killing a peer in the
+# middle of a transfer and restarting it into the same transfer forever. 120s suits a
+# small dataset; raise it well past your restore time as the data grows. With the
+# proxy, the transfer is exempt and startPeriod covers the rest of a start: a first
+# initialisation, InnoDB crash recovery.
 healthcheck:
   enabled: true
   interval: 10s
@@ -279,6 +284,11 @@ healthcheck:
   # (300s start_period + 10s interval x 6 retries = 360s) or a container that goes
   # unhealthy after the window does not fail the deploy. Raise it if you raise the
   # values above.
+  #
+  # It is also how long an upgrade waits on each peer before the next. With
+  # proxy.enabled a peer receiving a full state transfer counts as up, so the upgrade
+  # moves on once this has passed, transfer finished or not. Raise it past your
+  # restore time if a restarted peer can need one (README.md § Upgrading the image).
   monitor: 360s
 
 # How long Swarm waits for a peer to stop before killing it. A clean shutdown flushes
