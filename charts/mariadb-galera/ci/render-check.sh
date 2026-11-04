@@ -36,7 +36,7 @@ if [ "$case_name" = "five-peers" ]; then want_peers=5; fi
 # peers only.
 proxy_svc=""
 all="$(yq -r '.services | keys | .[]' "$f")"
-if [ "$case_name" = "proxy" ] || [ "$case_name" = "proxy-published" ] || [ "$case_name" = "single-writer" ]; then
+if [ "$case_name" = "proxy" ] || [ "$case_name" = "proxy-published" ] || [ "$case_name" = "single-writer" ] || [ "$case_name" = "slow-sst" ]; then
   proxy_svc="$(printf '%s\n' "$all" | { grep -E -- '-proxy$' || true; })"
   [ -n "$proxy_svc" ] || err "the proxy fixture rendered no proxy service"
 elif grep -qE -- '-proxy$' <<<"$all"; then
@@ -167,6 +167,10 @@ if [ -n "$proxy_svc" ]; then
   for s in $svcs; do
     grep -Eq "server $s tasks\.[^ ]+_$s:[0-9]+ check port $port" <<<"$cfg" \
       || err "peer $s is not a proxy backend at its task address, checked on the responder port $port"
+    # Up only once a check passed: else a peer back in DNS counts as up until its first
+    # check, and a joiner is in DNS for its whole state transfer when the proxy is on.
+    grep -Eq "^ *server $s .* init-state down( |$)" <<<"$cfg" \
+      || err "proxy counts $s up before its first check"
     grep -Fq 'galera-synced-check' <<<"$(yq -r ".services.\"$s\".command[0]" "$f")" \
       || err "peer $s does not run the Synced responder the proxy checks"
   done
@@ -181,10 +185,6 @@ if [ -n "$proxy_svc" ]; then
     for s in $svcs; do
       grep -Eq "^ *server $s .* on-marked-down shutdown-sessions$" <<<"$cfg" \
         || err "single-writer proxy keeps connections to $s after marking it down"
-      # Up only once a check passed: else a replica just started sends writes to peer 1
-      # for the 2s before its first check, Donor or not.
-      grep -Eq "^ *server $s .* init-state down " <<<"$cfg" \
-        || err "single-writer proxy counts $s up before its first check"
     done
     # In peer order: `balance first` picks by position, so the order IS the writer rule.
     [ "$(grep -oE '^ *server [^ ]+' <<<"$cfg" | awk '{print $2}' | tr '\n' ' ')" = "$(echo $svcs) " ] \
@@ -247,8 +247,13 @@ for s in $svcs; do
   hc="$(yq -r ".services.\"$s\".healthcheck.test // [] | join(\" \")" "$f")"
   # Exact, not a prefix: `--su-mysql` on its own runs no tests at all and would
   # report healthy unconditionally. The chart owns this list entirely, so there is
-  # no legitimate variation to allow for.
-  want_hc='CMD-SHELL test -e /tmp/galera-electing || exec healthcheck.sh --su-mysql --connect --galera_ready'
+  # no legitimate variation to allow for. A joiner mid-transfer passes only with the
+  # proxy on: without it, DNS would hand clients a peer that cannot serve.
+  if [ -n "$proxy_svc" ]; then
+    want_hc="CMD-SHELL test -e /tmp/galera-electing || { test -e /var/lib/mysql/sst_in_progress && pgrep -f 'wsrep_sst_[m]ariabackup --role joiner' >/dev/null; } || exec healthcheck.sh --su-mysql --connect --galera_ready"
+  else
+    want_hc='CMD-SHELL test -e /tmp/galera-electing || exec healthcheck.sh --su-mysql --connect --galera_ready'
+  fi
   if [ -n "$hc" ] && [ "$hc" != "$want_hc" ]; then
     err "$s: healthcheck is '$hc', expected '$want_hc' — --su-mysql must come first (the script re-execs and drops earlier options) and the probe must be --galera_ready, not --galera_online, which would kill donors"
   fi

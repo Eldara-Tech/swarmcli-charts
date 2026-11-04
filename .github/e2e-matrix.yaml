@@ -79,6 +79,10 @@ include:
   # returns with connections held open, the events controller moving a listed event along,
   # and an app stack reaching the proxy over the overlay.
   - { chart: mariadb-galera, name: "mariadb-galera events", cases: "events single-writer",                            timeout: 25m }
+  # mariadb-galera slow state transfer, a job of its own: a joiner whose transfer, its donors
+  # throttled, outlasts the healthcheck's window keeps its task while DNS publishes it, and
+  # the proxy routes it nothing until it is Synced.
+  - { chart: mariadb-galera, name: "mariadb-galera slow-sst", cases: "slow-sst",                                      timeout: 20m }
   # postgres: EVERY fixture (cases: "" => no filter). bind-mount is included, unlike
   # mariadb's: PGDATA sits one level below the mount (/var/lib/postgresql/<major>/docker),
   # so initdb never has to chown or empty the bind-mounted mountpoint itself. legacy-major
