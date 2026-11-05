@@ -294,7 +294,9 @@ healthcheck:
 # How long Swarm waits for a peer to stop before killing it. A clean shutdown flushes
 # the buffer pool and records the peer's position in grastate.dat; a peer killed
 # partway is left at seqno -1, as after a crash, and needs --wsrep-recover. Raise it
-# for a buffer pool of many gigabytes.
+# for a buffer pool of many gigabytes. An update starts the replacement after at most
+# a minute whatever this says; the new container then waits for the old one to exit
+# and release the data dir (README.md § Upgrading the image).
 stopGracePeriod: 5m
 
 # Arbitrary extra mariadbd flags, appended verbatim after the chart's own. Each

@@ -549,6 +549,15 @@ seconds, and needs a full transfer only when it missed more writes than
 `gcache.size` holds. If that can happen during your upgrades, raise
 `healthcheck.monitor` past your restore time.
 
+A peer that takes more than a minute to stop overlaps its replacement: an update
+starts the new task after a minute, whatever `stopGracePeriod` says. Each peer's
+container therefore holds a lock on its data dir for its whole life. The new one waits
+for the old one to exit, logging `waiting for the previous container of this peer to
+release its data dir` once a minute, rather than start a second `mariadbd` on the same
+files, which fails with `Unable to lock ./ibdata1 error: 11`. The wait lasts at most the old
+container's `stopGracePeriod`. On storage that cannot take the lock, the peer logs
+`cannot lock the data dir` and starts without this protection.
+
 That needs swarmcli 2.2.0 or later, which this chart declares. An older swarmcli
 refuses the chart; forced through with `--skip-compat-check`, it updates every peer
 together, a full stop with no peer holding `safe_to_bootstrap: 1`.

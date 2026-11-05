@@ -164,6 +164,29 @@ services:
         # for the cluster would sit out the whole stop_grace_period on every stop. Once
         # mariadbd is exec'd it handles SIGTERM itself.
         trap 'exit 0' TERM INT
+        # One container per data dir, before anything below touches it. During an update
+        # Swarm starts the replacement after waiting at most a minute for the old task to
+        # stop, and stop_grace_period gives the old one longer, so both can run at once:
+        # the new mariadbd then dies on `Unable to lock ./ibdata1 error: 11`. So each
+        # container holds an exclusive lock on the data dir for its whole life, taken here
+        # and kept through the exec at the end, and a new one waits for the old one to
+        # exit. The directory, not a file in it: a state transfer deletes every file in
+        # the data dir. Storage that cannot lock (some network filesystems) starts the
+        # peer unprotected, as before.
+        exec 9</var/lib/mysql
+        LOCKED=-60
+        while :; do
+          RC=0
+          flock -w 5 -E 75 9 || RC=$$?
+          [ "$$RC" = 75 ] || break
+          if [ $$((SECONDS - LOCKED)) -ge 60 ]; then
+            echo 'mariadb-galera: waiting for the previous container of this peer to release its data dir'
+            LOCKED=$$SECONDS
+          fi
+        done
+        if [ "$$RC" != 0 ]; then
+          echo "mariadb-galera: cannot lock the data dir (flock exit $$RC), so starting without protection from an overlapping container" >&2
+        fi
         # The state-transfer account. mariadb-backup connects to the DONOR peer to
         # stream its data dir; authenticating VIA unix_socket matches the account
         # against the OS user mysqld already runs as, so there is no password to
@@ -181,7 +204,7 @@ services:
         # always matches some live process in the NEW container (PID 1 is this
         # very shell). The script then waits 30s for "the previous SST" and exits
         # 114, on every restart, forever: one interrupted transfer wedges the peer
-        # permanently. At container start nothing of ours can be running, which is
+        # permanently. Behind the lock above nothing of ours can be running, which is
         # exactly what makes the file meaningless and safe to drop.
         rm -f /var/lib/mysql/wsrep_sst.pid
 {{- if $.Values.extraConfig }}
