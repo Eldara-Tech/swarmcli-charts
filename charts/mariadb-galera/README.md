@@ -558,8 +558,11 @@ files, which fails with `Unable to lock ./ibdata1 error: 11`. The wait lasts at 
 container's `stopGracePeriod`. On storage that cannot take the lock, the peer logs
 `cannot lock the data dir` and starts without this protection.
 
-That needs swarmcli 2.2.0 or later, which this chart declares. An older swarmcli
-refuses the chart; forced through with `--skip-compat-check`, it updates every peer
+Rolling the peers one at a time needs swarmcli 2.2.0 or later, and 2.2.2 also holds
+back a peer that is still starting, such as one just restarted or one receiving a state
+transfer without the proxy, rather than restart it together with the next peer, which
+leaves one peer of three running. This chart declares 2.2.2. An older swarmcli refuses the chart;
+forced through with `--skip-compat-check`, a swarmcli before 2.2.0 updates every peer
 together, a full stop with no peer holding `safe_to_bootstrap: 1`.
 
 Every peer can also restart without you changing the image. By default Swarm resolves
