@@ -145,6 +145,24 @@ stop_svc() {
   exit 1
 }
 
+# Removes every container a stopped service still lists, so its volume can go. Swarm
+# reaps old task containers on its own, and `docker rm -f` on one it is already removing
+# fails with "removal of container … is already in progress", so that is tolerated and
+# the containers' absence is what counts.
+rm_containers() {
+  local c i
+  for c in $(docker ps -aq -f "label=com.docker.swarm.service.name=$1"); do
+    docker rm -f "$c" >/dev/null 2>&1 || true
+  done
+  for i in $(seq 1 30); do
+    [ -z "$(docker ps -aq -f "label=com.docker.swarm.service.name=$1")" ] && return 0
+    sleep 1
+  done
+  echo "  $1: its containers were not removed"
+  docker ps -a -f "label=com.docker.swarm.service.name=$1"
+  exit 1
+}
+
 # 1. One leader, the rest streaming; one etcd cluster with one leader.
 wait_cluster "after install"
 e1="$(cid_of "$(printf '%s\n' $members | sed -n 1p)")"
@@ -381,7 +399,7 @@ if [ "$case" = lifecycle ]; then
   replica="$(for p in $peers; do [ "$p" = "${release}_${lead}" ] || echo "$p"; done | sed -n 1p)"
   vol="$(docker service inspect "$replica" --format '{{range .Spec.TaskTemplate.ContainerSpec.Mounts}}{{.Source}}{{end}}')"
   stop_svc "$replica"
-  for c in $(docker ps -aq -f "label=com.docker.swarm.service.name=$replica"); do docker rm -f "$c" >/dev/null; done
+  rm_containers "$replica"
   docker volume rm "$vol" >/dev/null
   docker service scale --detach "$replica=1" >/dev/null
   wait_cluster "after rebuilding $replica from an empty volume"
@@ -404,7 +422,7 @@ if [ "$case" = lifecycle ]; then
   # 6. An etcd member lost for good, replaced as README.md § Replacing an etcd member
   #    says: removed and re-added with etcdctl, then started empty with rejoinMembers.
   stop_svc "$m3"
-  for c in $(docker ps -aq -f "label=com.docker.swarm.service.name=$m3"); do docker rm -f "$c" >/dev/null; done
+  rm_containers "$m3"
   docker volume rm "${release}_postgres-patroni-etcd-3" >/dev/null
   e1="$(cid_of "$(printf '%s\n' $members | sed -n 1p)")"
   id="$(docker exec "$e1" etcdctl member list | awk -F', ' '$3 == "postgres-patroni-etcd-3" { print $1 }')"
@@ -429,7 +447,7 @@ if [ "$case" = lifecycle ]; then
   for m in $members; do docker service scale --detach "$m=0" >/dev/null; done
   for m in $members; do
     stop_svc "$m"
-    for c in $(docker ps -aq -f "label=com.docker.swarm.service.name=$m"); do docker rm -f "$c" >/dev/null; done
+    rm_containers "$m"
   done
   for k in $(seq 1 "$want_members"); do docker volume rm "${release}_postgres-patroni-etcd-$k" >/dev/null; done
   write_until 4 "etcd wiped" >/dev/null
