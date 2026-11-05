@@ -967,6 +967,8 @@ if [ "$case" = lifecycle ]; then
   #    must wait for the old one's lock on the data dir rather than start a second
   #    mariadbd on those files (`Unable to lock ./ibdata1`), so the update completes with no
   #    failed task, and the row written just before the freeze survives.
+  # Step 6 waited on the first peer's view; this one may still be catching up.
+  wait_cluster "$second" "before replacing $second beside its old container"
   q "$(cid_of "$second")" "REPLACE INTO e2e_galera.t VALUES (50, 'before-overlap')" >/dev/null
   old_c="$(cid_of "$second")"
   seqno="$(status_of "$old_c" 'WSREP_LAST_COMMITTED')"
