@@ -956,8 +956,50 @@ if [ "$case" = lifecycle ]; then
   elected_since "$before_containers" \
     || { echo "  the cluster re-formed after a crash, but not through an election"; exit 1; }
   rows_ok "$first_svc" 1 20 30 40
+
+  # 7. A replacement that starts while the old container still runs. A stop-first update
+  #    starts the new task after waiting at most a minute for the old one, and a frozen
+  #    old container lives until the fixture's stopGracePeriod (90s) runs out. It is
+  #    frozen the way a slow clean shutdown leaves it: Galera has recorded its position
+  #    in grastate.dat, so a replacement rejoins by IST on the same files, while InnoDB
+  #    still holds them. (At seqno -1 the replacement would take a full state transfer
+  #    instead, which replaces the files rather than opening them.) The new container
+  #    must wait for the old one's lock on the data dir rather than start a second
+  #    mariadbd on those files (`Unable to lock ./ibdata1`), so the update completes with no
+  #    failed task, and the row written just before the freeze survives.
+  q "$(cid_of "$second")" "REPLACE INTO e2e_galera.t VALUES (50, 'before-overlap')" >/dev/null
+  old_c="$(cid_of "$second")"
+  seqno="$(status_of "$old_c" 'WSREP_LAST_COMMITTED')"
+  before_tasks="$(docker service ps -q "$second" | sort)"
+  upd() { docker service inspect --format '{{if .UpdateStatus}}{{.UpdateStatus.StartedAt}} {{.UpdateStatus.State}}{{end}}' "$second"; }
+  before_upd="$(upd)"
+  docker kill --signal STOP "$old_c" >/dev/null
+  docker exec "$old_c" sed -i "s/^seqno:.*/seqno:   $seqno/" /var/lib/mysql/grastate.dat
+  docker service update --detach --force "$second" >/dev/null
+  st=""
+  for _ in $(seq 1 90); do
+    now_upd="$(upd)"
+    if [ "$now_upd" != "$before_upd" ]; then
+      st="${now_upd##* }"
+      [ "$st" = updating ] || break
+    fi
+    sleep 5
+  done
+  new_tasks="$(comm -13 <(echo "$before_tasks") <(docker service ps -q "$second" | sort))"
+  if [ "$st" != completed ] || [ "$(echo $new_tasks | wc -w | tr -d ' ')" != 1 ]; then
+    echo "  replacing $second while its old container still ran: update '$st', new task(s): $(echo $new_tasks)"
+    docker service ps --no-trunc --format '    {{.Name}} {{.CurrentState}} {{.Error}}' "$second" | sed -n 1,5p
+    for c in $(docker ps -aq -f "label=com.docker.swarm.service.name=$second" | sed -n 1,2p); do
+      docker logs "$c" 2>&1 | { grep -E 'Unable to lock|exclusive lock|\[ERROR\]' || true; } | tail -n 6 | sed 's/^/    /'
+    done
+    exit 1
+  fi
+  docker logs "$(cid_of "$second")" 2>&1 | grep -F 'waiting for the previous container of this peer to release its data dir' >/dev/null \
+    || { echo "  the new $second container never waited for the old one, so this step tests nothing"; exit 1; }
+  wait_cluster "$second" "after replacing $second beside its old container"
+  rows_ok "$second" 1 20 30 40 50
   rm -f "$extra" "$sizes"
-  lifecycle_ok=", rejoined, re-synced a rebuilt peer 1 with extraConfig's buffer pool, rolled an all-peer upgrade with quorum kept, elected a peer after a full stop and after a crash, and forced one with a peer lost"
+  lifecycle_ok=", rejoined, re-synced a rebuilt peer 1 with extraConfig's buffer pool, rolled an all-peer upgrade with quorum kept, elected a peer after a full stop and after a crash, forced one with a peer lost, and replaced one beside its old container, which it waited out"
 fi
 
 # With the events fixture: a scheduled event keeps running on the one peer that owns

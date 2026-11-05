@@ -98,6 +98,14 @@ for s in $svcs; do
     || err "$s: lost the hard failure when its own address cannot be determined"
   grep -Fq 'rm -f /var/lib/mysql/wsrep_sst.pid' <<<"$cmd" \
     || err "$s: lost the stale wsrep_sst.pid cleanup — a peer interrupted mid-transfer would refuse to retry forever"
+  # The data-dir lock comes before anything else that touches the data dir, or a
+  # replacement started while the old container still runs (a Swarm update waits at
+  # most a minute) acts on files the old mariadbd holds.
+  first_dd="$(grep -vE '^ *#' <<<"$cmd" | { grep -F '/var/lib/mysql' || true; } | sed -n 1p)"
+  [ "$(echo $first_dd)" = 'exec 9</var/lib/mysql' ] \
+    || err "$s: the first command to touch the data dir is '$(echo $first_dd)', not the data-dir lock"
+  grep -Eq '^ *flock -w [0-9]+ -E 75 9 ' <<<"$cmd" \
+    || err "$s: takes no lock on the data dir, so a replacement can run beside the old container"
   grep -Fq -- "--wsrep-sst-auth=mysql:" <<<"$cmd" \
     || err "$s: lost the passwordless unix_socket SST auth"
   # The gcomm list must name every peer, or a peer cannot find the cluster.
