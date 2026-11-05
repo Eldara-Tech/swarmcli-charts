@@ -1,0 +1,12 @@
+# The web UI routed through the in-repo traefik chart as a real edge (ci/e2e-setup.sh
+# stands it up), with the S3 API unrouted. Plain HTTP (tls:false), as in `edge`.
+# ingress.host is set only so ci/e2e-check.sh can prove the edge does NOT route it.
+admin:
+  enabled: true
+  exposure:
+    mode: traefik
+  ingress:
+    host: admin.e2e.test
+    tls: false
+ingress:
+  host: s3.e2e.test

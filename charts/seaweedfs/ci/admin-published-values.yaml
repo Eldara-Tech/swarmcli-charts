@@ -1,0 +1,8 @@
+# The web UI published on the routing mesh under a different number, the S3 API
+# overlay-only.
+admin:
+  enabled: true
+  exposure:
+    mode: published
+  publish:
+    port: 24646
