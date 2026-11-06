@@ -93,6 +93,91 @@ if [ "$case" = "bind-mount" ]; then
   fi
 fi
 
+# --- sso fixture: Vaultwarden discovers the provider at the first authorize request, so
+# convergence proves only that the settings parsed and the secret file was readable (it
+# refuses to start otherwise). Make that request — as the web vault would — and assert it
+# is sent on to the stub's authorization endpoint for the chart's client, with the callback
+# derived from DOMAIN and the configured scopes. Then prove the secret reached Vaultwarden
+# only as a file. sso-ca runs the same checks against the https stub, whose certificate
+# comes from a private CA: there the redirect also proves Vaultwarden trusts caBundle. ------
+if [ "$case" = "sso" ] || [ "$case" = "sso-ca" ]; then
+  idp_auth='http://vw-e2e-idp:8080/realms/e2e/protocol/openid-connect/auth?'
+  [ "$case" = "sso-ca" ] && idp_auth='https://vw-e2e-idp-tls:8443/realms/e2e/protocol/openid-connect/auth?'
+  cb='redirect_uri=https%3A%2F%2Fvaultwarden-sso.e2e.test%2Fidentity%2Fconnect%2Foidc-signin'
+  q='client_id=web&redirect_uri=https%3A%2F%2Fvaultwarden-sso.e2e.test%2Fsso-connector.html&state=e2e-state'
+  q="${q}&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256"
+  got="$(docker exec "$cid" curl -s -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 10 \
+    "http://127.0.0.1:80/identity/connect/authorize?${q}" 2>/dev/null || true)"
+  code="${got%% *}"
+  loc="${got#* }"
+  case "$code" in
+    3??) ;;
+    *) echo "  FAIL: /identity/connect/authorize answered '$code', not a redirect — was the stub provider discovered? (docker service logs ${release}_vaultwarden)"; exit 1 ;;
+  esac
+  case "$loc" in
+    "$idp_auth"*) ;;
+    *) echo "  FAIL: the login redirected to '${loc:-<nothing>}', not to the stub's authorization endpoint"; exit 1 ;;
+  esac
+  for want in 'client_id=vaultwarden-e2e' "$cb" 'scope=[^&]*offline_access' 'code_challenge_method=S256'; do
+    if ! grep -E "[?&]${want}(&|\$)" <<<"$loc" >/dev/null; then
+      echo "  FAIL: the authorization request lacks ${want}: $loc"
+      exit 1
+    fi
+  done
+  echo "  sso: the login redirects to the stub with client_id vaultwarden-e2e, the oidc-signin callback on DOMAIN and the configured scopes"
+
+  # /identity/connect/authorize answers whether or not SSO is on; prevalidate, which the
+  # web vault calls first, hands out a token only when it is.
+  pre="$(docker exec "$cid" curl -s --max-time 10 http://127.0.0.1:80/identity/sso/prevalidate 2>/dev/null || true)"
+  if ! grep -F '"token":' <<<"$pre" >/dev/null; then
+    echo "  FAIL: /identity/sso/prevalidate handed out no token, so SSO is not enabled in the running config: ${pre:-<empty>}"
+    exit 1
+  fi
+  echo "  sso: enabled in the running config (/identity/sso/prevalidate hands out a token)"
+
+  if ! pid1_env "$cid" | grep -xF "SSO_CLIENT_SECRET_FILE=/run/secrets/vaultwarden_sso_client_secret" >/dev/null; then
+    echo "  FAIL: PID 1 does not carry SSO_CLIENT_SECRET_FILE=/run/secrets/vaultwarden_sso_client_secret"
+    exit 1
+  fi
+  if pid1_env "$cid" | grep -E '^SSO_CLIENT_SECRET=' >/dev/null; then
+    echo "  FAIL: SSO_CLIENT_SECRET is in PID 1's environment — the secret must only be read from its file"
+    exit 1
+  fi
+  # Compared against the secret the task mounts, not a known value: setup keeps a secret left
+  # over from an earlier run, which would make a check against the default pass vacuously.
+  sso_secret="$(docker exec "$cid" cat /run/secrets/vaultwarden_sso_client_secret 2>/dev/null || true)"
+  if [ -z "$sso_secret" ]; then
+    echo "  FAIL: the task mounts no (or an empty) /run/secrets/vaultwarden_sso_client_secret"
+    exit 1
+  fi
+  if { docker service inspect "${release}_vaultwarden"; docker inspect "$cid"; } | grep -F -- "$sso_secret" >/dev/null; then
+    echo "  FAIL: the SSO client secret is visible in docker inspect"
+    exit 1
+  fi
+  echo "  sso: the client secret is mounted, read through SSO_CLIENT_SECRET_FILE, and absent from docker inspect"
+fi
+
+# --- sso-ca fixture: discovery over https already proved the private CA is trusted (the
+# redirect above). What it cannot show is that the public CAs still are — the push relay,
+# HIBP, icons and a public SMTP relay depend on them — so count: the bundle PID 1 was handed
+# must be the image's whole system bundle plus the mounted CA. -----------------------------
+if [ "$case" = "sso-ca" ]; then
+  if ! pid1_env "$cid" | grep -xF "SSL_CERT_FILE=/tmp/ca-bundle.crt" >/dev/null; then
+    echo "  FAIL: PID 1 does not carry SSL_CERT_FILE=/tmp/ca-bundle.crt"
+    exit 1
+  fi
+  # grep -c prints 0 itself on no match; empty means the file could not be read at all.
+  certs() { local n; n="$(docker exec "$cid" grep -c 'BEGIN CERTIFICATE' "$1" 2>/dev/null || true)"; echo "${n:-0}"; }
+  sys="$(certs /etc/ssl/certs/ca-certificates.crt)"
+  ca="$(certs /run/configs/vaultwarden-ca.pem)"
+  all="$(certs /tmp/ca-bundle.crt)"
+  if [ "$ca" -lt 1 ] || [ "$sys" -lt 1 ] || [ "$all" -ne $((sys + ca)) ]; then
+    echo "  FAIL: /tmp/ca-bundle.crt holds $all certificates, expected the system bundle's $sys plus the mounted CA's $ca"
+    exit 1
+  fi
+  echo "  sso-ca: the private CA is trusted (discovery over https worked) and the bundle keeps all $sys public CAs beside it"
+fi
+
 # --- edge fixture: prove a request routes THROUGH the stood-up traefik edge. The probe
 # above proved the app serves; now assert it is reachable via the edge with a matching
 # Host header, and that an unknown host 404s. ------------------------------------------

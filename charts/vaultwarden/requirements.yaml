@@ -29,4 +29,8 @@ secrets:
     description: "auth.adminToken.enabled=true only - ADMIN_TOKEN Argon2id PHC secret"
   - name: "{{ .Values.smtp.password.secretName }}"
     description: "smtp.enabled=true and smtp.password.enabled=true only - SMTP password secret"
-configs: []
+  - name: "{{ .Values.sso.clientSecretSecretName }}"
+    description: "sso.enabled=true only - OpenID Connect client secret, read through SSO_CLIENT_SECRET_FILE"
+configs:
+  - name: "{{ .Values.caBundle.configName }}"
+    description: "caBundle.enabled=true only - PEM CA certificate(s) added to Vaultwarden's trust store"
