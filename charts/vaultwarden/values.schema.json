@@ -139,6 +139,29 @@
       },
       "required": ["enabled", "host", "port", "from", "fromName", "username", "security", "timeout", "password"]
     },
+    "sso": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "authority": { "type": "string" },
+        "clientId": { "type": "string" },
+        "clientSecretSecretName": { "type": "string", "minLength": 1 },
+        "only": { "type": "boolean" },
+        "signupsAllowed": { "type": "boolean" },
+        "signupsMatchEmail": { "type": "boolean" },
+        "scopes": { "type": "string" },
+        "pkce": { "type": "boolean" }
+      },
+      "required": ["enabled", "authority", "clientId", "clientSecretSecretName", "only", "signupsAllowed", "signupsMatchEmail", "scopes", "pkce"]
+    },
+    "caBundle": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "configName": { "type": "string", "minLength": 1 }
+      },
+      "required": ["enabled", "configName"]
+    },
     "app": {
       "type": "object",
       "properties": {

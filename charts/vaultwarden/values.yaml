@@ -103,6 +103,41 @@ smtp:
     enabled: false
     secretName: vaultwarden_smtp_password
 
+# Single sign-on through an OpenID Connect provider (Keycloak, Authentik, ...). Register
+# <DOMAIN>/identity/connect/oidc-signin as the redirect URI with the provider, so DOMAIN
+# must be the URL users actually reach. SSO replaces the login step only: every user still
+# unlocks their vault with a master password. See the README's "Single sign-on".
+sso:
+  enabled: false
+  # The provider's issuer URL, without /.well-known/openid-configuration. It must equal the
+  # `issuer` of the discovery document exactly, e.g. https://keycloak.example.com/realms/main
+  authority: ""
+  clientId: ""
+  # EXTERNAL Swarm secret holding the client secret, which Vaultwarden reads itself through
+  # SSO_CLIENT_SECRET_FILE. It is required: Vaultwarden supports confidential clients only.
+  #   printf '%s' '<client secret>' | docker secret create vaultwarden_sso_client_secret -
+  clientSecretSecretName: vaultwarden_sso_client_secret
+  # Refuse email + master password logins, so every user signs in through the provider.
+  only: false
+  # Let a first SSO login create an account. Independent of app.signupsAllowed, which only
+  # governs the sign-up form.
+  signupsAllowed: true
+  # Associate a first SSO login with an existing account of the same email.
+  signupsMatchEmail: true
+  # Scopes requested besides the implicit openid, space-separated. "" => Vaultwarden's
+  # default, "email profile". Keycloak needs offline_access too to issue refresh tokens.
+  scopes: ""
+  pkce: true
+
+# Extra CA certificate(s) Vaultwarden trusts for its OUTBOUND TLS: an SSO provider or SMTP
+# relay whose certificate comes from a private CA, such as an internal Keycloak. The PEM
+# file is an EXTERNAL Swarm config (a CA certificate is not a secret), referenced only while
+# enabled. At start it is appended to the image's own bundle, so public CAs keep working:
+#   docker config create vaultwarden_ca_bundle ./ca.pem
+caBundle:
+  enabled: false
+  configName: vaultwarden_ca_bundle
+
 app:
   # Rendered as ENABLE_WEBSOCKET. (The older WEBSOCKET_ENABLED has been ignored
   # since Vaultwarden 1.29 — websockets share the main HTTP port now.)

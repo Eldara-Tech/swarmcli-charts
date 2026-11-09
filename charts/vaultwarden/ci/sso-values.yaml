@@ -1,0 +1,12 @@
+# Single sign-on against the stub OpenID provider ci/e2e-setup.sh stands up on traefik-public,
+# the overlay the default traefik exposure joins. Vaultwarden discovers the provider at the
+# first authorize request, not at start, so ci/e2e-check.sh makes one and asserts the redirect
+# it answers with. authority must equal the stub's discovery `issuer` byte for byte. The
+# scopes are set so the check can see SSO_SCOPES reach the authorization request.
+ingress:
+  host: vaultwarden-sso.e2e.test
+sso:
+  enabled: true
+  authority: http://vw-e2e-idp:8080/realms/e2e
+  clientId: vaultwarden-e2e
+  scopes: "email profile offline_access"

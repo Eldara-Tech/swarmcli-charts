@@ -287,10 +287,13 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   it has connected and migrated, so every keycloak fixture needs a reachable database.
   The `metrics` fixture scrapes `:9000/metrics` from the `monitoring` overlay, as Prometheus
   would, and asserts JVM and DB-pool series.
-- **vaultwarden** — the four dummy secrets + the data node label for every fixture, plus a
+- **vaultwarden** — the five dummy secrets + the data node label for every fixture, plus a
   throwaway PostgreSQL/MariaDB named `vw-postgres`/`vw-mariadb` for the `postgres`/`mysql`
   fixtures — deliberately *not* the plain `postgres`/`mariadb` names the keycloak and superset
-  hooks use, so the two never collide.
+  hooks use, so the two never collide — and, for `sso`, a stub OpenID provider `vw-e2e-idp`
+  on `traefik-public` serving a discovery document and an empty key set; `sso-ca` serves the
+  same over https as `vw-e2e-idp-tls`, with a certificate from a private CA the hook
+  generates and creates as the `vaultwarden_ca_bundle` config.
 - **superset** — the four operator secrets + the `superset-db-net`/`redis-net`/`traefik-public`
   overlays + a throwaway metadata database (PostgreSQL, or MySQL for the `mysql` fixture) and a
   password-protected `redis:7`. The `embedded-redis` fixture deliberately gets **no** Redis from
