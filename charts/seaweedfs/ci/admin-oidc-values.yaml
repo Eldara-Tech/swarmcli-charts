@@ -1,0 +1,23 @@
+# The web UI's OIDC login (admin.oidc) on the SeaweedFS Enterprise image, with the UI
+# overlay-only, so browserUrl is set as it must be without a route. The provider is the
+# store itself, as in the `oidc` fixture: ci/e2e-check.sh puts a discovery document in the
+# `idp` bucket, which the filer serves on the loopback issuer below, restarts weed admin
+# and follows the login button to the provider. Ephemeral, so no discovery document is left
+# on the shared data volume from an earlier run, or from the `oidc` fixture.
+image:
+  repository: chrislusf/seaweedfs-enterprise
+buckets:
+  - idp
+persistence:
+  enabled: false
+admin:
+  enabled: true
+  oidc:
+    enabled: true
+    issuer: http://127.0.0.1:8888/buckets/idp
+    clientId: seaweedfs-admin
+    browserUrl: https://seaweedfs-admin.example.com
+    adminGroups:
+      - storage-admins
+    readonlyGroups:
+      - storage-auditors
