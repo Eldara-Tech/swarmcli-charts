@@ -237,6 +237,6 @@ discovery:
   enabled: true
   image:
     repository: wollomatic/socket-proxy
-    tag: "1.13.1"
+    tag: "1.13.2"
   # Host path of the Docker socket, mounted read-only by the socket-proxy and by cAdvisor.
   dockerSocket: /var/run/docker.sock
