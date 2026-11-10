@@ -164,10 +164,11 @@ traefik:
   certResolver: le
   constraintLabel: traefik-public
   redirectMiddleware: https-redirect
-  # htpasswd users for a basic-auth middleware on the public routers, required with
-  # auth.mode none in traefik mode. Generate the entry with
-  # `htpasswd -nbB <user> <password>` and DOUBLE every `$` (Compose eats single ones),
-  # e.g. "ops:$$2y$$05$$…". Empty => no middleware.
+  # htpasswd users for a basic-auth middleware on the public routers (traefik mode): a
+  # second gate in front of any auth.mode, and required with auth.mode none. It takes the
+  # Authorization header, so API clients sending bearer tokens are refused. Generate the
+  # entry with `htpasswd -nbB <user> <password>` and DOUBLE every `$` (Compose eats single
+  # ones), e.g. "ops:$$2y$$05$$…". Empty => no middleware.
   basicAuthUsers: ""
   entrypoints:
     http: http

@@ -4,11 +4,12 @@
 
 # These point oauth2-proxy at keycloak.example.com, which does not resolve, so the proxy
 # fails its OIDC discovery and never converges. Their differences (exposure mode, TLS,
-# extra networks, the data pin) are render-time contracts ci/render-check.sh asserts; the
-# mock fixture is the one that deploys.
+# extra networks, the data pin, basic auth) are render-time contracts ci/render-check.sh
+# asserts; the mock fixture is the one that deploys.
 default
 extra-network
 none
+oauth2-basic-auth
 published
 
 # Points at the operator's own proxy, which CI does not have; ci/render-check.sh asserts the

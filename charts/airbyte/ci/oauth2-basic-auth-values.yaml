@@ -1,0 +1,5 @@
+# oauth2-proxy behind Traefik's basic auth: ci/render-check.sh asserts the public HTTPS router
+# asks for the credentials before the login, and that Traefik strips them before oauth2-proxy.
+# The `$` characters are DOUBLED because Compose eats single ones.
+traefik:
+  basicAuthUsers: "ops:$$apr1$$e2eSalt1$$1s/hES2iWPor3OWxBdGX./"
