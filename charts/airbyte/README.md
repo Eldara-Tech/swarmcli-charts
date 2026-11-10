@@ -190,6 +190,20 @@ traefik:
   basicAuthUsers: "ops:$$2y$$05$$Q3Z…"
 ```
 
+## Basic auth in front of the login
+
+`traefik.basicAuthUsers` is not limited to `auth.mode: none`: in traefik mode it puts
+the same basic-auth middleware in front of oauth2-proxy or Airbyte's own login, so a
+visitor passes both. Traefik strips the `Authorization` header once the credentials
+match, so neither login sees the password. That header is the one bearer tokens travel
+in, so API clients relying on `oauth2.skipJwtBearerTokens` are refused with a 401 at
+the edge. A published port has no Traefik in front of it, and so no basic auth.
+
+```yaml
+traefik:
+  basicAuthUsers: "ops:$$2y$$05$$Q3Z…"   # htpasswd -nbB ops '<password>', every $ doubled
+```
+
 ## Workload Launcher Security
 
 Airbyte launches connector workloads dynamically. The workload launcher
@@ -252,7 +266,7 @@ after 30 minutes, and a pod whose image is still missing then fails. Kubernetes
 | `exposure.mode` | `traefik` | `traefik`, `published`, or `none` |
 | `exposure.network` / `.host` / `.tls` | `traefik-public` / `airbyte.example.com` / `true` | Ingress overlay and public address |
 | `exposure.publishedPort` | `8080` | Direct port of the entry service (OAuth2 proxy or server) when mode is `published` |
-| `traefik.basicAuthUsers` | `""` | htpasswd users for a basic-auth middleware on the public routers; required with `auth.mode: none` in traefik mode |
+| `traefik.basicAuthUsers` | `""` | htpasswd users for a basic-auth middleware on the public routers, in front of any `auth.mode` (see [Basic auth in front of the login](#basic-auth-in-front-of-the-login)); required with `auth.mode: none` in traefik mode |
 | `oauth2.issuerUrl` / `.clientId` | see `values.yaml` | OIDC discovery issuer and client ID |
 | `oauth2.clientSecretName` / `.cookieSecretName` | see `values.yaml` | External OIDC client and cookie-encryption secrets |
 | `oauth2.cookieName`, `.emailDomain`, `.trustedProxyIp`, `.scope` | see `values.yaml` | OAuth2 proxy cookie and OIDC request settings |

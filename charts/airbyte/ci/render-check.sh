@@ -90,6 +90,21 @@ case "$case" in
     ;;
 esac
 
+# traefik.basicAuthUsers in front of oauth2-proxy: the public HTTPS router asks for the
+# credentials before the login and the redirect router stays bare. Wherever the middleware
+# exists, Traefik strips the credentials once they match, so the password reaches neither
+# oauth2-proxy nor Airbyte.
+if [ "$case" = "oauth2-basic-auth" ]; then
+  labels="$(yq -r '.services["oauth2-proxy"].deploy.labels[]' "$out")"
+  printf '%s\n' "$labels" | grep -x 'traefik.http.routers.ci-https.middlewares=ci-auth,ci-headers' >/dev/null \
+    && printf '%s\n' "$labels" | grep -x 'traefik.http.routers.ci-http.middlewares=https-redirect' >/dev/null \
+    || { echo "  FAIL($case): oauth2-proxy's HTTPS router does not ask for basic auth before the login"; fail=1; }
+fi
+if grep -F 'basicauth.users=' "$out" >/dev/null; then
+  grep -E 'traefik\.http\.middlewares\.ci-auth\.basicauth\.removeheader=true$' "$out" >/dev/null \
+    || { echo "  FAIL($case): the basic-auth middleware passes the credentials on to the login behind it"; fail=1; }
+fi
+
 # auth.mode none refuses to serve Airbyte where nothing authenticates. Checked once, from the
 # default fixture, by rendering the two refused combinations.
 if [ "$case" = "default" ]; then

@@ -77,6 +77,9 @@
 {{- end }}
 {{- if $authMiddleware }}
 {{- $entry = append $entry (printf "traefik.http.middlewares.%s.basicauth.users=%s" $authMiddleware .Values.traefik.basicAuthUsers) }}
+{{- /* Nothing behind the edge reads the Basic header, which carries the password: oauth2-proxy
+       logs every one as an invalid bearer token, and Airbyte's own login may try it as a login. */}}
+{{- $entry = append $entry (printf "traefik.http.middlewares.%s.basicauth.removeheader=true" $authMiddleware) }}
 {{- end }}
 {{- if .Values.exposure.tls }}
 {{- $entry = append $entry (printf "traefik.http.middlewares.%s-headers.headers.customrequestheaders.X-Forwarded-Host=%s" $router .Values.exposure.host) }}
