@@ -220,16 +220,14 @@ on the edge if multi-gigabyte uploads fail part-way.
 ### Host clients and FUSE mounts
 
 A client running on a node rather than in a container, such as a
-[geesefs](https://github.com/yandex-cloud/geesefs) mount, reaches the S3 API through a
-published port. The console is exposed independently, so a routed console keeps its
-route:
+[geesefs](https://github.com/yandex-cloud/geesefs) mount, needs the S3 API on the node
+itself. `nodeProxy` gives it that beside any exposure mode, so a routed S3 API and a routed
+console keep their routes:
 
 ```yaml
-exposure:
-  mode: published
-publish:
-  port: 9002
-  mode: ingress   # the routing mesh: the port on every node, 127.0.0.1 included
+nodeProxy:
+  enabled: true
+  port: 9002      # the default
 ```
 
 ```bash
@@ -237,11 +235,22 @@ AWS_ACCESS_KEY_ID=… AWS_SECRET_ACCESS_KEY=… \
   geesefs --endpoint http://127.0.0.1:9002 <bucket> <mountpoint>
 ```
 
-Swarm cannot bind a published port to one address, so the port listens on every
-interface of every node, in plain HTTP: requests are signed, but their payloads are not
-encrypted. Keep it off the network with each node's firewall. In distributed mode the
-port is published in host mode, so only a node running a peer answers on it, with no
-failover to the other peers.
+It is a global HAProxy service, `<release>_rustfs-node-proxy`. One task per node publishes
+the port in host mode there and passes each connection over `network.name` to a peer whose
+`/health/ready` answers 200. In distributed mode a peer that is restarting, during a rolling
+upgrade for example, gets no new connections while the others carry on.
+`nodeProxy.placement.constraints` limits the nodes that run it, and so open the port. On a
+node, `curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:9002/health/ready` prints
+200 once a peer is ready.
+
+A standalone store whose S3 API is not routed can publish the API itself instead:
+`exposure.mode: published` with `publish.mode: ingress` puts the port on every node through
+the routing mesh, 127.0.0.1 included. That takes the S3 API off Traefik, since it has one
+`exposure.mode`; the console is exposed independently and keeps its route.
+
+Swarm cannot bind a published port to one address, so either way the port listens on every
+interface of those nodes, in plain HTTP: requests are signed, but their payloads are not
+encrypted. Keep it off the network with each node's firewall.
 
 ## Web console
 
@@ -429,7 +438,8 @@ invalid-state error. A published console keeps a browser on one node's peer by i
   slip into the manifest that way, and the bucket loop hands the key pair to `curl` on
   stdin, so it never appears in a process list.
 - Everything on `network.name`, and while either listener is traefik-routed everything
-  on `exposure.network`, can reach the S3 port (and the console port when enabled).
+  on `exposure.network`, can reach the S3 port (and the console port when enabled), and
+  with `nodeProxy` so can everything that reaches `nodeProxy.port` on a node running it.
   That is the intent; the key pair is what protects the data. In distributed mode that
   port also carries the peers' internode RPC, which RustFS signs with a secret derived
   from the key pair.
@@ -825,6 +835,12 @@ ignores it, except where its description says it is refused.
 | `traefik.redirectMiddleware` | `https-redirect` | HTTP→HTTPS middleware |
 | `traefik.idleTimeoutSeconds` | `120` | RustFS's idle-connection timeout while either listener is routed; must outlast Traefik's 90s |
 | `publish.port` / `publish.mode` | `9000` / `ingress` | S3 API published port (published mode); distributed mode needs mode `host`, on each peer's node |
+| `nodeProxy.enabled` | `false` | A global HAProxy publishing the S3 API in host mode on every node it runs on, beside any exposure mode ([Host clients and FUSE mounts](#host-clients-and-fuse-mounts)) |
+| `nodeProxy.port` | `9002` | The port it publishes on each node; must differ from `publish.port` and `console.publish.port` while those are published |
+| `nodeProxy.image.repository` | `haproxy` | Proxy image |
+| `nodeProxy.image.tag` | pinned in `values.yaml` | Proxy image tag (a concrete pin; Renovate maintains it) |
+| `nodeProxy.placement.constraints` | `[]` | The nodes it runs on, and so opens the port on; empty = every node |
+| `nodeProxy.resources.limits.memory` | `""` | Memory limit of each proxy task; empty = none |
 | `nofile` | `65536` | Open-file limit; `0` = daemon default |
 | `extraEnv` | `{}` | Extra `RUSTFS_*` environment (for every peer). Credentials, the listener addresses, every OIDC setting but the tuning ones ([Single sign-on](#single-sign-on)), while `metrics.enabled` the OTLP endpoints and export settings ([Metrics](#metrics)), and in distributed mode the cluster wiring, the erasure set width, the internode secret and the disk-check bypass ([Security](#security)) are refused; `RUSTFS_OBS_LOG_DIRECTORY`, `RUSTFS_CHECK_UPDATE`, `RUSTFS_HTTP1_HEADER_READ_TIMEOUT` and `RUSTFS_OUTBOUND_ALLOW_ORIGINS` override the chart's defaults |
 | `metrics.enabled` | `false` | An OpenTelemetry Collector RustFS (every peer) pushes its metrics to, labelled for Prometheus service discovery. See *Metrics*. |
