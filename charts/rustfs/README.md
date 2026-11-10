@@ -217,6 +217,32 @@ your own proxy, keep its upstream keep-alive below RustFS's timeout. Traefik's
 entrypoints also time out slow requests (v3's default `readTimeout` is 60s); raise it
 on the edge if multi-gigabyte uploads fail part-way.
 
+### Host clients and FUSE mounts
+
+A client running on a node rather than in a container, such as a
+[geesefs](https://github.com/yandex-cloud/geesefs) mount, reaches the S3 API through a
+published port. The console is exposed independently, so a routed console keeps its
+route:
+
+```yaml
+exposure:
+  mode: published
+publish:
+  port: 9002
+  mode: ingress   # the routing mesh: the port on every node, 127.0.0.1 included
+```
+
+```bash
+AWS_ACCESS_KEY_ID=… AWS_SECRET_ACCESS_KEY=… \
+  geesefs --endpoint http://127.0.0.1:9002 <bucket> <mountpoint>
+```
+
+Swarm cannot bind a published port to one address, so the port listens on every
+interface of every node, in plain HTTP: requests are signed, but their payloads are not
+encrypted. Keep it off the network with each node's firewall. In distributed mode the
+port is published in host mode, so only a node running a peer answers on it, with no
+failover to the other peers.
+
 ## Web console
 
 The console listens on `console.port` (9001) and serves its UI under
