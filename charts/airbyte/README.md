@@ -177,8 +177,8 @@ authenticates:
 
 - `exposure.mode: traefik` requires `traefik.basicAuthUsers`, a basic-auth
   middleware on the router. Generate the entry with
-  `htpasswd -nbB <user> <password>` and **double every `$`**, because Compose
-  eats single ones.
+  `htpasswd -nbB <user> '<password>' | sed 's/\$/$$/g'`, which doubles every `$`
+  because Compose eats single ones.
 - `exposure.mode: none` joins the server to `exposure.network` for your own
   proxy, which must authenticate and route to `<release>_server:8001`.
 - `exposure.mode: published` is refused.
@@ -201,7 +201,7 @@ the edge. A published port has no Traefik in front of it, and so no basic auth.
 
 ```yaml
 traefik:
-  basicAuthUsers: "ops:$$2y$$05$$Q3Z…"   # htpasswd -nbB ops '<password>', every $ doubled
+  basicAuthUsers: "ops:$$2y$$05$$Q3Z…"   # htpasswd -nbB ops '<password>' | sed 's/\$/$$/g'
 ```
 
 ## Workload Launcher Security
