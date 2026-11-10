@@ -57,6 +57,9 @@
 {{- if and $nodeProxy $consolePublished (eq (.Values.nodeProxy.port | int) (.Values.console.publish.port | int)) -}}
 {{-   fail "nodeProxy.port must differ from console.publish.port: both are published on the nodes" -}}
 {{- end -}}
+{{- if and $nodeProxy (eq (.Values.s3.port | int) 8405) -}}
+{{-   fail "s3.port 8405 is nodeProxy's health port: pick another s3.port" -}}
+{{- end -}}
 {{- if and $oidc (not $console) -}}
 {{-   fail "console.oidc.enabled needs console.enabled: the single sign-on login and its callback are the console's" -}}
 {{- end -}}
@@ -654,10 +657,15 @@ services:
 
   # nodeProxy: the S3 API on every node it runs on, for clients on the node itself. One task
   # per node publishes nodeProxy.port in host mode and passes each connection over
-  # network.name to a peer whose /health/ready answers 200, so a peer that is restarting, or
-  # a cluster without quorum, gets no new connections. TCP mode: requests pass through as
-  # they are, signatures included. The config travels in an env var and is written out at
-  # every start, as postgres-patroni's proxy does; `$$` is the compose escape for `$`.
+  # network.name to a peer whose /health/ready answers 200. A peer whose connection fails, or
+  # that fails two checks, is marked down at once, and a connection that cannot reach it is
+  # sent to another peer within a second. TCP mode: requests pass through as they are,
+  # signatures included. The config travels in an env var and is written out at every start,
+  # as postgres-patroni's proxy does; `$$` is the compose escape for `$`.
+  #
+  # Each peer is addressed by tasks.<release>_<service>, the task itself, as postgres-patroni's
+  # proxy does: a stopping peer's VIP loses its backend before the process stops, and
+  # connections to it hang, while the task's own address still answers, or refuses at once.
   rustfs-node-proxy:
     image: {{ .Values.nodeProxy.image.repository }}:{{ .Values.nodeProxy.image.tag }}
     networks:
@@ -687,17 +695,25 @@ services:
         defaults
           mode tcp
           log global
-          # Only connections that fail: a FUSE mount opens many, and each would be a line.
+          # Only connections that fail: a FUSE mount opens many, and each would be a line, and
+          # the container healthcheck's probe of the health frontend would be an error each time.
           option tcplog
           option dontlog-normal
-          timeout connect 5s
-          # Long enough for one large object on a slow link; an S3 client opens a new
-          # connection when an idle one is closed.
+          option dontlognull
+          # Overlay connects are local: a peer that does not answer within a second is gone,
+          # and every retry goes to another peer.
+          timeout connect 1s
+          retries 3
+          option redispatch 1
+          # Idle time only: a transfer that keeps moving is never cut. An S3 client opens a
+          # new connection when an idle one is closed.
           timeout client 10m
           timeout server 10m
-          # No on-marked-down shutdown-sessions: a transfer already running on a peer that
-          # stops answering /health/ready is left to finish.
-          default-server inter 3s fall 2 rise 2 resolvers docker resolve-prefer ipv4 init-addr none
+          # observe layer4: a failed connection marks the peer down without waiting for its
+          # checks. shutdown-sessions: a peer marked down loses its open connections too, so
+          # clients holding them reconnect to a ready peer rather than keep failing on one
+          # that is alive but not ready.
+          default-server inter 2s fall 2 rise 2 observe layer4 error-limit 1 on-error mark-down on-marked-down shutdown-sessions resolvers docker resolve-prefer ipv4 init-addr none
         # What the container healthcheck connects to.
         frontend health
           mode http
@@ -710,10 +726,10 @@ services:
           http-check expect status 200
 {{- if $distributed }}
 {{- range $i := until $peers }}
-          server {{ printf "%s-%d" $alias (add1 $i) }} {{ printf "%s-%d" $alias (add1 $i) }}:{{ $port }} check
+          server rustfs-{{ add1 $i }} tasks.{{ $.Release.Name }}_rustfs-{{ add1 $i }}:{{ $port }} check
 {{- end }}
 {{- else }}
-          server {{ $alias }} {{ $alias }}:{{ $port }} check
+          server rustfs tasks.{{ .Release.Name }}_rustfs:{{ $port }} check
 {{- end }}
     healthcheck:
       # HAProxy is up iff it is listening (it refuses to start if a bind fails). Whether a

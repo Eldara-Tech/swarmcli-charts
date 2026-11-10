@@ -222,12 +222,19 @@ on the edge if multi-gigabyte uploads fail part-way.
 A client running on a node rather than in a container, such as a
 [geesefs](https://github.com/yandex-cloud/geesefs) mount, needs the S3 API on the node
 itself. `nodeProxy` gives it that beside any exposure mode, so a routed S3 API and a routed
-console keep their routes:
+console keep their routes. Pin it to the nodes that mount, so no other node opens the port:
+
+```bash
+docker node update --label-add geesefs=true <node>
+```
 
 ```yaml
 nodeProxy:
   enabled: true
   port: 9002      # the default
+  placement:
+    constraints:
+      - node.labels.geesefs == true
 ```
 
 ```bash
@@ -237,11 +244,15 @@ AWS_ACCESS_KEY_ID=… AWS_SECRET_ACCESS_KEY=… \
 
 It is a global HAProxy service, `<release>_rustfs-node-proxy`. One task per node publishes
 the port in host mode there and passes each connection over `network.name` to a peer whose
-`/health/ready` answers 200. In distributed mode a peer that is restarting, during a rolling
-upgrade for example, gets no new connections while the others carry on.
-`nodeProxy.placement.constraints` limits the nodes that run it, and so open the port. On a
-node, `curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:9002/health/ready` prints
-200 once a peer is ready.
+`/health/ready` answers 200, addressing each peer's task directly. A connection that cannot
+reach a peer, one restarting during a rolling upgrade for example, goes to another peer
+within a second, and that peer is marked down. A peer that fails two checks also loses the
+connections open to it, so clients reconnect to a ready one. RustFS sees the proxy's address
+as the client's, in its log and in `aws:SourceIp` policy conditions. An update of the proxy
+itself (a `nodeProxy.*` value, a new image) stops each node's task before it starts the new
+one, so the port is closed on that node for a few seconds. On a node,
+`curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:9002/health/ready` prints 200
+once a peer is ready.
 
 A standalone store whose S3 API is not routed can publish the API itself instead:
 `exposure.mode: published` with `publish.mode: ingress` puts the port on every node through
@@ -250,7 +261,15 @@ the routing mesh, 127.0.0.1 included. That takes the S3 API off Traefik, since i
 
 Swarm cannot bind a published port to one address, so either way the port listens on every
 interface of those nodes, in plain HTTP: requests are signed, but their payloads are not
-encrypted. Keep it off the network with each node's firewall.
+encrypted. Docker forwards a published port before ufw's rules, or any INPUT rule, see it,
+so block it in the `DOCKER-USER` chain, matching the port the client dialled (Docker has
+already rewritten it to the container's), and persist the rule as your distribution does:
+
+```bash
+iptables -I DOCKER-USER -i <external interface> -p tcp -m conntrack --ctorigdstport 9002 --ctdir ORIGINAL -j DROP
+```
+
+A client on the node itself reaches 127.0.0.1:9002 without passing that chain.
 
 ## Web console
 

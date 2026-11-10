@@ -1,7 +1,7 @@
 # traefik-values.yaml plus nodeProxy, the shape #342 asks for: the S3 API and the console
 # stay on Traefik while every node also publishes the S3 API in host mode on 9002, for
-# clients on the node itself. Render-only (e2e-render-only): the live proxy is exercised
-# by distributed-lifecycle.
+# clients on the node itself. Placed and memory-limited, which distributed-lifecycle leaves
+# at the defaults. Render-only (e2e-render-only): distributed-lifecycle runs the proxy live.
 exposure:
   mode: traefik
 ingress:
@@ -18,3 +18,9 @@ buckets:
   - runner-cache
 nodeProxy:
   enabled: true
+  placement:
+    constraints:
+      - node.labels.geesefs == true
+  resources:
+    limits:
+      memory: 64M

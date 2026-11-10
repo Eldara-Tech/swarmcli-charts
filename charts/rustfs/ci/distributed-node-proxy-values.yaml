@@ -1,7 +1,8 @@
 # distributed-traefik-values.yaml plus nodeProxy, the shape #342 asks for: the S3 API and
 # the console stay on Traefik across the peers while every node also publishes the S3 API in
-# host mode on 9002, failing over between the peers. Render-only (e2e-render-only): the live
-# proxy is exercised by distributed-lifecycle.
+# host mode on 9002, failing over between the peers. Placed and memory-limited, which
+# distributed-lifecycle leaves at the defaults. Render-only (e2e-render-only):
+# distributed-lifecycle runs the proxy live.
 mode: distributed
 exposure:
   mode: traefik
@@ -19,3 +20,9 @@ buckets:
   - runner-cache
 nodeProxy:
   enabled: true
+  placement:
+    constraints:
+      - node.labels.geesefs == true
+  resources:
+    limits:
+      memory: 64M

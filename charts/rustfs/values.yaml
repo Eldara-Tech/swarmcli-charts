@@ -247,11 +247,13 @@ publish:
 # The S3 API on every node itself, for clients that run on the nodes rather than in a
 # container, such as a geesefs mount (README "Host clients and FUSE mounts"). enabled adds a
 # global HAProxy service, rustfs-node-proxy, that publishes port in host mode on each node it
-# runs on and passes every connection over network.name to a peer whose /health/ready answers,
-# so a peer that restarts is skipped. It sits beside every exposure mode: Traefik routes, the
-# console and a published port are left as they are. Swarm cannot bind a published port to
-# one address, so the port listens on every interface of those nodes in plain HTTP: keep it
-# off the network with each node's firewall.
+# runs on and passes every connection over network.name to a peer whose /health/ready answers;
+# a connection that cannot reach a restarting peer goes to another within a second. It sits
+# beside every exposure mode: Traefik routes, the console and a published port are left as
+# they are. Swarm cannot bind a published port to one address, so the port listens on every
+# interface of those nodes in plain HTTP, and Docker's iptables rules take it past ufw: pin
+# the proxy to the nodes that need it (placement) and block the port from outside in the
+# DOCKER-USER chain (README "Host clients and FUSE mounts").
 nodeProxy:
   enabled: false
   port: 9002

@@ -297,7 +297,7 @@ fi
 m='.services."rustfs-metrics"'
 services="$(q '.services | keys | join(" ")')"
 obs="RUSTFS_OBS_ENDPOINT RUSTFS_OBS_TRACES_EXPORT_ENABLED RUSTFS_OBS_LOGS_EXPORT_ENABLED RUSTFS_OBS_LOG_STDOUT_ENABLED"
-if [ -n "$proxy" ]; then "$(dirname "$0")/render-check-node-proxy.sh" "$rendered" 1 || fail=1; fi
+if [ -n "$proxy" ]; then "$(dirname "$0")/render-check-node-proxy.sh" "$rendered" 1 shaped || fail=1; fi
 if [ "$case" != "metrics" ]; then
   [ "$services" = "rustfs${proxy:+ rustfs-node-proxy}" ] || bad "case $case: services are '$services'; metrics and nodeProxy must be opt-in"
   [ "$(q '.networks.monitoring')" = "null" ] || bad "case $case: the monitoring overlay is declared although metrics are off"
@@ -367,13 +367,14 @@ if [ "$case" = "default" ]; then
     bad "release my_s3.x was refused: $(tr '\n' ' ' <"$tmp.err")"
   fi
   # nodeProxy publishes on the nodes, so it cannot take a port a published listener holds,
-  # and it dials the peers by the same alias as every other client.
+  # nor its health port, and it dials the task of the release's own service.
   refused 'nodeProxy.port must differ from publish.port' --set nodeProxy.enabled=true --set exposure.mode=published --set publish.port=9002
   refused 'nodeProxy.port must differ from console.publish.port' --set nodeProxy.enabled=true --set console.enabled=true \
     --set console.exposure.mode=published --set console.publish.port=9002
+  refused "s3.port 8405 is nodeProxy's health port" --set nodeProxy.enabled=true --set s3.port=8405
   if "${SWARMCLI:?render-check needs SWARMCLI to render the refusals}" charts template my_s3.x "$chart" --set nodeProxy.enabled=true >"$tmp" 2>"$tmp.err"; then
-    grep -Ex ' *server my-s3-x-rustfs my-s3-x-rustfs:9000 check' <<<"$(yq -r '.services."rustfs-node-proxy".environment.HAPROXY_CFG' "$tmp")" >/dev/null \
-      || bad "release my_s3.x: nodeProxy does not dial the alias my-s3-x-rustfs"
+    grep -Ex ' *server rustfs tasks\.my_s3\.x_rustfs:9000 check' <<<"$(yq -r '.services."rustfs-node-proxy".environment.HAPROXY_CFG' "$tmp")" >/dev/null \
+      || bad "release my_s3.x: nodeProxy does not dial tasks.my_s3.x_rustfs, the task of the release's service"
   else
     bad "release my_s3.x with nodeProxy on was refused: $(tr '\n' ' ' <"$tmp.err")"
   fi
