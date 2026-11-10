@@ -1,0 +1,28 @@
+# distributed-traefik-values.yaml plus nodeProxy, the shape #342 asks for: the S3 API and
+# the console stay on Traefik across the peers while every node also publishes the S3 API in
+# host mode on 9002, failing over between the peers. Placed and memory-limited, which
+# distributed-lifecycle leaves at the defaults. Render-only (e2e-render-only):
+# distributed-lifecycle runs the proxy live.
+mode: distributed
+exposure:
+  mode: traefik
+ingress:
+  host: s3-cluster.example.com
+  tls: true
+console:
+  enabled: true
+  exposure:
+    mode: traefik
+  ingress:
+    host: rustfs-console.example.com
+    tls: true
+buckets:
+  - runner-cache
+nodeProxy:
+  enabled: true
+  placement:
+    constraints:
+      - node.labels.geesefs == true
+  resources:
+    limits:
+      memory: 64M

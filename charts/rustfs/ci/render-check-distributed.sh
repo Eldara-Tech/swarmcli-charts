@@ -36,6 +36,11 @@ fail=0
 bad() { echo "    FAIL: $*" >&2; fail=1; }
 
 q() { yq -r "$1" "$rendered"; }
+# node-proxy is the traefik fixture plus nodeProxy: every traefik check runs on it, which
+# proves both routes survive the proxy, and ci/render-check-node-proxy.sh checks the proxy.
+# lifecycle turns nodeProxy on too, for the writer through it.
+proxy=""
+case "$case" in node-proxy) proxy=1; case=traefik ;; lifecycle) proxy=1 ;; esac
 case "$case" in multi-drive) peers=6; drives=2 ;; *) peers=4; drives=1 ;; esac
 PEERS="$(seq 1 "$peers" | tr '\n' ' ')"
 monitor=2m; [ "$case" = "lifecycle" ] && monitor=20s
@@ -46,8 +51,13 @@ env_() { q "$(p "$1").environment.$2"; }
 services="$(q '.services | keys | join(" ")')"
 want_services="$(for n in $PEERS; do printf 'rustfs-%s ' "$n"; done)"
 [ "$case" = "metrics" ] && want_services="${want_services}rustfs-distributed-metrics "
+[ -n "$proxy" ] && want_services="${want_services}rustfs-node-proxy "
 [ "$services " = "$(echo "$want_services" | tr ' ' '\n' | sed '/^$/d' | LC_ALL=C sort | tr '\n' ' ')" ] \
   || bad "services are '$services', expected $want_services"
+
+if [ -n "$proxy" ]; then
+  "$(dirname "$0")/render-check-node-proxy.sh" "$rendered" "$peers" "$([ "$case" = lifecycle ] || echo shaped)" || fail=1
+fi
 
 # ── one cluster: the same volume list everywhere, each peer naming itself in it ───────
 vols="$(env_ 1 RUSTFS_VOLUMES)"

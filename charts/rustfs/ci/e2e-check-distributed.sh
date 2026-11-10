@@ -38,8 +38,9 @@
 #
 # `buckets` additionally forces peer 1's task to restart and proves the object survives and
 # the bootstrap passes again over the buckets that now exist. `lifecycle` drives
-# `swarmcli charts upgrade` itself: an upgrade rolling every peer one at a time while a
-# client keeps writing, then every peer stopped together and started again.
+# `swarmcli charts upgrade` itself: an upgrade rolling every peer one at a time while two
+# clients keep writing, one through the shared alias and one through nodeProxy's port on the
+# node, then every peer stopped together and started again.
 set -euo pipefail
 
 release="$1"
@@ -409,7 +410,17 @@ if [ "$case" = "lifecycle" ]; then
   task_of() { docker service ps -q --filter desired-state=running "$(svc "$1")" | sed -n 1p; }
   tmp="$(mktemp -d)"
   writer="${release}-writer"
-  trap 'docker rm -f "$writer" >/dev/null 2>&1 || true; kill "${sampler:-}" 2>/dev/null || true; rm -rf "$tmp"' EXIT
+  nwriter="${release}-node-writer"
+  trap 'docker rm -f "$writer" "$nwriter" >/dev/null 2>&1 || true; kill "${sampler:-}" 2>/dev/null || true; rm -rf "$tmp"' EXIT
+  # nodeProxy's port on this node, from the host's network, the path a geesefs mount takes.
+  node_() { docker run --rm -i --network host "$CURL_IMAGE" -sS --max-time 15 "$@"; }
+  pcode=""
+  for _ in $(seq 1 30); do
+    pcode="$(node_ -o /dev/null -w '%{http_code}' http://127.0.0.1:9002/health/ready 2>/dev/null || true)"
+    [ "$pcode" = 200 ] && break
+    sleep 2
+  done
+  [ "$pcode" = 200 ] || die "nodeProxy's port 9002 on the node did not answer /health/ready within 60s (last: '$pcode')"
 
   # A client writing once a second through the shared alias, retrying as the README tells
   # clients to: the alias stops resolving to a peer once its task is gone, but a connection
@@ -419,6 +430,14 @@ if [ "$case" = "lifecycle" ]; then
     "i=0; while :; do i=\$((i+1)); printf x | curl -s -o /dev/null -w \"\$i %{http_code}\\n\" --max-time 10 \
       --retry 5 --retry-all-errors --retry-delay 1 --aws-sigv4 '$SIG' --user '$KEY:$SECRET' \
       -X PUT --data-binary @- 'http://${alias}:9000/$bucket/w/'\$i; sleep 1; done" >/dev/null
+  # A writer through nodeProxy, with one retry where the client above has five, and every
+  # write timed: the proxy itself must take new connections off a restarting peer within
+  # seconds, not leave them to the client's retries. Each line is "<n> <HTTP code> <seconds>".
+  docker rm -f "$nwriter" >/dev/null 2>&1 || true
+  docker run -d --name "$nwriter" --network host --entrypoint sh "$CURL_IMAGE" -c \
+    "i=0; while :; do i=\$((i+1)); s=\$(date +%s); c=\$(printf x | curl -s -o /dev/null -w '%{http_code}' --max-time 4 \
+      --retry 1 --retry-all-errors --retry-delay 1 --aws-sigv4 '$SIG' --user '$KEY:$SECRET' \
+      -X PUT --data-binary @- 'http://127.0.0.1:9002/$bucket/n/'\$i); echo \"\$i \$c \$((\$(date +%s) - s))\"; sleep 1; done" >/dev/null
   # Whether any peer reports the cluster writable, every 2 seconds: "-" when none does.
   (
     while :; do
@@ -443,7 +462,7 @@ if [ "$case" = "lifecycle" ]; then
     || die "the upgrade did not give every peer a new task (before: $(echo $before_tasks); after: $(echo $now_tasks))"
   sleep 4
   kill "$sampler"; wait "$sampler" 2>/dev/null || true; sampler=""
-  docker stop -t 2 "$writer" >/dev/null 2>&1 || true
+  docker stop -t 2 "$writer" "$nwriter" >/dev/null 2>&1 || true
   if grep -x -- - "$tmp/cluster" >/dev/null; then
     die "no peer reported the cluster writable at $(grep -cx -- - "$tmp/cluster") of $(wc -l <"$tmp/cluster" | tr -d ' ') samples during the upgrade; the peers did not roll one at a time"
   fi
@@ -453,6 +472,14 @@ if [ "$case" = "lifecycle" ]; then
   [ "$total" -ge 30 ] || die "the writer finished only $total writes during the upgrade: $(tail -3 <<<"$writes" | tr '\n' ';')"
   [ "$failed" = "0" ] || die "$failed of $total writes failed during the upgrade, even with retries: $(grep -vE ' 200$' <<<"$writes" | sed -n 1,5p | tr '\n' ';')"
   echo "  ok: the upgrade gave every peer a new task while the cluster stayed writable at every sample, and all $total writes succeeded"
+  writes="$(grep -E '^[0-9]+ [0-9]+ [0-9]+$' <<<"$(docker logs "$nwriter" 2>&1 || true)" || true)"
+  total="$(grep -c . <<<"$writes" || true)"
+  failed="$(awk '$2 != 200' <<<"$writes")"
+  slow="$(awk '$3 > 4' <<<"$writes")"
+  [ "$total" -ge 30 ] || die "the writer through nodeProxy finished only $total writes during the upgrade: $(tail -3 <<<"$writes" | tr '\n' ';')"
+  [ -z "$failed" ] && [ -z "$slow" ] \
+    || die "writes through nodeProxy failed or took over 4s while the peers rolled (<n> <code> <s>): $(printf '%s\n' "$failed" "$slow" | sed '/^$/d' | sort -un | sed -n 1,8p | tr '\n' ';')"
+  echo "  ok: all $total writes through nodeProxy's port on the node succeeded within 4s while every peer rolled"
   # Quorum alone does not tell one at a time from all at once on a cluster this small. The
   # order does: one at a time, each new task starts only after the one before has outlived
   # its 20s monitor window; all at once, they start within seconds of each other.
@@ -491,7 +518,14 @@ if [ "$case" = "lifecycle" ]; then
     done
     [ "$back" = "$payload" ] || die "after the full stop the object read back through peer $n as '${back:-<nothing>}'"
   done
-  echo "  ok: after every peer stopped together and started again, the cluster formed by itself and every peer serves the object"
+  back=""
+  for _ in $(seq 1 20); do
+    back="$(node_ --aws-sigv4 "$SIG" --user "$KEY:$SECRET" "http://127.0.0.1:9002/$bucket/dir/object.txt" 2>/dev/null || true)"
+    [ "$back" = "$payload" ] && break
+    sleep 3
+  done
+  [ "$back" = "$payload" ] || die "after the full stop the object read back through nodeProxy's port as '${back:-<nothing>}'"
+  echo "  ok: after every peer stopped together and started again, the cluster formed by itself and every peer, and nodeProxy's port, serves the object"
 fi
 
 echo "  rustfs distributed [$case]: all checks passed${metrics_ok}"

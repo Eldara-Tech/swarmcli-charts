@@ -244,6 +244,32 @@ publish:
   port: 9000
   mode: ingress
 
+# The S3 API on every node itself, for clients that run on the nodes rather than in a
+# container, such as a geesefs mount (README "Host clients and FUSE mounts"). enabled adds a
+# global HAProxy service, rustfs-node-proxy, that publishes port in host mode on each node it
+# runs on and passes every connection over network.name to a peer whose /health/ready answers;
+# a connection that cannot reach a restarting peer goes to another within a second. It sits
+# beside every exposure mode: Traefik routes, the console and a published port are left as
+# they are. Swarm cannot bind a published port to one address, so the port listens on every
+# interface of those nodes in plain HTTP, and Docker's iptables rules take it past ufw: pin
+# the proxy to the nodes that need it (placement) and block the port from outside in the
+# DOCKER-USER chain (README "Host clients and FUSE mounts").
+nodeProxy:
+  enabled: false
+  port: 9002
+  image:
+    repository: haproxy
+    # A concrete tag, not appVersion: this is a second image, and Renovate's
+    # helm-values manager maintains pins written here.
+    tag: "3.4"
+  # The nodes it runs on, and so opens the port on, e.g. ["node.labels.geesefs == true"].
+  # Empty: every node.
+  placement:
+    constraints: []
+  resources:
+    limits:
+      memory: ""
+
 # Open-file limit for the RustFS process. Below 16384 RustFS disables its per-disk
 # file-descriptor cache, which costs performance. 0 leaves the daemon's default.
 # Applied by `docker stack deploy` from Docker 23 on.
