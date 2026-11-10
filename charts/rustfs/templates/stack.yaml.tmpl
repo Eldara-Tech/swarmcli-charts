@@ -50,6 +50,13 @@
 {{- if and (eq .Values.exposure.mode "published") $consolePublished (eq (.Values.console.publish.port | int) (.Values.publish.port | int)) -}}
 {{-   fail "console.publish.port must differ from publish.port" -}}
 {{- end -}}
+{{- $nodeProxy := .Values.nodeProxy.enabled -}}
+{{- if and $nodeProxy (eq .Values.exposure.mode "published") (eq (.Values.nodeProxy.port | int) (.Values.publish.port | int)) -}}
+{{-   fail "nodeProxy.port must differ from publish.port: both are published on the nodes" -}}
+{{- end -}}
+{{- if and $nodeProxy $consolePublished (eq (.Values.nodeProxy.port | int) (.Values.console.publish.port | int)) -}}
+{{-   fail "nodeProxy.port must differ from console.publish.port: both are published on the nodes" -}}
+{{- end -}}
 {{- if and $oidc (not $console) -}}
 {{-   fail "console.oidc.enabled needs console.enabled: the single sign-on login and its callback are the console's" -}}
 {{- end -}}
@@ -641,6 +648,106 @@ services:
       labels:
         - "prometheus.io/scrape=true"
         - "prometheus.io/port=8889"
+{{- end }}
+
+{{- if $nodeProxy }}
+
+  # nodeProxy: the S3 API on every node it runs on, for clients on the node itself. One task
+  # per node publishes nodeProxy.port in host mode and passes each connection over
+  # network.name to a peer whose /health/ready answers 200, so a peer that is restarting, or
+  # a cluster without quorum, gets no new connections. TCP mode: requests pass through as
+  # they are, signatures included. The config travels in an env var and is written out at
+  # every start, as postgres-patroni's proxy does; `$$` is the compose escape for `$`.
+  rustfs-node-proxy:
+    image: {{ .Values.nodeProxy.image.repository }}:{{ .Values.nodeProxy.image.tag }}
+    networks:
+      {{ .Values.network.name }}: {}
+    ports:
+      - target: {{ $port }}
+        published: {{ .Values.nodeProxy.port }}
+        protocol: tcp
+        mode: host
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - >-
+        set -eu;
+        printf '%s\n' "$$HAPROXY_CFG" > /tmp/haproxy.cfg;
+        exec haproxy -f /tmp/haproxy.cfg -db
+    environment:
+      HAPROXY_CFG: |
+        global
+          log stdout format raw local0
+          maxconn 4096
+        # Docker's embedded DNS, asked again while the proxy runs, so it follows a peer Swarm
+        # reschedules, and init-addr none lets it start before any peer is in DNS.
+        resolvers docker
+          nameserver dns 127.0.0.11:53
+        defaults
+          mode tcp
+          log global
+          # Only connections that fail: a FUSE mount opens many, and each would be a line.
+          option tcplog
+          option dontlog-normal
+          timeout connect 5s
+          # Long enough for one large object on a slow link; an S3 client opens a new
+          # connection when an idle one is closed.
+          timeout client 10m
+          timeout server 10m
+          # No on-marked-down shutdown-sessions: a transfer already running on a peer that
+          # stops answering /health/ready is left to finish.
+          default-server inter 3s fall 2 rise 2 resolvers docker resolve-prefer ipv4 init-addr none
+        # What the container healthcheck connects to.
+        frontend health
+          mode http
+          bind :8405
+          monitor-uri /healthz
+        listen s3
+          bind :{{ $port }}
+          balance roundrobin
+          option httpchk GET /health/ready
+          http-check expect status 200
+{{- if $distributed }}
+{{- range $i := until $peers }}
+          server {{ printf "%s-%d" $alias (add1 $i) }} {{ printf "%s-%d" $alias (add1 $i) }}:{{ $port }} check
+{{- end }}
+{{- else }}
+          server {{ $alias }} {{ $alias }}:{{ $port }} check
+{{- end }}
+    healthcheck:
+      # HAProxy is up iff it is listening (it refuses to start if a bind fails). Whether a
+      # peer is ready is the store's health: tying the two together would restart the proxy
+      # exactly while the peers recover. CMD with bash: /dev/tcp is a bash feature.
+      test:
+        - CMD
+        - bash
+        - -c
+        - "exec 3<>/dev/tcp/127.0.0.1/8405"
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      # One task per node. Its host-mode port belongs to the node, so an update stops the old
+      # task before the new one binds it.
+      mode: global
+      update_config:
+        order: stop-first
+{{- with .Values.nodeProxy.placement.constraints }}
+      placement:
+        constraints:
+{{- range . }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- with .Values.nodeProxy.resources.limits.memory }}
+      resources:
+        limits:
+          memory: {{ . | quote }}
+{{- end }}
+      restart_policy:
+        condition: any
 {{- end }}
 
 secrets:

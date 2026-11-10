@@ -156,6 +156,38 @@
         "mode": { "type": "string", "enum": ["ingress", "host"] }
       }
     },
+    "nodeProxy": {
+      "description": "A global HAProxy service publishing the S3 API in host mode on every node it runs on, for clients on the nodes themselves.",
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string", "minLength": 1 }
+          }
+        },
+        "placement": {
+          "type": "object",
+          "properties": {
+            "constraints": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "resources": {
+          "type": "object",
+          "properties": {
+            "limits": {
+              "type": "object",
+              "properties": {
+                "memory": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
     "nofile": { "type": "integer", "minimum": 0 },
     "extraEnv": {
       "type": "object",

@@ -1,0 +1,20 @@
+# traefik-values.yaml plus nodeProxy, the shape #342 asks for: the S3 API and the console
+# stay on Traefik while every node also publishes the S3 API in host mode on 9002, for
+# clients on the node itself. Render-only (e2e-render-only): the live proxy is exercised
+# by distributed-lifecycle.
+exposure:
+  mode: traefik
+ingress:
+  host: s3-cache.example.com
+  tls: true
+console:
+  enabled: true
+  exposure:
+    mode: traefik
+  ingress:
+    host: rustfs-console.example.com
+    tls: true
+buckets:
+  - runner-cache
+nodeProxy:
+  enabled: true

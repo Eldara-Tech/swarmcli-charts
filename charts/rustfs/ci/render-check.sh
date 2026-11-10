@@ -33,6 +33,9 @@ rendered="${1:?rendered stack file}"
 case="${2:-}"
 # mode: distributed has checks of its own, for the same case names without the prefix.
 case "$case" in distributed-*) exec "$(dirname "$0")/render-check-distributed.sh" "$rendered" "${case#distributed-}" ;; esac
+# node-proxy is the traefik fixture plus nodeProxy: every traefik check runs on it, which
+# proves both routes survive the proxy, and ci/render-check-node-proxy.sh checks the proxy.
+proxy=""; [ "$case" = "node-proxy" ] && { proxy=1; case=traefik; }
 
 if ! command -v yq >/dev/null 2>&1 || ! yq --version 2>&1 | grep -F mikefarah >/dev/null; then
   echo "    ERROR: mikefarah yq v4 is required by render-check.sh (a skipped check reads exactly like a passing one)" >&2
@@ -294,8 +297,9 @@ fi
 m='.services."rustfs-metrics"'
 services="$(q '.services | keys | join(" ")')"
 obs="RUSTFS_OBS_ENDPOINT RUSTFS_OBS_TRACES_EXPORT_ENABLED RUSTFS_OBS_LOGS_EXPORT_ENABLED RUSTFS_OBS_LOG_STDOUT_ENABLED"
+if [ -n "$proxy" ]; then "$(dirname "$0")/render-check-node-proxy.sh" "$rendered" 1 || fail=1; fi
 if [ "$case" != "metrics" ]; then
-  [ "$services" = "rustfs" ] || bad "case $case: services are '$services'; metrics must be opt-in"
+  [ "$services" = "rustfs${proxy:+ rustfs-node-proxy}" ] || bad "case $case: services are '$services'; metrics and nodeProxy must be opt-in"
   [ "$(q '.networks.monitoring')" = "null" ] || bad "case $case: the monitoring overlay is declared although metrics are off"
   for v in $obs; do
     [ "$(env_ "$v")" = "null" ] || bad "case $case: $v is set although metrics are off"
@@ -361,6 +365,17 @@ if [ "$case" = "default" ]; then
       || bad "release my_s3.x does not get the alias my-s3-x-rustfs: '_' and '.' must become '-'"
   else
     bad "release my_s3.x was refused: $(tr '\n' ' ' <"$tmp.err")"
+  fi
+  # nodeProxy publishes on the nodes, so it cannot take a port a published listener holds,
+  # and it dials the peers by the same alias as every other client.
+  refused 'nodeProxy.port must differ from publish.port' --set nodeProxy.enabled=true --set exposure.mode=published --set publish.port=9002
+  refused 'nodeProxy.port must differ from console.publish.port' --set nodeProxy.enabled=true --set console.enabled=true \
+    --set console.exposure.mode=published --set console.publish.port=9002
+  if "${SWARMCLI:?render-check needs SWARMCLI to render the refusals}" charts template my_s3.x "$chart" --set nodeProxy.enabled=true >"$tmp" 2>"$tmp.err"; then
+    grep -Ex ' *server my-s3-x-rustfs my-s3-x-rustfs:9000 check' <<<"$(yq -r '.services."rustfs-node-proxy".environment.HAPROXY_CFG' "$tmp")" >/dev/null \
+      || bad "release my_s3.x: nodeProxy does not dial the alias my-s3-x-rustfs"
+  else
+    bad "release my_s3.x with nodeProxy on was refused: $(tr '\n' ' ' <"$tmp.err")"
   fi
   refused 'metrics.network must differ from network.name and exposure.network' --set metrics.enabled=true --set metrics.network=rustfs-net
   refused 'metrics.network must differ from network.name and exposure.network' --set metrics.enabled=true --set metrics.network=traefik-public
