@@ -238,9 +238,10 @@ include:
   # monitor window, hence the 6m budget.
   - { chart: rustfs, name: "rustfs distributed", cases: "distributed-default distributed-buckets distributed-ephemeral distributed-edge distributed-console-edge distributed-oidc distributed-metrics", timeout: 6m }
   # rustfs distributed lifecycle, a job of its own: `swarmcli charts upgrade` rolling every
-  # peer one at a time while a client keeps writing through the shared alias (no write may
-  # fail, some peer must report the cluster writable at every sample, and the new tasks must
-  # start a monitor window apart), then every peer stopped together and started again.
+  # peer one at a time while one client keeps writing through the shared alias and another
+  # through nodeProxy's port on the node (no write may fail, some peer must report the
+  # cluster writable at every sample, and the new tasks must start a monitor window apart),
+  # then every peer stopped together and started again.
   - { chart: rustfs, name: "rustfs distributed lifecycle", cases: "distributed-lifecycle",                          timeout: 6m  }
   # gitlab: ONE fixture. GitLab CE is a multi-gigabyte monolith (Postgres, Redis, Gitaly,
   # Puma, Sidekiq in one container) whose documented baseline is 8 vCPU / 16 GB, so the
