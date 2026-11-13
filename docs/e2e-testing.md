@@ -423,7 +423,16 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   overlay (the exporter's project count proves its role can read core's tables) and runs
   promtool on `monitoring/`; `oidc` follows a login to the stub provider's
   authorization endpoint and checks that `CONFIG_OVERWRITE_JSON` applied the settings and made
-  them read-only.
+  them read-only. For `ha` (its own CI job, `harbor ha`) the hook also stands up a SeaweedFS
+  S3 store, `harbor-e2e-s3`, on `harbor-e2e-s3-net` with the bucket created, and installs the
+  in-repo **redis** chart in sentinel mode as release `harbor-e2e-redis` on `redis-net`,
+  whose `redis_password` secret Harbor reads too. The check does what `published` does, then
+  asserts two running tasks per replicated service, keys on the Redis master in databases 0,
+  1, 2 and 5 (only a client that found the master through the Sentinels writes there),
+  pushes and pulls with none failing while core's tasks are replaced, through a killed core
+  and registry task, and after the Redis master is stopped (a new push lands on the promoted
+  master, a scan succeeds). One node cannot be drained without stopping everything, so
+  killing tasks stands in for a node drain, which stays unproven in CI.
 
 `whoami` and `swarm-cronjob` converge solo and ship no hooks.
 

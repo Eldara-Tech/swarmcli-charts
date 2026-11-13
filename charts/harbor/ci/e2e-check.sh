@@ -12,7 +12,14 @@
 #              overlay, as Prometheus would (the exporter's project count proves its
 #              read-only role can read core's tables), and runs promtool on monitoring/;
 #   oidc       follows a login to the stub provider's authorization endpoint and checks that
-#              CONFIG_OVERWRITE_JSON applied the settings and made them read-only.
+#              CONFIG_OVERWRITE_JSON applied the settings and made them read-only;
+#   ha         does what published does, then: two running tasks of each replicated service;
+#              keys on the Redis master in every database Harbor uses, which only a client
+#              that found the master through the Sentinels writes; pushes and pulls in a loop
+#              while core's tasks are replaced one at a time, with none failing; one core and
+#              one registry task killed together, pushing and pulling through the rest; and
+#              the Redis master stopped, after which a push lands on the new master and a scan
+#              succeeds. CI's single node cannot show a node drain: killing tasks stands in.
 # The published port is reached from a container on the host network, i.e. from the swarm
 # node, so the check runs the same against a remote daemon (colima) as on a CI runner.
 set -euo pipefail
@@ -46,7 +53,22 @@ for t in /service/notifications/tasks/1 '/api/x#/../../service/notifications/tas
   [ "$code" = "404" ] || bad "POST $t answered $code; the job hooks must stay unreachable through nginx"
 done
 
-if [ "$case" = "published" ]; then
+# Has Trivy scan e2e/busybox:<tag>; it downloads its database on the first scan, so this waits
+# a while.
+scan() {
+  local code status art
+  code="$(hcurl -o /dev/null -w '%{http_code}' -u "$admin" -X POST "$base/api/v2.0/projects/e2e/repositories/busybox/artifacts/$1/scan")"
+  status="not started (HTTP $code)"
+  [ "$code" = "202" ] && for _ in $(seq 1 60); do
+    art="$(hcurl -u "$admin" "$base/api/v2.0/projects/e2e/repositories/busybox/artifacts/$1?with_scan_overview=true" || true)"
+    status="$(sed -n 's/.*"scan_status":"\([A-Za-z]*\)".*/\1/p' <<<"$art")"
+    case "$status" in Success|Error|Stopped) break ;; esac
+    sleep 5
+  done
+  if [ "$status" = "Success" ]; then echo "  scan: Trivy finished $1 (Success)"; else bad "the Trivy scan of $1 ended '$status'"; fi
+}
+
+if [ "$case" = "published" ] || [ "$case" = "ha" ]; then
   code="$(hcurl -o /dev/null -w '%{http_code}' -u "$admin" -H 'Content-Type: application/json' \
     -d '{"project_name":"e2e","public":false}' "$base/api/v2.0/projects")"
   case "$code" in 201|409) echo "  api: project e2e ($code)" ;; *) bad "creating project e2e answered $code" ;; esac
@@ -75,16 +97,105 @@ if [ "$case" = "published" ]; then
   if DOCKER_CONFIG="$cfg" docker pull -q "$img" >/dev/null; then echo "  pull: $img"; else bad "docker pull $img failed"; fi
   docker rmi -f "$img" >/dev/null 2>&1 || true
 
-  # Trivy downloads its database on the first scan, so this waits a while.
-  code="$(hcurl -o /dev/null -w '%{http_code}' -u "$admin" -X POST "$base/api/v2.0/projects/e2e/repositories/busybox/artifacts/e2e/scan")"
-  status="not started (HTTP $code)"
-  [ "$code" = "202" ] && for _ in $(seq 1 60); do
-    art="$(hcurl -u "$admin" "$base/api/v2.0/projects/e2e/repositories/busybox/artifacts/e2e?with_scan_overview=true" || true)"
-    status="$(sed -n 's/.*"scan_status":"\([A-Za-z]*\)".*/\1/p' <<<"$art")"
-    case "$status" in Success|Error|Stopped) break ;; esac
+  scan e2e
+fi
+
+if [ "$case" = "ha" ]; then
+  rr=harbor-e2e-redis   # the redis chart's release, ci/e2e-setup.sh
+  cid_of() { docker ps -q -f "label=com.docker.swarm.service.name=$1" | sed -n 1p; }
+  running() { docker service ps "$1" --filter desired-state=running --format '{{.ID}} {{.CurrentState}}' | sed -n 's/ Running.*//p' | sort | tr '\n' ' '; }
+  # shellcheck disable=SC2086  # splitting the space-separated task IDs is the point
+  count() { set -- $1; echo $#; }
+  master() { docker exec "$(cid_of "${rr}_sentinel-1")" redis-cli -p 26379 SENTINEL get-master-addr-by-name mymaster | sed -n 1p; }
+  # redis-cli on the Redis overlay, from a Sentinel's container; the password is the one the
+  # data peers mount.
+  rpw="$(docker exec "$(cid_of "${rr}_redis-1")" cat /run/secrets/redis_password)"
+  rcli() { local h="$1"; shift; docker exec -e REDISCLI_AUTH="$rpw" "$(cid_of "${rr}_sentinel-1")" redis-cli -h "$h" -p 6379 "$@"; }
+  push_pull() {  # pull the image and push it under a new tag; $1 = the tag
+    DOCKER_CONFIG="$cfg" docker pull -q "$img" >/dev/null 2>&1 \
+      && docker tag "$img" "${img%:*}:$1" \
+      && DOCKER_CONFIG="$cfg" docker push -q "${img%:*}:$1" >/dev/null 2>&1 \
+      && docker rmi -f "$img" "${img%:*}:$1" >/dev/null 2>&1
+  }
+  # Layers only in $img, so every pull below fetches them through Harbor again.
+  docker rmi -f busybox:1.37 >/dev/null 2>&1 || true
+
+  for s in nginx core portal jobservice registry registryctl; do
+    n="$(count "$(running "${release}_$s")")"
+    if [ "$n" = 2 ]; then echo "  replicas: ${s} runs 2 tasks"; else bad "${release}_$s runs $n tasks, not 2"; fi
+  done
+
+  # A UI login, so core stores a session (database 0).
+  code="$(docker run --rm --network host curlimages/curl:latest sh -c '
+    curl -s -c /tmp/j -D /tmp/h -o /dev/null "$0/api/v2.0/systeminfo"
+    t="$(sed -n "s/^[Xx]-[Hh]arbor-[Cc][Ss][Rr][Ff]-[Tt]oken: *//p" /tmp/h | tr -d "\r")"
+    curl -s -b /tmp/j -c /tmp/j -o /dev/null -w "%{http_code}" -H "X-Harbor-CSRF-Token: $t" \
+      --data-urlencode principal=admin --data-urlencode "password=$1" "$0/c/login"' "$base" "${admin#admin:}" || true)"
+  [ "$code" = "200" ] || bad "the UI login answered '$code'"
+  m="$(master)"
+  echo "  redis: the Sentinels name $m as the master"
+  for d in "0:core's sessions" "1:the registry's blob cache" "2:jobservice's queue" "5:Trivy's store"; do
+    n="$(rcli "$m" -n "${d%%:*}" dbsize 2>/dev/null || true)"
+    if [ "${n:-0}" -gt 0 ] 2>/dev/null; then echo "  redis: database ${d%%:*} on the master holds $n keys (${d#*:})"; else bad "database ${d%%:*} on the master $m is empty (${d#*:}): '$n'"; fi
+  done
+  blobs="$(rcli "$m" -n 1 --scan --pattern 'blobs::*' | wc -l | tr -d ' ')"
+  [ "$blobs" -gt 0 ] || bad "the registry cached no blob descriptor on the master"
+
+  # Core's tasks replaced one at a time, while pushes and pulls keep going: none may fail.
+  log="$cfg/loop"; : >"$log"
+  ( i=0; while [ ! -e "$log.stop" ]; do i=$((i+1)); if push_pull "loop-$i"; then echo ok; else echo FAIL; fi >>"$log"; done ) &
+  loop=$!
+  old="$(running "${release}_core")"
+  docker service update --detach --force "${release}_core" >/dev/null
+  state=""
+  for _ in $(seq 1 120); do
+    state="$(docker service inspect -f '{{if .UpdateStatus}}{{.UpdateStatus.State}}{{end}}' "${release}_core")"
+    case "$state" in completed|paused|rollback_*) break ;; esac
     sleep 5
   done
-  if [ "$status" = "Success" ]; then echo "  scan: Trivy finished (Success)"; else bad "the Trivy scan ended '$status'"; fi
+  touch "$log.stop"; wait "$loop" || true
+  new="$(running "${release}_core")"
+  oks="$(grep -c '^ok$' "$log" || true)"; fails="$(grep -c '^FAIL$' "$log" || true)"
+  [ "$state" = "completed" ] || bad "core's forced update ended '$state'"
+  for t in $old; do case " $new " in *" $t "*) bad "core task $t survived the forced update" ;; esac; done
+  [ "$(count "$new")" = 2 ] || bad "core runs '$new' after the update, not 2 tasks"
+  if [ "$fails" = 0 ] && [ "$oks" -gt 0 ]; then echo "  update: $oks push/pulls during core's rolling update, none failed"; else bad "$fails of $((oks + fails)) push/pulls failed during core's rolling update"; fi
+
+  # One core and one registry task killed at once: the others serve. A client retries a
+  # request cut off mid-flight, so three tries.
+  docker kill "$(cid_of "${release}_core")" "$(cid_of "${release}_registry")" >/dev/null
+  ok=0
+  for t in 1 2 3; do if push_pull "killed-$t"; then ok=$t; break; fi; sleep 5; done
+  if [ "$ok" != 0 ]; then echo "  kill: push/pull worked with a core and a registry task killed (try $ok)"; else bad "push/pull failed three times with a core and a registry task killed"; fi
+  for s in core registry; do
+    for _ in $(seq 1 60); do [ "$(count "$(running "${release}_$s")")" = 2 ] && break; sleep 5; done
+    [ "$(count "$(running "${release}_$s")")" = 2 ] || bad "${release}_$s did not get back to 2 tasks"
+  done
+  push_pull replaced || bad "push/pull failed once the killed tasks were replaced"
+
+  # The Redis master stopped: the Sentinels promote a replica, and Harbor follows them.
+  peer="${rr}_redis-${m##*-}"
+  docker service scale --detach "$peer=0" >/dev/null
+  m2=""
+  for _ in $(seq 1 60); do m2="$(master 2>/dev/null || true)"; [ -n "$m2" ] && [ "$m2" != "$m" ] && break; sleep 3; done
+  if [ -n "$m2" ] && [ "$m2" != "$m" ]; then echo "  failover: the Sentinels promoted $m2"; else bad "no failover from $m (master still '$m2')"; fi
+  health=""
+  for _ in $(seq 1 60); do health="$(hcurl "$base/api/v2.0/health" || true)"; healthy "$health" && break; sleep 5; done
+  healthy "$health" || bad "Harbor is not healthy after the failover: $health"
+  before="$(rcli "$m2" -n 1 --scan --pattern 'blobs::*' | wc -l | tr -d ' ')"
+  # A layer no image had before, so the push writes new descriptors.
+  stamp="${release}-e2e-stamp"
+  docker rm -f "$stamp" >/dev/null 2>&1 || true
+  DOCKER_CONFIG="$cfg" docker pull -q "$img" >/dev/null
+  docker run --name "$stamp" "$img" sh -c 'date > /stamp' >/dev/null
+  docker commit "$stamp" "${img%:*}:failover" >/dev/null
+  docker rm -f "$stamp" >/dev/null
+  if DOCKER_CONFIG="$cfg" docker push -q "${img%:*}:failover" >/dev/null; then echo "  failover: pushed ${img%:*}:failover"; else bad "the push after the failover failed"; fi
+  after="$(rcli "$m2" -n 1 --scan --pattern 'blobs::*' | wc -l | tr -d ' ')"
+  if [ "$after" -gt "$before" ]; then echo "  failover: the registry cached the new blobs on $m2 ($before -> $after)"; else bad "the registry wrote no blob descriptor to the new master $m2 ($before -> $after)"; fi
+  scan failover
+  docker rmi -f "$img" "${img%:*}:failover" >/dev/null 2>&1 || true
+  docker service scale --detach "$peer=1" >/dev/null
 fi
 
 if [ "$case" = "metrics" ]; then

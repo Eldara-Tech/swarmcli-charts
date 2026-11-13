@@ -5,11 +5,39 @@
 {{- $metrics := .Values.metrics.enabled -}}
 {{- $trivy := .Values.trivy.enabled -}}
 {{- $pv := .Values.persistence -}}
+{{- /* redis and core are absent from values a release stored before they existed. */ -}}
+{{- $redis := .Values.redis | default dict -}}
+{{- $redisExt := $redis.external | default dict -}}
+{{- $redisType := $redis.type | default "internal" -}}
+{{- $redisExternal := eq $redisType "external" -}}
+{{- $redisAuth := and $redisExternal (not (empty $redisExt.passwordSecret)) -}}
+{{- $replicas := dict "nginx" (.Values.nginx.replicas | default 1) "core" ((.Values.core | default dict).replicas | default 1) "portal" (.Values.portal.replicas | default 1) "jobservice" (.Values.jobservice.replicas | default 1) "registry" (.Values.registry.replicas | default 1) "registryctl" (.Values.registryctl.replicas | default 1) -}}
 {{- if not (has $mode (list "traefik" "published" "none")) -}}
 {{-   fail (printf "exposure.mode must be traefik, published or none (got %q)" $mode) -}}
 {{- end -}}
 {{- if not (has .Values.storage.type (list "filesystem" "s3")) -}}
 {{-   fail (printf "storage.type must be filesystem or s3 (got %q)" .Values.storage.type) -}}
+{{- end -}}
+{{- if not (has $redisType (list "internal" "external")) -}}
+{{-   fail (printf "redis.type must be internal or external (got %q)" $redisType) -}}
+{{- end -}}
+{{- if not $s3 -}}
+{{-   range $svc := list "registry" "registryctl" -}}
+{{-     if gt (int (get $replicas $svc)) 1 -}}
+{{-       fail (printf "%s.replicas is %v, but storage.type=filesystem keeps the layers on one node's volume, which a second replica cannot share; use storage.type=s3 for more than one" $svc (get $replicas $svc)) -}}
+{{-     end -}}
+{{-   end -}}
+{{- end -}}
+{{- if $redisExternal -}}
+{{-   if not (regexMatch `^[A-Za-z0-9._-]+:[0-9]+(,[A-Za-z0-9._-]+:[0-9]+)*$` (toString $redisExt.addr)) -}}
+{{-     fail (printf "redis.external.addr must be host:port, or the Sentinels as host:port,host:port without spaces, when redis.type=external (got %q)" (toString $redisExt.addr)) -}}
+{{-   end -}}
+{{-   if not (regexMatch `^[A-Za-z0-9._-]*$` (toString $redisExt.sentinelMasterSet)) -}}
+{{-     fail (printf "redis.external.sentinelMasterSet may hold only letters, digits, '.', '_' and '-' (got %q)" (toString $redisExt.sentinelMasterSet)) -}}
+{{-   end -}}
+{{-   if and (contains "," (toString $redisExt.addr)) (not $redisExt.sentinelMasterSet) -}}
+{{-     fail "redis.external.addr lists several addresses, which only Sentinels can be: set redis.external.sentinelMasterSet to the master set they monitor" -}}
+{{-   end -}}
 {{- end -}}
 {{- if and (eq $mode "traefik") (not .Values.ingress.host) -}}
 {{-   fail "ingress.host is required when exposure.mode=traefik" -}}
@@ -26,13 +54,14 @@
 {{- if $s3 }}{{ $secretNames = concat $secretNames (list .Values.storage.s3.accessKeySecret .Values.storage.s3.secretKeySecret) }}{{ end -}}
 {{- if $oidc }}{{ $secretNames = append $secretNames .Values.oidc.clientSecretSecret }}{{ end -}}
 {{- if $metrics }}{{ $secretNames = append $secretNames .Values.metrics.database.passwordSecret }}{{ end -}}
+{{- if $redisAuth }}{{ $secretNames = append $secretNames $redisExt.passwordSecret }}{{ end -}}
 {{- range $secretNames -}}
 {{-   if not (regexMatch "^[A-Za-z0-9]([A-Za-z0-9_.-]{0,62}[A-Za-z0-9])?$" (toString .)) -}}
 {{-     fail (printf "%q is not a Docker secret name (1-64 characters of letters, digits, '_', '.' and '-', starting and ending with a letter or digit)" (toString .)) -}}
 {{-   end -}}
 {{- end -}}
 {{- if ne (len $secretNames) (len (uniq $secretNames)) -}}
-{{-   fail "every secret value (database.passwordSecret, admin.passwordSecret, secrets.*, storage.s3.*Secret, oidc.clientSecretSecret, metrics.database.passwordSecret) must name a different Swarm secret" -}}
+{{-   fail "every secret value (database.passwordSecret, admin.passwordSecret, secrets.*, storage.s3.*Secret, oidc.clientSecretSecret, metrics.database.passwordSecret, redis.external.passwordSecret) must name a different Swarm secret" -}}
 {{- end -}}
 {{- if $s3 -}}
 {{-   if not (regexMatch "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$" .Values.storage.s3.bucket) -}}
@@ -78,8 +107,9 @@
 {{-   $others := list .Values.database.network -}}
 {{-   if $proxied }}{{ $others = append $others .Values.exposure.network }}{{ end -}}
 {{-   if and $s3 .Values.storage.s3.network }}{{ $others = append $others .Values.storage.s3.network }}{{ end -}}
+{{-   if and $redisExternal $redisExt.network }}{{ $others = append $others $redisExt.network }}{{ end -}}
 {{-   if has .Values.metrics.network $others -}}
-{{-     fail "metrics.network must differ from database.network, exposure.network and storage.s3.network: Prometheus would share an overlay with the database, the edge or the object store" -}}
+{{-     fail "metrics.network must differ from database.network, exposure.network, storage.s3.network and redis.external.network: Prometheus would share an overlay with the database, the edge, the object store or Redis" -}}
 {{-   end -}}
 {{- end -}}
 version: "3.9"
@@ -101,6 +131,16 @@ version: "3.9"
        file. `$$` escapes the `$` for compose, so the values are resolved inside the container
        and never reach the manifest or `docker inspect`. */}}
 {{- $rd := `rd() { f=/run/secrets/$$2; v="$$(cat "$$f" 2>/dev/null || true)"; if [ -z "$$v" ]; then echo "$$f is missing or empty - refusing to start" >&2; exit 1; fi; export "$$1=$$v"; }` }}
+{{- /* Every component's Redis URL is this followed by its database. An external Redis's
+       password is spliced in by each wrapper in place of the placeholder, so the manifest
+       never holds it; it goes into URLs unencoded, hence the restricted characters. */}}
+{{- $redisURL := printf "redis://%svalkey:6379" $p }}
+{{- $redisCheck := "" }}
+{{- if $redisExternal }}
+{{-   $redisURL = printf "%s://%s%s" (ternary "redis+sentinel" "redis" (not (empty $redisExt.sentinelMasterSet))) (ternary ":__HARBOR_REDIS_PASSWORD__@" "" $redisAuth) $redisExt.addr }}
+{{-   with $redisExt.sentinelMasterSet }}{{ $redisURL = printf "%s/%s" $redisURL . }}{{ end }}
+{{-   $redisCheck = printf `case "$$HARBOR_REDIS_PASSWORD" in *[!A-Za-z0-9._~-]*) echo "secret %s may hold only letters, digits, '.', '_', '~' and '-': it goes into Redis URLs; create it with openssl rand -hex 32" >&2; exit 1;; esac` $redisExt.passwordSecret }}
+{{- end }}
 
 {{- /* The registry's configuration, shared by registry and registryctl (which deletes blobs
        through the same storage driver). It reaches both as an environment variable, and their
@@ -119,7 +159,14 @@ version: "3.9"
 {{- end }}
 {{- $http := dict "addr" ":5000" }}
 {{- if $metrics }}{{ $_ := set $http "debug" (dict "addr" ":8001" "prometheus" (dict "enabled" true "path" "/metrics")) }}{{ end }}
-{{- $registryConfig := dict "version" "0.1" "log" (dict "level" "info" "fields" (dict "service" "registry")) "storage" $storage "redis" (dict "addr" (printf "%svalkey:6379" $p) "db" 1 "readtimeout" "10s" "writetimeout" "10s" "dialtimeout" "10s" "pool" (dict "maxidle" 100 "maxactive" 500 "idletimeout" "60s")) "http" $http "auth" (dict "htpasswd" (dict "realm" "harbor-registry-basic-realm" "path" (printf "%s/%s" $secretPath .Values.secrets.registryHtpasswd))) "validation" (dict "disabled" true) "compatibility" (dict "schema1" (dict "enabled" true)) }}
+{{- /* With Sentinel, addr lists the Sentinels and sentinelMasterSet names the master set (Harbor's
+       distribution fork). The password reaches the registry as REGISTRY_REDIS_PASSWORD. */}}
+{{- $registryRedis := dict "addr" (printf "%svalkey:6379" $p) "db" 1 "readtimeout" "10s" "writetimeout" "10s" "dialtimeout" "10s" "pool" (dict "maxidle" 100 "maxactive" 500 "idletimeout" "60s") }}
+{{- if $redisExternal }}
+{{-   $_ := set $registryRedis "addr" $redisExt.addr }}
+{{-   with $redisExt.sentinelMasterSet }}{{ $_ := set $registryRedis "sentinelMasterSet" . }}{{ end }}
+{{- end }}
+{{- $registryConfig := dict "version" "0.1" "log" (dict "level" "info" "fields" (dict "service" "registry")) "storage" $storage "redis" $registryRedis "http" $http "auth" (dict "htpasswd" (dict "realm" "harbor-registry-basic-realm" "path" (printf "%s/%s" $secretPath .Values.secrets.registryHtpasswd))) "validation" (dict "disabled" true) "compatibility" (dict "schema1" (dict "enabled" true)) }}
 
 {{- /* A new volume, or the image's anonymous /storage, is owned by root, and Harbor's images
        run as uid 10000. So registry and registryctl start as root, take ownership of the
@@ -188,18 +235,25 @@ services:
       disable: true
 {{- end }}
     deploy:
-      replicas: 1
+      replicas: {{ get $replicas "nginx" }}
 {{- if .Values.healthcheck.enabled }}
       {{- /* Swarm counts every failure of an updated task until it is healthy, and
              keeps watching it for `monitor` after that. */}}
       update_config:
         monitor: {{ .Values.healthcheck.monitor }}
 {{- end }}
-{{- if $constraints }}
+{{- $spread := gt (int (get $replicas "nginx")) 1 }}
+{{- if or $constraints $spread }}
       placement:
+{{- if $constraints }}
         constraints:
 {{- range $constraints }}
           - {{ . }}
+{{- end }}
+{{- end }}
+{{- if $spread }}
+        preferences:
+          - spread: node.id
 {{- end }}
 {{- end }}
       restart_policy:
@@ -245,11 +299,17 @@ services:
 {{- if $oidc }}
       - {{ .Values.oidc.clientSecretSecret }}
 {{- end }}
+{{- if $redisAuth }}
+      - {{ $redisExt.passwordSecret }}
+{{- end }}
     networks:
       - internal
       - {{ .Values.database.network }}
 {{- if $metrics }}
       - {{ .Values.metrics.network }}
+{{- end }}
+{{- if and $redisExternal $redisExt.network }}
+      - {{ $redisExt.network }}
 {{- end }}
     environment:
       CONFIG_PATH: /etc/core/app.conf
@@ -264,8 +324,8 @@ services:
       POSTGRESQL_SSLMODE: {{ .Values.database.sslmode | quote }}
       POSTGRESQL_MAX_IDLE_CONNS: {{ .Values.database.maxIdleConns | quote }}
       POSTGRESQL_MAX_OPEN_CONNS: {{ .Values.database.maxOpenConns | quote }}
-      _REDIS_URL_CORE: "redis://{{ $p }}valkey:6379?idle_timeout_seconds=30"
-      _REDIS_URL_REG: "redis://{{ $p }}valkey:6379/1?idle_timeout_seconds=30"
+      _REDIS_URL_CORE: "{{ $redisURL }}?idle_timeout_seconds=30"
+      _REDIS_URL_REG: "{{ $redisURL }}/1?idle_timeout_seconds=30"
       CORE_URL: "http://{{ $p }}core:8080"
       CORE_LOCAL_URL: http://127.0.0.1:8080
       PORTAL_URL: "http://{{ $p }}portal:8080"
@@ -322,6 +382,13 @@ services:
         if [ "$$n" -ne 16 ]; then echo "secret {{ .Values.secrets.secretKey }} must be exactly 16 bytes with no trailing newline (got $$n); create it with printf '%s'" >&2; exit 1; fi
         read -r first < "$$TOKEN_PRIVATE_KEY_PATH" || true
         if [ "$$first" != "-----BEGIN RSA PRIVATE KEY-----" ]; then echo "secret {{ .Values.secrets.tokenKey }} must be a PKCS#1 RSA key (BEGIN RSA PRIVATE KEY): Harbor signs registry tokens with libtrust, which reads no other format; create it with openssl genrsa -traditional" >&2; exit 1; fi
+{{- if $redisAuth }}
+        rd HARBOR_REDIS_PASSWORD {{ $redisExt.passwordSecret }}
+        {{ $redisCheck }}
+        export _REDIS_URL_CORE="$${_REDIS_URL_CORE/__HARBOR_REDIS_PASSWORD__/$$HARBOR_REDIS_PASSWORD}"
+        export _REDIS_URL_REG="$${_REDIS_URL_REG/__HARBOR_REDIS_PASSWORD__/$$HARBOR_REDIS_PASSWORD}"
+        unset HARBOR_REDIS_PASSWORD
+{{- end }}
 {{- if $oidc }}
         rd HARBOR_OIDC_CLIENT_SECRET {{ .Values.oidc.clientSecretSecret }}
         case "$$HARBOR_OIDC_CLIENT_SECRET" in *[\"\\]*) echo "secret {{ .Values.oidc.clientSecretSecret }} contains a double quote or backslash - refusing to start" >&2; exit 1;; esac
@@ -341,16 +408,23 @@ services:
       disable: true
 {{- end }}
     deploy:
-      replicas: 1
+      replicas: {{ get $replicas "core" }}
 {{- if .Values.healthcheck.enabled }}
       update_config:
         monitor: {{ .Values.healthcheck.monitor }}
 {{- end }}
-{{- if $constraints }}
+{{- $spread := gt (int (get $replicas "core")) 1 }}
+{{- if or $constraints $spread }}
       placement:
+{{- if $constraints }}
         constraints:
 {{- range $constraints }}
           - {{ . }}
+{{- end }}
+{{- end }}
+{{- if $spread }}
+        preferences:
+          - spread: node.id
 {{- end }}
 {{- end }}
       restart_policy:
@@ -380,16 +454,23 @@ services:
       disable: true
 {{- end }}
     deploy:
-      replicas: 1
+      replicas: {{ get $replicas "portal" }}
 {{- if .Values.healthcheck.enabled }}
       update_config:
         monitor: {{ .Values.healthcheck.monitor }}
 {{- end }}
-{{- if $constraints }}
+{{- $spread := gt (int (get $replicas "portal")) 1 }}
+{{- if or $constraints $spread }}
       placement:
+{{- if $constraints }}
         constraints:
 {{- range $constraints }}
           - {{ . }}
+{{- end }}
+{{- end }}
+{{- if $spread }}
+        preferences:
+          - spread: node.id
 {{- end }}
 {{- end }}
       restart_policy:
@@ -404,11 +485,17 @@ services:
       - {{ .Values.secrets.core }}
       - {{ .Values.secrets.jobservice }}
       - {{ .Values.secrets.registryPassword }}
+{{- if $redisAuth }}
+      - {{ $redisExt.passwordSecret }}
+{{- end }}
     networks:
       - internal
       - {{ .Values.database.network }}
 {{- if $metrics }}
       - {{ .Values.metrics.network }}
+{{- end }}
+{{- if and $redisExternal $redisExt.network }}
+      - {{ $redisExt.network }}
 {{- end }}
     environment:
       LOG_LEVEL: info
@@ -417,7 +504,7 @@ services:
       REGISTRY_CONTROLLER_URL: "http://{{ $p }}registryctl:8080"
       REGISTRY_CREDENTIAL_USERNAME: harbor_registry_user
       JOB_SERVICE_POOL_WORKERS: {{ .Values.jobservice.workers | quote }}
-      JOB_SERVICE_POOL_REDIS_URL: "redis://{{ $p }}valkey:6379/2?idle_timeout_seconds=30"
+      JOB_SERVICE_POOL_REDIS_URL: "{{ $redisURL }}/2?idle_timeout_seconds=30"
 {{- if $metrics }}
       METRIC_NAMESPACE: harbor
       METRIC_SUBSYSTEM: jobservice
@@ -436,6 +523,12 @@ services:
         rd CORE_SECRET {{ .Values.secrets.core }}
         rd JOBSERVICE_SECRET {{ .Values.secrets.jobservice }}
         rd REGISTRY_CREDENTIAL_PASSWORD {{ .Values.secrets.registryPassword }}
+{{- if $redisAuth }}
+        rd HARBOR_REDIS_PASSWORD {{ $redisExt.passwordSecret }}
+        {{ $redisCheck }}
+        export JOB_SERVICE_POOL_REDIS_URL="$${JOB_SERVICE_POOL_REDIS_URL/__HARBOR_REDIS_PASSWORD__/$$HARBOR_REDIS_PASSWORD}"
+        unset HARBOR_REDIS_PASSWORD
+{{- end }}
         until curl -fsS -o /dev/null --max-time 5 "$$CORE_URL/api/v2.0/ping"; do echo "waiting for core at $$CORE_URL" >&2; sleep 5; done
         exec /harbor/entrypoint.sh
 {{- if .Values.healthcheck.enabled }}
@@ -450,16 +543,23 @@ services:
       disable: true
 {{- end }}
     deploy:
-      replicas: 1
+      replicas: {{ get $replicas "jobservice" }}
 {{- if .Values.healthcheck.enabled }}
       update_config:
         monitor: {{ .Values.healthcheck.monitor }}
 {{- end }}
-{{- if $constraints }}
+{{- $spread := gt (int (get $replicas "jobservice")) 1 }}
+{{- if or $constraints $spread }}
       placement:
+{{- if $constraints }}
         constraints:
 {{- range $constraints }}
           - {{ . }}
+{{- end }}
+{{- end }}
+{{- if $spread }}
+        preferences:
+          - spread: node.id
 {{- end }}
 {{- end }}
       restart_policy:
@@ -495,6 +595,9 @@ services:
       - {{ $.Values.storage.s3.accessKeySecret }}
       - {{ $.Values.storage.s3.secretKeySecret }}
 {{-   end }}
+{{-   if and $redisAuth (eq $svc "registry") }}
+      - {{ $redisExt.passwordSecret }}
+{{-   end }}
     networks:
       - internal
 {{-   if and $s3 $.Values.storage.s3.network }}
@@ -502,6 +605,9 @@ services:
 {{-   end }}
 {{-   if and $metrics (eq $svc "registry") }}
       - {{ $.Values.metrics.network }}
+{{-   end }}
+{{-   if and $redisExternal $redisExt.network (eq $svc "registry") }}
+      - {{ $redisExt.network }}
 {{-   end }}
 {{-   if and (not $s3) $pv.enabled }}
     volumes:
@@ -529,6 +635,15 @@ services:
         rd REGISTRY_STORAGE_S3_ACCESSKEY {{ $.Values.storage.s3.accessKeySecret }}
         rd REGISTRY_STORAGE_S3_SECRETKEY {{ $.Values.storage.s3.secretKeySecret }}
 {{-   end }}
+{{-   if and $redisAuth (eq $svc "registry") }}
+        {{- /* The registry parses REGISTRY_REDIS_PASSWORD as YAML, where a bare null or ~ is no
+               password at all: quoted, it stays the string. registryctl uses no Redis, and its
+               parser would trip over the same variable, so it never gets it. */}}
+        rd HARBOR_REDIS_PASSWORD {{ $redisExt.passwordSecret }}
+        {{ $redisCheck }}
+        export REGISTRY_REDIS_PASSWORD="'$$HARBOR_REDIS_PASSWORD'"
+        unset HARBOR_REDIS_PASSWORD
+{{-   end }}
         {{ $asHarbor }}exec su -s /bin/sh harbor -c 'exec {{ ternary "/home/harbor/entrypoint.sh" "/home/harbor/start.sh" (eq $svc "registry") }}'
 {{-   if $.Values.healthcheck.enabled }}
     healthcheck:
@@ -542,7 +657,7 @@ services:
       disable: true
 {{-   end }}
     deploy:
-      replicas: 1
+      replicas: {{ get $replicas $svc }}
       # One registry and one registryctl on the storage: an update stops the old task first.
       update_config:
         order: stop-first
@@ -550,11 +665,18 @@ services:
         monitor: {{ $.Values.healthcheck.monitor }}
 {{-   end }}
 {{-   $c := ternary $constraints $dataConstraints $s3 }}
-{{-   if $c }}
+{{-   $spread := gt (int (get $replicas $svc)) 1 }}
+{{-   if or $c $spread }}
       placement:
+{{-     if $c }}
         constraints:
-{{-     range $c }}
+{{-       range $c }}
           - {{ . }}
+{{-       end }}
+{{-     end }}
+{{-     if $spread }}
+        preferences:
+          - spread: node.id
 {{-     end }}
 {{-   end }}
       restart_policy:
@@ -565,6 +687,7 @@ services:
         - "prometheus.io/port=8001"
 {{-   end }}
 {{- end }}
+{{- if not $redisExternal }}
 
   valkey:
     image: {{ .Values.valkey.image.repository }}:{{ .Values.valkey.image.tag | default $tag }}
@@ -601,20 +724,28 @@ services:
 {{- end }}
       restart_policy:
         condition: any
+{{- end }}
 {{- if $trivy }}
 
   # The scanner. Its database cache lives in the container (/home/scanner/.cache), so a
   # replaced task downloads it again.
   trivy:
     image: {{ .Values.trivy.image.repository }}:{{ .Values.trivy.image.tag | default $tag }}
+{{- if $redisAuth }}
+    secrets:
+      - {{ $redisExt.passwordSecret }}
+{{- end }}
     networks:
       - internal
+{{- if and $redisExternal $redisExt.network }}
+      - {{ $redisExt.network }}
+{{- end }}
     environment:
       SCANNER_LOG_LEVEL: info
-      SCANNER_REDIS_URL: "redis://{{ $p }}valkey:6379/5?idle_timeout_seconds=30"
-      SCANNER_STORE_REDIS_URL: "redis://{{ $p }}valkey:6379/5?idle_timeout_seconds=30"
+      SCANNER_REDIS_URL: "{{ $redisURL }}/5?idle_timeout_seconds=30"
+      SCANNER_STORE_REDIS_URL: "{{ $redisURL }}/5?idle_timeout_seconds=30"
       SCANNER_STORE_REDIS_NAMESPACE: harbor.scanner.trivy:store
-      SCANNER_JOB_QUEUE_REDIS_URL: "redis://{{ $p }}valkey:6379/5?idle_timeout_seconds=30"
+      SCANNER_JOB_QUEUE_REDIS_URL: "{{ $redisURL }}/5?idle_timeout_seconds=30"
       SCANNER_JOB_QUEUE_REDIS_NAMESPACE: harbor.scanner.trivy:job-queue
       SCANNER_TRIVY_CACHE_DIR: /home/scanner/.cache/trivy
       SCANNER_TRIVY_REPORTS_DIR: /home/scanner/.cache/reports
@@ -623,6 +754,23 @@ services:
       SCANNER_TRIVY_IGNORE_UNFIXED: {{ .Values.trivy.ignoreUnfixed | quote }}
       SCANNER_TRIVY_OFFLINE_SCAN: {{ .Values.trivy.offlineScan | quote }}
       SCANNER_TRIVY_TIMEOUT: {{ .Values.trivy.timeout | quote }}
+{{- if $redisAuth }}
+    # Only for the Redis password: splices it into the URLs, then execs the image's entrypoint.
+    entrypoint:
+      - /bin/bash
+      - -c
+    command:
+      - |-
+        set -eu
+        {{ $rd }}
+        rd HARBOR_REDIS_PASSWORD {{ $redisExt.passwordSecret }}
+        {{ $redisCheck }}
+        export SCANNER_REDIS_URL="$${SCANNER_REDIS_URL/__HARBOR_REDIS_PASSWORD__/$$HARBOR_REDIS_PASSWORD}"
+        export SCANNER_STORE_REDIS_URL="$${SCANNER_STORE_REDIS_URL/__HARBOR_REDIS_PASSWORD__/$$HARBOR_REDIS_PASSWORD}"
+        export SCANNER_JOB_QUEUE_REDIS_URL="$${SCANNER_JOB_QUEUE_REDIS_URL/__HARBOR_REDIS_PASSWORD__/$$HARBOR_REDIS_PASSWORD}"
+        unset HARBOR_REDIS_PASSWORD
+        exec /home/scanner/entrypoint.sh
+{{- end }}
 {{- if .Values.healthcheck.enabled }}
     healthcheck:
       test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8080/probe/healthy"]
@@ -659,10 +807,16 @@ services:
     image: {{ .Values.metrics.exporter.image.repository }}:{{ .Values.metrics.exporter.image.tag | default $tag }}
     secrets:
       - {{ .Values.metrics.database.passwordSecret }}
+{{- if $redisAuth }}
+      - {{ $redisExt.passwordSecret }}
+{{- end }}
     networks:
       - internal
       - {{ .Values.database.network }}
       - {{ .Values.metrics.network }}
+{{- if and $redisExternal $redisExt.network }}
+      - {{ $redisExt.network }}
+{{- end }}
     environment:
       LOG_LEVEL: info
       HARBOR_EXPORTER_PORT: "8001"
@@ -676,7 +830,7 @@ services:
       HARBOR_SERVICE_SCHEME: http
       HARBOR_SERVICE_HOST: "{{ $p }}core"
       HARBOR_SERVICE_PORT: "8080"
-      HARBOR_REDIS_URL: "redis://{{ $p }}valkey:6379/2"
+      HARBOR_REDIS_URL: "{{ $redisURL }}/2"
       HARBOR_REDIS_NAMESPACE: harbor_job_service_namespace
       HARBOR_REDIS_TIMEOUT: "3600"
       HARBOR_DATABASE_HOST: {{ .Values.database.host | quote }}
@@ -694,6 +848,12 @@ services:
         set -eu
         {{ $rd }}
         rd HARBOR_DATABASE_PASSWORD {{ .Values.metrics.database.passwordSecret }}
+{{- if $redisAuth }}
+        rd HARBOR_REDIS_PASSWORD {{ $redisExt.passwordSecret }}
+        {{ $redisCheck }}
+        export HARBOR_REDIS_URL="$${HARBOR_REDIS_URL/__HARBOR_REDIS_PASSWORD__/$$HARBOR_REDIS_PASSWORD}"
+        unset HARBOR_REDIS_PASSWORD
+{{- end }}
         exec /harbor/entrypoint.sh
     deploy:
       replicas: 1
@@ -749,13 +909,14 @@ networks:
 {{- if $proxied }}{{ $external = append $external .Values.exposure.network }}{{ end }}
 {{- if and $s3 .Values.storage.s3.network }}{{ $external = append $external .Values.storage.s3.network }}{{ end }}
 {{- if $metrics }}{{ $external = append $external .Values.metrics.network }}{{ end }}
+{{- if and $redisExternal $redisExt.network }}{{ $external = append $external $redisExt.network }}{{ end }}
 {{- range $external | uniq }}
   {{ . }}:
     external: true
 {{- end }}
 {{- $volumes := list }}
 {{- if and $pv.enabled (not $s3) (not $pv.registryPath) }}{{ $volumes = append $volumes $pv.registryVolume }}{{ end }}
-{{- if and $pv.enabled (not $pv.valkeyPath) }}{{ $volumes = append $volumes $pv.valkeyVolume }}{{ end }}
+{{- if and $pv.enabled (not $pv.valkeyPath) (not $redisExternal) }}{{ $volumes = append $volumes $pv.valkeyVolume }}{{ end }}
 {{- if $volumes }}
 
 volumes:

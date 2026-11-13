@@ -295,3 +295,9 @@ include:
   # promtool; `oidc` follows a login to a stub provider. Nine images on the first pull, and
   # core migrates an empty database before it answers.
   - { chart: harbor,        cases: "published metrics oidc",                                                          timeout: 15m }
+  # harbor ha, a job of its own: two replicas of every stateless component, S3 (SeaweedFS) and
+  # the redis chart in sentinel mode, all stood up by ci/e2e-setup.sh. ci/e2e-check.sh proves
+  # every Redis client reaches the master through the Sentinels, then pushes and pulls through
+  # a rolling update of core (none may fail), a killed core and registry task, and a Redis
+  # failover. One node: a real node drain stays unproven here.
+  - { chart: harbor, name: "harbor ha", cases: "ha",                                                                timeout: 15m }

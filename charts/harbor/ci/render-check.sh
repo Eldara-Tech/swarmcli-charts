@@ -13,6 +13,10 @@
 #   * Only nginx is exposed, and only core, jobservice and the exporter reach the database
 #     (jobservice reads the database's address from core and connects itself). Valkey has
 #     no password, so it must stay on the stack's own overlay.
+#   * An external Redis (ha): every component dials it through the Sentinels in its own
+#     database, and its password is spliced in by the wrappers, never written into the
+#     manifest; only the components that use Redis join its overlay or hold its secret.
+#   * Replicas: more than one is spread over the nodes, one renders no preference.
 #   * The registry, registryctl and Valkey keep data on the pinned node; the pin must never
 #     outlive the volume (persistence off, or S3 for the registry).
 #   * Metrics are opt-in: exactly core, jobservice, the registry and the exporter join the
@@ -44,9 +48,17 @@ case "$case" in
   *) metrics=0 ;;
 esac
 trivy=1; [ "$case" = "s3" ] && trivy=0
+# Storage and Redis by what the fixture configures: s3 and ha keep layers in S3, ha uses the
+# redis chart in sentinel mode instead of the valkey service.
+s3=0; extredis=0; s3ep=http://rustfs-rustfs:9000; s3root=registry; s3net=rustfs-net
+case "$case" in s3) s3=1 ;; ha) s3=1; extredis=1; s3ep=http://harbor-e2e-s3:8333; s3root=null; s3net=harbor-e2e-s3-net ;; esac
+sentinels=harbor-e2e-redis-sentinel-1:26379,harbor-e2e-redis-sentinel-2:26379,harbor-e2e-redis-sentinel-3:26379
+redisurl="redis://ci_valkey:6379"
+[ "$extredis" = 1 ] && redisurl="redis+sentinel://:__HARBOR_REDIS_PASSWORD__@$sentinels/mymaster"
 
 # ── the services ──────────────────────────────────────────────────────────────────────
-want="core jobservice nginx portal registry registryctl valkey"
+want="core jobservice nginx portal registry registryctl"
+[ "$extredis" = 0 ] && want="$want valkey"
 [ "$trivy" = 1 ] && want="$want trivy"
 [ "$metrics" = 1 ] && want="$want exporter"
 want="$(tr ' ' '\n' <<<"$want" | sort | tr '\n' ' ')"
@@ -54,8 +66,10 @@ got="$(q '.services | keys | .[]' | sort | tr '\n' ' ')"
 [ "$got" = "$want" ] || bad "services are '$got', expected '$want'"
 
 # ── wrappers: secrets exported from files, never written into the manifest ────────────
-for s in core jobservice registry registryctl exporter; do
+for s in core jobservice registry registryctl exporter trivy; do
   [ "$(q ".services.$s // \"\"")" = "" ] && continue
+  # Trivy has a wrapper only to splice in an external Redis's password.
+  [ "$s" = trivy ] && [ "$(q '.services.trivy.command // ""')" = "" ] && continue
   script="$(q ".services.$s.command[0]")"
   [ "$(q ".services.$s.entrypoint | join(\" \")")" = "/bin/bash -c" ] || bad "$s: entrypoint is not [/bin/bash, -c]"
   grep -F 'rd() { f=/run/secrets/$$2; v="$$(cat "$$f" 2>/dev/null || true)"; if [ -z "$$v" ]; then echo' <<<"$script" >/dev/null \
@@ -65,7 +79,7 @@ for s in core jobservice registry registryctl exporter; do
   fi
   for v in POSTGRESQL_PASSWORD HARBOR_ADMIN_PASSWORD CORE_SECRET JOBSERVICE_SECRET CSRF_KEY REGISTRY_CREDENTIAL_PASSWORD \
            REGISTRY_HTTP_SECRET REGISTRY_STORAGE_S3_ACCESSKEY REGISTRY_STORAGE_S3_SECRETKEY HARBOR_DATABASE_PASSWORD \
-           HARBOR_OIDC_CLIENT_SECRET; do
+           HARBOR_OIDC_CLIENT_SECRET HARBOR_REDIS_PASSWORD REGISTRY_REDIS_PASSWORD; do
     [ "$(env_ "$s" "$v")" = "null" ] || bad "$s: $v is set in environment:, where it lands in the manifest and docker inspect"
   done
 done
@@ -87,7 +101,7 @@ exports jobservice CORE_SECRET=harbor-core-secret JOBSERVICE_SECRET=harbor-jobse
   REGISTRY_CREDENTIAL_PASSWORD=harbor-registry-password
 exports registry REGISTRY_HTTP_SECRET=harbor-registry-http-secret
 exports registryctl CORE_SECRET=harbor-core-secret JOBSERVICE_SECRET=harbor-jobservice-secret
-if [ "$case" = "s3" ]; then
+if [ "$s3" = 1 ]; then
   for s in registry registryctl; do
     exports "$s" REGISTRY_STORAGE_S3_ACCESSKEY=harbor-s3-access-key REGISTRY_STORAGE_S3_SECRETKEY=harbor-s3-secret-key
   done
@@ -112,7 +126,7 @@ done
 
 # ── networks: only nginx is exposed, only core, jobservice and the exporter reach the database
 db=postgres-net
-case "$case" in published|oidc|metrics) db=harbor-e2e-db-net ;; esac
+case "$case" in published|oidc|metrics|ha) db=harbor-e2e-db-net ;; esac
 for s in $(q '.services | keys | .[]'); do
   n=" $(nets "$s") "
   grep -F ' internal ' <<<"$n" >/dev/null || bad "$s is not on the stack's internal overlay"
@@ -126,7 +140,7 @@ for s in $(q '.services | keys | .[]'); do
   esac
   [ "$(q ".services.$s.ports // [] | length")" = "0" ] || [ "$s" = "nginx" ] || bad "$s publishes a port; only nginx may"
 done
-[ "$(nets valkey)" = "internal" ] || bad "valkey is on '$(nets valkey)'; it has no password and must stay on internal alone"
+[ "$extredis" = 1 ] || [ "$(nets valkey)" = "internal" ] || bad "valkey is on '$(nets valkey)'; it has no password and must stay on internal alone"
 [ "$(q '.networks.internal.external // false')" = "false" ] || bad "the internal overlay is external; it must be the stack's own"
 
 # ── components dial each other by full service name ──────────────────────────────
@@ -137,8 +151,7 @@ for s in $(q '.services | keys | .[]'); do
   [ -z "$short" ] || bad "$s dials a short service name: $short"
 done
 [ "$(env_ core CORE_URL)" = "http://ci_core:8080" ] && [ "$(env_ jobservice CORE_URL)" = "http://ci_core:8080" ] \
-  && [ "$(env_ jobservice JOB_SERVICE_POOL_REDIS_URL)" = "redis://ci_valkey:6379/2?idle_timeout_seconds=30" ] \
-  || bad "core/jobservice do not dial ci_core and ci_valkey"
+  || bad "core/jobservice do not dial ci_core"
 [ "$metrics" = 0 ] || [ "$(env_ exporter HARBOR_SERVICE_HOST)" = "ci_core" ] || bad "the exporter does not dial ci_core"
 [ "$(env_ nginx HARBOR_CORE)/$(env_ nginx HARBOR_PORTAL)" = "ci_core/ci_portal" ] \
   && [ "$(q '.configs.nginx.template_driver')" = "golang" ] \
@@ -169,7 +182,7 @@ grep -F 'until curl -fsS -o /dev/null --max-time 5 "$$CORE_URL/api/v2.0/ping"' <
 labels="$(q '.services.nginx.deploy.labels // [] | .[]')"
 ext="$(env_ core EXT_ENDPOINT)"
 case "$case" in
-  published|oidc|metrics)
+  published|oidc|metrics|ha)
     [ "$(q '.services.nginx.ports[0].published')/$(q '.services.nginx.ports[0].target')" = "18080/8080" ] \
       || bad "published: nginx does not publish 18080 -> 8080"
     [ "$(nets nginx)" = "internal" ] || bad "published: nginx joins '$(nets nginx)', expected internal only"
@@ -207,14 +220,13 @@ regcfg="$(env_ registry HARBOR_REGISTRY_CONFIG)"
 [ "$regcfg" = "$(env_ registryctl HARBOR_REGISTRY_CONFIG)" ] || bad "registry and registryctl run different registry configurations"
 rc() { yq -r "$1" <<<"$regcfg"; }
 [ "$(rc '.auth.htpasswd.path')" = "/run/secrets/harbor-registry-htpasswd" ] || bad "the registry does not check logins against the htpasswd secret"
-[ "$(rc '.redis.addr')" = "ci_valkey:6379" ] || bad "the registry's cache is not ci_valkey"
 for s in registry registryctl; do
   [ "$(q ".services.$s.user")" = "0:0" ] || bad "$s does not start as root, so it cannot take ownership of the storage"
   grep -F "exec su -s /bin/sh harbor -c 'exec /home/harbor/" <<<"$(q ".services.$s.command[0]")" >/dev/null \
     || bad "$s does not hand over to uid 10000 through su"
 done
-if [ "$case" = "s3" ]; then
-  [ "$(rc '.storage.s3.regionendpoint')/$(rc '.storage.s3.bucket')/$(rc '.storage.s3.rootdirectory')" = "http://rustfs-rustfs:9000/harbor/registry" ] \
+if [ "$s3" = 1 ]; then
+  [ "$(rc '.storage.s3.regionendpoint')/$(rc '.storage.s3.bucket')/$(rc '.storage.s3.rootdirectory')" = "$s3ep/harbor/$s3root" ] \
     || bad "s3: the registry's s3 driver is not endpoint/bucket/rootdirectory from the values"
   [ "$(rc '.storage.filesystem')" = "null" ] || bad "s3: a filesystem driver is configured too; the registry refuses two"
   [ "$(rc '.storage.redirect.disable')" = "true" ] || bad "s3: redirects are on; clients cannot reach an overlay endpoint"
@@ -224,11 +236,11 @@ if [ "$case" = "s3" ]; then
       || bad "s3: $s does not export the S3 access key from its secret"
     [ "$(q ".services.$s.volumes // [] | length")" = "0" ] || bad "s3: $s mounts a volume"
     [ "$(pins "$s")" = "" ] || bad "s3: $s is pinned to the data node, which holds no data of its"
-    grep -F ' rustfs-net' <<<" $(nets "$s")" >/dev/null || bad "s3: $s does not join storage.s3.network"
+    grep -F " $s3net" <<<" $(nets "$s")" >/dev/null || bad "s3: $s does not join storage.s3.network"
     if grep -F 'chown' <<<"$(q ".services.$s.command[0]")" >/dev/null; then bad "s3: $s still takes ownership of a /storage it does not use"; fi
   done
-  [ "$(pins valkey)" = "node.labels.harbor-data == true" ] || bad "s3: valkey lost its pin"
-  [ "$(env_ core WITH_TRIVY)" = "false" ] || bad "s3 (trivy off): core still registers the scanner"
+  [ "$extredis" = 1 ] || [ "$(pins valkey)" = "node.labels.harbor-data == true" ] || bad "s3: valkey lost its pin"
+  [ "$(env_ core WITH_TRIVY)" = "$([ "$trivy" = 1 ] && echo true || echo false)" ] || bad "s3: core's WITH_TRIVY does not match whether Trivy runs"
 else
   [ "$(rc '.storage.filesystem.rootdirectory')" = "/storage" ] || bad "the registry does not store layers under /storage"
   [ "$(rc '.storage.s3')" = "null" ] || bad "an s3 driver is configured with storage.type=filesystem"
@@ -274,7 +286,80 @@ for s in nginx core portal jobservice trivy exporter; do
   [ "$(pins "$s")" = "" ] || bad "$s is pinned ($(pins "$s")); it keeps no data"
 done
 for s in registry registryctl valkey; do
+  [ "$s" = valkey ] && [ "$extredis" = 1 ] && continue
   [ "$(q ".services.$s.deploy.update_config.order")" = "stop-first" ] || bad "$s does not stop the old task first"
+done
+
+# ── Redis: the internal valkey, or an external one through its Sentinels ───────────────
+# Each component in its own database: 0 core, 1 the registry (core's _REDIS_URL_REG must
+# match it, GC clears the registry's keys there), 2 jobservice and the exporter, 5 Trivy.
+[ "$(env_ core _REDIS_URL_CORE)" = "$redisurl?idle_timeout_seconds=30" ] || bad "core's _REDIS_URL_CORE is '$(env_ core _REDIS_URL_CORE)'"
+[ "$(env_ core _REDIS_URL_REG)" = "$redisurl/1?idle_timeout_seconds=30" ] || bad "core's _REDIS_URL_REG is '$(env_ core _REDIS_URL_REG)'"
+[ "$(env_ jobservice JOB_SERVICE_POOL_REDIS_URL)" = "$redisurl/2?idle_timeout_seconds=30" ] || bad "jobservice's Redis URL is '$(env_ jobservice JOB_SERVICE_POOL_REDIS_URL)'"
+if [ "$trivy" = 1 ]; then
+  for v in SCANNER_REDIS_URL SCANNER_STORE_REDIS_URL SCANNER_JOB_QUEUE_REDIS_URL; do
+    [ "$(env_ trivy "$v")" = "$redisurl/5?idle_timeout_seconds=30" ] || bad "trivy's $v is '$(env_ trivy "$v")'"
+  done
+fi
+[ "$metrics" = 0 ] || [ "$(env_ exporter HARBOR_REDIS_URL)" = "$redisurl/2" ] || bad "the exporter's HARBOR_REDIS_URL is '$(env_ exporter HARBOR_REDIS_URL)'"
+[ "$(rc '.redis.db')" = "1" ] || bad "the registry's cache is not database 1"
+if [ "$extredis" = 0 ]; then
+  [ "$(rc '.redis.addr')/$(rc '.redis.sentinelMasterSet')" = "ci_valkey:6379/null" ] || bad "the registry's cache is not ci_valkey"
+  [ "$(q '.networks.redis-net // ""')" = "" ] || bad "internal Redis, but the redis overlay is declared"
+else
+  [ "$(rc '.redis.addr')/$(rc '.redis.sentinelMasterSet')" = "$sentinels/mymaster" ] \
+    || bad "ha: the registry does not ask the Sentinels for master set mymaster: $(rc '.redis | tojson')"
+  [ "$(rc '.redis.password')" = "null" ] || bad "ha: the registry configuration carries a Redis password"
+  [ "$(q '.volumes // {} | length')" = "0" ] || bad "ha: volumes are declared, though nothing keeps data in the stack"
+  [ "$(q '.networks.redis-net.external')" = "true" ] || bad "ha: redis-net is not declared external"
+  # The password reaches each Redis client through its wrapper, from the secret, checked for
+  # the characters a URL takes unencoded; and nothing else holds it.
+  check='case "$$HARBOR_REDIS_PASSWORD" in *[!A-Za-z0-9._~-]*) echo "secret redis_password may hold only'
+  splice() {  # $1 service, then the variables its wrapper must splice the password into
+    local svc="$1" script; shift
+    script="$(q ".services.$svc.command[0]")"
+    exports "$svc" HARBOR_REDIS_PASSWORD=redis_password
+    grep -F "$check" <<<"$script" >/dev/null || bad "ha: $svc does not refuse a Redis password a URL cannot take"
+    for v in "$@"; do
+      grep -Fx "export $v=\"\$\${$v/__HARBOR_REDIS_PASSWORD__/\$\$HARBOR_REDIS_PASSWORD}\"" <<<"$script" >/dev/null \
+        || bad "ha: $svc does not splice the Redis password into $v"
+    done
+    grep -Fx 'unset HARBOR_REDIS_PASSWORD' <<<"$script" >/dev/null || bad "ha: $svc leaves HARBOR_REDIS_PASSWORD in its environment"
+  }
+  splice core _REDIS_URL_CORE _REDIS_URL_REG
+  splice jobservice JOB_SERVICE_POOL_REDIS_URL
+  splice trivy SCANNER_REDIS_URL SCANNER_STORE_REDIS_URL SCANNER_JOB_QUEUE_REDIS_URL
+  [ "$(tail -n1 <<<"$(q '.services.trivy.command[0]')")" = "exec /home/scanner/entrypoint.sh" ] || bad "ha: trivy's wrapper does not exec the image's entrypoint"
+  splice registry
+  grep -Fx "export REGISTRY_REDIS_PASSWORD=\"'\$\$HARBOR_REDIS_PASSWORD'\"" <<<"$(q '.services.registry.command[0]')" >/dev/null \
+    || bad "ha: the registry is not given the Redis password single-quoted (it parses REGISTRY_REDIS_PASSWORD as YAML)"
+  if grep -F 'REDIS' <<<"$(q '.services.registryctl.command[0]')" >/dev/null; then bad "ha: registryctl's wrapper touches Redis; it uses none"; fi
+  for s in $(q '.services | keys | .[]'); do
+    case "$s" in
+      core|jobservice|registry|trivy)
+        grep -Fx -- '- redis_password' <<<"$(q ".services.$s.secrets")" >/dev/null || bad "ha: $s does not mount redis_password"
+        grep -F ' redis-net ' <<<" $(nets "$s") " >/dev/null || bad "ha: $s does not join redis-net" ;;
+      *)
+        if grep -Fx -- '- redis_password' <<<"$(q ".services.$s.secrets // []")" >/dev/null; then bad "ha: $s mounts the Redis password; it uses no Redis"; fi
+        if grep -F ' redis-net ' <<<" $(nets "$s") " >/dev/null; then bad "ha: $s joins redis-net; it uses no Redis"; fi ;;
+    esac
+  done
+fi
+
+# ── replicas: more than one is spread over the nodes ─────────────────────────────────
+n=1; [ "$case" = "ha" ] && n=2
+for s in nginx core portal jobservice registry registryctl; do
+  [ "$(q ".services.$s.deploy.replicas")" = "$n" ] || bad "$s runs $(q ".services.$s.deploy.replicas") replicas, expected $n"
+  spread="$(q ".services.$s.deploy.placement.preferences // [] | map(.spread) | join(\",\")")"
+  if [ "$n" -gt 1 ]; then
+    [ "$spread" = "node.id" ] || bad "$s runs $n replicas, but its placement preferences are '$spread', not a node.id spread"
+  else
+    [ -z "$spread" ] || bad "$s runs one replica, yet renders the placement preference '$spread'"
+  fi
+done
+for s in valkey trivy exporter; do
+  [ "$(q ".services.$s // \"\"")" = "" ] && continue
+  [ "$(q ".services.$s.deploy.replicas")" = "1" ] || bad "$s does not run exactly one replica"
 done
 
 # ── metrics ───────────────────────────────────────────────────────────────────────────
@@ -383,6 +468,51 @@ if [ "$case" = "default" ]; then
   refused 'storage.s3.bucket' --set storage.type=s3 --set storage.s3.bucket=Bad_Bucket
   refused 'storage.s3.endpoint must be' --set storage.type=s3 --set storage.s3.endpoint=rustfs:9000
   refused 'persistence.registryVolume is a Docker named-volume name' --set persistence.registryVolume=a/b
+  # Replicas: a filesystem volume is one node's, so the registry and registryctl stay at one.
+  refused 'registry.replicas is 2, but storage.type=filesystem' --set registry.replicas=2
+  refused 'registryctl.replicas is 3, but storage.type=filesystem' --set registryctl.replicas=3
+  if render --set nginx.replicas=2 --set 'placement.constraints[0]=node.role==worker'; then
+    [ "$(yq -r '.services.nginx.deploy.placement.constraints[0] + "/" + .services.nginx.deploy.placement.preferences[0].spread' "$tmp")" = "node.role==worker/node.id" ] \
+      || bad "nginx.replicas=2 with a constraint does not render both the constraint and the node.id spread"
+    [ "$(yq -r '.services.core.deploy.placement.preferences // "none"' "$tmp")" = "none" ] || bad "core.replicas=1 renders a spread preference"
+  else
+    bad "nginx.replicas=2 was refused: $(tr '\n' ' ' <"$tmp.err")"
+  fi
+  # External Redis.
+  redisext=(--set redis.type=external --set redis.external.addr=redis:6379)
+  refused "'/redis/type': value must be one of 'internal', 'external'" --set redis.type=sentinel
+  refused 'redis.external.addr must be host:port' --set redis.type=external
+  # --set splits on an unescaped comma.
+  refused 'redis.external.addr must be host:port' --set redis.type=external --set 'redis.external.addr=a:1\, b:2'
+  refused 'which only Sentinels can be' --set redis.type=external --set 'redis.external.addr=a:1\,b:2'
+  refused 'redis.external.sentinelMasterSet may hold only' "${redisext[@]}" --set 'redis.external.sentinelMasterSet=a b'
+  refused 'must name a different Swarm secret' "${redisext[@]}" --set redis.external.passwordSecret=harbor-core-secret
+  refused 'is not a Docker secret name' "${redisext[@]}" --set 'redis.external.passwordSecret=x;id'
+  refused 'metrics.network must differ' "${redisext[@]}" --set metrics.enabled=true --set metrics.network=redis-net
+  # A plain Redis without a password: no Sentinel scheme, nothing mounted, no Trivy wrapper.
+  if render "${redisext[@]}" --set redis.external.passwordSecret=; then
+    [ "$(yq -r .services.jobservice.environment.JOB_SERVICE_POOL_REDIS_URL "$tmp")" = "redis://redis:6379/2?idle_timeout_seconds=30" ] \
+      || bad "external Redis without a password: jobservice dials '$(yq -r .services.jobservice.environment.JOB_SERVICE_POOL_REDIS_URL "$tmp")'"
+    [ "$(yq -r '.services.registry.environment.HARBOR_REGISTRY_CONFIG' "$tmp" | yq -r '.redis.addr + "/" + (.redis.sentinelMasterSet // "none")')" = "redis:6379/none" ] \
+      || bad "external Redis without Sentinel: the registry's redis config is wrong"
+    [ "$(yq -r '.services.trivy.command // "none"' "$tmp")" = "none" ] || bad "external Redis without a password: trivy gets a wrapper"
+    if grep -E 'HARBOR_REDIS_PASSWORD|harbor-redis-password' "$tmp" >/dev/null; then bad "external Redis without a password: the password is still read"; fi
+    [ "$(yq -r '.services.valkey // "gone"' "$tmp")" = "gone" ] && [ "$(yq -r '.volumes | keys | join(",")' "$tmp")" = "harbor-registry" ] \
+      || bad "external Redis: the valkey service or its volume is still rendered"
+  else
+    bad "external Redis without a password was refused: $(tr '\n' ' ' <"$tmp.err")"
+  fi
+  # The exporter, with metrics, reads the job queue from the external Redis too.
+  if render "${redisext[@]}" --set redis.external.sentinelMasterSet=m --set metrics.enabled=true; then
+    x="$(yq -r '.services.exporter.command[0]' "$tmp")"
+    [ "$(yq -r .services.exporter.environment.HARBOR_REDIS_URL "$tmp")" = "redis+sentinel://:__HARBOR_REDIS_PASSWORD__@redis:6379/m/2" ] \
+      && grep -Fx 'rd HARBOR_REDIS_PASSWORD harbor-redis-password' <<<"$x" >/dev/null \
+      && grep -Fx 'export HARBOR_REDIS_URL="$${HARBOR_REDIS_URL/__HARBOR_REDIS_PASSWORD__/$$HARBOR_REDIS_PASSWORD}"' <<<"$x" >/dev/null \
+      && [ "$(yq -r '.services.exporter.networks | join(" ")' "$tmp")" = "internal postgres-net monitoring redis-net" ] \
+      || bad "external Redis with metrics: the exporter does not reach it with the password spliced in"
+  else
+    bad "external Redis with metrics was refused: $(tr '\n' ' ' <"$tmp.err")"
+  fi
 fi
 
 exit "$fail"
