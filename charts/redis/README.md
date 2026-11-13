@@ -78,9 +78,10 @@ swarmcli charts install redis swarmcli-charts/redis --set mode=sentinel
 **Connecting.** A client asks any Sentinel which peer is the master, then authenticates to
 that peer with the `redis_password` secret, on the `redis-net` overlay. With the release
 named `redis`, the Sentinels are `redis-sentinel-1:26379` to `redis-sentinel-3:26379` and the
-master set is `mymaster` (`sentinel.masterName`); as a URL, e.g. for Harbor:
-`redis+sentinel://redis-sentinel-1:26379,redis-sentinel-2:26379,redis-sentinel-3:26379/mymaster`.
-A client without Sentinel support cannot follow a failover.
+master set is `mymaster` (`sentinel.masterName`); clients that take a URL write it as
+`redis+sentinel://:<password>@redis-sentinel-1:26379,redis-sentinel-2:26379,redis-sentinel-3:26379/mymaster`.
+The [harbor chart](../harbor#high-availability) takes the same as `redis.external.*`. A
+client without Sentinel support cannot follow a failover.
 
 - **Addresses.** Every peer and Sentinel announces its network alias
   (`<release>-redis-<N>`, `<release>-sentinel-<N>`), not its task IP, so a rescheduled task
