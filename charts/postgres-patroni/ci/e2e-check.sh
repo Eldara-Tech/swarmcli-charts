@@ -97,11 +97,15 @@ wait_cluster() {
         and ([.[] | select(.Role == "Leader" and .State == "running")] | length) == 1
         and ([.[] | select(.Role == "Replica" and .State == "streaming")] | length) == $n - 1
         and ([.[] | .TL] | unique | length) == 1' <<<"$out" >/dev/null; then
+      # Judged on the last attempt, never on one more: right after the proxy first routes
+      # to a peer back at a new address, a check still in flight to its old one can time
+      # out as the third failure (fall 3) and mark it down for a few seconds. What follows
+      # retries through that.
       for _ in $(seq 1 30); do
-        [ "$(trap - ERR; sql 5432 'SELECT pg_is_in_recovery()' 2>/dev/null)" = f ] && break
+        out="$(trap - ERR; sql 5432 'SELECT pg_is_in_recovery()' 2>&1 || true)"
+        [ "$out" = f ] && break
         sleep 2
       done
-      out="$(trap - ERR; sql 5432 'SELECT pg_is_in_recovery()' 2>&1 || true)"
       [ "$out" = f ] \
         || { echo "  $1: the cluster settled, but the proxy's primary port did not reach it within 60s; last: $(echo $out)"; proxy_seen; exit 1; }
       # And until Swarm counts every task as running. A task with a healthcheck stays
