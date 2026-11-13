@@ -35,6 +35,121 @@ fail=0
 bad() { echo "    FAIL: $*" >&2; fail=1; }
 q() { yq -r "$1" "$rendered"; }
 
+# ── sentinel mode ─────────────────────────────────────────────────────────────────────
+# Every mistake here still converges: peers sharing a volume or a node label, a peer
+# announcing another's alias, Sentinels monitoring different first masters, a Sentinel's
+# default user allowed to repoint its clients. So each peer and Sentinel is checked against
+# its own number, and the refusals are rendered.
+case "$case" in
+sentinel*)
+  peers=3; members=3
+  [ "$case" = sentinel-two-peers ] && peers=2
+  persistent=yes; metrics=no
+  case "$case" in sentinel-ephemeral|sentinel-metrics) persistent=no ;; esac
+  [ "$case" = sentinel-metrics ] && metrics=yes
+  want=""
+  for n in $(seq 1 "$peers"); do want="$want redis-$n"; [ "$metrics" = yes ] && want="$want redis-exporter-$n"; done
+  for n in $(seq 1 "$members"); do want="$want sentinel-$n"; done
+  want="$(tr ' ' '\n' <<<"$want" | sed '/^$/d' | sort | tr '\n' ' ')"
+  got="$(q '.services | keys | .[]' | sort | tr '\n' ' ')"
+  [ "$got" = "$want" ] || bad "services are '$got', expected '$want'"
+  sentinels="ci-sentinel-1 ci-sentinel-2 ci-sentinel-3"
+  acl='user default on nopass resetchannels &+switch-master &+replica-reconf-done -@all +ping +client|setname +client|setinfo +subscribe +unsubscribe +sentinel|get-master-addr-by-name +sentinel|sentinels +sentinel|replicas +sentinel|master'
+
+  # $1 = service, $2 = N, $3 = alias, $4 = volume
+  common() {
+    local s=".services.\"$1\""
+    [ "$(q "$s.deploy.replicas")" = 1 ] || bad "$1: replicas is not 1"
+    [ "$(q "$s.deploy.endpoint_mode")" = vip ] || bad "$1: endpoint_mode is not vip (dnsrr drops the alias)"
+    [ "$(q "$s.networks | keys | join(\" \")")" = redis-net ] || bad "$1: networks are not exactly redis-net"
+    [ "$(q "$s.networks.\"redis-net\".aliases | join(\" \")")" = "$3" ] || bad "$1: aliases are not exactly $3"
+    [ "$(q "$s.deploy.labels | join(\" \")")" = com.swarmcli.rollout=sequential ] || bad "$1: deploy labels are not exactly the sequential rollout"
+    [ "$(q "$s.ports // [] | length")" = 0 ] || bad "$1 publishes a port"
+    [ "$(q "$s.secrets | join(\" \")")" = "redis_password$([ "$metrics" = yes ] && [ "${1%%-*}" = redis ] && echo ' redis_exporter_password')" ] \
+      || bad "$1: secrets are $(q "$s.secrets | join(\" \")")"
+    if [ "$persistent" = yes ]; then
+      [ "$(q "$s.volumes | join(\" \")")" = "$4:/data" ] || bad "$1: volumes are not exactly $4:/data"
+      [ "$(q "$s.deploy.placement.constraints | join(\",\")")" = "node.labels.redis-data-$2 == true" ] || bad "$1: not pinned by exactly node label redis-data-$2"
+    else
+      [ "$(q "$s.volumes")" = null ] || bad "$1 mounts a volume although persistence is off"
+      [ "$(q "$s.deploy.placement")" = null ] || bad "$1 is pinned although persistence is off"
+    fi
+  }
+
+  for n in $(seq 1 "$peers"); do
+    common "redis-$n" "$n" "ci-redis-$n" "redis-data-$n"
+    cmd="$(q ".services.\"redis-$n\".command[2]")"
+    for want in "me=ci-redis-$n" "ss=\"$sentinels\"" \
+        'sentinel get-master-addr-by-name mymaster' '[ "$$m" != "$$me" ] && break' '[ -n "$$(ls -A /data)" ] && break' \
+        'sentinel replicas mymaster 2>&1)" || continue' 'case "$$k" in ERR*|NOPERM*|*"Could not connect"*) continue ;; esac' \
+        '[ "$$k" -gt "$$r" ] && r="$$k"' 'if [ "$$n" -gt 1 ] && [ "$$r" -eq 0 ]; then break; fi' \
+        '[ "$$m" = "$$me" ] || role="--replicaof $$m 6379"' \
+        '--requirepass "$$(cat /run/secrets/redis_password)"' \
+        '--masterauth "$$(cat /run/secrets/redis_password)" --replica-announce-ip "$$me" $$role'; do
+      grep -F -- "$want" <<<"$cmd" >/dev/null || bad "redis-$n's start does not contain: $want"
+    done
+    [ "$(q ".services.\"redis-$n\".healthcheck.test[1]")" = 'REDISCLI_AUTH="$$(cat /run/secrets/redis_password)" redis-cli ping 2>&1 | grep -qE '"'"'^(PONG|LOADING)'"'" ] \
+      || bad "redis-$n's healthcheck does not pass a peer that is still LOADING (a kill restarts the load)"
+    if [ "$metrics" = yes ]; then
+      e=".services.\"redis-exporter-$n\""
+      grep -F -- "--redis.addr=redis://tasks.ci_redis-$n:6379" <<<"$(q "$e.command[0]")" >/dev/null || bad "redis-exporter-$n does not scrape tasks.ci_redis-$n"
+      grep -F -- "--user 'exporter' on" <<<"$cmd" >/dev/null || bad "redis-$n does not define the exporter's ACL user"
+      [ "$(q "$e.deploy.labels | sort | join(\",\")")" = "prometheus.io/port=9121,prometheus.io/scrape=true" ] || bad "redis-exporter-$n carries more than the discovery labels"
+      [ "$(q "$e.networks | sort | join(\" \")")" = "monitoring redis-net" ] || bad "redis-exporter-$n networks are not redis-net and monitoring"
+    fi
+  done
+
+  for n in $(seq 1 "$members"); do
+    common "sentinel-$n" "$n" "ci-sentinel-$n" "redis-data-sentinel-$n"
+    cmd="$(q ".services.\"sentinel-$n\".command[2]")"
+    others="$(tr ' ' '\n' <<<"$sentinels" | grep -vx "ci-sentinel-$n" | tr '\n' ' ' | sed 's/ $//')"
+    for want in "me=ci-sentinel-$n" "ss=\"$others\"" 'echo "sentinel announce-ip $$me"' 'echo "sentinel announce-hostnames yes"' \
+        'echo "sentinel myid $$(printf '"'%s'"' "$$me" | sha1sum | cut -c1-40)"' "echo \"$acl\"" 'echo "user admin on #$$h ~* &* +@all"' \
+        'echo "sentinel monitor mymaster $${m:-ci-redis-1} 6379 2"' 'echo "sentinel auth-pass mymaster \"$$q\""' \
+        'exec docker-entrypoint.sh redis-server "$$c" --sentinel'; do
+      grep -F -- "$want" <<<"$cmd" >/dev/null || bad "sentinel-$n's start does not contain: $want"
+    done
+    # Hostnames resolve only once resolve-hostnames is on, so it must precede the monitor line.
+    r="$(grep -n 'resolve-hostnames yes' <<<"$cmd" | cut -d: -f1 || true)"; m="$(grep -n 'sentinel monitor' <<<"$cmd" | cut -d: -f1 || true)"
+    [ -n "$r" ] && [ -n "$m" ] && [ "$r" -lt "$m" ] || bad "sentinel-$n: resolve-hostnames does not precede the monitor line"
+  done
+
+  vols="$(q '.volumes // {} | keys | .[]' | sort | tr '\n' ' ')"
+  if [ "$persistent" = yes ]; then
+    want=""; for n in $(seq 1 "$peers"); do want="$want redis-data-$n"; done; for n in $(seq 1 "$members"); do want="$want redis-data-sentinel-$n"; done
+    want="$(tr ' ' '\n' <<<"$want" | sed '/^$/d' | sort | tr '\n' ' ')"
+    [ "$vols" = "$want" ] || bad "volumes are '$vols', expected '$want'"
+  else
+    [ -z "$vols" ] || bad "volumes '$vols' are declared although persistence is off"
+  fi
+
+  if [ "$case" = sentinel ]; then
+    chart="$(cd "$(dirname "$0")/.." && pwd)"
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    srefused() {
+      local want="$1"; shift
+      if "${SWARMCLI:?render-check needs SWARMCLI to test the refusals}" charts template r "$chart" -f "$chart/ci/sentinel-values.yaml" "$@" >/dev/null 2>"$tmp/err"; then
+        bad "rendered with $* — it must be refused"
+      elif ! grep -F -- "$want" "$tmp/err" >/dev/null; then
+        bad "$* failed, but not with \"$want\": $(tail -1 "$tmp/err")"
+      fi
+    }
+    srefused "/mode" --set mode=cluster
+    srefused "/cluster/peers" --set cluster.peers=1
+    srefused "/cluster/peers" --set cluster.peers=6
+    srefused "/sentinel/members" --set sentinel.members=4
+    srefused "/sentinel/masterName" --set 'sentinel.masterName=a b'
+    srefused "mode=sentinel requires auth.enabled" --set auth.enabled=false
+    srefused "exposure.enabled is standalone only" --set exposure.enabled=true
+    srefused "persistence.volumePath is standalone only" --set persistence.volumePath=/srv/redis
+    out="$("$SWARMCLI" charts template r "$chart" -f "$chart/ci/sentinel-values.yaml" --set sentinel.members=5 --set cluster.peers=5 2>/dev/null)"
+    grep -F 'echo "sentinel monitor mymaster $${m:-r-redis-1} 6379 3"' <<<"$out" >/dev/null || bad "five Sentinels do not use a quorum of 3"
+  fi
+  exit "$fail"
+  ;;
+esac
+
 rcmd="$(q '.services.redis.command[2]')"
 [ -n "$rcmd" ] && [ "$rcmd" != "null" ] || bad "redis has no start-up script — every check below would pass vacuously"
 services="$(q '.services | keys | .[]' | tr '\n' ' ')"

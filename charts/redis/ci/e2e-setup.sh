@@ -4,7 +4,7 @@
 # install`, once per fixture:
 #   $1 = release name   $2 = chart directory   $3 = fixture case name
 # It provisions the external prerequisites swarmcli validates but never creates: the
-# operator-supplied auth and exporter secrets and the persistence node-label pin. For the bind-mount
+# operator-supplied auth and exporter secrets and the persistence node-label pin(s). For the bind-mount
 # fixture it also pre-creates the host data dir owned by the container's redis uid.
 # The shared redis-net overlay is autoCreate:true, so swarmcli creates it at install —
 # not this hook. ci/e2e-teardown.sh removes everything created here.
@@ -26,9 +26,16 @@ docker secret inspect redis_exporter_password >/dev/null 2>&1 \
 
 # Pin: label this (single-node) swarm's node so the persistence.nodeLabel constraint
 # (node.labels.redis-data == true) schedules. Harmless for the ephemeral fixture (no pin).
+# The sentinel fixtures pin peer and Sentinel N to redis-data-<N>: the one node carries
+# every label, which is not HA but is the pinned shape operators run.
 node="$(docker node ls --format '{{.ID}} {{.Self}}' 2>/dev/null | awk '$2=="true"{print $1; exit}')"
 [ -n "$node" ] || node="$(docker node ls -q 2>/dev/null | sed -n 1p)"
-[ -n "$node" ] && docker node update --label-add redis-data=true "$node" >/dev/null
+if [ -n "$node" ]; then
+  docker node update --label-add redis-data=true "$node" >/dev/null
+  case "$case" in
+    sentinel*) for n in 1 2 3 4 5; do docker node update --label-add "redis-data-$n=true" "$node" >/dev/null; done ;;
+  esac
+fi
 
 # bind-mount fixture only: pre-create /opt/redis-data owned by the container's redis uid
 # (999), matching ci/bind-mount-values.yaml. Best-effort — dockerd would auto-create the

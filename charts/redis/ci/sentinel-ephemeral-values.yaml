@@ -1,0 +1,5 @@
+# Sentinel mode without volumes: no node pins. A restarted Sentinel has no saved file and
+# asks the others for the master; ci/e2e-check.sh proves it rejoins under its own id.
+mode: sentinel
+persistence:
+  enabled: false

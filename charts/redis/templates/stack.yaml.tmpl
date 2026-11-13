@@ -21,9 +21,65 @@
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- /* `| default` keeps a release whose stored values predate mode (--reuse-values) standalone. */ -}}
+{{- $mode := .Values.mode | default "standalone" -}}
+{{- if not (has $mode (list "standalone" "sentinel")) -}}
+{{- fail (printf "mode must be standalone or sentinel (got %q)" $mode) -}}
+{{- end -}}
+{{- $sentinel := eq $mode "sentinel" -}}
+{{- if $sentinel -}}
+{{- if or (lt (int .Values.cluster.peers) 2) (gt (int .Values.cluster.peers) 5) -}}
+{{- fail (printf "cluster.peers must be 2 to 5 in sentinel mode (got %v)" .Values.cluster.peers) -}}
+{{- end -}}
+{{- if not (has (int .Values.sentinel.members) (list 3 5)) -}}
+{{- fail (printf "sentinel.members must be 3 or 5 (got %v): a failover needs a majority of them" .Values.sentinel.members) -}}
+{{- end -}}
+{{- if not (regexMatch "^[A-Za-z0-9._-]+$" (toString .Values.sentinel.masterName)) -}}
+{{- fail (printf "sentinel.masterName must match ^[A-Za-z0-9._-]+$ (got %q): it is spliced into the Sentinels' configuration and their clients' URLs" (toString .Values.sentinel.masterName)) -}}
+{{- end -}}
+{{- if not .Values.auth.enabled -}}
+{{- fail "mode=sentinel requires auth.enabled: the replicas and the Sentinels authenticate with auth.secretName, and it is the password of the Sentinels' admin user" -}}
+{{- end -}}
+{{- if .Values.exposure.enabled -}}
+{{- fail "exposure.enabled is standalone only: in sentinel mode clients ask a Sentinel for the master and then dial it, so they must be on network.name" -}}
+{{- end -}}
+{{- if .Values.persistence.volumePath -}}
+{{- fail "persistence.volumePath is standalone only: in sentinel mode every peer and Sentinel has a named volume of its own" -}}
+{{- end -}}
+{{- end -}}
+{{- /* redis-server's start-up script, in parts sentinel mode reuses: $pre checks and reads the
+       secrets, $flags are the server's own flags. */ -}}
+{{- $pre := list -}}
+{{- if .Values.auth.enabled -}}
+{{-   $pre = append $pre (printf "test -s /run/secrets/%s || { echo '%s secret is empty' >&2; exit 1; };" .Values.auth.secretName .Values.auth.secretName) -}}
+{{- end -}}
+{{- if $acl -}}
+{{-   $pre = append $pre (printf "e=\"$$(cat /run/secrets/%s)\"; [ -n \"$$(printf '%%s' \"$$e\" | tr -d '[:space:]')\" ] || { echo '%s secret is empty' >&2; exit 1; };" .Values.metrics.secretName .Values.metrics.secretName) -}}
+{{-   $pre = append $pre "h=\"$$(printf '%s' \"$$e\" | sha256sum | cut -d' ' -f1)\";" -}}
+{{- end -}}
+{{- $flags := list -}}
+{{- if .Values.persistence.enabled -}}
+{{-   $flags = append $flags "--dir /data" -}}
+{{-   if .Values.persistence.appendonly }}{{ $flags = append $flags "--appendonly yes" }}{{- end -}}
+{{- end -}}
+{{- if .Values.auth.enabled -}}
+{{-   $flags = append $flags (printf "--requirepass \"$$(cat /run/secrets/%s)\"" .Values.auth.secretName) -}}
+{{- end -}}
+{{- if $acl -}}
+{{-   $flags = append $flags (printf "--user '%s' on \"#$$h\" -@all '+client|setname' '+info' '+latency|latest' '+latency|histogram' '+slowlog|len' '+slowlog|get' '+command|info'" .Values.metrics.username) -}}
+{{- end -}}
+{{- if .Values.maxmemory -}}
+{{-   $flags = append $flags (printf "--maxmemory %s" .Values.maxmemory) -}}
+{{-   $flags = append $flags (printf "--maxmemory-policy %s" .Values.maxmemoryPolicy) -}}
+{{- end -}}
+{{- range .Values.extraConfig -}}
+{{-   $flags = append $flags . -}}
+{{- end -}}
+{{- $args := concat $pre (list "exec docker-entrypoint.sh redis-server") $flags -}}
 version: "3.9"
 
 services:
+{{- if not $sentinel }}
 
   redis:
     image: {{ .Values.image.repository }}:{{ if .Values.image.tag }}{{ .Values.image.tag }}{{ else }}{{ .Chart.AppVersion }}{{ end }}
@@ -70,32 +126,6 @@ services:
     # that is empty or only whitespace stops the start rather than create a user with
     # an empty password. Its grants read server state and the slow log, and nothing
     # else: no key, no CONFIG (CONFIG GET returns requirepass).
-{{- $args := list }}
-{{- if .Values.auth.enabled }}
-{{-   $args = append $args (printf "test -s /run/secrets/%s || { echo '%s secret is empty' >&2; exit 1; };" .Values.auth.secretName .Values.auth.secretName) }}
-{{- end }}
-{{- if $acl }}
-{{-   $args = append $args (printf "e=\"$$(cat /run/secrets/%s)\"; [ -n \"$$(printf '%%s' \"$$e\" | tr -d '[:space:]')\" ] || { echo '%s secret is empty' >&2; exit 1; };" .Values.metrics.secretName .Values.metrics.secretName) }}
-{{-   $args = append $args "h=\"$$(printf '%s' \"$$e\" | sha256sum | cut -d' ' -f1)\";" }}
-{{- end }}
-{{- $args = append $args "exec docker-entrypoint.sh redis-server" }}
-{{- if .Values.persistence.enabled }}
-{{-   $args = append $args "--dir /data" }}
-{{-   if .Values.persistence.appendonly }}{{ $args = append $args "--appendonly yes" }}{{- end }}
-{{- end }}
-{{- if .Values.auth.enabled }}
-{{-   $args = append $args (printf "--requirepass \"$$(cat /run/secrets/%s)\"" .Values.auth.secretName) }}
-{{- end }}
-{{- if $acl }}
-{{-   $args = append $args (printf "--user '%s' on \"#$$h\" -@all '+client|setname' '+info' '+latency|latest' '+latency|histogram' '+slowlog|len' '+slowlog|get' '+command|info'" .Values.metrics.username) }}
-{{- end }}
-{{- if .Values.maxmemory }}
-{{-   $args = append $args (printf "--maxmemory %s" .Values.maxmemory) }}
-{{-   $args = append $args (printf "--maxmemory-policy %s" .Values.maxmemoryPolicy) }}
-{{- end }}
-{{- range .Values.extraConfig }}
-{{-   $args = append $args . }}
-{{- end }}
     command:
       - sh
       - -c
@@ -219,11 +249,281 @@ services:
         - "prometheus.io/scrape=true"
         - "prometheus.io/port=9121"
 {{- end }}
+{{- end }}
+{{- if $sentinel }}
+{{- /* Sentinel mode: peer N is `redis-<N>`, Sentinel N is `sentinel-<N>`, both pinned by node label
+       N and both reached at a release-scoped network alias (no `_`, which a host name cannot
+       hold). Redis does not bind to the address it announces, so the alias is what every peer
+       and Sentinel announces: it stays the same when Swarm reschedules a task, which a task IP
+       does not, and a master that comes back under the same name is turned into a replica. */}}
+{{- $image := printf "%s:%s" .Values.image.repository (.Values.image.tag | default .Chart.AppVersion) }}
+{{- $master := toString .Values.sentinel.masterName }}
+{{- $members := int .Values.sentinel.members }}
+{{- $sentinels := list }}
+{{- range $i := until $members }}{{ $sentinels = append $sentinels (printf "%s-sentinel-%d" $.Release.Name (add1 $i)) }}{{ end }}
+{{- $secret := printf "/run/secrets/%s" .Values.auth.secretName }}
+{{- /* Asks each Sentinel in $ss for the master's address in turn; the first answer wins, and $s is
+       left naming the Sentinel that gave it. */}}
+{{- $ask := printf `for s in $$ss; do m="$$(redis-cli -h "$$s" -p 26379 --raw sentinel get-master-addr-by-name %s 2>/dev/null | sed -n 1p)" || m=""; [ -n "$$m" ] && break; done` $master }}
+{{- range $i := until (int .Values.cluster.peers) }}
+{{- $n := add1 $i }}
+{{- $alias := printf "%s-redis-%d" $.Release.Name $n }}
+{{- $c := list }}
+{{- if and $.Values.persistence.enabled $.Values.persistence.nodeLabel }}{{ $c = append $c (printf "node.labels.%s-%d == true" $.Values.persistence.nodeLabel $n) }}{{ end }}
+{{- $c = concat $c $.Values.placement.constraints }}
+
+  redis-{{ $n }}:
+    image: {{ $image }}
+    networks:
+      {{ $.Values.network.name }}:
+        aliases:
+          - {{ $alias }}
+{{- if $.Values.persistence.enabled }}
+    volumes:
+      - {{ $.Values.persistence.volumeName }}-{{ $n }}:/data
+{{- end }}
+    secrets:
+      - {{ $.Values.auth.secretName }}
+{{- if $acl }}
+      - {{ $.Values.metrics.secretName }}
+{{- end }}
+    # Starts as the master or as a replica of it, as the Sentinels say, and waits for as long
+    # as none answers: a peer never decides on its own, so two cannot both start as master.
+    # One the Sentinels name master while its data directory is empty (a lost volume) does not
+    # start while any of them knows a replica, so they promote a replica that still has the
+    # data, instead of every replica copying the empty peer. That decision takes answers from
+    # a majority of the Sentinels, the highest replica count among them, and treats an error as
+    # no answer: one Sentinel restarted without its file knows no replicas yet. The flags are
+    # standalone's, plus the replication password and the alias to announce.
+    command:
+      - sh
+      - -c
+      - |-
+        set -eu
+        {{ join " " $pre }}
+        me={{ $alias }}
+        ss="{{ join " " $sentinels }}"
+        while :; do
+          {{ $ask }}
+          if [ -z "$$m" ]; then echo "no Sentinel answers yet, waiting to learn the master" >&2; sleep 2; continue; fi
+          [ "$$m" != "$$me" ] && break
+          [ -n "$$(ls -A /data)" ] && break
+          n=0; r=0
+          for s in $$ss; do
+            k="$$(redis-cli -h "$$s" -p 26379 --raw sentinel replicas {{ $master }} 2>&1)" || continue
+            case "$$k" in ERR*|NOPERM*|*"Could not connect"*) continue ;; esac
+            n=$$((n + 1))
+            k="$$(printf '%s\n' "$$k" | grep -c '^name$$')" || k=0
+            [ "$$k" -gt "$$r" ] && r="$$k"
+          done
+          if [ "$$n" -gt {{ div $members 2 }} ] && [ "$$r" -eq 0 ]; then break; fi
+          echo "the Sentinels name this peer master, but /data is empty and $$n of {{ $members }} Sentinels answered, knowing up to $$r replica(s): waiting for them to promote one" >&2
+          sleep 5
+        done
+        role=""
+        [ "$$m" = "$$me" ] || role="--replicaof $$m 6379"
+        exec docker-entrypoint.sh redis-server {{ join " " $flags }} --masterauth "$$(cat {{ $secret }})" --replica-announce-ip "$$me" $$role
+{{- if $.Values.healthcheck.enabled }}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        # LOADING passes too: a replica loading a full resync, or a peer its AOF, cannot
+        # answer PING yet, and a kill would only start the load over.
+        - REDISCLI_AUTH="$$(cat {{ $secret }})" redis-cli ping 2>&1 | grep -qE '^(PONG|LOADING)'
+      interval: {{ $.Values.healthcheck.interval }}
+      timeout: {{ $.Values.healthcheck.timeout }}
+      retries: {{ $.Values.healthcheck.retries }}
+      start_period: {{ $.Values.healthcheck.startPeriod }}
+{{- end }}
+    deploy:
+      replicas: 1
+      # vip, never dnsrr: dnsrr drops the network alias every peer is reached at.
+      endpoint_mode: vip
+{{- if $.Values.healthcheck.enabled }}
+      update_config:
+        monitor: {{ $.Values.healthcheck.monitor }}
+{{- end }}
+{{- if $c }}
+      placement:
+        constraints:
+{{- range $c }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- with $.Values.resources.limits.memory }}
+      resources:
+        limits:
+          memory: {{ . | quote }}
+{{- end }}
+      restart_policy:
+        condition: any
+      labels:
+        # swarmcli >= 2.2.0 updates services carrying this label one at a time, each running
+        # and past its monitor window before the next, so an upgrade stops one peer at a time.
+        - "com.swarmcli.rollout=sequential"
+{{- range $key, $val := $.Values.labels }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+{{- if $.Values.metrics.enabled }}
+
+  redis-exporter-{{ $n }}:
+    image: {{ $.Values.metrics.image.repository }}:{{ $.Values.metrics.image.tag }}
+    # As in standalone mode, one per peer: Prometheus tells master and replicas apart by
+    # redis_instance_info's role.
+    networks:
+      - {{ $.Values.network.name }}
+      - {{ $.Values.metrics.network }}
+{{- if $acl }}
+    secrets:
+      - {{ $.Values.metrics.secretName }}
+{{- end }}
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - >-
+{{- if $acl }}
+        p="$$(cat /run/secrets/{{ $.Values.metrics.secretName }})";
+        [ -n "$$(printf '%s' "$$p" | tr -d '[:space:]')" ] || { echo '{{ $.Values.metrics.secretName }} secret is empty' >&2; exit 1; };
+        export REDIS_PASSWORD="$$p";
+{{- end }}
+        exec /redis_exporter
+        --redis.addr=redis://tasks.{{ $.Release.Name }}_redis-{{ $n }}:6379
+{{- if $acl }}
+        --redis.user={{ $.Values.metrics.username }}
+{{- end }}
+        --config-command=-
+        --disable-scrape-endpoint
+    deploy:
+      replicas: 1
+{{- if $c }}
+      placement:
+        constraints:
+{{- range $c }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+      labels:
+        - "prometheus.io/scrape=true"
+        - "prometheus.io/port=9121"
+{{- end }}
+{{- end }}
+{{- range $i := until $members }}
+{{- $n := add1 $i }}
+{{- $alias := index $sentinels $i }}
+{{- $others := without $sentinels $alias }}
+{{- $c := list }}
+{{- if and $.Values.persistence.enabled $.Values.persistence.nodeLabel }}{{ $c = append $c (printf "node.labels.%s-%d == true" $.Values.persistence.nodeLabel $n) }}{{ end }}
+{{- $c = concat $c $.Values.placement.constraints }}
+
+  sentinel-{{ $n }}:
+    image: {{ $image }}
+    networks:
+      {{ $.Values.network.name }}:
+        aliases:
+          - {{ $alias }}
+{{- if $.Values.persistence.enabled }}
+    volumes:
+      - {{ $.Values.persistence.volumeName }}-sentinel-{{ $n }}:/data
+{{- end }}
+    secrets:
+      - {{ $.Values.auth.secretName }}
+    # Sentinel rewrites its configuration as the master changes, so it lives on the volume,
+    # and the start rewrites only the lines it owns: the announced alias, a fixed id (a new id
+    # at every start would leave the others counting a ghost toward the majority), the ACL
+    # users and the passwords. Without a saved configuration it asks the other Sentinels for
+    # the master and, when none answers (a first install), monitors peer 1, as all of them do.
+    #
+    # Its clients cannot authenticate to a Sentinel (Harbor's, for one, send no Sentinel
+    # password), so `default` keeps no password but may only discover the master: no SENTINEL
+    # SET, MONITOR, REMOVE or FAILOVER, which would let anything on the overlay point clients
+    # at a master of its own and collect their password. `admin`, with the auth secret, may
+    # do everything; the Sentinels use it among themselves. The password, read as
+    # requirepass reads it (trailing newlines dropped), goes into the file as \xHH escapes
+    # inside double quotes, so any byte reads back verbatim; Sentinel's own rewrites of the
+    # file store it in plain text, so it sits on the Sentinel's volume like any Redis config.
+    command:
+      - sh
+      - -c
+      - |-
+        set -eu
+        test -s {{ $secret }} || { echo '{{ $.Values.auth.secretName }} secret is empty' >&2; exit 1; }
+        me={{ $alias }}
+        c=/data/sentinel.conf
+        pw="$$(cat {{ $secret }})"
+        q="$$(printf '%s' "$$pw" | od -An -v -tx1 | tr -d ' \n' | sed 's/../\\x&/g')"
+        h="$$(printf '%s' "$$pw" | sha256sum | cut -d' ' -f1)"
+        {
+          echo "port 26379"
+          echo "sentinel resolve-hostnames yes"
+          echo "sentinel announce-hostnames yes"
+          echo "sentinel announce-ip $$me"
+          echo "sentinel announce-port 26379"
+          echo "sentinel myid $$(printf '%s' "$$me" | sha1sum | cut -c1-40)"
+          echo "user default on nopass resetchannels &+switch-master &+replica-reconf-done -@all +ping +client|setname +client|setinfo +subscribe +unsubscribe +sentinel|get-master-addr-by-name +sentinel|sentinels +sentinel|replicas +sentinel|master"
+          echo "user admin on #$$h ~* &* +@all"
+          echo "sentinel sentinel-user admin"
+          echo "sentinel sentinel-pass \"$$q\""
+          if [ -s "$$c" ]; then
+            grep -v -E '^(port|user|sentinel (resolve-hostnames|announce-hostnames|announce-ip|announce-port|myid|sentinel-user|sentinel-pass|auth-user|auth-pass)) ' "$$c" || true
+          else
+            ss="{{ join " " $others }}"
+            {{ $ask }}
+            echo "sentinel monitor {{ $master }} $${m:-{{ $.Release.Name }}-redis-1} 6379 {{ add (div $members 2) 1 }}"
+          fi
+          echo "sentinel auth-pass {{ $master }} \"$$q\""
+        } > "$$c.new"
+        mv "$$c.new" "$$c"
+        exec docker-entrypoint.sh redis-server "$$c" --sentinel
+{{- if $.Values.healthcheck.enabled }}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - redis-cli -p 26379 ping | grep -q PONG
+      interval: {{ $.Values.healthcheck.interval }}
+      timeout: {{ $.Values.healthcheck.timeout }}
+      retries: {{ $.Values.healthcheck.retries }}
+      start_period: {{ $.Values.healthcheck.startPeriod }}
+{{- end }}
+    deploy:
+      replicas: 1
+      endpoint_mode: vip
+{{- if $.Values.healthcheck.enabled }}
+      update_config:
+        monitor: {{ $.Values.healthcheck.monitor }}
+{{- end }}
+{{- if $c }}
+      placement:
+        constraints:
+{{- range $c }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      restart_policy:
+        condition: any
+      labels:
+        - "com.swarmcli.rollout=sequential"
+{{- range $key, $val := $.Values.labels }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+{{- end }}
+{{- end }}
 
 {{- if and .Values.persistence.enabled (not .Values.persistence.volumePath) }}
 
 volumes:
+{{- if $sentinel }}
+{{- range $i := until (int .Values.cluster.peers) }}
+  {{ $.Values.persistence.volumeName }}-{{ add1 $i }}: {}
+{{- end }}
+{{- range $i := until (int .Values.sentinel.members) }}
+  {{ $.Values.persistence.volumeName }}-sentinel-{{ add1 $i }}: {}
+{{- end }}
+{{- else }}
   {{ .Values.persistence.volumeName }}: {}
+{{- end }}
 {{- end }}
 
 {{- if .Values.auth.enabled }}

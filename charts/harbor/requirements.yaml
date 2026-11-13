@@ -3,8 +3,10 @@
 # rendered stack references must be listed here (swarmcli pre-flights it;
 # scripts/requirements-check.sh enforces it at PR time). Entries are declared
 # unconditionally where they can be; one a given configuration never references is inert.
-# The `with` below is the exception: storage.s3.network is "" unless an S3 store needs
-# joining, and an empty name is not a network. It is control flow, hence the disable-file.
+# The `with`s are the exception: storage.s3.network, and redis.external.network and
+# passwordSecret, may be "", and an empty name is neither a network nor a secret. The redis
+# entries are listed only with redis.type=external, so the default install's list is
+# unchanged. Control flow, hence the disable-file.
 networks:
   - name: "{{ .Values.database.network }}"
     driver: overlay
@@ -22,6 +24,16 @@ networks:
     attachable: true
     autoCreate: false
     description: "storage.type=s3 only - the overlay the S3 endpoint is reachable on (storage.s3.network), e.g. the rustfs chart's rustfs-net"
+{{- end }}
+{{- $redis := .Values.redis | default dict }}
+{{- $redisExt := dict }}
+{{- if eq ($redis.type | default "internal") "external" }}{{ $redisExt = $redis.external | default dict }}{{ end }}
+{{- with $redisExt.network }}
+  - name: "{{ . }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "redis.type=external only - the overlay Redis and its Sentinels are reachable on (redis.external.network), e.g. the redis chart's redis-net"
 {{- end }}
   - name: "{{ .Values.metrics.network }}"
     driver: overlay
@@ -57,4 +69,8 @@ secrets:
     description: "metrics.enabled only - password of the exporter's read-only database role (README, Metrics). Pre-create: printf '%s' 'S3cr3t' | docker secret create harbor-exporter-db-password -"
   - name: "{{ .Values.oidc.clientSecretSecret }}"
     description: "oidc.enabled only - the OIDC client secret (Keycloak: the client's Credentials tab). Pre-create: printf '%s' '<client secret>' | docker secret create harbor-oidc-client-secret -"
+{{- with $redisExt.passwordSecret }}
+  - name: "{{ . }}"
+    description: "redis.type=external only - the password of the external Redis, letters, digits, '.', '_', '~' and '-' only. Pre-create: openssl rand -hex 32 | tr -d '\\n' | docker secret create harbor-redis-password -"
+{{- end }}
 configs: []
