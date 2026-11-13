@@ -233,7 +233,8 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
 
 - **openclaw** — the reference above.
 - **redis**, **mariadb**, **postgres** — dummy auth secret(s) + the persistence node-label
-  pin + the bind-mount host dir.
+  pin + the bind-mount host dir. redis's `sentinel*` fixtures get node labels
+  `redis-data-1` to `-5` on the one node, so every pinned peer and Sentinel schedules there.
 - **mongodb** — the root, app-user and keyFile secrets + the persistence node-label pin + the
   bind-mount host dir. Its `ci/e2e-check.sh` connects from a throwaway client container on the
   release's overlay rather than `docker exec`, so the `replica-set` fixture exercises the member

@@ -3,7 +3,8 @@
 Single-instance Redis 8.2 for Docker Swarm: persistent (AOF on a node-local named
 volume), password-authenticated via an external Swarm secret, pinned to one node,
 and reachable by other stacks over a shared overlay. Not Traefik-routed (Redis is
-TCP); publishes no port by default.
+TCP); publishes no port by default. `mode: sentinel` runs a master, its replicas and
+Sentinels that fail over between them instead ([Sentinel mode](#sentinel-mode)).
 
 ## Prerequisites
 
@@ -57,6 +58,60 @@ authenticating with the `redis_password` secret. To reach Redis from outside the
 overlay, set `exposure.enabled: true` (publishes a port; choose `mode: ingress` for
 the cluster-wide routing mesh or `mode: host` for the pinned node only).
 
+## Sentinel mode
+
+`mode: sentinel` runs `cluster.peers` Redis peers (default 3), one master and its replicas,
+and `sentinel.members` Sentinels (3 or 5), which promote a replica when the master is lost.
+A failover needs a majority of the Sentinels, so 3 survive losing one. Auth is required.
+
+Each peer and Sentinel is a service of its own (`redis-<N>`, `sentinel-<N>`) with its own
+volume (`redis-data-<N>`, `redis-data-sentinel-<N>`), pinned by node label
+`redis-data-<N>`: peer N and Sentinel N share label N, so label one node per number. With
+two peers, label 3 carries only a Sentinel. Labels on one node give no availability.
+
+```bash
+for n in 1 2 3; do docker node update --label-add "redis-data-$n=true" "<node $n>"; done
+printf 'S3cr3t' | docker secret create redis_password -
+swarmcli charts install redis swarmcli-charts/redis --set mode=sentinel
+```
+
+**Connecting.** A client asks any Sentinel which peer is the master, then authenticates to
+that peer with the `redis_password` secret, on the `redis-net` overlay. With the release
+named `redis`, the Sentinels are `redis-sentinel-1:26379` to `redis-sentinel-3:26379` and the
+master set is `mymaster` (`sentinel.masterName`); as a URL, e.g. for Harbor:
+`redis+sentinel://redis-sentinel-1:26379,redis-sentinel-2:26379,redis-sentinel-3:26379/mymaster`.
+A client without Sentinel support cannot follow a failover.
+
+- **Addresses.** Every peer and Sentinel announces its network alias
+  (`<release>-redis-<N>`, `<release>-sentinel-<N>`), not its task IP, so a rescheduled task
+  keeps its address and an old master that comes back is turned into a replica.
+- **Starting.** A peer starts as master or replica as the Sentinels say, and waits as long as
+  none answers. A first install's master is peer 1. A peer the Sentinels name master while
+  its volume is empty, and while they know replicas, waits for them to promote one, so a lost
+  master volume does not wipe the replicas that still hold the data.
+- **Upgrades roll one service at a time**: each carries `com.swarmcli.rollout=sequential`,
+  which needs swarmcli 2.2.0 or later. The chart's floor is 2.2.0 in both modes.
+- **The Sentinels' default user has no password but may only discover**: `PING`,
+  `SENTINEL GET-MASTER-ADDR-BY-NAME`, `SENTINELS`, `REPLICAS` and `MASTER`, and subscribing
+  to `+switch-master` and `+replica-reconf-done`. Clients such as Harbor's send no Sentinel
+  password, so it cannot have one; and without the restriction anything on the overlay could
+  `SENTINEL SET` or `MONITOR` its clients onto a Redis of its own and collect their password.
+  The `admin` user, with the `redis_password` secret, may do everything, and the Sentinels
+  use it among themselves:
+  `docker exec -it <a sentinel container> sh -c 'REDISCLI_AUTH="$(cat /run/secrets/redis_password)" redis-cli -p 26379 --user admin sentinel failover mymaster'`.
+- **Writes during a partition.** Redis's default is kept: a master cut off from its replicas
+  keeps accepting writes, which are lost if the Sentinels promote another peer meanwhile.
+  To refuse them instead, add
+  `extraConfig: ["--min-replicas-to-write 1", "--min-replicas-max-lag 10"]`.
+- **Fixed at install**: `cluster.peers`, `sentinel.members` and `sentinel.masterName` (the
+  Sentinels keep the master set in their saved configuration), and `mode` itself: switching an
+  installed release starts the new mode's services empty beside the old ones, which keep
+  running, because swarmcli deploys without `--prune`.
+- Not offered in sentinel mode: `exposure.enabled`, `persistence.volumePath` and
+  `auth.enabled: false`; the render refuses each.
+- **Metrics** add one exporter per peer (`redis-exporter-<N>`); see below. swarmcli-cd needs
+  the same `allow` entries as a standalone release.
+
 ## Metrics
 
 Redis serves no Prometheus metrics of its own, so `metrics.enabled` adds a
@@ -109,6 +164,8 @@ auth there is nothing to restrict, and no secret is needed.
   the exporter's own user and password (`exporter/http.go` at v1.93.0 copies the
   configured options into each target's connection), so anything on `monitoring`
   could collect them with a fake Redis. The chart passes `--disable-scrape-endpoint`.
+- **In sentinel mode** each peer gets an exporter of its own, `<release>_redis-exporter-<N>`,
+  and the ACL user on its own command line.
 - **Rotating the password**: create a secret under a new name and point
   `metrics.secretName` at it. Both services change, so Redis restarts, and an
   ephemeral instance (`persistence.enabled: false`) starts empty.
@@ -165,6 +222,10 @@ git*, shows where to list the two files.
   (MIT). Then the chart's own: `RedisRejectingWrites` while Redis keeps answering OOM,
   `RedisMemoryNearLimit` above 90% of `maxmemory`, and `RedisPersistenceFailed` while
   the last RDB save or AOF write has failed, which by default makes Redis refuse writes.
+  For sentinel mode: `RedisNoMaster` while no peer of a release has been master for 2
+  minutes (every write refused) and `RedisMultipleMasters` while more than one has (writes
+  to the wrong one are lost), both critical, and `RedisReplicaLinkDown` while a replica has
+  been cut off from its master for 5 minutes.
   `RedisMemoryNearLimit` needs `maxmemory` set and `maxmemoryPolicy: noeviction`: with
   the default `maxmemory` there is no limit to approach, and an evicting policy sits at
   it by design.
@@ -185,6 +246,10 @@ every target, and the alerts carry it. Another Prometheus needs the same relabel
 | `image.repository` | `redis` | Image repository |
 | `image.tag` | `""` | Tag — defaults to `appVersion` in Chart.yaml |
 | `replicas` | `1` | Replica count (must stay 1 — node-local volume) |
+| `mode` | `standalone` | `standalone` or `sentinel` ([Sentinel mode](#sentinel-mode)) |
+| `cluster.peers` | `3` | Sentinel mode: Redis peers, 2 to 5 |
+| `sentinel.members` | `3` | Sentinel mode: Sentinels, 3 or 5 |
+| `sentinel.masterName` | `mymaster` | Sentinel mode: the name clients ask the Sentinels for |
 | `auth.enabled` | `true` | Require a password |
 | `auth.secretName` | `redis_password` | External Swarm secret holding the password |
 | `persistence.enabled` | `true` | Mount a volume at `/data` (also controls the node pin) |

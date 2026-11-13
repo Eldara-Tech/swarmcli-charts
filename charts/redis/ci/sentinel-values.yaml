@@ -1,0 +1,5 @@
+# Sentinel mode, persistent and pinned: three peers and three Sentinels, each with a volume
+# of its own and node label redis-data-<N> (ci/e2e-setup.sh puts every label on the one CI
+# node). ci/e2e-check.sh proves the replication, the Sentinels' ACL, a failover with the old
+# master rejoining as a replica, and a master whose volume was lost not winning.
+mode: sentinel
