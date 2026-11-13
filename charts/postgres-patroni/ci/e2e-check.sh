@@ -70,6 +70,20 @@ cluster() {
   return 1
 }
 leader() { cluster | jq -r '.[] | select(.Role == "Leader") | .Member'; }
+# Why the primary port reaches nothing: the address each peer advertises, what each proxy
+# replica resolves it to, and what that replica last said about its primary servers.
+proxy_seen() {
+  local c p
+  cluster 2>/dev/null | jq -r '.[] | "    \(.Member) \(.Host) \(.Role) \(.State)"' || true
+  for c in $(docker ps -q -f "label=com.docker.swarm.service.name=${release}_postgres-patroni-proxy"); do
+    echo "    proxy container $c:"
+    for p in $peers; do
+      echo "      tasks.$p -> $(docker exec "$c" getent hosts "tasks.$p" | awk '{ print $1 }' | xargs || true)"
+    done
+    docker logs "$c" 2>&1 | { grep -F ' primary/' || true; } | { grep -vE '^[0-9.]+:[0-9]+ \[' || true; } | tail -n 15 | sed 's/^/      /'
+    docker logs "$c" 2>&1 | { grep -E '^[0-9.]+:[0-9]+ \[.* primary primary/' || true; } | tail -n 3 | sed 's/^/      /'
+  done
+}
 # Waits until there is one leader and every other peer streams from it on its timeline,
 # and then until the proxy routes to it: Patroni can settle a few seconds before the
 # proxy's checks (rise 2, 3s apart) mark the new primary up, or before a rescheduled
@@ -83,12 +97,17 @@ wait_cluster() {
         and ([.[] | select(.Role == "Leader" and .State == "running")] | length) == 1
         and ([.[] | select(.Role == "Replica" and .State == "streaming")] | length) == $n - 1
         and ([.[] | .TL] | unique | length) == 1' <<<"$out" >/dev/null; then
+      # Judged on the last attempt, never on one more: right after the proxy first routes
+      # to a peer back at a new address, a check still in flight to its old one can time
+      # out as the third failure (fall 3) and mark it down for a few seconds. What follows
+      # retries through that.
       for _ in $(seq 1 30); do
-        [ "$(trap - ERR; sql 5432 'SELECT pg_is_in_recovery()' 2>/dev/null)" = f ] && break
+        out="$(trap - ERR; sql 5432 'SELECT pg_is_in_recovery()' 2>&1 || true)"
+        [ "$out" = f ] && break
         sleep 2
       done
-      [ "$(trap - ERR; sql 5432 'SELECT pg_is_in_recovery()' 2>/dev/null)" = f ] \
-        || { echo "  $1: the cluster settled, but the proxy's primary port did not reach it within 60s"; exit 1; }
+      [ "$out" = f ] \
+        || { echo "  $1: the cluster settled, but the proxy's primary port did not reach it within 60s; last: $(echo $out)"; proxy_seen; exit 1; }
       # And until Swarm counts every task as running. A task with a healthcheck stays
       # `starting` until its first healthy check, which can come after Patroni already
       # streams, and swarmcli rolls a service that is not running in the first batch,
