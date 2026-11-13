@@ -477,9 +477,16 @@ if [ "$case" = slow-sst ]; then
   bad="$(grep -E "^err |^ok $h3 [^4]" <<<"$log" || true)"
   [ -z "$bad" ] || { echo "  through the proxy, a client failed or reached $h3 before it was Synced:"; sort <<<"$bad" | uniq -c | sed -n 1,5p | sed 's/^/    /'; proxy_seen; exit 1; }
   # Each replica marked peer 3 up first on a passed check, the Synced responder's 200,
-  # never on its return to DNS.
+  # never on its return to DNS. Each replica checks on its own clock (inter 2s, rise 2),
+  # so one can still be counting when the client's first query reached peer 3 via another.
   for c in $(replicas); do
-    first_up="$(h3_events "$c" | grep -F ' is UP' | sed -n 1p || true)"
+    first_up=""
+    for _ in $(seq 1 30); do
+      first_up="$(h3_events "$c" | grep -F ' is UP' | sed -n 1p || true)"
+      [ -n "$first_up" ] && break
+      sleep 1
+    done
+    [ -n "$first_up" ] || { echo "  proxy container $c did not mark $h3 up within 30s"; proxy_seen; exit 1; }
     grep -F 'check passed' <<<"$first_up" >/dev/null \
       || { echo "  proxy container $c marked $h3 up other than by a passed check: '$first_up'"; proxy_seen; exit 1; }
   done
