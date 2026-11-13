@@ -73,10 +73,12 @@ groups:
       # Replication. A release's peers share its `stack` label, and the master is the one
       # whose INFO reports role:master. None means every write is refused; two mean writes
       # to the one the Sentinels did not choose are lost when it is turned back into a
-      # replica. `for` outlasts a normal failover (the Sentinels wait 30s by default).
+      # replica. No master is read from the replicas, every one cut off from its master, so a
+      # master whose own exporter is down does not count as missing. `for` outlasts a normal
+      # failover (the Sentinels wait 30s by default).
       - alert: RedisNoMaster
         expr: |
-          count by (stack) (redis_instance_info)
+          max by (stack) (redis_master_link_up) == 0
           unless on (stack)
             count by (stack) (redis_instance_info{role="master"})
         for: 2m
@@ -84,7 +86,7 @@ groups:
           severity: critical
         annotations:
           summary: 'Redis release {{ $labels.stack }} has no master'
-          description: 'No running Redis of release {{ $labels.stack }} has been a master for 2 minutes, so it refuses every write. The Sentinels have not promoted a replica: check that a majority of them run and can reach the peers.'
+          description: 'Every replica of Redis release {{ $labels.stack }} has been cut off from its master for 2 minutes, and no peer reports being one, so the release refuses every write. The Sentinels have not promoted a replica: check that a majority of them run and can reach the peers.'
       - alert: RedisMultipleMasters
         expr: count by (stack) (redis_instance_info{role="master"}) > 1
         for: 2m

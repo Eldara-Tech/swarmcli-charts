@@ -33,7 +33,8 @@ case="${3:-}"
 # another container on the overlay (where a client such as Harbor sits), and a restarted
 # Sentinel rejoining under its own id. With persistence (`sentinel`) also a failover the old
 # master rejoins as a replica, and a master whose volume was lost waiting for the Sentinels
-# to promote a replica instead of starting empty and being copied. With metrics
+# to promote a replica instead of starting empty and being copied; without (`sentinel-
+# ephemeral`) the same wait when the Sentinel it asks first knows no replicas. With metrics
 # (`sentinel-metrics`) each peer's exporter, exactly one of them reporting a master.
 case "$case" in
 sentinel*)
@@ -121,7 +122,8 @@ sentinel*)
   [ "$(cli -h "${release}-sentinel-1" -p 26379 sentinel get-master-addr-by-name mymaster | sed -n 1p)" = "${release}-redis-$m" ] \
     || bad "a client on redis-net cannot discover the master from ${release}-sentinel-1"
   for cmd in 'sentinel set mymaster quorum 1' 'sentinel monitor evil 127.0.0.1 6379 1' 'sentinel remove mymaster' \
-      'sentinel failover mymaster' 'sentinel reset mymaster' 'sentinel config set resolve-hostnames no' 'acl list' 'info'; do
+      'sentinel failover mymaster' 'sentinel reset mymaster' 'sentinel config set resolve-hostnames no' 'acl list' 'info' \
+      'publish __sentinel__:hello 127.0.0.1,6379,x,9,mymaster,127.0.0.1,6379,9'; do
     # shellcheck disable=SC2086 # each command is several words
     out="$(cli -h "${release}-sentinel-1" -p 26379 $cmd)"
     grep NOPERM <<<"$out" >/dev/null || bad "the Sentinels' default user was not refused '$cmd': $out"
@@ -176,6 +178,40 @@ sentinel*)
     fail=$((fail | f0))
   fi
 
+  if [ "$case" = sentinel-ephemeral ]; then
+    # An ephemeral master always restarts empty. Sentinel-1, restarted while it is down, has no
+    # file and knows no replicas, and every peer asks it first; the peer must still take the
+    # others' word and wait for a promotion. The Sentinels wait 120s before failing over, so
+    # the master is back well before they do, whatever the runner's speed.
+    f0="$fail"; fail=0
+    vic="$(agreed)"
+    for n in $(seq 1 "$members"); do sen_admin "$n" sentinel set mymaster down-after-milliseconds 120000 >/dev/null; done
+    peer "$vic" set e2e:k3 v3 >/dev/null
+    [ "$(peer "$vic" wait $((peers - 1)) 5000)" = "$((peers - 1))" ] || bad "e2e:k3 did not reach every replica"
+    docker service scale --detach "${release}_redis-$vic=0" >/dev/null
+    for _ in $(seq 1 30); do [ -z "$(cid_of "redis-$vic")" ] && break; sleep 1; done
+    old_s1="$(cid_of sentinel-1)"
+    docker service update --detach --force "${release}_sentinel-1" >/dev/null
+    fresh=no
+    for _ in $(seq 1 30); do
+      sleep 2
+      c="$(cid_of sentinel-1)"; [ -n "$c" ] && [ "$c" != "$old_s1" ] || continue
+      if [ "$(sen 1 sentinel get-master-addr-by-name mymaster 2>/dev/null | sed -n 1p)" = "${release}-redis-$vic" ] \
+          && [ "$(sen 1 sentinel replicas mymaster 2>/dev/null | grep -c '^name$' || true)" = 0 ]; then fresh=yes; break; fi
+    done
+    [ "$fresh" = yes ] || bad "the restarted sentinel-1 did not come back naming peer $vic with no replicas known"
+    docker service scale --detach "${release}_redis-$vic=1" >/dev/null
+    m="$(settled 300)" || bad "the cluster did not settle after empty peer $vic returned"
+    [ "$m" != "$vic" ] || bad "peer $vic came back empty and is master again"
+    docker service logs "${release}_redis-$vic" 2>&1 | grep 'waiting for them to promote one' >/dev/null \
+      || bad "peer $vic never waited for a promotion"
+    for r in $(seq 1 "$peers"); do
+      [ "$(peer "$r" get e2e:k3)" = v3 ] || bad "peer $r lost e2e:k3: the empty peer was copied"
+    done
+    [ "$fail" = 0 ] && echo "  empty restart: peer $vic waited though sentinel-1 knew no replicas, peer $m was promoted, no key lost"
+    fail=$((fail | f0))
+  fi
+
   if [ "$case" = sentinel-metrics ]; then
     masters=0
     for n in $(seq 1 "$peers"); do
@@ -186,6 +222,9 @@ sentinel*)
         sleep 2
       done
       grep -x 'redis_up 1' <<<"$body" >/dev/null || bad "redis-exporter-$n does not report redis_up 1"
+      # A second scrape sees the first one's commands: none may have been denied on its peer.
+      body2="$(docker run --rm --network monitoring curlimages/curl:latest -sSf "http://${release}_redis-exporter-$n:9121/metrics" 2>&1 || true)"
+      grep -x 'redis_acl_access_denied_cmd_total 0' <<<"$body2" >/dev/null || bad "redis-exporter-$n's scrapes are denied commands on peer $n"
       if grep -E '^redis_instance_info\{.*role="master"' <<<"$body" >/dev/null; then
         masters=$((masters + 1))
       else

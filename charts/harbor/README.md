@@ -288,7 +288,9 @@ registryctl: { replicas: 2 }
 - **Spreading.** A service with more than one replica carries the placement preference
   `spread: node.id`, so Swarm puts its replicas on different nodes where it can. It is a
   preference, not a rule: on fewer nodes than replicas they share one, and with a node down
-  its replicas start on the others.
+  its replicas start on the others. The exception is nginx with `publish.mode: host`: each
+  replica binds `publish.port` on its node, so a replica without a node of its own stays
+  Pending.
 - **Trivy and the exporter stay at one replica.** Each Trivy replica would download its own
   vulnerability database; while the one task is replaced, scans wait and pushes and pulls do
   not. The exporter only serves metrics.

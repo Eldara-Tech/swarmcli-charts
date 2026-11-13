@@ -80,16 +80,21 @@ that peer with the `redis_password` secret, on the `redis-net` overlay. With the
 named `redis`, the Sentinels are `redis-sentinel-1:26379` to `redis-sentinel-3:26379` and the
 master set is `mymaster` (`sentinel.masterName`); clients that take a URL write it as
 `redis+sentinel://:<password>@redis-sentinel-1:26379,redis-sentinel-2:26379,redis-sentinel-3:26379/mymaster`.
-The [harbor chart](../harbor#high-availability) takes the same as `redis.external.*`. A
-client without Sentinel support cannot follow a failover.
+The [harbor chart](../harbor#high-availability) takes the same as `redis.external.*`.
+Configure clients with **no Sentinel password**: the Sentinels' `default` user has none, and
+an `AUTH` against it fails, so discovery fails with it. A client without Sentinel support
+cannot follow a failover.
 
 - **Addresses.** Every peer and Sentinel announces its network alias
   (`<release>-redis-<N>`, `<release>-sentinel-<N>`), not its task IP, so a rescheduled task
   keeps its address and an old master that comes back is turned into a replica.
 - **Starting.** A peer starts as master or replica as the Sentinels say, and waits as long as
   none answers. A first install's master is peer 1. A peer the Sentinels name master while
-  its volume is empty, and while they know replicas, waits for them to promote one, so a lost
-  master volume does not wipe the replicas that still hold the data.
+  its volume is empty waits, as long as a majority of them does not answer or any of them
+  knows a replica, for them to promote one, so a lost master volume does not wipe the
+  replicas that still hold the data. If those replicas are gone for good too (both peers of
+  a two-peer set lost their volumes), the peer waits for ever, logging why: have every
+  Sentinel forget them with `sentinel reset mymaster` as `admin` (below), and it starts empty.
 - **Upgrades roll one service at a time**: each carries `com.swarmcli.rollout=sequential`,
   which needs swarmcli 2.2.0 or later. The chart's floor is 2.2.0 in both modes.
 - **The Sentinels' default user has no password but may only discover**: `PING`,
@@ -223,10 +228,11 @@ git*, shows where to list the two files.
   (MIT). Then the chart's own: `RedisRejectingWrites` while Redis keeps answering OOM,
   `RedisMemoryNearLimit` above 90% of `maxmemory`, and `RedisPersistenceFailed` while
   the last RDB save or AOF write has failed, which by default makes Redis refuse writes.
-  For sentinel mode: `RedisNoMaster` while no peer of a release has been master for 2
-  minutes (every write refused) and `RedisMultipleMasters` while more than one has (writes
-  to the wrong one are lost), both critical, and `RedisReplicaLinkDown` while a replica has
-  been cut off from its master for 5 minutes.
+  For sentinel mode: `RedisNoMaster` while every replica of a release has been cut off from
+  its master for 2 minutes and no peer reports being one (every write refused) and
+  `RedisMultipleMasters` while more than one peer has reported being master (writes to the
+  wrong one are lost), both critical, and `RedisReplicaLinkDown` while a replica has been cut
+  off from its master for 5 minutes.
   `RedisMemoryNearLimit` needs `maxmemory` set and `maxmemoryPolicy: noeviction`: with
   the default `maxmemory` there is no limit to approach, and an evicting policy sits at
   it by design.

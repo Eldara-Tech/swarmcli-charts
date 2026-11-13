@@ -81,11 +81,15 @@ sentinel*)
     cmd="$(q ".services.\"redis-$n\".command[2]")"
     for want in "me=ci-redis-$n" "ss=\"$sentinels\"" \
         'sentinel get-master-addr-by-name mymaster' '[ "$$m" != "$$me" ] && break' '[ -n "$$(ls -A /data)" ] && break' \
-        'sentinel replicas mymaster' '[ "$$r" -eq 0 ] && break' '[ "$$m" = "$$me" ] || role="--replicaof $$m 6379"' \
+        'sentinel replicas mymaster 2>&1)" || continue' 'case "$$k" in ERR*|NOPERM*|*"Could not connect"*) continue ;; esac' \
+        '[ "$$k" -gt "$$r" ] && r="$$k"' 'if [ "$$n" -gt 1 ] && [ "$$r" -eq 0 ]; then break; fi' \
+        '[ "$$m" = "$$me" ] || role="--replicaof $$m 6379"' \
         '--requirepass "$$(cat /run/secrets/redis_password)"' \
         '--masterauth "$$(cat /run/secrets/redis_password)" --replica-announce-ip "$$me" $$role'; do
       grep -F -- "$want" <<<"$cmd" >/dev/null || bad "redis-$n's start does not contain: $want"
     done
+    [ "$(q ".services.\"redis-$n\".healthcheck.test[1]")" = 'REDISCLI_AUTH="$$(cat /run/secrets/redis_password)" redis-cli ping 2>&1 | grep -qE '"'"'^(PONG|LOADING)'"'" ] \
+      || bad "redis-$n's healthcheck does not pass a peer that is still LOADING (a kill restarts the load)"
     if [ "$metrics" = yes ]; then
       e=".services.\"redis-exporter-$n\""
       grep -F -- "--redis.addr=redis://tasks.ci_redis-$n:6379" <<<"$(q "$e.command[0]")" >/dev/null || bad "redis-exporter-$n does not scrape tasks.ci_redis-$n"

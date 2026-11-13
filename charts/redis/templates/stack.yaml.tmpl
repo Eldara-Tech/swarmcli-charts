@@ -289,10 +289,12 @@ services:
 {{- end }}
     # Starts as the master or as a replica of it, as the Sentinels say, and waits for as long
     # as none answers: a peer never decides on its own, so two cannot both start as master.
-    # One the Sentinels name master while its data directory is empty (a lost volume) and
-    # they know replicas does not start, so they promote a replica that still has the data,
-    # instead of every replica copying the empty peer. The flags are standalone's, plus the
-    # replication password and the alias to announce.
+    # One the Sentinels name master while its data directory is empty (a lost volume) does not
+    # start while any of them knows a replica, so they promote a replica that still has the
+    # data, instead of every replica copying the empty peer. That decision takes answers from
+    # a majority of the Sentinels, the highest replica count among them, and treats an error as
+    # no answer: one Sentinel restarted without its file knows no replicas yet. The flags are
+    # standalone's, plus the replication password and the alias to announce.
     command:
       - sh
       - -c
@@ -306,9 +308,16 @@ services:
           if [ -z "$$m" ]; then echo "no Sentinel answers yet, waiting to learn the master" >&2; sleep 2; continue; fi
           [ "$$m" != "$$me" ] && break
           [ -n "$$(ls -A /data)" ] && break
-          r="$$(redis-cli -h "$$s" -p 26379 --raw sentinel replicas {{ $master }} 2>/dev/null | grep -c '^name$$')" || r=0
-          [ "$$r" -eq 0 ] && break
-          echo "the Sentinels name this peer master, but /data is empty and they know $$r replica(s): waiting for them to promote one" >&2
+          n=0; r=0
+          for s in $$ss; do
+            k="$$(redis-cli -h "$$s" -p 26379 --raw sentinel replicas {{ $master }} 2>&1)" || continue
+            case "$$k" in ERR*|NOPERM*|*"Could not connect"*) continue ;; esac
+            n=$$((n + 1))
+            k="$$(printf '%s\n' "$$k" | grep -c '^name$$')" || k=0
+            [ "$$k" -gt "$$r" ] && r="$$k"
+          done
+          if [ "$$n" -gt {{ div $members 2 }} ] && [ "$$r" -eq 0 ]; then break; fi
+          echo "the Sentinels name this peer master, but /data is empty and $$n of {{ $members }} Sentinels answered, knowing up to $$r replica(s): waiting for them to promote one" >&2
           sleep 5
         done
         role=""
@@ -318,7 +327,9 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - REDISCLI_AUTH="$$(cat {{ $secret }})" redis-cli ping | grep -q PONG
+        # LOADING passes too: a replica loading a full resync, or a peer its AOF, cannot
+        # answer PING yet, and a kill would only start the load over.
+        - REDISCLI_AUTH="$$(cat {{ $secret }})" redis-cli ping 2>&1 | grep -qE '^(PONG|LOADING)'
       interval: {{ $.Values.healthcheck.interval }}
       timeout: {{ $.Values.healthcheck.timeout }}
       retries: {{ $.Values.healthcheck.retries }}
@@ -431,7 +442,8 @@ services:
     # at a master of its own and collect their password. `admin`, with the auth secret, may
     # do everything; the Sentinels use it among themselves. The password, read as
     # requirepass reads it (trailing newlines dropped), goes into the file as \xHH escapes
-    # inside double quotes, so any byte reads back verbatim.
+    # inside double quotes, so any byte reads back verbatim; Sentinel's own rewrites of the
+    # file store it in plain text, so it sits on the Sentinel's volume like any Redis config.
     command:
       - sh
       - -c

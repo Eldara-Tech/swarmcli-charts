@@ -144,14 +144,29 @@ tests:
 
   # Replication. Release `nomaster` keeps two replicas and loses its master at 2m; release
   # `split` has two masters from 2m; in release `repl` one replica's link drops at 2m while
-  # its master stays. Release `repl` keeps its master, so it raises neither master alert.
+  # its master stays. Release `repl` keeps its master, so it raises neither master alert,
+  # and neither do releases `blind` and `half`, whose master serves while its exporter is gone.
   - interval: 1m
     input_series:
       - series: 'redis_instance_info{job="nomaster_redis-exporter-1",instance="10.0.7.5:9121",stack="nomaster",role="master"}'
         values: '1 1 _x10'
       - series: 'redis_instance_info{job="nomaster_redis-exporter-2",instance="10.0.7.6:9121",stack="nomaster",role="slave"}'
         values: '1x12'
+      - series: 'redis_master_link_up{job="nomaster_redis-exporter-2",instance="10.0.7.6:9121",stack="nomaster",master_host="nomaster-redis-1",master_port="6379"}'
+        values: '1 1 0x10'
       - series: 'redis_instance_info{job="nomaster_redis-exporter-3",instance="10.0.7.7:9121",stack="nomaster",role="slave"}'
+        values: '1x12'
+      - series: 'redis_master_link_up{job="nomaster_redis-exporter-3",instance="10.0.7.7:9121",stack="nomaster",master_host="nomaster-redis-1",master_port="6379"}'
+        values: '1 1 0x10'
+      - series: 'redis_instance_info{job="blind_redis-exporter-2",instance="10.0.11.6:9121",stack="blind",role="slave"}'
+        values: '1x12'
+      - series: 'redis_master_link_up{job="blind_redis-exporter-2",instance="10.0.11.6:9121",stack="blind",master_host="blind-redis-1",master_port="6379"}'
+        values: '1x12'
+      # Release `half`: its master's exporter is gone too, and one replica is cut off while the
+      # other still streams from the master, so the master serves.
+      - series: 'redis_master_link_up{job="half_redis-exporter-2",instance="10.0.12.6:9121",stack="half",master_host="half-redis-1",master_port="6379"}'
+        values: '1 1 0x10'
+      - series: 'redis_master_link_up{job="half_redis-exporter-3",instance="10.0.12.7:9121",stack="half",master_host="half-redis-1",master_port="6379"}'
         values: '1x12'
       - series: 'redis_instance_info{job="split_redis-exporter-1",instance="10.0.8.5:9121",stack="split",role="master"}'
         values: '1x12'
@@ -182,7 +197,7 @@ tests:
               stack: nomaster
             exp_annotations:
               summary: 'Redis release nomaster has no master'
-              description: 'No running Redis of release nomaster has been a master for 2 minutes, so it refuses every write. The Sentinels have not promoted a replica: check that a majority of them run and can reach the peers.'
+              description: 'Every replica of Redis release nomaster has been cut off from its master for 2 minutes, and no peer reports being one, so the release refuses every write. The Sentinels have not promoted a replica: check that a majority of them run and can reach the peers.'
       - eval_time: 10m
         alertname: RedisMultipleMasters
         exp_alerts:
@@ -205,3 +220,35 @@ tests:
             exp_annotations:
               summary: 'repl_redis-exporter-2 reports a Redis replica cut off from its master'
               description: 'The Redis replica behind repl_redis-exporter-2 has not been connected to its master repl-redis-1 for 5 minutes. It serves stale reads, and a failover has one candidate fewer.'
+          - exp_labels:
+              severity: warning
+              job: half_redis-exporter-2
+              instance: 10.0.12.6:9121
+              stack: half
+              master_host: half-redis-1
+              master_port: "6379"
+            exp_annotations:
+              summary: 'half_redis-exporter-2 reports a Redis replica cut off from its master'
+              description: 'The Redis replica behind half_redis-exporter-2 has not been connected to its master half-redis-1 for 5 minutes. It serves stale reads, and a failover has one candidate fewer.'
+          # Release `nomaster`'s replicas lost their master too.
+          - exp_labels:
+              severity: warning
+              job: nomaster_redis-exporter-2
+              instance: 10.0.7.6:9121
+              stack: nomaster
+              master_host: nomaster-redis-1
+              master_port: "6379"
+            exp_annotations:
+              summary: 'nomaster_redis-exporter-2 reports a Redis replica cut off from its master'
+              description: 'The Redis replica behind nomaster_redis-exporter-2 has not been connected to its master nomaster-redis-1 for 5 minutes. It serves stale reads, and a failover has one candidate fewer.'
+          # Release `nomaster`'s replicas lost their master too.
+          - exp_labels:
+              severity: warning
+              job: nomaster_redis-exporter-3
+              instance: 10.0.7.7:9121
+              stack: nomaster
+              master_host: nomaster-redis-1
+              master_port: "6379"
+            exp_annotations:
+              summary: 'nomaster_redis-exporter-3 reports a Redis replica cut off from its master'
+              description: 'The Redis replica behind nomaster_redis-exporter-3 has not been connected to its master nomaster-redis-1 for 5 minutes. It serves stale reads, and a failover has one candidate fewer.'
