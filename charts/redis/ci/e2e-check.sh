@@ -114,6 +114,9 @@ sentinel*)
 
   # As a client on the overlay sees it, from a container of no stack.
   img="$(docker service inspect --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}' "${release}_sentinel-1" | sed 's/@.*//')"
+  # Swarm pulled it by digest, untagged: pull the tag now, or the first `docker run` prints
+  # its pull progress into the answer read below.
+  docker pull -q "$img" >/dev/null
   cli() { docker run --rm --network redis-net "$img" redis-cli --raw "$@" 2>&1; }
   [ "$(cli -h "${release}-sentinel-1" -p 26379 sentinel get-master-addr-by-name mymaster | sed -n 1p)" = "${release}-redis-$m" ] \
     || bad "a client on redis-net cannot discover the master from ${release}-sentinel-1"
