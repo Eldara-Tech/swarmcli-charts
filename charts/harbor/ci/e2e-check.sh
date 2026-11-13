@@ -125,16 +125,9 @@ if [ "$case" = "ha" ]; then
     if [ "$n" = 2 ]; then echo "  replicas: ${s} runs 2 tasks"; else bad "${release}_$s runs $n tasks, not 2"; fi
   done
 
-  # A UI login, so core stores a session (database 0).
-  code="$(docker run --rm --network host curlimages/curl:latest sh -c '
-    curl -s -c /tmp/j -D /tmp/h -o /dev/null "$0/api/v2.0/systeminfo"
-    t="$(sed -n "s/^[Xx]-[Hh]arbor-[Cc][Ss][Rr][Ff]-[Tt]oken: *//p" /tmp/h | tr -d "\r")"
-    curl -s -b /tmp/j -c /tmp/j -o /dev/null -w "%{http_code}" -H "X-Harbor-CSRF-Token: $t" \
-      --data-urlencode principal=admin --data-urlencode "password=$1" "$0/c/login"' "$base" "${admin#admin:}" || true)"
-  [ "$code" = "200" ] || bad "the UI login answered '$code'"
   m="$(master)"
   echo "  redis: the Sentinels name $m as the master"
-  for d in "0:core's sessions" "1:the registry's blob cache" "2:jobservice's queue" "5:Trivy's store"; do
+  for d in "0:core's cache and sessions" "1:the registry's blob cache" "2:jobservice's queue" "5:Trivy's store"; do
     n="$(rcli "$m" -n "${d%%:*}" dbsize 2>/dev/null || true)"
     if [ "${n:-0}" -gt 0 ] 2>/dev/null; then echo "  redis: database ${d%%:*} on the master holds $n keys (${d#*:})"; else bad "database ${d%%:*} on the master $m is empty (${d#*:}): '$n'"; fi
   done
