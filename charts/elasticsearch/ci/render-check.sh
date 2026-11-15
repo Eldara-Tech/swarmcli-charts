@@ -12,6 +12,8 @@
 #   * the elastic password mounted 0444, which the image's ELASTIC_PASSWORD_FILE refuses, or the
 #     TLS files mounted outside the config directory, which Elasticsearch refuses to read;
 #   * a secret in Kibana's environment, which kibana-docker turns into a visible argv flag;
+#   * Kibana dialing a Swarm service name: `<release>_<svc>` has an underscore, which
+#     Elasticsearch's TLS refuses as a server name, so it works over http and fails over https;
 #   * a cluster node without the sequential-rollout label, so an upgrade stops every node at once;
 #   * an ingress-mode port on a cluster, accepted by compose and refused by the daemon.
 #
@@ -57,6 +59,9 @@ for s in $nodes; do
   [ "$(yq -r "$q.deploy.endpoint_mode" "$f")" = "vip" ] || err "$s: endpoint_mode is not vip — dnsrr drops the client alias"
   [ "$(yq -r "$q.environment.\"node.name\"" "$f")" = "$s" ] || err "$s: node.name is not $s"
   [ "$(yq -r "$q.hostname" "$f")" = "$s" ] || err "$s: hostname is not $s (the wrapper reads its address for it from /etc/hosts)"
+  # Its own underscore-free alias, the name Kibana and the setup job dial over TLS.
+  grep -qxF "${release}-$s" <<<"$(yq -r "$q.networks[].aliases // [] | .[]" "$f")" \
+    || err "$s: lacks its network alias ${release}-$s"
 
   # The elastic password: root:root 0440 (288), or ELASTIC_PASSWORD_FILE refuses to start.
   pw="$(yq -r "$q.environment.ELASTIC_PASSWORD_FILE" "$f")"
@@ -131,6 +136,16 @@ if [ "$kibana" = 1 ]; then
   hosts="$(yq -r '.services.kibana.environment.ELASTICSEARCH_HOSTS' "$f")"
   [ "$(yq -r '.services.kibana.environment.ELASTICSEARCH_HOSTS | from_json | length' "$f")" = "$want" ] \
     || err "ELASTICSEARCH_HOSTS has not one entry per node: $hosts"
+  # Never a Swarm service name: its underscore is not a legal host name, and Elasticsearch's TLS
+  # refuses it as the SNI server name, so over https every request would fail.
+  for h in $(yq -r '.services.kibana.environment.ELASTICSEARCH_HOSTS | from_json | .[]' "$f") \
+           $(yq -r '.services."kibana-setup".environment.ES_HOSTS' "$f"); do
+    case "$h" in
+      *_*) err "Kibana or kibana-setup dials $h, a name with an underscore, which TLS refuses" ;;
+      *://"${release}"-elasticsearch-[0-9]*:9200) ;;
+      *) err "Kibana or kibana-setup dials $h, not a node alias" ;;
+    esac
+  done
   # The setup job tries the same hosts Kibana uses.
   [ "$(yq -r '.services."kibana-setup".environment.ES_HOSTS' "$f" | tr ' ' '\n' | wc -l | tr -d ' ')" = "$want" ] \
     || err "kibana-setup does not try every node"

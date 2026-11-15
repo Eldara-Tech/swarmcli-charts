@@ -53,7 +53,7 @@ auth:
 #   verificationMode  how a node and Kibana check the other side's certificate:
 #            certificate  the chain must lead to the CA; the host name is not checked. Default,
 #                         so one certificate serves every node whatever their names.
-#            full         the chain AND the host name. Kibana dials <release>_elasticsearch-<N>,
+#            full         the chain AND the host name. Kibana dials <release>-elasticsearch-<N>,
 #                         so the certificate must carry those names as DNS SANs.
 #            none         no check at all. Do not use outside a test.
 #   caSecretName / certSecretName / keySecretName  the CA certificate, the node certificate
@@ -101,7 +101,7 @@ placement:
 
 # Overlay the nodes and Kibana attach to. external:true (default) is a shared attachable overlay
 # (declared in requirements.yaml, auto-created if missing) that application stacks join to reach
-# Elasticsearch at http://<release>_elasticsearch-<N>:9200 (or https with tls.http). In a cluster
+# Elasticsearch at http://<release>-elasticsearch-<N>:9200 (or https with tls.http). In a cluster
 # the nodes also talk to each other on it (9300, TLS). external:false => a chart-managed overlay,
 # reachable only by this stack.
 #   clientAlias  a name every node also answers to on this overlay, so a client can be given one

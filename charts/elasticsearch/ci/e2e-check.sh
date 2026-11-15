@@ -28,7 +28,18 @@ case="$3"
 tls_dir="${E2E_ES_TLS_DIR:-${TMPDIR:-/tmp}/e2e-elasticsearch-tls}"
 elastic_pw='e2e-elastic-pw'
 kibana_pw='e2e-"kibana"\pw'
-fail() { echo "  elasticsearch [$case]: $*"; exit 1; }
+# The harness dumps service logs only when an install does not converge; a smoke failure here
+# usually lives in kibana-setup or Kibana, so print theirs before giving up.
+fail() {
+  echo "  elasticsearch [$case]: $*"
+  for svc in kibana-setup kibana; do
+    if [ -n "$(docker service ls -q -f "name=${release}_$svc")" ]; then
+      echo "      --- docker service logs ${release}_$svc (tail 40) ---"
+      docker service logs --tail 40 "${release}_$svc" 2>&1 | sed 's/^/      /' || true
+    fi
+  done
+  exit 1
+}
 
 want=1
 case "$case" in cluster|cluster-transport-tls) want=3 ;; esac

@@ -101,8 +101,10 @@ Each entry must match the actual name, so if you override a name in values, chan
 ## Connecting
 
 Attach your application to the `elasticsearch-net` overlay. Each node is reachable at
-**`http://<release>_elasticsearch-<N>:9200`** (https with `tls.http`). For the install above, that
-is `http://elasticsearch_elasticsearch-1:9200`. Every node also answers to the shared alias
+**`http://<release>-elasticsearch-<N>:9200`** (https with `tls.http`). For the install above, that
+is `http://elasticsearch-elasticsearch-1:9200`. Use this alias, not the Swarm service name
+`<release>_elasticsearch-<N>`: the underscore is not valid in a host name, and with `tls.http`
+Elasticsearch refuses the TLS handshake for it (`Illegal server name`). Every node also answers to the shared alias
 `elasticsearch` (`network.clientAlias`). That alias is convenient for a single node, but it
 resolves to every node without checking their health. In a cluster, give your client the list of
 nodes, which most Elasticsearch clients accept, so it can fail over on its own. If two releases of
@@ -113,7 +115,7 @@ Authenticate as a user you created for the application. Do not use `elastic` for
 only the indices the application needs is enough:
 
 ```bash
-curl -u elastic:$PW http://elasticsearch_elasticsearch-1:9200/_security/user/myapp \
+curl -u elastic:$PW http://elasticsearch-elasticsearch-1:9200/_security/user/myapp \
   -H 'Content-Type: application/json' \
   -d '{"password":"…","roles":["myapp_writer"]}'
 ```
@@ -154,7 +156,8 @@ others. Keep `ca.key` off the swarm. If you would rather use Elastic's own tool,
 Elasticsearch image) produce the same files.
 
 `tls.verificationMode: full` also checks host names. Kibana connects to
-`<release>_elasticsearch-<N>`, so with `full` the certificate must list those names as DNS SANs.
+`<release>-elasticsearch-<N>`, so with `full` the certificate must list those names as DNS SANs
+(plus `elasticsearch`, or your `network.clientAlias`, for clients that use the shared alias).
 
 To rotate a certificate, create the new files as secrets under **new names** (Swarm secrets cannot
 be changed) and point `tls.*SecretName` at them. The next upgrade then restarts each node in turn.

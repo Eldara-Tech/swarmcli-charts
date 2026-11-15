@@ -61,7 +61,11 @@
 {{- $nm := printf "%s-%d" $prefix (add1 $i) -}}
 {{- $names = append $names $nm -}}
 {{- $seeds = append $seeds (printf "tasks.%s_%s" $.Release.Name $nm) -}}
-{{- $hosts = append $hosts (printf "%s://%s_%s:9200" $scheme $.Release.Name $nm) -}}
+{{- /* Kibana and the setup job dial a per-node ALIAS, not the service name: Swarm's
+     `<release>_<service>` carries an underscore, which is not a legal DNS host name, and
+     Elasticsearch's TLS stack rejects it as the SNI server name ("Illegal server name"), so
+     over https every request to a service name is refused before it is read. */ -}}
+{{- $hosts = append $hosts (printf "%s://%s-%s:9200" $scheme $.Release.Name $nm) -}}
 {{- end -}}
 {{- $certDir := "/usr/share/elasticsearch/config/certs" -}}
 {{- $image := printf "%s:%s" .Values.image.repository (.Values.image.tag | default .Chart.AppVersion) -}}
@@ -82,14 +86,17 @@ services:
     stop_grace_period: {{ $.Values.stopGracePeriod }}
 
     networks:
-{{- if $.Values.network.clientAlias }}
       {{ $.Values.network.name }}:
         aliases:
+          # This node's own name, release-scoped so releases sharing the overlay do not collide,
+          # and free of the underscore in the Swarm service name, which TLS refuses as a host
+          # name. Kibana and the setup job connect here; with verificationMode full it is the
+          # name the certificate must carry.
+          - {{ $.Release.Name }}-{{ $name }}
+{{- if $.Values.network.clientAlias }}
           # Shared by every node, so one name reaches them all. Not health-aware beyond what
           # Swarm's VIP gives: hand clients the node list when they take one.
           - {{ $.Values.network.clientAlias }}
-{{- else }}
-      - {{ $.Values.network.name }}
 {{- end }}
 
 {{- if $.Values.exposure.enabled }}
@@ -236,8 +243,8 @@ services:
 
     deploy:
       replicas: 1
-      # vip, not dnsrr: dnsrr drops network aliases (network.clientAlias would silently not
-      # exist), and the nodes need tasks.<service> for each other's real address anyway.
+      # vip, not dnsrr: dnsrr drops network aliases (the per-node and client aliases would
+      # silently not exist), and the nodes need tasks.<service> for each other's real address anyway.
       endpoint_mode: vip
 {{- if $.Values.healthcheck.enabled }}
       {{- /* Swarm watches a task for `monitor` after CREATING it, and only counts a failure
