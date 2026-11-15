@@ -1,0 +1,3 @@
+# Auth off: every listener PLAINTEXT, no authorizer, no secrets and no users one-shot.
+auth:
+  enabled: false

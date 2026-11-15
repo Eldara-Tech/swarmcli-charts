@@ -1,0 +1,546 @@
+{{- /* The CROSS-FIELD invariants only. Single-field rules (peers is 3 or 5, the
+       exposure mode, user names) live in values.schema.json. Each of these renders a
+       stack docker accepts and that then fails at run time, or far from the cause. */ -}}
+{{- $peers := int .Values.cluster.peers -}}
+{{- $auth := .Values.auth.enabled -}}
+{{- $mode := .Values.exposure.mode -}}
+{{- if and .Values.persistence.enabled .Values.persistence.volumePaths -}}
+{{- if ne (len .Values.persistence.volumePaths) $peers -}}
+{{- fail (printf "persistence.volumePaths has %d entries but cluster.peers is %d. Give exactly one absolute host path per peer, in peer order, or leave it [] to use named volumes." (len .Values.persistence.volumePaths) $peers) -}}
+{{- end -}}
+{{- end -}}
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePaths) (contains "/" .Values.persistence.volumePrefix) -}}
+{{- fail "persistence.volumePrefix is a Docker named-volume name prefix and cannot contain '/'. To store data under host directories, set persistence.volumePaths instead." -}}
+{{- end -}}
+{{- if and .Values.network.encrypted .Values.network.external -}}
+{{- fail "network.encrypted only applies to a chart-managed overlay: an external network's driver options are fixed when it is created, so setting this on external:true would silently not encrypt anything. Either set network.external: false, or pre-create the overlay yourself with `docker network create --opt encrypted`." -}}
+{{- end -}}
+{{- if and (ne $mode "none") (not $auth) -}}
+{{- fail (printf "exposure.mode: %s needs auth.enabled: true. Without it every listener is PLAINTEXT and anyone who reaches a broker can read and write every topic." $mode) -}}
+{{- end -}}
+{{- if eq $mode "traefik" -}}
+{{- if ne (len .Values.traefik.hosts) $peers -}}
+{{- fail (printf "exposure.mode: traefik needs one host name per peer in traefik.hosts, in peer order: it has %d, cluster.peers is %d. A Kafka client connects to every broker by its own address, so the brokers cannot share one." (len .Values.traefik.hosts) $peers) -}}
+{{- end -}}
+{{- if ne (len (uniq .Values.traefik.hosts)) $peers -}}
+{{- fail "traefik.hosts lists a host name twice. Each broker needs its own: Traefik routes by host name, so two brokers on one name would receive each other's connections." -}}
+{{- end -}}
+{{- end -}}
+{{- if eq $mode "published" -}}
+{{- if not .Values.publish.host -}}
+{{- fail "exposure.mode: published needs publish.host: the name or address clients outside the swarm use to reach its nodes. Every broker advertises it with its own port, and a client connects to exactly what a broker advertises." -}}
+{{- end -}}
+{{- if gt (add (int .Values.publish.basePort) $peers -1) 65535 -}}
+{{- fail (printf "publish.basePort %v leaves no room for %d brokers: broker N publishes basePort + N - 1, which must stay at or below 65535." .Values.publish.basePort $peers) -}}
+{{- end -}}
+{{- end -}}
+{{- if and .Values.metrics.enabled (eq .Values.metrics.network .Values.network.name) -}}
+{{- fail "metrics.network must differ from network.name: the exporter joins both, and the point of a separate metrics overlay is that Prometheus never shares one with the brokers' ports." -}}
+{{- end -}}
+{{- $userNames := list -}}
+{{- range .Values.auth.users -}}
+{{- $userNames = append $userNames .name -}}
+{{- end -}}
+{{- if ne (len (uniq $userNames)) (len $userNames) -}}
+{{- fail "auth.users names a user twice. The users one-shot sets one password per user, so the second entry would silently replace the first's." -}}
+{{- end -}}
+{{- if has .Values.auth.internal.username $userNames -}}
+{{- fail (printf "auth.users must not name %q: that is auth.internal.username, the peers' own identity, which is defined by the brokers and not a SCRAM user." .Values.auth.internal.username) -}}
+{{- end -}}
+{{- if and .Values.metrics.enabled (or (has .Values.metrics.username $userNames) (eq .Values.metrics.username .Values.auth.internal.username)) -}}
+{{- fail (printf "metrics.username %q is also a user in auth.users or auth.internal.username. The exporter's user is allowed to Describe and nothing else, so it needs a name of its own." .Values.metrics.username) -}}
+{{- end -}}
+{{- /* Keys the chart writes itself, and a value that would carry a credential. A
+       duplicate key in server.properties is not an error: the last one silently wins,
+       so an override of a listener or of the quorum would break the cluster with
+       nothing pointing at the line that did it. */ -}}
+{{- $owned := list "process.roles" "node.id" "broker.id" "controller.quorum.voters" "controller.quorum.bootstrap.servers" "controller.quorum.auto.join.enable" "controller.listener.names" "inter.broker.listener.name" "listeners" "advertised.listeners" "listener.security.protocol.map" "log.dir" "log.dirs" "metadata.log.dir" "sasl.enabled.mechanisms" "sasl.mechanism.inter.broker.protocol" "sasl.mechanism.controller.protocol" "authorizer.class.name" "super.users" "allow.everyone.if.no.acl.found" -}}
+{{- range $k, $v := .Values.config -}}
+{{- if or (has $k $owned) (hasPrefix "listener.name." $k) -}}
+{{- fail (printf "config.%s is set by the chart itself, so it cannot be overridden here: the listeners, the quorum, the data directory and authentication are what the peers find and trust each other by." $k) -}}
+{{- end -}}
+{{- if regexMatch "(?i)password|jaas|secret" $k -}}
+{{- fail (printf "config.%s looks like a credential. Values are stored in the release record, readable by anyone with Docker access; a password belongs in a Swarm secret." $k) -}}
+{{- end -}}
+{{- if contains "\n" (toString $v) -}}
+{{- fail (printf "config.%s holds a newline, which would end the server.properties line and start another." $k) -}}
+{{- end -}}
+{{- end -}}
+{{- /* Names and addresses.
+
+       Peer N is the service <chart>-N, which is also its hostname and its node.id N.
+
+       What a peer advertises, to clients and to the other controllers, is a network
+       alias: release-scoped, with the release name's `_` (which a host name cannot hold)
+       and `.` (which would turn it into a domain name) replaced by `-`. The alias resolves
+       to the service VIP, which stays the same when Swarm reschedules the task, and Kafka
+       never binds to the address it advertises (its listeners bind 0.0.0.0), so a VIP
+       is safe here where Galera needs the task's own IP.
+
+       Swarm publishes no DNS name for a task, alias included, until its healthcheck
+       passes; see the healthcheck below for why that one passes before the quorum has
+       formed. */ -}}
+{{- $prefix := .Chart.Name -}}
+{{- $rel := .Release.Name | replace "_" "-" | replace "." "-" -}}
+{{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
+{{- $image := printf "%s:%s" .Values.image.repository $tag -}}
+{{- $aliases := list -}}
+{{- range $i := until $peers -}}
+{{- $aliases = append $aliases (printf "%s-%s-%d" $rel $prefix (add1 $i)) -}}
+{{- end -}}
+{{- $ctlBootstrap := list -}}
+{{- $clientBootstrap := list -}}
+{{- range $aliases -}}
+{{- $ctlBootstrap = append $ctlBootstrap (printf "%s:9093" .) -}}
+{{- $clientBootstrap = append $clientBootstrap (printf "%s:9092" .) -}}
+{{- end -}}
+{{- /* Every peer formats its volume with the same cluster id, and a peer refuses to
+       start on a volume formatted with another. Derived from the release name, so it is
+       stable across upgrades and distinct between releases, and never the image's
+       built-in default, which every unconfigured apache/kafka container shares. It is
+       the canonical base64url form of 16 bytes, as kafka-storage random-uuid prints. */ -}}
+{{- $clusterId := .Release.Name | sha256sum | trunc 16 | b64enc | replace "+" "-" | replace "/" "_" | trimSuffix "==" -}}
+{{- /* The users one-shot and the exporter reach the cluster through peers 1-3 only:
+       three are enough to find it, and naming no more keeps both specs unchanged when
+       cluster.peers grows. An upgrade that changes them together with the peers has
+       swarmcli redeploy them while their own update is still settling, which Swarm
+       refuses ("update out of sequence"). */ -}}
+{{- $clientSeeds := slice $clientBootstrap 0 3 -}}
+{{- $proto := ternary "SASL_PLAINTEXT" "PLAINTEXT" $auth -}}
+{{- $external := ne $mode "none" -}}
+{{- $exporterUser := and .Values.metrics.enabled $auth -}}
+{{- $kafkaVersion := regexFind "^[0-9]+[.][0-9]+[.][0-9]+" $tag -}}
+{{- if and .Values.metrics.enabled (not $kafkaVersion) -}}
+{{- fail (printf "metrics.enabled needs the Kafka version, which is read from image.tag, but %q does not start with one (x.y.z)." $tag) -}}
+{{- end -}}
+version: "3.9"
+
+services:
+{{- range $i := until $peers }}
+{{- $n := add1 $i }}
+{{- $name := printf "%s-%d" $prefix $n }}
+{{- $alias := index $aliases $i }}
+{{- $others := without $aliases $alias }}
+{{- $advertised := printf "INTERNAL://%s:9092,CONTROLLER://%s:9093" $alias $alias }}
+{{- if eq $mode "traefik" }}
+{{- $advertised = printf "%s,EXTERNAL://%s:%v" $advertised (index $.Values.traefik.hosts $i) $.Values.traefik.port }}
+{{- else if eq $mode "published" }}
+{{- $advertised = printf "%s,EXTERNAL://%s:%d" $advertised $.Values.publish.host (add (int $.Values.publish.basePort) $i) }}
+{{- end }}
+
+  {{ $name }}:
+    image: {{ $image }}
+    # A stable hostname: Swarm otherwise names the container after the task, which
+    # changes on every reschedule and is what shows up in this peer's own log.
+    hostname: {{ $name }}
+    # Long enough for a controlled shutdown: the peer hands its partition leadership
+    # to the others first, and a clean stop spares it log recovery on the next start.
+    stop_grace_period: {{ $.Values.stopGracePeriod }}
+
+    networks:
+      {{ $.Values.network.name }}:
+        aliases:
+          # This peer's address for clients and for the other controllers; see the
+          # addressing note at the top of this template.
+          - {{ $alias }}
+{{- with $.Values.network.clientAlias }}
+          # Shared by every peer: a client bootstraps from it, learns every broker's own
+          # address from the metadata, and connects to those.
+          - {{ . }}
+{{- end }}
+{{- if eq $mode "traefik" }}
+      # The edge reaches the EXTERNAL listener over its own overlay.
+      {{ $.Values.exposure.network }}: {}
+{{- end }}
+
+{{- if eq $mode "published" }}
+    # Each broker its own port, on the ingress routing mesh: every node answers on it,
+    # and a client that connects to <publish.host>:<port> reaches exactly this broker,
+    # which is what it advertised.
+    ports:
+      - target: 9094
+        published: {{ add (int $.Values.publish.basePort) $i }}
+        protocol: tcp
+        mode: ingress
+{{- end }}
+
+{{- if $.Values.persistence.enabled }}
+    volumes:
+{{- if $.Values.persistence.volumePaths }}
+      - {{ index $.Values.persistence.volumePaths $i }}:/var/lib/kafka/data
+{{- else }}
+      - {{ printf "%s-%d" $.Values.persistence.volumePrefix $n }}:/var/lib/kafka/data
+{{- end }}
+{{- end }}
+
+{{- if $auth }}
+    secrets:
+      - {{ $.Values.auth.internal.secretName }}
+{{- end }}
+
+    environment:
+      KAFKA_HEAP_OPTS: "-Xms{{ $.Values.heap }} -Xmx{{ $.Values.heap }}"
+
+    # The image's own startup formats with a STATIC voter list on every start, which
+    # cannot form a dynamic quorum, so this replaces it: write server.properties, format
+    # an empty volume the way the quorum needs, then run the broker. The image's
+    # entrypoint still runs first (it installs custom CA certificates when asked).
+    #
+    # How an EMPTY volume is formatted is the part that matters (README.md § How the
+    # quorum forms). Peer 1 creates the cluster, `--standalone`, but only once every
+    # other peer has said its own volume is empty too: that is a first install. Any
+    # other empty peer, and peer 1 itself once any peer holds data, formats
+    # `--no-initial-controllers` and waits for a peer that is serving, then joins as an
+    # observer that adds itself to the quorum (controller.quorum.auto.join.enable). A
+    # peer whose volume was wiped therefore comes back as a NEW voter, with a new
+    # directory id that replaces its old entry, never as the old voter with an empty
+    # log, which could elect a leader without data the quorum had committed.
+    #
+    # Neither wait has a time limit: a peer that does not answer may be the one holding
+    # the data. Each peer answers the question on port 9095 for as long as it runs.
+    #
+    # Passwords are read from the mounted secrets here, so the plaintext never lands in
+    # the compose file, the environment or `docker inspect`. They are escaped twice: once
+    # for the JAAS string, once for the properties file. `$$` is the compose escape for
+    # a literal `$`.
+    command:
+      - bash
+      - -c
+      - |
+        set -euo pipefail
+        D=/var/lib/kafka/data
+        P=/opt/kafka/config/server.properties
+        cp /etc/kafka/docker/log4j2.yaml /opt/kafka/config/log4j2.yaml
+        cat > "$$P" <<'PROPS'
+        process.roles=broker,controller
+        node.id={{ $n }}
+        controller.quorum.bootstrap.servers={{ join "," $ctlBootstrap }}
+        controller.quorum.auto.join.enable=true
+        controller.listener.names=CONTROLLER
+        inter.broker.listener.name=INTERNAL
+        listeners=INTERNAL://:9092,CONTROLLER://:9093{{ if $external }},EXTERNAL://:9094{{ end }}
+        advertised.listeners={{ $advertised }}
+        listener.security.protocol.map=INTERNAL:{{ $proto }},CONTROLLER:{{ $proto }}{{ if $external }},EXTERNAL:{{ $proto }}{{ end }}
+        log.dirs=/var/lib/kafka/data
+        default.replication.factor=3
+        min.insync.replicas=2
+        offsets.topic.replication.factor=3
+        transaction.state.log.replication.factor=3
+        transaction.state.log.min.isr=2
+        share.coordinator.state.topic.replication.factor=3
+        share.coordinator.state.topic.min.isr=2
+{{- if $auth }}
+        sasl.enabled.mechanisms=SCRAM-SHA-512
+        sasl.mechanism.inter.broker.protocol=PLAIN
+        sasl.mechanism.controller.protocol=PLAIN
+        listener.name.controller.sasl.enabled.mechanisms=PLAIN
+        listener.name.internal.sasl.enabled.mechanisms=PLAIN,SCRAM-SHA-512
+        listener.name.internal.scram-sha-512.sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required;
+{{- if $external }}
+        listener.name.external.sasl.enabled.mechanisms=SCRAM-SHA-512
+        listener.name.external.scram-sha-512.sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required;
+{{- end }}
+        authorizer.class.name=org.apache.kafka.metadata.authorizer.StandardAuthorizer
+        super.users=User:{{ $.Values.auth.internal.username }}
+        allow.everyone.if.no.acl.found=false
+{{- end }}
+{{- range $k, $v := $.Values.config }}
+        {{ $k }}={{ toString $v | replace "$" "$$" }}
+{{- end }}
+        PROPS
+{{- if $auth }}
+        pw="$$(cat /run/secrets/{{ $.Values.auth.internal.secretName }})"
+        case "$$pw" in *$$'\n'*) echo "the secret {{ $.Values.auth.internal.secretName }} holds a newline inside the password" >&2; exit 1;; esac
+        pw="$$(printf '%s' "$$pw" | sed -e 's/[\\"]/\\&/g' -e 's/\\/\\\\/g')"
+        jaas="org.apache.kafka.common.security.plain.PlainLoginModule required username=\"{{ $.Values.auth.internal.username }}\" password=\"$$pw\" user_{{ $.Values.auth.internal.username }}=\"$$pw\";"
+        printf 'listener.name.controller.plain.sasl.jaas.config=%s\nlistener.name.internal.plain.sasl.jaas.config=%s\n' "$$jaas" "$$jaas" >> "$$P"
+        unset pw jaas
+{{- end }}
+        printf '#!/bin/sh\nif [ -f %s/meta.properties ]; then echo formatted; else echo empty; fi\n' "$$D" > /tmp/kafka-status
+        chmod +x /tmp/kafka-status
+        nc -lk -p 9095 -e /tmp/kafka-status &
+        if [ ! -f "$$D/meta.properties" ]; then
+          touch /tmp/kafka-waiting
+          ask() { nc -w 3 "$$1" 9095 </dev/null 2>/dev/null | tr -d '\r\n' || true; }
+          last=""
+          while :; do
+            serving=0 empty=0
+            for p in {{ join " " $others }}; do
+              case "$$(ask "$$p")" in
+                formatted) if nc -z -w 3 "$$p" 9093 2>/dev/null; then serving=$$((serving+1)); fi ;;
+                empty) empty=$$((empty+1)) ;;
+              esac
+            done
+            if [ "$$serving" -gt 0 ]; then flag=--no-initial-controllers; break; fi
+{{- if eq $n 1 }}
+            if [ "$$empty" -eq {{ len $others }} ]; then flag=--standalone; break; fi
+{{- end }}
+            now="empty volume; of {{ len $others }} other peers $$empty report empty and $$serving serve the cluster"
+            if [ "$$now" != "$$last" ]; then echo "waiting: $$now"; last="$$now"; fi
+            sleep 5
+          done
+          echo "formatting $$D $$flag"
+          /opt/kafka/bin/kafka-storage.sh format --cluster-id {{ $clusterId }} --config "$$P" $$flag
+          rm -f /tmp/kafka-waiting
+        fi
+        exec /opt/kafka/bin/kafka-server-start.sh "$$P"
+
+{{- if $.Values.healthcheck.enabled }}
+    # The controller listener: Kafka opens it as soon as it starts, before the quorum has
+    # a leader, whereas the client port waits for the leader, the metadata, log recovery
+    # and unfencing. Swarm publishes a task in DNS only once this passes, so a check on
+    # the client port would hide every peer from every other on a first install and the
+    # quorum would never form; it would also kill a broker in the middle of recovering
+    # its logs. A peer waiting before it formats an empty volume passes too, so that the
+    # others can resolve it and ask.
+    healthcheck:
+      test: ["CMD-SHELL", "[ -f /tmp/kafka-waiting ] || nc -z 127.0.0.1 9093"]
+      interval: {{ $.Values.healthcheck.interval }}
+      timeout: {{ $.Values.healthcheck.timeout }}
+      retries: {{ $.Values.healthcheck.retries }}
+      start_period: {{ $.Values.healthcheck.startPeriod }}
+{{- end }}
+
+    deploy:
+      # One replica per peer, always: a peer IS a service here, and two tasks sharing
+      # one data dir would corrupt it. Scale the cluster with cluster.peers.
+      replicas: 1
+      # vip (the default, stated because it is load-bearing): it keeps network aliases
+      # working, and the alias is this peer's address.
+      endpoint_mode: vip
+      update_config:
+{{- if $.Values.healthcheck.enabled }}
+        {{- /* Swarm watches a task for `monitor` after CREATING it and counts only a
+               failure inside that window against the rollout; swarmcli's sequential
+               rollout waits it out before the next peer. */}}
+        monitor: {{ $.Values.healthcheck.monitor }}
+{{- end }}
+        # The old task must be gone before the new one starts: both would otherwise
+        # mount the same data dir.
+        order: stop-first
+{{- /* Each peer is pinned to the node holding ITS volume. The pin travels with
+       persistence, so the ephemeral mode never strands a task Pending on a missing
+       node label; placement.constraints adds extras and applies in every mode. */}}
+{{- $constraints := list }}
+{{- if and $.Values.persistence.enabled $.Values.persistence.nodeLabelPrefix }}
+{{-   $constraints = append $constraints (printf "node.labels.%s-%d == true" $.Values.persistence.nodeLabelPrefix $n) }}
+{{- end }}
+{{- range $.Values.placement.constraints }}
+{{-   $constraints = append $constraints . }}
+{{- end }}
+{{- if $constraints }}
+      placement:
+        constraints:
+{{- range $constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- with $.Values.resources.limits.memory }}
+      resources:
+        limits:
+          memory: {{ . | quote }}
+{{- end }}
+      restart_policy:
+        condition: any
+      labels:
+        # swarmcli >= 2.2.0 updates services carrying this label one at a time, each
+        # converged before the next, so an upgrade never stops two peers together.
+        - "com.swarmcli.rollout=sequential"
+{{- if eq $mode "traefik" }}
+        # Full Traefik swarm-provider contract (charts/traefik/README.md "Routing a
+        # service"), as a TCP router: Traefik terminates TLS and routes by the SNI host
+        # name, so every broker shares one entrypoint and keeps its own address.
+        - "traefik.enable=true"
+        - "traefik.constraint-label={{ $.Values.traefik.constraintLabel }}"
+        - "traefik.swarm.network={{ $.Values.exposure.network }}"
+        - "traefik.tcp.routers.{{ $alias }}.rule=HostSNI(`{{ index $.Values.traefik.hosts $i }}`)"
+        - "traefik.tcp.routers.{{ $alias }}.entrypoints={{ $.Values.traefik.entrypoint }}"
+        - "traefik.tcp.routers.{{ $alias }}.tls=true"
+{{- with $.Values.traefik.certResolver }}
+        - "traefik.tcp.routers.{{ $alias }}.tls.certresolver={{ . }}"
+{{- end }}
+        - "traefik.tcp.services.{{ $alias }}.loadbalancer.server.port=9094"
+{{- end }}
+{{- range $key, $val := $.Values.labels }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+{{- end }}
+
+{{- if and $auth (or .Values.auth.users .Values.metrics.enabled) }}
+
+  # Creates each client user, or resets its password, and its ACLs, then exits. It talks
+  # to the cluster as the internal identity over the overlay rather than running inside
+  # a peer, so a user is added to a cluster that already runs without restarting
+  # anything. SCRAM credentials live in the cluster metadata, so one peer taking them is
+  # enough.
+  #
+  # Swarm runs it again only when its spec changes, which is what adding a user does,
+  # and what a rotation does: point secretName at a new secret.
+  #
+  # Passwords never reach a command line, where anyone on the node could read them in
+  # the process list: the internal one goes into the client's properties file, a user's
+  # into the file kafka-configs reads with --add-config-file.
+  {{ $prefix }}-users:
+    image: {{ $image }}
+
+    networks:
+      - {{ .Values.network.name }}
+
+    secrets:
+      - {{ .Values.auth.internal.secretName }}
+{{- range .Values.auth.users }}
+      - {{ .secretName }}
+{{- end }}
+{{- if $exporterUser }}
+      - {{ .Values.metrics.secretName }}
+{{- end }}
+
+    environment:
+      KAFKA_HEAP_OPTS: "-Xmx256m"
+
+    command:
+      - bash
+      - -c
+      - |
+        set -euo pipefail
+        umask 077
+        K=/opt/kafka/bin
+        B={{ join "," $clientSeeds }}
+        A=/tmp/admin.properties
+        readpw() {
+          v="$$(cat "/run/secrets/$$1")"
+          case "$$v" in *$$'\n'*) echo "the secret $$1 holds a newline inside the password" >&2; exit 1;; esac
+          printf '%s' "$$v"
+        }
+        pw="$$(readpw {{ .Values.auth.internal.secretName }} | sed -e 's/[\\"]/\\&/g' -e 's/\\/\\\\/g')"
+        printf 'security.protocol=SASL_PLAINTEXT\nsasl.mechanism=PLAIN\nsasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username="%s" password="%s";\n' '{{ .Values.auth.internal.username }}' "$$pw" > "$$A"
+        unset pw
+        until "$$K/kafka-broker-api-versions.sh" --bootstrap-server "$$B" --command-config "$$A" >/dev/null 2>&1; do
+          echo "waiting for the cluster"
+          sleep 5
+        done
+        scram() {
+          v="$$(readpw "$$2")"
+          printf 'SCRAM-SHA-512=password=%s\n' "$$(printf '%s' "$$v" | sed -e 's/\\/\\\\/g')" > /tmp/scram.properties
+          unset v
+          "$$K/kafka-configs.sh" --bootstrap-server "$$B" --command-config "$$A" --alter --entity-type users --entity-name "$$1" --add-config-file /tmp/scram.properties
+          rm -f /tmp/scram.properties
+        }
+{{- range .Values.auth.users }}
+        scram {{ .name }} {{ .secretName }}
+        "$$K/kafka-acls.sh" --bootstrap-server "$$B" --command-config "$$A" --add --allow-principal 'User:{{ .name }}' --operation All --topic '*' --group '*' --transactional-id '*' --cluster
+{{- end }}
+{{- if $exporterUser }}
+        scram {{ .Values.metrics.username }} {{ .Values.metrics.secretName }}
+        "$$K/kafka-acls.sh" --bootstrap-server "$$B" --command-config "$$A" --add --allow-principal 'User:{{ .Values.metrics.username }}' --operation Describe --topic '*' --group '*' --cluster
+{{- end }}
+        echo "users and ACLs are in place"
+
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+{{- with .Values.labels }}
+      labels:
+{{- range $key, $val := . }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- if .Values.metrics.enabled }}
+
+  # Reports brokers, partitions, replication and consumer-group lag, as a Kafka client.
+  # It is the only service of this chart on the metrics overlay, so nothing there can
+  # reach a broker's ports.
+  {{ $prefix }}-exporter:
+    image: {{ .Values.metrics.image.repository }}:{{ .Values.metrics.image.tag }}
+
+    networks:
+      - {{ .Values.network.name }}
+      - {{ .Values.metrics.network }}
+
+{{- if $exporterUser }}
+    secrets:
+      - {{ .Values.metrics.secretName }}
+{{- end }}
+
+    # The exporter takes its password from a flag or from SASL_USER_PASSWORD, so it is
+    # read from the mounted secret at start and lands in neither the compose file nor
+    # `docker inspect`. --kafka.version selects the protocol versions it speaks, and
+    # consumer-group lag of the KIP-848 protocol needs it to be the brokers' own.
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - >-
+{{- if $exporterUser }}
+        export SASL_USER_PASSWORD="$$(cat /run/secrets/{{ .Values.metrics.secretName }})";
+{{- end }}
+        exec /bin/kafka_exporter
+{{- range $clientSeeds }}
+        --kafka.server={{ . }}
+{{- end }}
+        --kafka.version={{ $kafkaVersion }}
+{{- if $exporterUser }}
+        --sasl.enabled
+        --sasl.mechanism=scram-sha512
+        --sasl.username={{ .Values.metrics.username }}
+{{- end }}
+
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+      # Only the discovery labels, never .Values.labels: once a service opts in, every
+      # one of its deploy labels is readable through Prometheus's targets API.
+      labels:
+        - "prometheus.io/scrape=true"
+        - "prometheus.io/port=9308"
+{{- end }}
+
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePaths) }}
+
+volumes:
+{{- range $i := until $peers }}
+  {{ printf "%s-%d" $.Values.persistence.volumePrefix (add1 $i) }}: {}
+{{- end }}
+{{- end }}
+
+{{- if $auth }}
+
+secrets:
+  {{ .Values.auth.internal.secretName }}:
+    external: true
+{{- range .Values.auth.users }}
+  {{ .secretName }}:
+    external: true
+{{- end }}
+{{- if $exporterUser }}
+  {{ .Values.metrics.secretName }}:
+    external: true
+{{- end }}
+{{- end }}
+
+networks:
+  {{ .Values.network.name }}:
+{{- if .Values.network.external }}
+    external: true
+{{- else }}
+    driver: overlay
+    attachable: true
+{{- if .Values.network.encrypted }}
+    # IPsec on the data plane. Replication and client traffic carry every record
+    # written, so without this they cross the wire between nodes in the clear.
+    driver_opts:
+      encrypted: "true"
+{{- end }}
+{{- end }}
+{{- if eq $mode "traefik" }}
+  {{ .Values.exposure.network }}:
+    external: true
+{{- end }}
+{{- if .Values.metrics.enabled }}
+  {{ .Values.metrics.network }}:
+    external: true
+{{- end }}

@@ -1,0 +1,7 @@
+# Host paths instead of named volumes — exercises the host-mount acknowledgment in
+# Chart.yaml. One absolute path per peer, in peer order.
+persistence:
+  volumePaths:
+    - /srv/kafka/peer-1
+    - /srv/kafka/peer-2
+    - /srv/kafka/peer-3

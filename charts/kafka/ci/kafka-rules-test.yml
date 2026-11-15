@@ -1,0 +1,262 @@
+# promtool unit tests for monitoring/kafka-rules.yml, which the chart ships for operators
+# to load into their Prometheus but does not deploy itself. Every series is shaped as
+# kafka_exporter was measured to serve it: a partition without a leader keeps its replicas
+# and in-sync replicas series and loses its offsets, a failed scrape marks every series
+# stale, and an exporter that cannot finish its scrapes leaves `up` alternating.
+#
+# The first test scrapes every 30 seconds, prometheus-stack's default, which the 2-minute
+# windows depend on; the consumer group one every minute, which its 10-minute ones do not.
+rule_files:
+  - ../monitoring/kafka-rules.yml
+
+evaluation_interval: 30s
+
+tests:
+  # Cluster `kfk` loses a broker two minutes in, and with it a partition of an RF 1 topic.
+  # Its topics are in every state an alert has to tell apart: `orders` (RF 3) under-replicated
+  # but writable, `pairs` (RF 2) below min.insync.replicas, `single` (RF 1) with one partition
+  # offline and one with its one replica in sync, which is not below min.insync.replicas, and
+  # `frozen` as a lost majority leaves the metadata: a leader and 2 in sync named, but no
+  # offset. Cluster `down` stops answering at 2m; cluster `flap` answers one scrape in four,
+  # as with many partitions offline. Cluster `ok` stays whole, but for one scrape reading 0
+  # brokers, as the whole cluster coming back did, and must raise nothing.
+  - interval: 30s
+    input_series:
+      - series: 'up{job="kfk_kafka-exporter",instance="10.0.3.5:9308",stack="kfk"}'
+        values: '1x30'
+      - series: 'up{job="ok_kafka-exporter",instance="10.0.4.5:9308",stack="ok"}'
+        values: '1x30'
+      - series: 'up{job="down_kafka-exporter",instance="10.0.5.5:9308",stack="down"}'
+        values: '1 1 1 1 0x26'
+      - series: 'up{job="flap_kafka-exporter",instance="10.0.6.5:9308",stack="flap"}'
+        values: '1 1 1 1 0 1 0 0 0 1 0 0 0 1 0 0 0 1 0 0 0 1 0 0 0 1 0 0 0 1 0'
+      # Not a kafka_exporter: KafkaUnreachable leaves it to prometheus-stack's TargetDown.
+      - series: 'up{job="db_mariadb-galera-exporter-1",instance="10.0.7.5:9104",stack="db"}'
+        values: '0x30'
+
+      - series: 'kafka_brokers{job="kfk_kafka-exporter",instance="10.0.3.5:9308",stack="kfk"}'
+        values: '3 3 3 3 2x26'
+      - series: 'kafka_brokers{job="ok_kafka-exporter",instance="10.0.4.5:9308",stack="ok"}'
+        values: '3 3 3 3 3 3 0 3x23'
+
+      # orders: RF 3, all three partitions down to 2 in sync.
+      - series: 'kafka_topic_partition_replicas{job="kfk_kafka-exporter",instance="10.0.3.5:9308",stack="kfk",topic="orders",partition="0"}'
+        values: '3x30'
+      - series: 'kafka_topic_partition_replicas{job="kfk_kafka-exporter",instance="10.0.3.5:9308",stack="kfk",topic="orders",partition="1"}'
+        values: '3x30'
+      - series: 'kafka_topic_partition_replicas{job="kfk_kafka-exporter",instance="10.0.3.5:9308",stack="kfk",topic="orders",partition="2"}'
+        values: '3x30'
+      - series: 'kafka_topic_partition_in_sync_replica{job="kfk_kafka-exporter",instance="10.0.3.5:9308",stack="kfk",topic="orders",partition="0"}'
+        values: '3 3 3 3 2x26'
+      - series: 'kafka_topic_partition_in_sync_replica{job="kfk_kafka-exporter",instance="10.0.3.5:9308",stack="kfk",topic="orders",partition="1"}'
+        values: '3 3 3 3 2x26'
+      - series: 'kafka_topic_partition_in_sync_replica{job="kfk_kafka-exporter",instance="10.0.3.5:9308",stack="kfk",topic="orders",partition="2"}'
+        values: '3 3 3 3 2x26'
+      - series: 'kafka_topic_partition_current_offset{job="kfk_kafka-exporter",instance="10.0.3.5:9308",stack="kfk",topic="orders",partition="0"}'
+        values: '100+10x30'
+      - series: 'kafka_topic_partition_current_offset{job="kfk_kafka-exporter",instance="10.0.3.5:9308",stack="kfk",topic="orders",partition="1"}'
+        values: '100+10x30'
+      - series: 'kafka_topic_partition_current_offset{job="kfk_kafka-exporter",instance="10.0.3.5:9308",stack="kfk",topic="orders",partition="2"}'
+        values: '100+10x30'
+      # pairs: RF 2, down to 1 in sync, still led.
+      - series: 'kafka_topic_partition_replicas{job="kfk_kafka-exporter",instance="10.0.3.5:9308",stack="kfk",topic="pairs",partition="0"}'
+        values: '2x30'
+      - series: 'kafka_topic_partition_in_sync_replica{job="kfk_kafka-exporter",instance="10.0.3.5:9308",stack="kfk",topic="pairs",partition="0"}'
+        values: '2 2 2 2 1x26'
+      - series: 'kafka_topic_partition_current_offset{job="kfk_kafka-exporter",instance="10.0.3.5:9308",stack="kfk",topic="pairs",partition="0"}'
+        values: '0x30'
+      # single: RF 1. Partition 0 loses its only replica: 0 in sync, no offset from then on.
+      # Partition 1 keeps its single replica in sync, below 2 but all an RF 1 topic needs.
+      - series: 'kafka_topic_partition_replicas{job="kfk_kafka-exporter",instance="10.0.3.5:9308",stack="kfk",topic="single",partition="0"}'
+        values: '1x30'
+      - series: 'kafka_topic_partition_in_sync_replica{job="kfk_kafka-exporter",instance="10.0.3.5:9308",stack="kfk",topic="single",partition="0"}'
+        values: '1 1 1 1 0x26'
+      - series: 'kafka_topic_partition_current_offset{job="kfk_kafka-exporter",instance="10.0.3.5:9308",stack="kfk",topic="single",partition="0"}'
+        values: '5 5 5 5 stale'
+      - series: 'kafka_topic_partition_replicas{job="kfk_kafka-exporter",instance="10.0.3.5:9308",stack="kfk",topic="single",partition="1"}'
+        values: '1x30'
+      - series: 'kafka_topic_partition_in_sync_replica{job="kfk_kafka-exporter",instance="10.0.3.5:9308",stack="kfk",topic="single",partition="1"}'
+        values: '1x30'
+      - series: 'kafka_topic_partition_current_offset{job="kfk_kafka-exporter",instance="10.0.3.5:9308",stack="kfk",topic="single",partition="1"}'
+        values: '6x30'
+      # frozen: the broker lost first left its ISR, then its leader died with the majority,
+      # and the metadata still names that leader and 2 in sync.
+      - series: 'kafka_topic_partition_replicas{job="kfk_kafka-exporter",instance="10.0.3.5:9308",stack="kfk",topic="frozen",partition="0"}'
+        values: '3x30'
+      - series: 'kafka_topic_partition_in_sync_replica{job="kfk_kafka-exporter",instance="10.0.3.5:9308",stack="kfk",topic="frozen",partition="0"}'
+        values: '3 3 3 3 2x26'
+      - series: 'kafka_topic_partition_current_offset{job="kfk_kafka-exporter",instance="10.0.3.5:9308",stack="kfk",topic="frozen",partition="0"}'
+        values: '7 7 7 7 stale'
+
+      # flap: a leaderless partition, reported only by the scrapes that complete.
+      - series: 'kafka_topic_partition_replicas{job="flap_kafka-exporter",instance="10.0.6.5:9308",stack="flap",topic="wide",partition="0"}'
+        values: '1 1 1 1 stale 1 stale _ _ 1 stale _ _ 1 stale _ _ 1 stale _ _ 1 stale _ _ 1 stale _ _ 1 stale'
+      - series: 'kafka_topic_partition_current_offset{job="flap_kafka-exporter",instance="10.0.6.5:9308",stack="flap",topic="wide",partition="0"}'
+        values: '9 9 9 9 stale'
+
+      # ok: one RF 3 topic and one RF 1 topic, both healthy.
+      - series: 'kafka_topic_partition_replicas{job="ok_kafka-exporter",instance="10.0.4.5:9308",stack="ok",topic="events",partition="0"}'
+        values: '3x30'
+      - series: 'kafka_topic_partition_in_sync_replica{job="ok_kafka-exporter",instance="10.0.4.5:9308",stack="ok",topic="events",partition="0"}'
+        values: '3x30'
+      - series: 'kafka_topic_partition_current_offset{job="ok_kafka-exporter",instance="10.0.4.5:9308",stack="ok",topic="events",partition="0"}'
+        values: '0+5x30'
+      - series: 'kafka_topic_partition_replicas{job="ok_kafka-exporter",instance="10.0.4.5:9308",stack="ok",topic="scratch",partition="0"}'
+        values: '1x30'
+      - series: 'kafka_topic_partition_in_sync_replica{job="ok_kafka-exporter",instance="10.0.4.5:9308",stack="ok",topic="scratch",partition="0"}'
+        values: '1x30'
+      - series: 'kafka_topic_partition_current_offset{job="ok_kafka-exporter",instance="10.0.4.5:9308",stack="ok",topic="scratch",partition="0"}'
+        values: '0x30'
+
+    alert_rule_test:
+      # A minute after the loss, nothing has lasted its `for` yet.
+      - eval_time: 3m
+        alertname: KafkaPartitionsOffline
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: KafkaPartitionsUnderMinISR
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: KafkaUnreachable
+        exp_alerts: []
+
+      # The partition without a leader, the one whose leader died with the majority, and the
+      # one only the completing scrapes report: one alert per topic.
+      - eval_time: 5m
+        alertname: KafkaPartitionsOffline
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: kfk_kafka-exporter
+              stack: kfk
+              topic: single
+            exp_annotations:
+              summary: '1 partition(s) of topic single in kfk are offline'
+              description: 'For 3 minutes no broker has served 1 partition(s) of single: every read and write to them fails. Every broker holding a replica is down, or a majority of the brokers is, which stops leader election. `kafka-topics.sh --describe --unavailable-partitions` lists those without a leader.'
+          - exp_labels:
+              severity: critical
+              job: kfk_kafka-exporter
+              stack: kfk
+              topic: frozen
+            exp_annotations:
+              summary: '1 partition(s) of topic frozen in kfk are offline'
+              description: 'For 3 minutes no broker has served 1 partition(s) of frozen: every read and write to them fails. Every broker holding a replica is down, or a majority of the brokers is, which stops leader election. `kafka-topics.sh --describe --unavailable-partitions` lists those without a leader.'
+          - exp_labels:
+              severity: critical
+              job: flap_kafka-exporter
+              stack: flap
+              topic: wide
+            exp_annotations:
+              summary: '1 partition(s) of topic wide in flap are offline'
+              description: 'For 3 minutes no broker has served 1 partition(s) of wide: every read and write to them fails. Every broker holding a replica is down, or a majority of the brokers is, which stops leader election. `kafka-topics.sh --describe --unavailable-partitions` lists those without a leader.'
+      # pairs alone: the healthy RF 1 partition has all the replicas it can, and the offline
+      # ones belong to KafkaPartitionsOffline.
+      - eval_time: 5m
+        alertname: KafkaPartitionsUnderMinISR
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: kfk_kafka-exporter
+              stack: kfk
+              topic: pairs
+            exp_annotations:
+              summary: '1 partition(s) of topic pairs in kfk are below min.insync.replicas'
+              description: '1 partition(s) of pairs have had fewer than 2 in-sync replicas for 2 minutes: acks=all writes to them are refused, and acks=1 writes stay invisible to consumers until a replica catches up. `kafka-topics.sh --describe --under-min-isr-partitions` lists them.'
+      # Down for good, and answering one scrape in four: both. Not the galera exporter.
+      - eval_time: 5m
+        alertname: KafkaUnreachable
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: down_kafka-exporter
+              stack: down
+            exp_annotations:
+              summary: 'Prometheus cannot get Kafka metrics from down_kafka-exporter'
+              description: 'Most scrapes of down_kafka-exporter have failed for 2 minutes or more. The exporter answers too late when no broker answers it, or when many partitions have no leader, so Kafka is likely down; it may also be the exporter itself. Every other Kafka alert of down is blind meanwhile. Its log says which: `docker service logs down_kafka-exporter` shows `Cannot get` lines for an unreachable Kafka.'
+          - exp_labels:
+              severity: critical
+              job: flap_kafka-exporter
+              stack: flap
+            exp_annotations:
+              summary: 'Prometheus cannot get Kafka metrics from flap_kafka-exporter'
+              description: 'Most scrapes of flap_kafka-exporter have failed for 2 minutes or more. The exporter answers too late when no broker answers it, or when many partitions have no leader, so Kafka is likely down; it may also be the exporter itself. Every other Kafka alert of flap is blind meanwhile. Its log says which: `docker service logs flap_kafka-exporter` shows `Cannot get` lines for an unreachable Kafka.'
+      - eval_time: 5m
+        alertname: KafkaBrokersMissing
+        exp_alerts: []
+
+      # Cluster ok's single 0 never lasted the 5 minutes.
+      - eval_time: 8m
+        alertname: KafkaBrokersMissing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: kfk_kafka-exporter
+              stack: kfk
+            exp_annotations:
+              summary: 'Kafka cluster kfk has 2 broker(s), fewer than in the last day'
+              description: 'Cluster kfk has had 2 broker(s) in its metadata for 5 minutes, fewer than it had in the last day: a broker is down or cannot reach the controllers. Its partitions run on the others; one more loss in a 3-node cluster also loses the controller majority.'
+
+      - eval_time: 11m
+        alertname: KafkaPartitionsUnderReplicated
+        exp_alerts: []
+      # orders alone, all three partitions: pairs is below min.insync.replicas, single's
+      # partition 1 has all its replicas in sync, and frozen's metadata is not to be trusted.
+      - eval_time: 14m
+        alertname: KafkaPartitionsUnderReplicated
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: kfk_kafka-exporter
+              stack: kfk
+              topic: orders
+            exp_annotations:
+              summary: '3 partition(s) of topic orders in kfk are under-replicated'
+              description: '3 partition(s) of orders have had fewer in-sync replicas than replicas for 10 minutes: a broker is down, or a follower cannot keep up. They still take writes, but the next broker lost can stop them. `kafka-topics.sh --describe --under-replicated-partitions` lists them.'
+
+  # Consumer groups on cluster kfk, scraped every minute. g-stalled stops committing at 30m
+  # while the producers go on. g-healthy keeps up, its lag a sawtooth between commits with
+  # one spike, as a producer flushing its backlog after an outage made it. g-step jumps
+  # once at 30m and stays, as when a partition comes back; g-idle has a constant lag on a
+  # topic no one writes to. Only g-stalled may fire.
+  - interval: 1m
+    input_series:
+      - series: 'kafka_consumergroup_lag_sum{job="kfk_kafka-exporter",instance="10.0.3.5:9308",stack="kfk",consumergroup="g-stalled",topic="orders"}'
+        values: '200x30 500+300x40'
+      - series: 'kafka_consumergroup_lag_sum{job="kfk_kafka-exporter",instance="10.0.3.5:9308",stack="kfk",consumergroup="g-healthy",topic="orders"}'
+        values: '12 3 9 5 12 3 9 5 12 3 9 5 12 3 9 5 12 3 9 5 12 3 9 5 12 3 9 5 12 3 9 5 12 3 9 5 12 3 9 5 1534 3 9 5 12 3 9 5 12 3 9 5 12 3 9 5 12 3 9 5 12 3 9 5 12 3 9 5 12 3 9'
+      - series: 'kafka_consumergroup_lag_sum{job="kfk_kafka-exporter",instance="10.0.3.5:9308",stack="kfk",consumergroup="g-step",topic="orders"}'
+        values: '10x30 5000x40'
+      - series: 'kafka_consumergroup_lag_sum{job="kfk_kafka-exporter",instance="10.0.3.5:9308",stack="kfk",consumergroup="g-idle",topic="audit"}'
+        values: '150x70'
+
+    alert_rule_test:
+      # Growing since 31m: the condition holds from 40m, and the 15m `for` has not passed.
+      - eval_time: 50m
+        alertname: KafkaConsumerGroupLagGrowing
+        exp_alerts: []
+      # The least lag of 46m to 56m is 47m's, 500 + 16 * 300.
+      - eval_time: 56m
+        alertname: KafkaConsumerGroupLagGrowing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: kfk_kafka-exporter
+              stack: kfk
+              consumergroup: g-stalled
+              topic: orders
+            exp_annotations:
+              summary: 'Consumer group g-stalled in kfk is falling behind on orders'
+              description: 'The lag of g-stalled on orders has kept growing for 25 minutes or more and is at least 5300 messages: its consumers are stopped or slower than the producers. kafka_consumergroup_members says whether any is connected; a group no longer used can be removed with `kafka-consumer-groups.sh --delete --group g-stalled`.'
+      # g-step's condition held from 40m to 50m, never for 15 minutes.
+      - eval_time: 70m
+        alertname: KafkaConsumerGroupLagGrowing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: kfk_kafka-exporter
+              stack: kfk
+              consumergroup: g-stalled
+              topic: orders
+            exp_annotations:
+              summary: 'Consumer group g-stalled in kfk is falling behind on orders'
+              description: 'The lag of g-stalled on orders has kept growing for 25 minutes or more and is at least 9500 messages: its consumers are stopped or slower than the producers. kafka_consumergroup_members says whether any is connected; a group no longer used can be removed with `kafka-consumer-groups.sh --delete --group g-stalled`.'

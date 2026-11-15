@@ -90,6 +90,7 @@
     { "matchFileNames": ["charts/airbyte/**"], "semanticCommitScope": "airbyte" },
     { "matchFileNames": ["charts/gitlab-runner/**"], "semanticCommitScope": "gitlab-runner" },
     { "matchFileNames": ["charts/harbor/**"], "semanticCommitScope": "harbor" },
+    { "matchFileNames": ["charts/kafka/**"], "semanticCommitScope": "kafka" },
     { "matchFileNames": ["charts/keycloak/**"], "semanticCommitScope": "keycloak" },
     { "matchFileNames": ["charts/loki/**"], "semanticCommitScope": "loki" },
     { "matchFileNames": ["charts/mariadb/**"], "semanticCommitScope": "mariadb" },

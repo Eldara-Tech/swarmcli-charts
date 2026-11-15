@@ -1,0 +1,7 @@
+# Each broker on its own port of the ingress routing mesh, advertised under
+# publish.host. 127.0.0.1 so the e2e client on the node's own network can reach what
+# the brokers advertise.
+exposure:
+  mode: published
+publish:
+  host: 127.0.0.1

@@ -1,0 +1,220 @@
+# kafka chart default values.
+#
+# An Apache Kafka cluster in KRaft mode on Docker Swarm. Every peer is a broker AND a
+# controller (Kafka's "combined" mode), so 3 peers keep the metadata quorum through the
+# loss of 1 and 5 through the loss of 2. Topics default to 3 replicas with
+# min.insync.replicas 2, so an acks=all producer keeps writing with one peer down.
+#
+# Each peer is its OWN Swarm service with exactly one replica, its own data volume and
+# its own node label, because a Swarm volume is node-local. Peers reach each other by a
+# release-scoped network alias, which stays the same when Swarm reschedules a task.
+#
+# The controller quorum is DYNAMIC (KIP-853): a peer that comes back on an empty volume
+# joins as a new voter and replaces its old entry by itself, instead of rejoining with
+# an empty log under its old identity. README.md § How the quorum forms.
+#
+# Every password ALWAYS comes from an EXTERNAL Swarm secret the operator pre-creates
+# (never created by the chart).
+
+image:
+  repository: apache/kafka
+  tag: ""  # defaults to the appVersion in Chart.yaml; must be Kafka 4.2 or later
+
+cluster:
+  # Number of peers, 3 or 5: the controller quorum needs a majority, so an even count
+  # buys no extra fault tolerance and 1 is not a cluster. Raising it later adds the new
+  # peers to the quorum by themselves; lowering it does not remove the old ones
+  # (README.md § Changing the peer count).
+  peers: 3
+
+# Authentication and authorisation. enabled:false => every listener is PLAINTEXT and
+# anything on the overlay may read and write every topic; exposure.mode must then be
+# none.
+#
+# With it on, every listener speaks SASL, and Kafka's StandardAuthorizer refuses
+# whatever no ACL allows.
+#   internal: the identity the peers use with each other (controller and replication
+#     traffic, over SASL/PLAIN; KRaft cannot use SCRAM between controllers). It is the
+#     only super user. Pre-create its secret with a random password:
+#       openssl rand -base64 32 | docker secret create kafka_internal_password -
+#   users: client users, over SASL/SCRAM-SHA-512. A one-shot service creates each one,
+#     or resets its password, and grants it every operation on every topic, group,
+#     transactional id and the cluster. Adding a user restarts no peer. Pre-create each
+#     secret, e.g.:
+#       printf 'S3cr3t' | docker secret create kafka_app_password -
+#     Removing a user from the list does not delete it from Kafka (README.md § Users).
+auth:
+  enabled: true
+  internal:
+    username: kafka-internal
+    secretName: kafka_internal_password
+  users:
+    - name: app
+      secretName: kafka_app_password
+
+# Persistence. One named volume per peer at /var/lib/kafka/data, suffixed with the
+# peer's 1-based index (kafka-data-1, -2, -3).
+#
+# enabled:false => an ephemeral cluster: no volumes and no node pins, so a task that is
+# rescheduled loses that peer's data and the peer rejoins on an empty disk. Fine for CI
+# and demos, never for real data.
+persistence:
+  enabled: true
+  volumePrefix: kafka-data
+  # Store each peer's data under a host directory instead of Docker's managed volume
+  # storage. When set it TAKES PRECEDENCE and volumePrefix is ignored: give exactly one
+  # ABSOLUTE host path per peer, in peer order. Each directory must already exist on
+  # that peer's node and be writable by the image's appuser (uid 1000). This is
+  # host-filesystem access, acknowledged via swarmcli-charts/allow: "host-mount" in
+  # Chart.yaml. Leave empty ([]) to use the named volumes above.
+  volumePaths: []
+  # Node-label prefix pinning each peer to the node carrying its data volume (Swarm
+  # volumes are node-local). Peer N renders `node.labels.<nodeLabelPrefix>-<N> == true`
+  # while persistence is enabled, and the pin is dropped automatically when it is not.
+  # Label one node per peer first:
+  #   docker node update --label-add kafka-1=true <node-a>
+  #   docker node update --label-add kafka-2=true <node-b>
+  #   docker node update --label-add kafka-3=true <node-c>
+  # Set "" to schedule every peer unpinned even with persistence on. That is only
+  # correct on a single-node swarm, where it is a single point of failure: no
+  # availability, just a realistic cluster to develop against.
+  nodeLabelPrefix: kafka
+
+# Extra scheduling constraints, applied to EVERY peer (independent of the per-peer
+# persistence pins above).
+placement:
+  constraints: []
+
+# Overlay network the cluster attaches to. external:true (default) is a shared
+# attachable overlay (declared in requirements.yaml, auto-created if missing) that app
+# stacks also join to reach the cluster. external:false => chart-managed overlay (the
+# cluster is only reachable by services in this stack).
+#
+# clientAlias is a DNS alias every peer shares: clients bootstrap from
+# <clientAlias>:9092 and then connect to each broker by the address it advertises,
+# <release>-kafka-<N>:9092. "" publishes no shared alias; list the brokers instead.
+#
+# encrypted applies IPsec to the overlay's data plane, which keeps replication and
+# client traffic off the wire in the clear. It costs throughput, so it is opt-in. Only
+# settable on a chart-managed network (external:false); for an external overlay the
+# operator passes `--opt encrypted` to `docker network create` instead.
+network:
+  name: kafka-net
+  external: true
+  encrypted: false
+  clientAlias: kafka
+
+# Reaching the brokers from outside the swarm. A Kafka client fetches metadata from
+# any broker and then connects to the leader of every partition itself, so nothing can
+# load-balance its connections: each broker needs an address of its own, and only the
+# first connection is balanced. Each broker gets a third listener (container port 9094)
+# advertised under that address.
+#   none:      overlay only (default).
+#   traefik:   the traefik edge terminates TLS and routes each broker's host name to it
+#              by SNI, on one port for all of them (traefik.* below). Clients use
+#              security.protocol=SASL_SSL and list the hosts as bootstrap servers.
+#   published: broker N publishes publish.basePort + N - 1 on the ingress routing mesh,
+#              so every node answers on every broker's port; put your own TCP load
+#              balancer or DNS in front of the nodes. Unencrypted: trusted networks only.
+# Both need auth.enabled.
+exposure:
+  mode: none
+  # Shared EXTERNAL overlay the edge proxy lives on (traefik mode). Provisioned by the
+  # traefik chart or the operator (requirements.yaml, autoCreate:false).
+  network: traefik-public
+
+# traefik-mode routing. The defaults match the traefik chart in this repository; adjust
+# them to your Traefik install if you run your own.
+#   hosts: one DNS name per peer, in peer order, each resolving to the edge. Broker N
+#     advertises hosts[N-1]:443.
+#   certResolver: "" serves Traefik's default certificate instead of requesting one.
+traefik:
+  hosts: []
+  entrypoint: https
+  port: 443
+  certResolver: le
+  # Swarm-provider constraint label. The traefik chart runs with
+  # --providers.swarm.exposedByDefault=false and a constraint on this label, so a routed
+  # service must carry it to be discovered. Match your Traefik's constraintLabel.
+  constraintLabel: traefik-public
+
+# published-mode ports.
+#   host: the name or address clients outside the swarm use to reach the swarm's nodes
+#     (or the load balancer in front of them). Required in published mode.
+#   basePort: broker N publishes basePort + N - 1.
+publish:
+  host: ""
+  basePort: 19092
+
+# Extra broker settings (key: value), written to every peer's server.properties after
+# the chart's own, e.g. { log.retention.hours: 72, num.partitions: 6 }. Changing one
+# restarts every peer, one at a time. The keys the chart sets itself are refused (the
+# render says which), and so is anything holding a password: secrets belong in Swarm
+# secrets. min.insync.replicas can only be changed at cluster level once the cluster
+# exists (kafka-configs.sh --entity-type brokers --entity-default).
+config: {}
+
+# JVM heap of each peer (-Xms and -Xmx). Leave headroom under resources.limits.memory
+# for the page cache Kafka relies on.
+heap: 1g
+
+# Prometheus metrics: one kafka_exporter, found by Docker Swarm service discovery. It
+# carries the deploy labels prometheus.io/scrape=true and prometheus.io/port=9308 and
+# joins metrics.network, the prometheus-stack chart's default scrape overlay, so that
+# chart picks it up with no config. It reports brokers, partitions, replication and
+# consumer-group lag; the alert rules and the dashboard are in monitoring/ (README.md
+# § Metrics).
+#
+# Off by default, and nothing below renders while it is off. Turning it on adds services
+# and leaves the peers' own specs untouched, so it never restarts a peer.
+#
+# With auth.enabled the exporter logs in as its own SCRAM user, allowed to Describe and
+# nothing else, which the users one-shot creates. secretName is an EXTERNAL Swarm secret
+# holding its password. Pre-create it with a random one:
+#   openssl rand -base64 32 | docker secret create kafka_exporter_password -
+metrics:
+  enabled: false
+  image:
+    repository: danielqsj/kafka-exporter
+    # A concrete tag, not appVersion: this is a second image, and Renovate's helm-values
+    # manager maintains pins written here.
+    tag: "v1.11.0"
+  username: exporter
+  secretName: kafka_exporter_password
+  # External overlay the exporter shares with Prometheus. Only the exporter joins it,
+  # never the peers. requirements.yaml declares it autoCreate:true.
+  network: monitoring
+
+# Swarm deploy resource limits per peer (optional). Rendered only when limits.memory is
+# set.
+resources:
+  limits:
+    memory: ""           # e.g. "2G"
+
+# Container healthcheck: the controller listener accepts a connection. It is the only
+# port Kafka opens before the quorum has a leader, and Swarm publishes a peer in DNS only
+# once its healthcheck passes, so a check on the client port would keep every peer out
+# of DNS on a first install and the quorum would never form. A peer waiting for the
+# others before it formats an empty volume passes too, so they can ask it.
+#
+# Healthy therefore means "running", not "caught up": a rolling upgrade moves to the next
+# peer once `monitor` has passed (README.md § Upgrading).
+healthcheck:
+  enabled: true
+  interval: 10s
+  timeout: 5s
+  retries: 3
+  startPeriod: 60s
+  # How long Swarm counts a task failure against the rollout, measured from task
+  # creation, and how long an upgrade waits on each peer before the next. Must cover the
+  # healthcheck's worst case (60s start_period + 10s interval x 3 retries = 90s). Raise it
+  # for a broker that needs longer to catch up after a restart.
+  monitor: 120s
+
+# How long Swarm waits for a peer to stop before killing it. A clean shutdown moves the
+# peer's partition leadership to the others first and spares it log recovery on the
+# next start.
+stopGracePeriod: 2m
+
+# Extra deploy labels (key: value), applied to every peer.
+labels: {}
