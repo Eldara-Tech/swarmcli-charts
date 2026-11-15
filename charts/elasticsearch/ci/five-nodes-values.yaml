@@ -1,0 +1,7 @@
+# Five nodes: every per-node identity (service, volume, node label, node.name) must stay
+# distinct, and every node must be in the seed list and the initial master list.
+cluster:
+  nodes: 5
+tls:
+  enabled: true
+  verificationMode: full

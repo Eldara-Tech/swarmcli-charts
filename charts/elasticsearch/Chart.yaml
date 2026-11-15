@@ -1,0 +1,35 @@
+name: elasticsearch
+description: Elasticsearch and Kibana for Docker Swarm — security always on, secret-sourced passwords, single node or a 3/5-node TLS cluster with one pinned service per node
+version: 0.1.0
+# Kibana (kibana.image) runs this same version: Elastic releases both together, and Kibana
+# refuses an Elasticsearch of another version.
+# renovate: image=docker.elastic.co/elasticsearch/elasticsearch
+appVersion: "9.5.5"
+# Oldest swarmcli whose chart engine renders this chart; verified by scripts/floor-check.sh
+# against a real binary of that version. 2.2.2 rolls the com.swarmcli.rollout=sequential nodes of
+# a cluster out one at a time, holding back a node still starting (Eldara-Tech/swarmcli#712).
+swarmcliVersion: ">= 2.2.2"
+# host-mount is acknowledged because persistence.volumePaths can bind-mount the data dirs from
+# operator-chosen host paths. The default (named volume) render mounts no host path — no
+# docker.sock, unprivileged — so the annotation is exercised by the security scan only when a
+# host path is configured.
+annotations:
+  swarmcli-charts/allow: "host-mount"
+maintainers:
+  - name: Eldara
+    url: https://github.com/Eldara-Tech
+keywords:
+  - elasticsearch
+  - kibana
+  - elastic
+  - elastic-stack
+  - search
+  - logging
+  - stateful
+  - cluster
+  - swarm
+home: https://github.com/Eldara-Tech/swarmcli-charts
+sources:
+  - https://github.com/Eldara-Tech/swarmcli-charts
+  - https://github.com/elastic/elasticsearch
+  - https://github.com/elastic/kibana

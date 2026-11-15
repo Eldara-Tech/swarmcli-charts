@@ -1,0 +1,396 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "elasticsearch chart values",
+  "type": "object",
+  "properties": {
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string"
+        }
+      }
+    },
+    "cluster": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "nodes": {
+          "description": "1 is a single-node cluster; a multi-node one needs a majority to keep a master, so only odd counts of 3 or more.",
+          "enum": [
+            1,
+            3,
+            5
+          ]
+        }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "properties": {
+        "elasticPasswordSecretName": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "tls": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "http": {
+          "type": "boolean"
+        },
+        "verificationMode": {
+          "enum": [
+            "certificate",
+            "full",
+            "none"
+          ]
+        },
+        "caSecretName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "certSecretName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "keySecretName": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "heapSize": {
+      "type": "string",
+      "pattern": "^$|^[0-9]+[kKmMgG]$",
+      "description": "JVM heap like 512m or 2g, or \"\" to let Elasticsearch size it."
+    },
+    "persistence": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "volumePrefix": {
+          "type": "string",
+          "minLength": 1
+        },
+        "volumePaths": {
+          "description": "One absolute host path per node, in node order, or [] for named volumes.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^/"
+          }
+        },
+        "nodeLabelPrefix": {
+          "type": "string"
+        }
+      }
+    },
+    "placement": {
+      "type": "object",
+      "properties": {
+        "constraints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "network": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "external": {
+          "type": "boolean"
+        },
+        "clientAlias": {
+          "type": "string"
+        }
+      }
+    },
+    "exposure": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "mode": {
+          "enum": [
+            "ingress",
+            "host"
+          ]
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "limits": {
+          "type": "object",
+          "properties": {
+            "memory": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "stopGracePeriod": {
+      "type": "string",
+      "pattern": "^[0-9]+(ms|s|m|h)([0-9]+(ms|s|m|h))*$"
+    },
+    "healthcheck": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "interval": {
+          "type": "string",
+          "pattern": "^[0-9]+(ms|s|m|h)([0-9]+(ms|s|m|h))*$"
+        },
+        "timeout": {
+          "type": "string",
+          "pattern": "^[0-9]+(ms|s|m|h)([0-9]+(ms|s|m|h))*$"
+        },
+        "retries": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "startPeriod": {
+          "type": "string",
+          "pattern": "^[0-9]+(ms|s|m|h)([0-9]+(ms|s|m|h))*$"
+        },
+        "monitor": {
+          "type": "string",
+          "pattern": "^[0-9]+(ms|s|m|h)([0-9]+(ms|s|m|h))*$"
+        }
+      }
+    },
+    "settings": {
+      "type": "object",
+      "additionalProperties": {
+        "type": [
+          "string",
+          "number",
+          "boolean"
+        ]
+      }
+    },
+    "labels": {
+      "type": "object",
+      "additionalProperties": {
+        "type": [
+          "string",
+          "number",
+          "boolean"
+        ]
+      }
+    },
+    "kibana": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string"
+            }
+          }
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "passwordSecretName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "encryptionKey": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "secretName": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "exposure": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "enum": [
+                "traefik",
+                "published",
+                "none"
+              ]
+            },
+            "network": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "ingress": {
+          "type": "object",
+          "properties": {
+            "host": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tls": {
+              "type": "boolean"
+            }
+          }
+        },
+        "traefik": {
+          "type": "object",
+          "properties": {
+            "certResolver": {
+              "type": "string"
+            },
+            "entrypoints": {
+              "type": "object",
+              "properties": {
+                "http": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "https": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "constraintLabel": {
+              "type": "string",
+              "minLength": 1
+            },
+            "redirectMiddleware": {
+              "type": "string"
+            }
+          }
+        },
+        "publish": {
+          "type": "object",
+          "properties": {
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "mode": {
+              "enum": [
+                "ingress",
+                "host"
+              ]
+            }
+          }
+        },
+        "healthcheck": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "interval": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h)([0-9]+(ms|s|m|h))*$"
+            },
+            "timeout": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h)([0-9]+(ms|s|m|h))*$"
+            },
+            "retries": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "startPeriod": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h)([0-9]+(ms|s|m|h))*$"
+            },
+            "monitor": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m|h)([0-9]+(ms|s|m|h))*$"
+            }
+          }
+        },
+        "resources": {
+          "type": "object",
+          "properties": {
+            "limits": {
+              "type": "object",
+              "properties": {
+                "memory": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "settings": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          }
+        },
+        "placement": {
+          "type": "object",
+          "properties": {
+            "constraints": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

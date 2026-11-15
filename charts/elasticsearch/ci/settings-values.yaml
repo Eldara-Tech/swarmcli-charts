@@ -1,0 +1,16 @@
+# Extra settings on both sides, a chart-managed overlay, no shared client alias, a throwaway
+# Kibana without an encryption key, and the published-port-free none mode.
+settings:
+  indices.query.bool.max_clause_count: 4096
+  action.destructive_requires_name: true
+network:
+  external: false
+  clientAlias: ""
+kibana:
+  encryptionKey:
+    enabled: false
+  exposure:
+    mode: none
+  settings:
+    i18n.locale: de-DE
+    xpack.fleet.enabled: false

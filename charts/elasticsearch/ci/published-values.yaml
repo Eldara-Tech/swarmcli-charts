@@ -1,0 +1,13 @@
+# The REST API published on the ingress mesh, and Kibana published directly (plain HTTP).
+exposure:
+  enabled: true
+  port: 19200
+kibana:
+  exposure:
+    mode: published
+  ingress:
+    host: localhost
+  publish:
+    port: 15601
+# Trimmed so the node fits a CI runner beside Kibana.
+heapSize: 512m

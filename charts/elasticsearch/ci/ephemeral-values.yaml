@@ -1,0 +1,6 @@
+# Persistence off: no volume and no node pin (a pin with no volume would strand the task Pending
+# on a label nobody needs to set).
+persistence:
+  enabled: false
+# Trimmed so the node fits a CI runner beside Kibana.
+heapSize: 512m

@@ -1,0 +1,10 @@
+# A cluster with TLS on the transport layer only: the REST API stays plain HTTP on the overlay.
+cluster:
+  nodes: 3
+tls:
+  enabled: true
+  http: false
+heapSize: 512m
+kibana:
+  exposure:
+    mode: none

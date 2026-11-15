@@ -1,0 +1,7 @@
+# Host-path persistence: /usr/share/elasticsearch/data bind-mounted from a host directory, which
+# exercises the host-mount acknowledgment. ci/e2e-setup.sh creates the directory owned 1000:0.
+persistence:
+  volumePaths:
+    - /opt/elasticsearch-data-1
+# Trimmed so the node fits a CI runner beside Kibana.
+heapSize: 512m
