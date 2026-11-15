@@ -116,13 +116,14 @@ include:
   # exporter from the monitoring overlay, proves its user is Describe-only and runs promtool.
   # bind-mount (host dirs) and internal-net (an IPsec overlay) are render-only
   # (ci/e2e-render-only), covered by charts.yml.
-  - { chart: kafka,         cases: "default ephemeral no-auth metrics five-peers",                                    timeout: 10m }
+  - { chart: kafka,         cases: "default ephemeral unpinned no-auth metrics five-peers",                           timeout: 10m }
   # kafka from outside the swarm, a job of its own: `published` writes and reads through the
   # routing-mesh port each broker advertises, `traefik` over TLS through the traefik edge,
   # each broker routed by its SNI host name.
   - { chart: kafka, name: "kafka exposure", cases: "published traefik",                                               timeout: 10m }
   # kafka lifecycle, a job of its own: a peer's volume wiped (it must rejoin as a NEW voter
-  # and get its replicas back), a full stop, `swarmcli charts upgrade` rolling every peer, and
+  # and get its replicas back), a full stop, peer 1 wiped while every other peer is down (it
+  # must wait, not create a cluster), `swarmcli charts upgrade` rolling every peer, and
   # an upgrade to 5 peers whose two new voters must join the running quorum by themselves.
   - { chart: kafka, name: "kafka lifecycle", cases: "lifecycle",                                                      timeout: 15m }
   # mongodb: EVERY fixture (cases: "" => no filter). ci/e2e-setup.sh creates the three dummy

@@ -216,5 +216,5 @@ healthcheck:
 # next start.
 stopGracePeriod: 2m
 
-# Extra deploy labels (key: value), applied to every peer.
+# Extra deploy labels (key: value), applied to every peer and to the users one-shot.
 labels: {}

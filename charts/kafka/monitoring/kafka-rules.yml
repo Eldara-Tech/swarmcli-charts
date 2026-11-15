@@ -125,6 +125,30 @@ groups:
         annotations:
           summary: 'Kafka cluster {{ $labels.stack }} has {{ $value }} broker(s), fewer than in the last day'
           description: 'Cluster {{ $labels.stack }} has had {{ $value }} broker(s) in its metadata for 5 minutes, fewer than it had in the last day: a broker is down or cannot reach the controllers. Its partitions run on the others; one more loss in a 3-node cluster also loses the controller majority.'
+      # Every peer of this chart is a controller as well as a broker, so the brokers left are
+      # the controllers left. Once they are down to a bare majority of the most seen in the
+      # last day (2 of 3, 3 of 5), the next loss takes the metadata quorum and with it every
+      # write that needs the controllers: critical, as quorum at risk is by CONTRIBUTING, next
+      # to KafkaBrokersMissing's warning. Below the peak only, so a cluster never seen larger
+      # does not fire. With a majority gone the frozen metadata still counts a bare majority,
+      # so it keeps firing then too.
+      - alert: KafkaQuorumAtRisk
+        expr: |
+          (
+            max by (stack, job) (kafka_brokers)
+              <= floor(max by (stack, job) (max_over_time(kafka_brokers[1d])) / 2) + 1
+          )
+          and
+          (
+            max by (stack, job) (kafka_brokers)
+              < max by (stack, job) (max_over_time(kafka_brokers[1d]))
+          )
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Kafka cluster {{ $labels.stack }} is one broker away from losing its controller quorum'
+          description: 'Cluster {{ $labels.stack }} has had only {{ $value }} broker(s) for 5 minutes, a bare majority of the most it had in the last day. Every broker of the kafka chart is also a controller, so losing one more loses the metadata quorum: topics, leaders and new writes stop. Bring the missing peers back.'
       # Falling further behind, whatever the lag, as LinkedIn's Burrow judges a consumer: by
       # the trend of its lag over a window, not by a threshold. The least lag of the last 10
       # minutes must exceed the most of the 10 minutes that ended 20 minutes ago, which a

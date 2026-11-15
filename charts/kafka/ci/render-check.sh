@@ -70,18 +70,31 @@ for s in $peers; do
   [ "$(q ".services.\"$s\".deploy.endpoint_mode")" = vip ] || err "$s: endpoint_mode is not vip; dnsrr drops the aliases every peer is addressed by"
   [ "$(q ".services.\"$s\".deploy.update_config.order")" = stop-first ] || err "$s: update order is not stop-first; two tasks would mount one data dir"
   q ".services.\"$s\".deploy.labels[]" | has -x 'com.swarmcli.rollout=sequential' || err "$s: lost com.swarmcli.rollout=sequential; an upgrade would restart every peer at once"
-  q ".services.\"$s\".healthcheck.test[1]" | has -F 'nc -z 127.0.0.1 9093' || err "$s: the healthcheck is not the controller port; a client-port check would keep every peer out of DNS on a first install"
-  # Formatting: the same cluster id everywhere, --standalone on peer 1 alone.
+  [ "$(q ".services.\"$s\".healthcheck.test | join(\"|\")")" = 'CMD-SHELL|[ -f /tmp/kafka-waiting ] || nc -z 127.0.0.1 9093' ] \
+    || err "$s: the healthcheck is not exactly the controller port or the waiting marker; a client-port check would keep every peer out of DNS on a first install"
+  [ -n "$(q ".services.\"$s\".deploy.update_config.monitor // \"\"")" ] || err "$s: no update monitor; peers would restart 5s apart"
+  # Formatting: the same cluster id everywhere, --standalone on peer 1 alone, and only
+  # on the exact condition that keeps it from forming a second cluster: every other
+  # peer ANSWERED empty (a peer that does not answer may hold the data). A peer joins
+  # only one that reports formatted AND serves its controller port.
   sc="$(script "$s")"
   cid="$(printf '%s\n' "$sc" | sed -n 's/.*--cluster-id \([^ ]*\) .*/\1/p')"
   printf '%s' "$cid" | has -E '^[A-Za-z0-9_-]{22}$' || err "$s: cluster id '$cid' is not 22 base64url characters"
   cids="$cids $cid"
+  # The script's lines without their indentation, which YAML's block scalar shifts.
+  scl="$(printf '%s\n' "$sc" | sed 's/^ *//')"
   if [ "$i" -eq 1 ]; then
-    printf '%s\n' "$sc" | has 'flag=--standalone' || err "peer 1 can never bootstrap the cluster"
+    printf '%s\n' "$scl" | has -xF "if [ \"\$\$empty\" -eq $((want - 1)) ]; then flag=--standalone; break; fi" \
+      || err "peer 1 does not format --standalone exactly when all $((want - 1)) other peers report empty"
+    [ "$(printf '%s\n' "$sc" | grep -c 'standalone' || true)" -eq 1 ] || err "peer 1 has more than one way to format --standalone"
   elif printf '%s\n' "$sc" | has 'standalone'; then
     err "$s: can format --standalone; only peer 1 may, or a second cluster forms under the same id"
   fi
-  printf '%s\n' "$sc" | has 'flag=--no-initial-controllers' || err "$s: cannot join an existing cluster"
+  printf '%s\n' "$scl" | has -xF 'empty) empty=$$((empty+1)) ;;' || err "$s: counts something other than an 'empty' answer as an empty peer"
+  printf '%s\n' "$scl" | has -xF 'formatted) if nc -z -w 3 "$$p" 9093 2>/dev/null; then serving=$$((serving+1)); fi ;;' \
+    || err "$s: counts a formatted peer as serving without its controller port answering"
+  printf '%s\n' "$scl" | has -xF 'if [ "$$serving" -gt 0 ]; then flag=--no-initial-controllers; break; fi' || err "$s: cannot join an existing cluster"
+  printf '%s\n' "$scl" | has -xF 'rm -f /tmp/kafka-waiting' || err "$s: never clears the waiting marker, so a broken peer would stay healthy"
   # Secrets stay out of the environment.
   env="$(q ".services.\"$s\".environment | keys | join(\" \")")"
   [ "$env" = KAFKA_HEAP_OPTS ] || err "$s: environment is '$env'; only KAFKA_HEAP_OPTS belongs there"
@@ -235,6 +248,14 @@ if [ "$case_name" = default ]; then
   refused 'must not name "kafka-internal"' --set 'auth.users[0].name=kafka-internal' --set 'auth.users[0].secretName=s1'
   refused 'metrics.username "app"' --set metrics.enabled=true --set metrics.username=app
   refused 'does not start with one' --set metrics.enabled=true --set image.tag=latest-ish
+  refused 'needs 4.2 or later' --set image.tag=4.1.2
+  refused 'exposure.network must differ' --set exposure.mode=traefik --set 'traefik.hosts={a.example,b.example,c.example}' --set exposure.network=kafka-net
+  # The update monitor is the gap between two peers' restarts, healthcheck or not.
+  if render ci "$chart" --set healthcheck.enabled=false; then
+    [ "$(yq -r '.services."kafka-2".deploy.update_config.monitor // ""' "$tmp")" = 120s ] || err "with the healthcheck off, the update monitor is gone"
+  else
+    err "healthcheck.enabled=false was refused: $(tr '\n' ' ' <"$tmp.err")"
+  fi
   # A release name with `_` and `.`: the aliases a host name can carry.
   if render my_kafka.x "$chart"; then
     [ "$(yq -r '.services."kafka-1".networks."kafka-net".aliases[0]' "$tmp")" = my-kafka-x-kafka-1 ] \

@@ -37,6 +37,9 @@
 {{- if and .Values.metrics.enabled (eq .Values.metrics.network .Values.network.name) -}}
 {{- fail "metrics.network must differ from network.name: the exporter joins both, and the point of a separate metrics overlay is that Prometheus never shares one with the brokers' ports." -}}
 {{- end -}}
+{{- if and (eq $mode "traefik") (eq .Values.exposure.network .Values.network.name) -}}
+{{- fail "exposure.network must differ from network.name: the brokers join both in traefik mode, as two networks, and the edge's overlay is the traefik chart's, not this cluster's." -}}
+{{- end -}}
 {{- $userNames := list -}}
 {{- range .Values.auth.users -}}
 {{- $userNames = append $userNames .name -}}
@@ -110,6 +113,9 @@
 {{- $external := ne $mode "none" -}}
 {{- $exporterUser := and .Values.metrics.enabled $auth -}}
 {{- $kafkaVersion := regexFind "^[0-9]+[.][0-9]+[.][0-9]+" $tag -}}
+{{- if and $kafkaVersion (not (semverCompare ">=4.2.0" $kafkaVersion)) -}}
+{{- fail (printf "image.tag %q is Kafka %s, but this chart needs 4.2 or later: a peer on an empty volume joins the quorum through controller.quorum.auto.join.enable, which older versions ignore, so a wiped or added peer would never become a voter." $tag $kafkaVersion) -}}
+{{- end -}}
 {{- if and .Values.metrics.enabled (not $kafkaVersion) -}}
 {{- fail (printf "metrics.enabled needs the Kafka version, which is read from image.tag, but %q does not start with one (x.y.z)." $tag) -}}
 {{- end -}}
@@ -309,12 +315,12 @@ services:
       # working, and the alias is this peer's address.
       endpoint_mode: vip
       update_config:
-{{- if $.Values.healthcheck.enabled }}
         {{- /* Swarm watches a task for `monitor` after CREATING it and counts only a
                failure inside that window against the rollout; swarmcli's sequential
-               rollout waits it out before the next peer. */}}
+               rollout waits it out before the next peer. Rendered with the healthcheck
+               off too: it is then the only gap between two peers' restarts, which would
+               otherwise be Swarm's default of 5s. */}}
         monitor: {{ $.Values.healthcheck.monitor }}
-{{- end }}
         # The old task must be gone before the new one starts: both would otherwise
         # mount the same data dir.
         order: stop-first
@@ -407,6 +413,8 @@ services:
         K=/opt/kafka/bin
         B={{ join "," $clientSeeds }}
         A=/tmp/admin.properties
+        # Swarm keeps an exited task's container, and with it these files.
+        trap 'rm -f "$$A" /tmp/scram.properties' EXIT
         readpw() {
           v="$$(cat "/run/secrets/$$1")"
           case "$$v" in *$$'\n'*) echo "the secret $$1 holds a newline inside the password" >&2; exit 1;; esac
@@ -475,7 +483,8 @@ services:
     command:
       - >-
 {{- if $exporterUser }}
-        export SASL_USER_PASSWORD="$$(cat /run/secrets/{{ .Values.metrics.secretName }})";
+        SASL_USER_PASSWORD="$$(cat /run/secrets/{{ .Values.metrics.secretName }})" || exit 1;
+        export SASL_USER_PASSWORD;
 {{- end }}
         exec /bin/kafka_exporter
 {{- range $clientSeeds }}

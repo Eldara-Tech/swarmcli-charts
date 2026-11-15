@@ -139,14 +139,25 @@ whatever no ACL allows.
   the overlay, or resets its password, and grants it every operation on every topic,
   group and transactional id, and on the cluster. Adding a user changes only the
   one-shot, so no peer restarts.
-- **Rotating a password**: create a secret under a new name and point `secretName` at
-  it; the changed spec runs the one-shot again.
+- **Rotating a user's password**: create a secret under a new name and point its
+  `secretName` at it; the changed spec runs the one-shot again.
+- **Rotating the internal password, or turning `auth.enabled` on or off**, needs every
+  peer stopped first. Each peer accepts only its own idea of the internal credential, so
+  a rolling upgrade would leave the restarted peers and the old ones unable to talk, and
+  partitions offline until the last one rolled. Scale every peer to 0
+  (`docker service scale <release>_kafka-1=0 <release>_kafka-2=0 …`), then run the
+  upgrade: with no peer up, swarmcli starts them all together.
 - **Removing a user** from the list does not delete it from Kafka. Remove it by hand:
   `kafka-configs.sh --alter --entity-type users --entity-name <u> --delete-config SCRAM-SHA-512`
   and `kafka-acls.sh --remove --allow-principal User:<u> …`, as any client user.
 - **Narrower permissions**: create the user yourself with `kafka-configs.sh` and grant it
   only the ACLs it needs with `kafka-acls.sh`; leave it out of `auth.users`, whose users
   always get everything.
+- **An ephemeral cluster restarted as a whole** (`persistence.enabled: false`) comes back
+  empty, users and ACLs included, and the one-shot does not run again by itself: run
+  `docker service update --force <release>_kafka-users`.
+- Use ASCII passwords: `kafka-configs.sh` reads the file holding a user's password as
+  ISO-8859-1, so other characters reach Kafka as a different password.
 
 `auth.enabled: false` makes every listener PLAINTEXT with no authorizer: anything on the
 overlay may read and write every topic.
@@ -218,7 +229,10 @@ git*, shows where to list the two files.
     as this one and silences the rest), `KafkaPartitionsOffline` (a partition no leader
     serves: its replicas are reported without an offset) and `KafkaPartitionsUnderMinISR`
     (fewer in-sync replicas than `min(2, replication factor)`, so `acks=all` writes are
-    refused; the 2 is the chart's `min.insync.replicas`, edit it if you change that);
+    refused; the 2 is the chart's `min.insync.replicas`, edit it if you change that) and
+    `KafkaQuorumAtRisk` (brokers down to a bare majority of the most seen in the last
+    day, 2 of 3 or 3 of 5: every broker is a controller, so the next loss takes the
+    metadata quorum);
   - warning: `KafkaPartitionsUnderReplicated`, `KafkaBrokersMissing` (fewer brokers than
     the most seen in the last day, as the rules cannot know `cluster.peers`; it fires for a
     day after a deliberate shrink) and `KafkaConsumerGroupLagGrowing` (a group's lag rising
@@ -290,10 +304,19 @@ every target, and the alerts carry it. Another Prometheus needs the same relabel
 ## Security note
 
 - Passwords come only from external Swarm secrets and are read inside the containers at
-  start, so they appear in neither the compose file, the environment nor `docker
-  inspect`. A peer writes the internal one into its own `server.properties` inside the
-  container; the users one-shot writes them to files only it reads, never to a command
-  line.
+  start, so they appear in neither the compose file, the service's environment nor
+  `docker inspect`. A peer writes the internal one into its own `server.properties`
+  inside the container; the users one-shot writes them to files only it reads, never to
+  a command line, and removes them when it exits; the exporter holds its own in its
+  process environment, which only its uid and root can read.
+- **Every stack attached to `kafka-net` is trusted with the internal password.** The
+  peers find each other by their aliases on that overlay and send the internal
+  credential over SASL/PLAIN, unencrypted, to whatever answers. A service attached to
+  the same overlay can declare a peer's alias, so it can receive that password, which is
+  the super user's, and it can answer the status port a peer on an empty volume asks.
+  Attach only stacks you would trust with the cluster itself, or keep the cluster on a
+  chart-managed overlay (`network.external: false`) and give clients outside the stack
+  `exposure.mode` instead.
 - Traffic on `kafka-net` is not encrypted. On an overlay spanning untrusted networks,
   use a chart-managed one with `network.encrypted: true`, or create the external one
   with `--opt encrypted`.
@@ -342,8 +365,11 @@ short, so keep the other peers up.
 
 With a majority of the peers' volumes gone, no quorum can form and the remaining peer
 cannot decide anything on its own: the cluster does not start. There is no forced
-bootstrap; restore the volumes from a backup, or rebuild the cluster from empty volumes
-(uninstall with `--purge-volumes`, then install).
+bootstrap; restore the volumes from a backup, or rebuild the cluster from empty volumes:
+uninstall, remove `<release>_kafka-data-<N>` with `docker volume rm` on **every** node
+that holds one, then install. `--purge-volumes` alone is not enough on a multi-node
+swarm, where it removes only the volumes of the node swarmcli is connected to, and a
+surviving volume brings the old cluster's voter set back.
 
 ### Upgrading
 
@@ -369,11 +395,13 @@ Raising `cluster.peers` from 3 to 5 adds two peers on empty volumes, which join 
 quorum by themselves; label their nodes first. They hold no partitions until you move
 some to them with `kafka-reassign-partitions.sh`.
 
-Lowering it does **not** take peers out of the cluster. Move their partitions away
-first, then remove each from the quorum
-(`kafka-metadata-quorum.sh remove-controller --controller-id <N> --controller-directory-id <id>`),
-and only then lower the count and remove the services by hand (swarmcli deploys without
-`--prune`).
+Lowering it does **not** take peers out of the cluster. For each peer to remove, highest
+number first: move its partitions away, stop it (`docker service rm
+<release>_kafka-<N>`; swarmcli deploys without `--prune`, so lowering the count would
+leave it running), and only then remove it from the quorum
+(`kafka-metadata-quorum.sh remove-controller --controller-id <N> --controller-directory-id <id>`).
+In that order, because auto-join is on: a peer still running adds itself back the
+moment it is removed. Then lower `cluster.peers`.
 
 ### Broker settings
 

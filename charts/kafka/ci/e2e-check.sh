@@ -19,8 +19,9 @@
 #   traefik    a client writes and reads over TLS through the traefik edge, routed to each
 #              broker by SNI;
 #   lifecycle  a peer whose volume is wiped rejoins as a NEW voter and gets its replicas
-#              back; the cluster survives a full stop; an upgrade rolls every peer; raising
-#              cluster.peers to 5 adds two voters.
+#              back; the cluster survives a full stop; peer 1, wiped while every other
+#              peer is down, waits instead of creating a cluster and then rejoins; an
+#              upgrade rolls every peer; raising cluster.peers to 5 adds two voters.
 #
 # Portable to /bin/bash 3.2 (CONTRIBUTING.md § Portability).
 set -euo pipefail
@@ -199,6 +200,34 @@ lifecycle)
   n="$(kx 1 "$T/kafka-console-consumer.sh --bootstrap-server $boot $C --topic e2e-check --from-beginning --max-messages 30 --timeout-ms 60000 2>/dev/null | wc -l" | tr -d ' ')"
   [ "$n" -eq 30 ] || fail "read $n of 30 records after the full stop"
 
+  # 2b. Peer 1 is the only peer that may create a cluster. Wipe its volume while every
+  #     other peer is down: with nobody answering it must WAIT, since a peer that does
+  #     not answer may hold the data, rather than format --standalone and form a second
+  #     cluster under the same id. Once the others are back it must join theirs as a new
+  #     voter.
+  old1="$(voter_dir 1)"
+  for i in $(seq 1 "$peers"); do docker service scale -d "${rel}_kafka-$i=0" >/dev/null; done
+  waitfor 180 "[ -z \"\$(docker ps -q --filter label=com.docker.stack.namespace=$rel --filter name=${rel}_kafka-)\" ]" || fail "the peers did not stop"
+  waitfor 60 "docker volume rm '${rel}_kafka-data-1'" || fail "could not remove ${rel}_kafka-data-1"
+  docker service scale -d "${rel}_kafka-1=1" >/dev/null
+  waitfor 120 "[ -n \"\$(ctr 1)\" ] && docker logs \"\$(ctr 1)\" 2>&1 | has 'waiting: empty volume'" || fail "the wiped peer 1 did not wait for the others"
+  sleep 30
+  c1="$(ctr 1)"
+  if docker exec "$c1" test -f /var/lib/kafka/data/meta.properties || docker logs "$c1" 2>&1 | has '^formatting '; then
+    docker logs --tail 20 "$c1" 2>&1 | sed 's/^/    /'
+    fail "the wiped peer 1 formatted its volume with every other peer down"
+  fi
+  for i in $(seq 2 "$peers"); do docker service scale -d "${rel}_kafka-$i=1" >/dev/null; done
+  for i in $(seq 1 "$peers"); do
+    waitfor 300 "[ -n \"\$(ctr $i)\" ]" || fail "peer $i did not restart"
+  done
+  waitfor 300 "docker logs \"\$(ctr 1)\" 2>&1 | has '^formatting /var/lib/kafka/data --no-initial-controllers'" || fail "the wiped peer 1 did not join with --no-initial-controllers"
+  for i in $(seq 1 "$peers"); do seed "$i"; done
+  waitfor 300 "quorum_ok && [ -n \"\$(voter_dir 1)\" ] && [ \"\$(voter_dir 1)\" != '$old1' ]" \
+    || { quorum | sed 's/^/    /' || true; fail "the wiped peer 1 did not rejoin as a new voter (old directory id $old1)"; }
+  n="$(kx 1 "$T/kafka-console-consumer.sh --bootstrap-server $boot $C --topic e2e-check --from-beginning --max-messages 30 --timeout-ms 60000 2>/dev/null | wc -l" | tr -d ' ')"
+  [ "$n" -eq 30 ] || fail "read $n of 30 records after peer 1 was rebuilt"
+
   # 3. An upgrade that changes every peer's spec rolls them one at a time and ends with
   #    the same cluster.
   sc="${SWARMCLI:-$repo/.swarmcli-bin/swarmcli}"
@@ -233,7 +262,7 @@ lifecycle)
   waitfor 300 quorum_ok || { quorum | sed 's/^/    /' || true; fail "peers 4 and 5 did not join the quorum"; }
   n="$(kx 5 "$T/kafka-console-consumer.sh --bootstrap-server $(alias_of 5):9092 $C --topic e2e-check --from-beginning --max-messages 30 --timeout-ms 60000 2>/dev/null | wc -l" | tr -d ' ')"
   [ "$n" -eq 30 ] || fail "read $n of 30 records through the new peer 5"
-  summary="$summary, wiped peer rejoined as a new voter, full stop and rolling upgrade survived, grew to 5 voters"
+  summary="$summary, wiped peer rejoined as a new voter, full stop survived, wiped peer 1 waited for the others and rejoined, rolling upgrade survived, grew to 5 voters"
   ;;
 esac
 

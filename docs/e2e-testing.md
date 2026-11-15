@@ -271,8 +271,9 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
   nothing else, and runs `promtool test rules`; `published` and `traefik` write and read
   through the routing-mesh ports and over TLS through the edge. `lifecycle` wipes one
   peer's volume and asserts it rejoins as a NEW voter with its replicas back, then survives
-  a full stop and a rolling upgrade, and grows to five peers whose new voters join by
-  themselves.
+  a full stop; wipes peer 1, the only peer that may create a cluster, while every other
+  peer is down and asserts it waits rather than format, then rejoins once they are back;
+  survives a rolling upgrade, and grows to five peers whose new voters join by themselves.
 - **postgres-patroni** — the four dummy secrets (superuser, replication, REST API, exporter) + a node
   label for EVERY peer (`postgres-patroni-1` … `-5`) on the single CI node, so the pinned
   fixtures schedule every peer and etcd member there, and for `bind-mount` the host dirs,

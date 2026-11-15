@@ -183,6 +183,20 @@ tests:
       - eval_time: 5m
         alertname: KafkaBrokersMissing
         exp_alerts: []
+      - eval_time: 5m
+        alertname: KafkaQuorumAtRisk
+        exp_alerts: []
+      # kfk is down to 2 of 3, a bare majority; ok's single 0 never lasted the 5 minutes.
+      - eval_time: 8m
+        alertname: KafkaQuorumAtRisk
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: kfk_kafka-exporter
+              stack: kfk
+            exp_annotations:
+              summary: 'Kafka cluster kfk is one broker away from losing its controller quorum'
+              description: 'Cluster kfk has had only 2 broker(s) for 5 minutes, a bare majority of the most it had in the last day. Every broker of the kafka chart is also a controller, so losing one more loses the metadata quorum: topics, leaders and new writes stop. Bring the missing peers back.'
 
       # Cluster ok's single 0 never lasted the 5 minutes.
       - eval_time: 8m
@@ -260,3 +274,25 @@ tests:
             exp_annotations:
               summary: 'Consumer group g-stalled in kfk is falling behind on orders'
               description: 'The lag of g-stalled on orders has kept growing for 25 minutes or more and is at least 9500 messages: its consumers are stopped or slower than the producers. kafka_consumergroup_members says whether any is connected; a group no longer used can be removed with `kafka-consumer-groups.sh --delete --group g-stalled`.'
+
+  # A five-peer cluster loses one broker at 2m and a second at 10m. Four of five still
+  # leave room for another loss, so only the second makes the quorum a bare majority (3).
+  - interval: 30s
+    input_series:
+      - series: 'kafka_brokers{job="big_kafka-exporter",instance="10.0.8.5:9308",stack="big"}'
+        values: '5 5 5 5 4x16 3x20'
+
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: KafkaQuorumAtRisk
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: KafkaQuorumAtRisk
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: big_kafka-exporter
+              stack: big
+            exp_annotations:
+              summary: 'Kafka cluster big is one broker away from losing its controller quorum'
+              description: 'Cluster big has had only 3 broker(s) for 5 minutes, a bare majority of the most it had in the last day. Every broker of the kafka chart is also a controller, so losing one more loses the metadata quorum: topics, leaders and new writes stop. Bring the missing peers back.'
