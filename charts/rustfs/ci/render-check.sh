@@ -234,6 +234,24 @@ if [ "$case" = "oidc" ]; then
   grep -F 'done; f=/run/secrets/rustfs-oidc-client-secret; RUSTFS_IDENTITY_OPENID_CLIENT_SECRET="$$(cat "$$f" 2>/dev/null || true)"; if [ -z "$$RUSTFS_IDENTITY_OPENID_CLIENT_SECRET" ]; then echo' <<<"$script" >/dev/null \
     && grep -F 'export RUSTFS_IDENTITY_OPENID_CLIENT_SECRET;' <<<"$script" >/dev/null \
     || bad "case $case: the wrapper does not export the client secret from /run/secrets/rustfs-oidc-client-secret, refusing an empty one"
+  # console.oidc.selfHeal, on by default. RustFS never retries a 404 at start, so a loop asks
+  # the login endpoint every 30 seconds, stops for good at any answer but "provider not
+  # discovered" once the server answers, and restarts the server only after RustFS's own
+  # validation of the provider has passed for 3 minutes. Without that gate a provider RustFS
+  # refuses would restart the store forever.
+  grep -F "api=http://127.0.0.1:$port/rustfs/admin/v3/oidc; since=0; while sleep 30; do" <<<"$script" >/dev/null \
+    || bad "case $case: the selfHeal loop does not ask the server's own login endpoint on the S3 port every 30 seconds"
+  grep -F 'in *"provider not discovered"*) ;; *" 000"|*" 5"??) since=0; continue ;; *) exit 0 ;; esac;' <<<"$script" >/dev/null \
+    || bad "case $case: the selfHeal loop does not wait out a starting server and stop at any answer but 'provider not discovered'"
+  grep -F '"config_url":"%s","client_id":"%s"' <<<"$script" >/dev/null \
+    && grep -F "| curl -K - -s -o /dev/null -w '%{http_code}' --max-time 150 --aws-sigv4" <<<"$script" >/dev/null \
+    && grep -F '"$$RUSTFS_IDENTITY_OPENID_CONFIG_URL" | sed' <<<"$script" >/dev/null \
+    && grep -F '"$$RUSTFS_IDENTITY_OPENID_CLIENT_ID" | sed' <<<"$script" >/dev/null \
+    && grep -F -- '-X POST --data "$$body" "$$api/validate" || true)" != 200 ]; then since=0; continue; fi;' <<<"$script" >/dev/null \
+    || bad "case $case: the selfHeal loop does not gate the restart on a signed validation of the provider from the server's own environment"
+  grep -E '"provider not discovered".*/validate.*if \[ "\$\$\(\(now - since\)\)" -lt 180 \]; then continue; fi; echo "console\.oidc\.selfHeal: [^"]*" >&2; kill -TERM 1; exit 0; done \) & exec /entrypoint\.sh rustfs$' <<<"$script" >/dev/null \
+    || bad "case $case: the selfHeal loop does not send SIGTERM to PID 1 only after the 3-minute hold, in the background of the server"
+  if grep -F '/health/ready' <<<"$script" >/dev/null; then bad "case $case: the standalone selfHeal loop waits on peers"; fi
 else
   for v in RUSTFS_IDENTITY_OPENID_CONFIG_URL RUSTFS_IDENTITY_OPENID_CLIENT_ID RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC \
            RUSTFS_IDENTITY_OPENID_DISPLAY_NAME RUSTFS_BROWSER_REDIRECT_URL RUSTFS_OUTBOUND_ALLOW_ORIGINS \
@@ -243,6 +261,7 @@ else
   done
   [ "$(q "$svc.secrets | length")" = "2" ] || bad "case $case: a third secret is mounted although oidc is off"
   if grep -F 'CLIENT_SECRET' <<<"$script" >/dev/null; then bad "case $case: the wrapper reads an OIDC client secret although oidc is off"; fi
+  if grep -F 'kill -TERM 1' <<<"$script" >/dev/null; then bad "case $case: the selfHeal loop is rendered although oidc is off"; fi
 fi
 
 # ── buckets ───────────────────────────────────────────────────────────────────────────
@@ -447,6 +466,10 @@ if [ "$case" = "default" ]; then
   render "${kco[@]}" --set console.oidc.browserUrl=https://c.example.com/ \
     && [ "$(yq -r "$svc.environment.RUSTFS_BROWSER_REDIRECT_URL" "$tmp")" = "https://c.example.com/" ] \
     || bad "console.oidc.browserUrl with a trailing / was refused or not passed on: $(tr '\n' ' ' <"$tmp.err")"
+  # selfHeal: false leaves the restart to the operator: no loop at all.
+  render "${kco[@]}" --set console.oidc.selfHeal=false \
+    && ! grep -F 'kill -TERM 1' <<<"$(yq -r "$svc.command[0]" "$tmp")" >/dev/null \
+    || bad "console.oidc.selfHeal=false was refused, or the restart loop is still rendered: $(tr '\n' ' ' <"$tmp.err")"
   refused 'console.oidc.browserUrl must be scheme://host[:port] only' "${kco[@]}" \
     --set 'console.oidc.browserUrl=https://c.example.com\,evil.example'
   refused 'console.oidc.clientSecretSecret: "x;id" is not a Docker secret name' "${kco[@]}" \

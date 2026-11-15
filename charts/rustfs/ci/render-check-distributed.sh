@@ -298,6 +298,25 @@ for n in $PEERS; do
     grep -F 'done; f=/run/secrets/rustfs-oidc-client-secret; RUSTFS_IDENTITY_OPENID_CLIENT_SECRET="$$(cat "$$f" 2>/dev/null || true)"; if [ -z "$$RUSTFS_IDENTITY_OPENID_CLIENT_SECRET" ]; then echo' <<<"$script" >/dev/null \
       && grep -F 'export RUSTFS_IDENTITY_OPENID_CLIENT_SECRET;' <<<"$script" >/dev/null \
       || bad "case $case: peer $n's wrapper does not export the client secret from /run/secrets/rustfs-oidc-client-secret, refusing an empty one"
+    # console.oidc.selfHeal, on by default: render-check.sh has the loop's gates; here, that
+    # every peer has them, and restarts only while every other peer is ready and no
+    # lower-numbered peer is itself without the provider, so two peers are never down at once.
+    grep -F 'api=http://127.0.0.1:9000/rustfs/admin/v3/oidc; since=0; while sleep 30; do' <<<"$script" >/dev/null \
+      && grep -F 'in *"provider not discovered"*) ;; *" 000"|*" 5"??) since=0; continue ;; *) exit 0 ;; esac;' <<<"$script" >/dev/null \
+      && grep -F -- '-X POST --data "$$body" "$$api/validate" || true)" != 200 ]; then since=0; continue; fi;' <<<"$script" >/dev/null \
+      || bad "case $case: peer $n has no selfHeal loop gated on its own login endpoint and a validation of the provider"
+    others="$(for m in $PEERS; do [ "$m" = "$n" ] || printf '%s ' "$m"; done)"
+    want="ok=1; for m in ${others% }; do if [ \"\$\$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \"http://ci-rustfs-\$\$m:9000/health/ready\" || true)\" != 200 ]; then ok=\"\"; fi; done;"
+    grep -F "$want" <<<"$script" >/dev/null || bad "case $case: peer $n's selfHeal loop does not wait for every other peer (${others% }) to be ready"
+    lower="$(for m in $PEERS; do [ "$m" -lt "$n" ] && printf '%s ' "$m"; done || true)"
+    want="for m in ${lower% }; do case \"\$\$(curl -s --max-time 10 \"http://ci-rustfs-\$\$m:9000/rustfs/admin/v3/oidc/authorize/default\" || true)\" in *\"provider not discovered\"*) ok=\"\" ;; esac; done;"
+    if [ -n "$lower" ]; then
+      grep -F "$want" <<<"$script" >/dev/null || bad "case $case: peer $n's selfHeal loop does not defer to the lower-numbered peers ${lower% }"
+    elif grep -F 'ci-rustfs-$$m:9000/rustfs/admin/v3/oidc/authorize/default' <<<"$script" >/dev/null; then
+      bad "case $case: peer 1's selfHeal loop defers to a lower-numbered peer"
+    fi
+    grep -E -- '-lt 180 \]; then continue; fi; ok=1; .*; if \[ -z "\$\$ok" \]; then continue; fi; echo "console\.oidc\.selfHeal: [^"]*" >&2; kill -TERM 1; exit 0; done \) & exec /entrypoint\.sh rustfs$' <<<"$script" >/dev/null \
+      || bad "case $case: peer $n's selfHeal loop does not send SIGTERM to PID 1 only after the hold and the checks of the other peers"
   else
     for v in RUSTFS_IDENTITY_OPENID_CONFIG_URL RUSTFS_IDENTITY_OPENID_CLIENT_ID RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC \
              RUSTFS_IDENTITY_OPENID_DISPLAY_NAME RUSTFS_BROWSER_REDIRECT_URL RUSTFS_OUTBOUND_ALLOW_ORIGINS \
@@ -307,6 +326,7 @@ for n in $PEERS; do
     done
     [ "$(q "$(p "$n").secrets | length")" = "2" ] || bad "case $case: peer $n mounts a third secret although oidc is off"
     if grep -F 'CLIENT_SECRET' <<<"$script" >/dev/null; then bad "case $case: peer $n's wrapper reads an OIDC client secret although oidc is off"; fi
+    if grep -F 'kill -TERM 1' <<<"$script" >/dev/null; then bad "case $case: peer $n renders the selfHeal loop although oidc is off"; fi
   fi
 done
 [ "$case" = "oidc" ] && { [ "$(q '.secrets."rustfs-oidc-client-secret".external')" = "true" ] || bad "case $case: the OIDC client secret is not declared external"; }
@@ -384,6 +404,18 @@ if [ "$case" = "default" ]; then
 
   kc=https://kc.example.com/realms/r/.well-known/openid-configuration
   kco=(--set console.enabled=true --set console.oidc.enabled=true --set "console.oidc.configUrl=$kc" --set console.oidc.browserUrl=https://c.example.com)
+
+  # selfHeal's peer lists follow cluster.peers: with six, peer 6 waits for 1-5 and defers to
+  # them, peer 1 waits for 2-6 and defers to none. selfHeal: false renders no loop anywhere.
+  render "${kco[@]}" --set cluster.peers=6 \
+    && grep -F 'ok=1; for m in 1 2 3 4 5; do' <<<"$(y '.services."rustfs-6".command[0]')" >/dev/null \
+    && grep -F 'done; for m in 1 2 3 4 5; do case' <<<"$(y '.services."rustfs-6".command[0]')" >/dev/null \
+    && grep -F 'ok=1; for m in 2 3 4 5 6; do' <<<"$(y '.services."rustfs-1".command[0]')" >/dev/null \
+    && ! grep -F 'done; for m in' <<<"$(y '.services."rustfs-1".command[0]')" >/dev/null \
+    || bad "with cluster.peers=6 the selfHeal loops do not wait for, and defer to, the right peers: $(tr '\n' ' ' <"$tmp.err")"
+  render "${kco[@]}" --set console.oidc.selfHeal=false \
+    && ! grep -F 'kill -TERM 1' "$tmp" >/dev/null \
+    || bad "console.oidc.selfHeal=false was refused, or a peer still renders the restart loop: $(tr '\n' ' ' <"$tmp.err")"
 
   # A release name with '_' and '.' gets aliases, and a volume list, without them.
   if "$sc" charts template my_s3.x "$chart" --set mode=distributed >"$tmp" 2>"$tmp.err"; then

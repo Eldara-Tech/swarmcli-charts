@@ -62,10 +62,11 @@ if [ "$case" = "distributed-bind-mount" ]; then
     -c 'for n in 1 2 3 4; do d=/host-tmp/rustfs-distributed-e2e/$n; mkdir -p "$d" && chown 10001:10001 "$d" && chmod 0750 "$d"; done' >/dev/null
 fi
 
-# oidc: busybox httpd serving a discovery document and an empty key set on rustfs-net,
-# Running and answering BEFORE install, because RustFS (every peer) discovers its providers
-# once, at start, and drops one it cannot reach. Nobody logs in, so no key is needed. The two
-# content types are what RustFS checks for.
+# oidc: busybox httpd on rustfs-net serving an empty key set, and a 404 for the discovery
+# document, which it holds in $DISCOVERY: RustFS (every peer) discovers its provider once,
+# at start, and never retries a 404, so the release starts without single sign-on, and
+# ci/e2e-check*.sh writes the document out to prove console.oidc.selfHeal restarts it.
+# Nobody logs in, so no key is needed. The two content types are what RustFS checks for.
 if [ "$c" = "oidc" ]; then
   docker network create --driver overlay --attachable traefik-public >/dev/null 2>&1 || true
   docker secret inspect rustfs-oidc-client-secret >/dev/null 2>&1 \
@@ -75,18 +76,20 @@ if [ "$c" = "oidc" ]; then
   docker service rm rustfs-e2e-idp >/dev/null 2>&1 || true
   docker service create --detach --name rustfs-e2e-idp --network rustfs-net --env DISCOVERY="$discovery" \
     busybox:1.37 sh -c 'd=/www/realms/e2e && mkdir -p "$d/.well-known" "$d/protocol/openid-connect" &&
-      printf "%s" "$DISCOVERY" > "$d/.well-known/openid-configuration" &&
       printf "{\"keys\":[]}" > "$d/protocol/openid-connect/certs.json" &&
       printf ".well-known/openid-configuration:application/json\n.json:application/json\n" > /etc/httpd.conf &&
       exec httpd -f -v -p 8080 -h /www -c /etc/httpd.conf' >/dev/null
   got=""
   for _ in $(seq 1 40); do
     got="$(docker run --rm --network rustfs-net curlimages/curl:latest -s -o /dev/null -w '%{http_code} %{content_type}' \
+      --max-time 5 "$iss/protocol/openid-connect/certs.json" 2>/dev/null || true)"
+    got="$got/$(docker run --rm --network rustfs-net curlimages/curl:latest -s -o /dev/null -w '%{http_code}' \
       --max-time 5 "$iss/.well-known/openid-configuration" 2>/dev/null || true)"
-    [ "$got" = "200 application/json" ] && break
+    [ "$got" = "200 application/json/404" ] && break
     sleep 3
   done
-  [ "$got" = "200 application/json" ] || { echo "  FAIL: the stub OpenID provider never served its discovery document (last: '$got')"; exit 1; }
+  [ "$got" = "200 application/json/404" ] \
+    || { echo "  FAIL: the stub OpenID provider never served its key set with a 404 for its discovery document (last: '$got')"; exit 1; }
 fi
 
 if [ "$c" = "edge" ] || [ "$c" = "console-edge" ]; then
