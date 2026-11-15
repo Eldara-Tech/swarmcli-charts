@@ -218,8 +218,11 @@ include:
   # console and proves its UI answers; `edge` does the signed round trip path-style through the
   # traefik chart; `console-edge` routes only the console through it and proves the S3 host is
   # not routed; `oidc` proves single sign-on against a stub provider (discovery, the login
-  # redirect and its callback, the client secret reaching the process). traefik (labels only)
-  # and bind-mount are covered by charts.yml and run in a full local `make e2e`. `metrics`
+  # redirect and its callback, the client secret reaching the process), started with a 404
+  # that RustFS never retries, so console.oidc.selfHeal must restart the store once the
+  # provider answers, and not before (about 7 minutes; distributed: peer by peer, about 10).
+  # traefik (labels only) and bind-mount are covered by charts.yml and run in a full local
+  # `make e2e`. `metrics`
   # scrapes the OpenTelemetry Collector RustFS pushes to from the monitoring overlay, as
   # Prometheus would, for every metric the alert rules and dashboard read, and runs promtool.
   - { chart: rustfs,        cases: "default buckets ephemeral published edge console-edge oidc metrics",             timeout: 6m  }
