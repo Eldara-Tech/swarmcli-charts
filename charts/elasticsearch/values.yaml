@@ -1,0 +1,257 @@
+# elasticsearch chart default values.
+#
+# Elasticsearch, and Kibana in front of it, on Docker Swarm. Security is always on: every
+# request to Elasticsearch authenticates, and the passwords come from EXTERNAL Swarm secrets the
+# operator pre-creates (never created by the chart, never in values).
+#
+# One node by default (discovery.type single-node). cluster.nodes: 3 or 5 runs a real cluster,
+# one Swarm service per node (elasticsearch-1 … elasticsearch-N), each with its own volume and its
+# own node pin, talking to each other over TLS (tls.enabled is then required). Both shapes use
+# the same service names, volumes and node labels for node 1.
+#
+# Kibana (kibana.enabled, on by default) logs in as the built-in kibana_system user. A one-shot
+# service, kibana-setup, sets that user's password from a secret through the Elasticsearch API,
+# and runs again whenever its spec changes — a rotated secret name, say.
+
+image:
+  repository: docker.elastic.co/elasticsearch/elasticsearch
+  tag: ""  # defaults to appVersion from Chart.yaml; Kibana runs the same version (kibana.image)
+
+cluster:
+  # cluster.name. "" => the release name, so two releases on one shared overlay never mistake
+  # each other's nodes for their own.
+  name: ""
+  # How many Elasticsearch nodes. 1 is a single-node cluster (discovery.type single-node, no
+  # transport TLS needed). 3 or 5 is a cluster: every node is master-eligible and holds data, so
+  # it keeps a master while a majority is up. Put each node on a DIFFERENT Swarm node (see
+  # persistence.nodeLabelPrefix): N nodes on one host share its fate and provide no availability.
+  #
+  # Fixed at install. Raising 1 to 3 on a running release is NOT supported: nodes 2 and 3 start
+  # empty, are a majority of the new master list, and can form a cluster of their own beside
+  # node 1. Grow by installing a new release and restoring a snapshot into it. Going from 3 to 5
+  # is safe (two empty nodes are not a majority of five and join the existing cluster), and
+  # going down is never safe without first moving the data off the nodes you remove.
+  nodes: 1
+
+# The built-in superuser `elastic`. Its password is read from this EXTERNAL Swarm secret on every
+# start (the image's ELASTIC_PASSWORD_FILE), so the plaintext never lands in the compose file or
+# `docker inspect`. At least 6 characters. Pre-create it, e.g.:
+#   openssl rand -base64 24 | docker secret create elasticsearch_elastic_password -
+# Rotating it is a new secret under a new name: the next deploy restarts every node with it. That
+# only works while nobody has changed the password through the API (the password API, Kibana's
+# user management); once someone has, Elasticsearch keeps that one and ignores the secret.
+auth:
+  elasticPasswordSecretName: elasticsearch_elastic_password
+
+# TLS from operator-supplied PEM files (EXTERNAL Swarm secrets; the chart generates nothing).
+# Required when cluster.nodes > 1: Elasticsearch refuses to form a multi-node cluster with
+# security on and the transport layer in the clear. One certificate for every node is enough;
+# the README shows generating a CA and one with elasticsearch-certutil.
+#   enabled  turns on TLS on the transport layer (node-to-node, port 9300).
+#   http     also serves the REST API (9200) over HTTPS — for Kibana, the setup job and every
+#            client on the overlay. They then need the CA (Kibana is given it automatically).
+#   verificationMode  how a node and Kibana check the other side's certificate:
+#            certificate  the chain must lead to the CA; the host name is not checked. Default,
+#                         so one certificate serves every node whatever their names.
+#            full         the chain AND the host name. Kibana dials <release>_elasticsearch-<N>,
+#                         so the certificate must carry those names as DNS SANs.
+#            none         no check at all. Do not use outside a test.
+#   caSecretName / certSecretName / keySecretName  the CA certificate, the node certificate
+#            (with its chain) and its unencrypted private key, all PEM. Pre-create them, e.g.:
+#              docker secret create elasticsearch_tls_ca   ca.crt
+#              docker secret create elasticsearch_tls_cert node.crt
+#              docker secret create elasticsearch_tls_key  node.key
+tls:
+  enabled: false
+  http: true
+  verificationMode: certificate
+  caSecretName: elasticsearch_tls_ca
+  certSecretName: elasticsearch_tls_cert
+  keySecretName: elasticsearch_tls_key
+
+# JVM heap, e.g. "2g" => ES_JAVA_OPTS="-Xms2g -Xmx2g". "" lets Elasticsearch size it itself: half
+# the container's memory limit when resources.limits.memory is set, otherwise half the HOST's
+# memory — on a shared host, set one or the other.
+heapSize: ""
+
+# Persistence. One volume per node, mounted at /usr/share/elasticsearch/data. enabled:false =>
+# ephemeral data (no volume, and every node pin below is dropped with it); a restarted node then
+# starts empty and, in a cluster, copies its shards back from the others.
+persistence:
+  enabled: true
+  # Named volume of node N: <volumePrefix>-<N> (elasticsearch-data-1, -2, …).
+  volumePrefix: elasticsearch-data
+  # Store data under host directories instead: exactly one ABSOLUTE path per node, in node order.
+  # When set it TAKES PRECEDENCE over volumePrefix and is bind-mounted on that node's pinned host.
+  # Each directory must already exist there and be writable by the image's user, uid 1000 /
+  # gid 0 (`chown 1000:0 <dir>`). This is host-filesystem access, acknowledged via
+  # swarmcli-charts/allow: "host-mount" in Chart.yaml. [] => named volumes.
+  volumePaths: []
+  # Node N is pinned to the Swarm node labelled <nodeLabelPrefix>-<N>, where its volume lives
+  # (Swarm volumes are node-local). Rendered only while persistence is enabled. Label one node per
+  # Elasticsearch node, and a DIFFERENT one for each in a cluster:
+  #   docker node update --label-add elasticsearch-data-1=true <node>
+  # Set "" to schedule unpinned (a single-node swarm, or persistence you manage elsewhere).
+  nodeLabelPrefix: elasticsearch-data
+
+# Extra scheduling constraints for the Elasticsearch nodes, always applied (independent of the
+# persistence pins).
+placement:
+  constraints: []
+
+# Overlay the nodes and Kibana attach to. external:true (default) is a shared attachable overlay
+# (declared in requirements.yaml, auto-created if missing) that application stacks join to reach
+# Elasticsearch at http://<release>_elasticsearch-<N>:9200 (or https with tls.http). In a cluster
+# the nodes also talk to each other on it (9300, TLS). external:false => a chart-managed overlay,
+# reachable only by this stack.
+#   clientAlias  a name every node also answers to on this overlay, so a client can be given one
+#                host. DNS returns every node and is not health-aware, so give clients the node
+#                list when they take one (most Elasticsearch clients do). "" => no shared alias.
+network:
+  name: elasticsearch-net
+  external: true
+  clientAlias: elasticsearch
+
+# Publish the REST API (9200) on the hosts. Off by default: Elasticsearch stays on the overlay.
+#   port  the published port; the container always listens on 9200.
+#   mode  ingress (cluster-wide routing mesh) or host (only on the node running it). A cluster
+#         needs host: every node publishes the same port, which the ingress mesh cannot share.
+exposure:
+  enabled: false
+  port: 9200
+  mode: ingress
+
+# Swarm deploy resource limits per node (optional). Rendered only when limits.memory is set.
+resources:
+  limits:
+    memory: ""           # e.g. "4G"
+
+# How long Swarm waits after SIGTERM before it kills a node. Elasticsearch flushes and closes its
+# shards on a clean stop; killed partway, the shards recover from the translog on the next start.
+stopGracePeriod: 2m
+
+# Container healthcheck: the REST API answers at all (any HTTP status, a 401 included), on
+# 127.0.0.1 with no credentials. Deliberately not "the cluster is green" nor "a master is
+# elected": Swarm publishes a node in DNS only once it is healthy, and the nodes find each other
+# through DNS, so a check that needs the cluster could never pass on a first start. A node waits
+# up to 30s for a master before it opens the REST API, hence the start period.
+healthcheck:
+  enabled: true
+  interval: 10s
+  timeout: 5s
+  retries: 6
+  startPeriod: 120s
+  # How long Swarm counts a task failure against the rollout, measured from task creation. Must
+  # cover the healthcheck's worst case above (120s start_period + 10s interval x 6 retries =
+  # 180s) or a node that goes unhealthy after the window does not fail the deploy. Raise it if
+  # you raise the values above.
+  monitor: 3m
+
+# Extra Elasticsearch settings, passed as environment entries the image turns into settings. Use
+# a values file (-f): `--set settings.a.b=c` nests the key instead of keeping the dots.
+#   settings:
+#     indices.query.bool.max_clause_count: 4096
+#     action.destructive_requires_name: "true"
+# The settings this chart owns (node.name, cluster.name, discovery.*, cluster.initial_master_nodes,
+# network.publish_host, xpack.security.*) are refused: change them through the values above.
+settings: {}
+
+# Extra deploy labels (key: value) on every Elasticsearch node.
+labels: {}
+
+kibana:
+  enabled: true
+
+  image:
+    repository: docker.elastic.co/kibana/kibana
+    tag: ""  # defaults to appVersion from Chart.yaml: Kibana must run Elasticsearch's version
+
+  # Kibana keeps all its state in Elasticsearch, so it can run several replicas, provided they
+  # share encryptionKey below (the render refuses more than one without it).
+  replicas: 1
+
+  # EXTERNAL Swarm secret holding the password of the built-in kibana_system user, which Kibana
+  # logs in as. kibana-setup sets that password from this secret, so it is any value you choose
+  # (at least 6 characters). Pre-create it, e.g.:
+  #   openssl rand -base64 24 | docker secret create kibana_system_password -
+  passwordSecretName: kibana_system_password
+
+  # One key (at least 32 characters) for Kibana's session cookies, its encrypted saved objects
+  # (alerting rules and connectors store credentials in them) and reporting. Without it Kibana
+  # makes up a fresh key on every start: everyone is logged out on each restart, and alerting
+  # and connectors refuse to run. Pre-create it, e.g.:
+  #   openssl rand -hex 32 | docker secret create kibana_encryption_key -
+  # Keep it: rotating it makes every encrypted saved object unreadable. enabled:false drops it,
+  # for a throwaway instance.
+  encryptionKey:
+    enabled: true
+    secretName: kibana_encryption_key
+
+  # How Kibana is exposed:
+  #   traefik    Traefik deploy labels on exposure.network (default). TLS at the edge.
+  #   published  publish a port on the Swarm directly (plain HTTP; no proxy).
+  #   none       no published port and no Traefik labels. Kibana sits on exposure.network so your
+  #              OWN reverse proxy, joined to that overlay, can reach it on port 5601.
+  exposure:
+    mode: traefik
+    # Shared EXTERNAL overlay the edge proxy lives on (traefik & none modes). Provisioned by the
+    # proxy chart/operator (requirements.yaml, autoCreate:false). Unused in published mode.
+    network: traefik-public
+
+  # Public address (all modes). host drives the Traefik Host() rule and Kibana's
+  # server.publicBaseUrl, which it puts in links, e-mails and redirects. tls says whether that
+  # public endpoint is HTTPS: it picks the URL's scheme and, when true, makes Kibana mark its
+  # session cookie Secure (published mode always serves plain HTTP, so tls is ignored there).
+  ingress:
+    host: kibana.example.com
+    tls: true
+
+  # traefik-mode routing. The defaults match the traefik chart in this repository; adjust them to
+  # your Traefik if you run your own.
+  traefik:
+    certResolver: le
+    entrypoints:
+      http: http
+      https: https
+    # Swarm-provider constraint label. The traefik chart runs with exposedByDefault=false and a
+    # constraint on this label, so a routed service must carry it to be discovered.
+    constraintLabel: traefik-public
+    # Middleware on the HTTP router redirecting to HTTPS (only when ingress.tls). No provider
+    # suffix => resolved in the swarm provider, where the traefik chart always defines it.
+    redirectMiddleware: https-redirect
+
+  # published-mode port publish. Kibana listens on 5601; port is the published one.
+  publish:
+    port: 5601
+    mode: ingress
+
+  # Healthcheck: Kibana's HTTP server answers at all, a 503 "not ready yet" included. Not "Kibana
+  # is available": it is not while it migrates its saved objects after an upgrade, which can take
+  # minutes on a big install, and a check that kills it then restarts the migration forever.
+  healthcheck:
+    enabled: true
+    interval: 15s
+    timeout: 5s
+    retries: 5
+    startPeriod: 120s
+    # Must cover 120s start_period + 15s interval x 5 retries = 195s; see healthcheck.monitor.
+    monitor: 4m
+
+  resources:
+    limits:
+      memory: ""         # e.g. "2G"
+
+  # Extra Kibana settings, passed to Kibana as --<key>=<value> flags. Use a values file (-f).
+  #   settings:
+  #     i18n.locale: de-DE
+  #     xpack.fleet.enabled: false
+  # The settings this chart owns (elasticsearch.*, server.publicBaseUrl, the encryption keys and
+  # xpack.security.secureCookies) are refused: change them through the values above.
+  settings: {}
+
+  # Extra scheduling constraints. Kibana is stateless, so it is unpinned by default.
+  placement:
+    constraints: []
+
+  # Extra deploy labels (key: value), merged after the Traefik router labels.
+  labels: {}

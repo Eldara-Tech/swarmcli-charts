@@ -1,0 +1,3 @@
+# Defaults: one node, persistent, Kibana behind Traefik. The heap is the only override, so the
+# node fits a CI runner beside Kibana (unset, Elasticsearch takes half the host).
+heapSize: 512m

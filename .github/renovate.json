@@ -88,6 +88,7 @@
       "semanticCommitScope": "gitlab"
     },
     { "matchFileNames": ["charts/airbyte/**"], "semanticCommitScope": "airbyte" },
+    { "matchFileNames": ["charts/elasticsearch/**"], "semanticCommitScope": "elasticsearch" },
     { "matchFileNames": ["charts/gitlab-runner/**"], "semanticCommitScope": "gitlab-runner" },
     { "matchFileNames": ["charts/harbor/**"], "semanticCommitScope": "harbor" },
     { "matchFileNames": ["charts/keycloak/**"], "semanticCommitScope": "keycloak" },

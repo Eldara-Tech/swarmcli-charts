@@ -1,0 +1,5 @@
+# Elasticsearch alone: no Kibana, no setup job, and neither Kibana secret referenced.
+kibana:
+  enabled: false
+# Trimmed so the node fits a CI runner beside Kibana.
+heapSize: 512m

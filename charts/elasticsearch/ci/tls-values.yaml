@@ -1,0 +1,9 @@
+# One node with TLS on both layers: the REST API serves HTTPS, so Kibana and the setup job must
+# trust the CA from tls.caSecretName. ci/e2e-setup.sh generates the CA and certificate.
+tls:
+  enabled: true
+kibana:
+  exposure:
+    mode: none
+# Trimmed so the node fits a CI runner beside Kibana.
+heapSize: 512m

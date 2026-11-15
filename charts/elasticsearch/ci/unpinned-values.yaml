@@ -1,0 +1,11 @@
+# A cluster with persistence on but no node pins (nodeLabelPrefix ""), plus an extra constraint
+# that must apply to every node.
+cluster:
+  nodes: 3
+tls:
+  enabled: true
+persistence:
+  nodeLabelPrefix: ""
+placement:
+  constraints:
+    - node.role == worker

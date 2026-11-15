@@ -1,0 +1,33 @@
+# External resources this chart needs. Authoritative: every external network/secret/config the
+# rendered stack references must be listed here (swarmcli pre-flights it; scripts/
+# requirements-check.sh enforces it at PR time).
+#
+# Names are values-templated so an override still passes the pre-flight (swarmcli renders this
+# file with the release's values). Every secret is declared unconditionally: the pre-flight is
+# manifest-driven, so a declared secret the release does not mount (TLS off, Kibana off) is
+# inert, while an empty name would fail every install.
+networks:
+  - name: "{{ .Values.network.name }}"
+    driver: overlay
+    attachable: true
+    autoCreate: true
+    description: "Shared overlay application stacks attach to in order to reach Elasticsearch by service name"
+  - name: "{{ .Values.kibana.exposure.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "Shared ingress overlay the edge proxy reaches Kibana on (kibana.exposure.mode traefik/none); provisioned by the traefik chart/operator (never created here)"
+secrets:
+  - name: "{{ .Values.auth.elasticPasswordSecretName }}"
+    description: "Password of the elastic superuser. Pre-create: openssl rand -base64 24 | docker secret create elasticsearch_elastic_password -"
+  - name: "{{ .Values.kibana.passwordSecretName }}"
+    description: "Password of the kibana_system user Kibana logs in as (kibana.enabled). Pre-create: openssl rand -base64 24 | docker secret create kibana_system_password -"
+  - name: "{{ .Values.kibana.encryptionKey.secretName }}"
+    description: "Kibana encryption key, 32+ characters (kibana.encryptionKey.enabled). Pre-create: openssl rand -hex 32 | docker secret create kibana_encryption_key -"
+  - name: "{{ .Values.tls.caSecretName }}"
+    description: "PEM CA certificate (tls.enabled). Pre-create: docker secret create elasticsearch_tls_ca ca.crt"
+  - name: "{{ .Values.tls.certSecretName }}"
+    description: "PEM node certificate (tls.enabled). Pre-create: docker secret create elasticsearch_tls_cert node.crt"
+  - name: "{{ .Values.tls.keySecretName }}"
+    description: "PEM unencrypted node private key (tls.enabled). Pre-create: docker secret create elasticsearch_tls_key node.key"
+configs: []

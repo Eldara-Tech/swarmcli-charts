@@ -234,6 +234,11 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
 - **openclaw** — the reference above.
 - **redis**, **mariadb**, **postgres** — dummy auth secret(s) + the persistence node-label
   pin + the bind-mount host dir.
+- **elasticsearch** — the elastic/kibana_system passwords and the Kibana encryption key, a CA and
+  node certificate generated with openssl (kept in `$E2E_ES_TLS_DIR` so `ci/e2e-check.sh` can
+  verify the REST API against the same CA), all three node-label pins on the one node, the
+  `traefik-public` overlay, `vm.max_map_count` raised through a privileged container when the
+  runner's is below 262144, the bind-mount host dir owned 1000:0, and the traefik edge for `edge`.
 - **mongodb** — the root, app-user and keyFile secrets + the persistence node-label pin + the
   bind-mount host dir. Its `ci/e2e-check.sh` connects from a throwaway client container on the
   release's overlay rather than `docker exec`, so the `replica-set` fixture exercises the member

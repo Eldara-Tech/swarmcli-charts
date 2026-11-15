@@ -1,0 +1,12 @@
+# A three-node cluster with TLS on both layers, every node pinned by its own label.
+# ci/e2e-setup.sh labels the one CI node with all three labels, so the pinned shape — the one
+# operators run — schedules there: not HA, but a real cluster that has to bootstrap, and whose
+# nodes find each other through tasks.<service> DNS. The heap is trimmed so three fit a runner.
+cluster:
+  nodes: 3
+tls:
+  enabled: true
+heapSize: 512m
+kibana:
+  exposure:
+    mode: none

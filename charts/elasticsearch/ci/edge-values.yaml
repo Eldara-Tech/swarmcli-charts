@@ -1,0 +1,9 @@
+# Edge-routing fixture: ci/e2e-setup.sh stands up the in-repo traefik chart and ci/e2e-check.sh
+# proves a request reaches Kibana THROUGH it. tls:false because CI has no ACME, so the http
+# router forwards straight to Kibana's 5601.
+kibana:
+  ingress:
+    host: kibana.e2e.test
+    tls: false
+# Trimmed so the node fits a CI runner beside Kibana.
+heapSize: 512m

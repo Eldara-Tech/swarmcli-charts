@@ -108,6 +108,23 @@ include:
   # rebuilt from empty under a running primary. It drives `swarmcli charts upgrade` itself;
   # its fixture shortens the health windows. ~11 minutes locally.
   - { chart: postgres-patroni, name: "postgres-patroni lifecycle", cases: "lifecycle",                                timeout: 25m }
+  # elasticsearch: the single-node fixtures that prove something a render cannot. A node is healthy
+  # once its REST API answers (a 401 included) and Kibana while it still serves "not ready yet", so
+  # ci/e2e-check.sh asserts from a client on the overlay: anonymous requests refused, `elastic` and
+  # `kibana_system` authenticate with their secrets' values (the latter set by kibana-setup from a
+  # password with " and \ in it), a document round-trips, and Kibana reports available. `tls`
+  # verifies the REST API's certificate (chain and name) and makes Kibana and the setup job trust
+  # the CA; `published` reaches both ports on the host; `edge` routes Kibana through the traefik
+  # chart. bind-mount, kibana-disabled and settings are render-only here and still run in a full
+  # local `make e2e`. swarmcli waits out Kibana's 4m update_config.monitor per fixture.
+  - { chart: elasticsearch, cases: "default ephemeral tls published edge",                                         timeout: 10m }
+  # elasticsearch cluster, a job of its own: three nodes on ONE runner, every node pinned by its own
+  # label (ci/e2e-setup.sh puts all three on the one node). Not HA, but a real cluster that must
+  # bootstrap through tasks.<service> DNS over transport TLS; the check asserts 3 nodes with one
+  # elected master, a write through node 1 read back through node 3, and that every node recorded
+  # its join. `cluster-transport-tls` keeps the REST API on plain HTTP. five-nodes and unpinned are
+  # render-only.
+  - { chart: elasticsearch, name: "elasticsearch cluster", cases: "cluster cluster-transport-tls",              timeout: 12m }
   # mongodb: EVERY fixture (cases: "" => no filter). ci/e2e-setup.sh creates the three dummy
   # secrets and the data node label; ci/e2e-check.sh then connects from a throwaway client
   # container on the release's overlay, so `replica-set` proves clients can follow replica-set

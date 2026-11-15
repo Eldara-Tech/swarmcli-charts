@@ -1,0 +1,538 @@
+{{- /* The CROSS-FIELD invariants only. Single-field rules (nodes is 1, 3 or 5, a volumePath is
+       absolute, the enums) live in values.schema.json, which rejects them earlier and names the
+       offending path. What is left is what a schema cannot state, and nothing downstream catches
+       these either: `docker compose config` validates structure, not Swarm semantics. */ -}}
+{{- $nodes := int .Values.cluster.nodes -}}
+{{- $multi := gt $nodes 1 -}}
+{{- if and $multi (not .Values.tls.enabled) -}}
+{{- fail "cluster.nodes > 1 needs tls.enabled: Elasticsearch refuses to form a multi-node cluster with security on and the transport layer in the clear. Create the CA, certificate and key secrets (see the README) and set tls.enabled: true." -}}
+{{- end -}}
+{{- if and $multi .Values.exposure.enabled (ne .Values.exposure.mode "host") -}}
+{{- fail "exposure.mode must be host when cluster.nodes > 1: every node publishes the same port, which the ingress routing mesh cannot share between several services." -}}
+{{- end -}}
+{{- if and .Values.persistence.enabled .Values.persistence.volumePaths -}}
+{{- if ne (len .Values.persistence.volumePaths) $nodes -}}
+{{- fail (printf "persistence.volumePaths has %d entries but cluster.nodes is %d. Give exactly one absolute host path per node, in node order, or leave it [] to use named volumes." (len .Values.persistence.volumePaths) $nodes) -}}
+{{- end -}}
+{{- end -}}
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePaths) (contains "/" .Values.persistence.volumePrefix) -}}
+{{- fail "persistence.volumePrefix is a Docker named-volume name prefix and cannot contain '/'. To store data under host directories, set persistence.volumePaths instead." -}}
+{{- end -}}
+{{- range $key, $_ := .Values.settings -}}
+{{- if or (has $key (list "node.name" "cluster.name" "network.publish_host" "cluster.initial_master_nodes")) (hasPrefix "discovery." $key) (hasPrefix "xpack.security." $key) -}}
+{{- fail (printf "settings.%s is owned by this chart (node identity, discovery, security and TLS are wired from cluster.*, auth.* and tls.*). Set it through those values instead." $key) -}}
+{{- end -}}
+{{- end -}}
+{{- $kib := .Values.kibana -}}
+{{- if $kib.enabled -}}
+{{- if and (gt (int $kib.replicas) 1) (not $kib.encryptionKey.enabled) -}}
+{{- fail "kibana.replicas > 1 needs kibana.encryptionKey.enabled: without a shared key every replica makes up its own, so a session cookie set by one is rejected by the next and users are logged out at random." -}}
+{{- end -}}
+{{- range $key, $_ := $kib.settings -}}
+{{- if or (hasPrefix "elasticsearch." $key) (has $key (list "server.publicBaseUrl" "xpack.security.encryptionKey" "xpack.encryptedSavedObjects.encryptionKey" "xpack.reporting.encryptionKey" "xpack.security.secureCookies")) -}}
+{{- fail (printf "kibana.settings.%s is owned by this chart (the Elasticsearch connection, the public URL and the encryption keys are wired from kibana.* and tls.*). Set it through those values instead." $key) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- /* Node identity and addressing.
+
+       Node N is the Swarm service elasticsearch-N, and that name is also its node.name and its
+       entry in cluster.initial_master_nodes — one string, so a rename cannot desynchronise them.
+
+       The nodes find each other at tasks.<release>_elasticsearch-N, which Swarm resolves to the
+       task's own address. It does so only once the task is healthy, which is why the healthcheck
+       asks for nothing but a listening REST API. Each node ADVERTISES (network.publish_host) the
+       address Docker wrote for its hostname into /etc/hosts, never a name: with the default
+       network.host 0.0.0.0, Elasticsearch would otherwise pick one of the container's
+       interfaces itself, and on a task with several networks that can be one the other nodes
+       cannot reach.
+
+       Clients — Kibana, the setup job, applications — use the service names
+       <release>_elasticsearch-N instead. Those are VIPs that route only to a healthy task and are
+       unique per release on a shared overlay, which the bare elasticsearch-N is not. */ -}}
+{{- $prefix := .Chart.Name -}}
+{{- $clusterName := .Values.cluster.name | default .Release.Name -}}
+{{- $tlsHttp := and .Values.tls.enabled .Values.tls.http -}}
+{{- $scheme := ternary "https" "http" $tlsHttp -}}
+{{- $names := list -}}
+{{- $seeds := list -}}
+{{- $hosts := list -}}
+{{- range $i := until $nodes -}}
+{{- $nm := printf "%s-%d" $prefix (add1 $i) -}}
+{{- $names = append $names $nm -}}
+{{- $seeds = append $seeds (printf "tasks.%s_%s" $.Release.Name $nm) -}}
+{{- $hosts = append $hosts (printf "%s://%s_%s:9200" $scheme $.Release.Name $nm) -}}
+{{- end -}}
+{{- $certDir := "/usr/share/elasticsearch/config/certs" -}}
+{{- $image := printf "%s:%s" .Values.image.repository (.Values.image.tag | default .Chart.AppVersion) -}}
+{{- $kibImage := printf "%s:%s" $kib.image.repository ($kib.image.tag | default .Chart.AppVersion) -}}
+version: "3.9"
+
+services:
+{{- range $i := until $nodes }}
+{{- $n := add1 $i }}
+{{- $name := printf "%s-%d" $prefix $n }}
+
+  {{ $name }}:
+    image: {{ $image }}
+    # A stable hostname: Swarm otherwise names the container after the task, which changes on
+    # every reschedule. The wrapper below also looks this name up in /etc/hosts for the address
+    # the node advertises.
+    hostname: {{ $name }}
+    stop_grace_period: {{ $.Values.stopGracePeriod }}
+
+    networks:
+{{- if $.Values.network.clientAlias }}
+      {{ $.Values.network.name }}:
+        aliases:
+          # Shared by every node, so one name reaches them all. Not health-aware beyond what
+          # Swarm's VIP gives: hand clients the node list when they take one.
+          - {{ $.Values.network.clientAlias }}
+{{- else }}
+      - {{ $.Values.network.name }}
+{{- end }}
+
+{{- if $.Values.exposure.enabled }}
+    # Only the REST API. The transport port (9300) is never published: the nodes reach each other
+    # over the overlay, so cluster traffic never touches the hosts.
+    ports:
+      - target: 9200
+        published: {{ $.Values.exposure.port }}
+        protocol: tcp
+        mode: {{ $.Values.exposure.mode }}
+{{- end }}
+
+{{- if $.Values.persistence.enabled }}
+    volumes:
+{{- if $.Values.persistence.volumePaths }}
+      - {{ index $.Values.persistence.volumePaths $i }}:/usr/share/elasticsearch/data
+{{- else }}
+      - {{ $.Values.persistence.volumePrefix }}-{{ $n }}:/usr/share/elasticsearch/data
+{{- end }}
+{{- end }}
+
+    secrets:
+      # The image's ELASTIC_PASSWORD_FILE refuses a file anyone but its owner and group can read
+      # ("must have file permissions 400, 440, 600 or 640"), and Swarm mounts a secret 0444 unless
+      # told otherwise. Elasticsearch runs as uid 1000 in group 0, so root:root 0440 is readable
+      # by it and by nobody else.
+      - source: {{ $.Values.auth.elasticPasswordSecretName }}
+        target: {{ $.Values.auth.elasticPasswordSecretName }}
+        uid: "0"
+        gid: "0"
+        mode: 0440
+{{- if $.Values.tls.enabled }}
+      # Under the config directory, not /run/secrets: Elasticsearch refuses to read TLS files
+      # anywhere else ("access to read the file is blocked; SSL resources should be placed in the
+      # [/usr/share/elasticsearch/config] directory").
+      - source: {{ $.Values.tls.caSecretName }}
+        target: {{ $certDir }}/ca.crt
+        uid: "0"
+        gid: "0"
+        mode: 0440
+      - source: {{ $.Values.tls.certSecretName }}
+        target: {{ $certDir }}/node.crt
+        uid: "0"
+        gid: "0"
+        mode: 0440
+      - source: {{ $.Values.tls.keySecretName }}
+        target: {{ $certDir }}/node.key
+        uid: "0"
+        gid: "0"
+        mode: 0440
+{{- end }}
+
+    # The image turns every variable with a dot in its name into a setting.
+    environment:
+      node.name: {{ $name }}
+      cluster.name: {{ $clusterName | quote }}
+{{- if $multi }}
+      discovery.seed_hosts: {{ join "," $seeds | quote }}
+{{- else }}
+      discovery.type: single-node
+{{- end }}
+      ELASTIC_PASSWORD_FILE: /run/secrets/{{ $.Values.auth.elasticPasswordSecretName }}
+{{- with $.Values.heapSize }}
+      ES_JAVA_OPTS: {{ printf "-Xms%s -Xmx%s" . . | quote }}
+{{- end }}
+      xpack.security.enabled: "true"
+{{- if $.Values.tls.enabled }}
+      xpack.security.transport.ssl.enabled: "true"
+      xpack.security.transport.ssl.verification_mode: {{ $.Values.tls.verificationMode }}
+      xpack.security.transport.ssl.certificate_authorities: {{ $certDir }}/ca.crt
+      xpack.security.transport.ssl.certificate: {{ $certDir }}/node.crt
+      xpack.security.transport.ssl.key: {{ $certDir }}/node.key
+{{- end }}
+{{- if $tlsHttp }}
+      xpack.security.http.ssl.enabled: "true"
+      xpack.security.http.ssl.certificate_authorities: {{ $certDir }}/ca.crt
+      xpack.security.http.ssl.certificate: {{ $certDir }}/node.crt
+      xpack.security.http.ssl.key: {{ $certDir }}/node.key
+{{- end }}
+{{- range $key, $val := $.Values.settings }}
+      {{ $key }}: {{ $val | toString | quote }}
+{{- end }}
+
+{{- if $multi }}
+    # Runs under the image's own entrypoint, which execs any command that is not
+    # `eswrapper`, so tini stays PID 1. It hands the two settings that must be decided in the
+    # container to Elasticsearch as -E flags, then execs the image's normal start.
+    #
+    # network.publish_host: this node's overlay address, from /etc/hosts — where Docker writes
+    # the container's hostname — and never from DNS. There is deliberately NO fallback: a node
+    # that cannot establish its own address refuses to start, because the alternative is joining
+    # while advertising something no other node can dial, which fails later and far from here.
+    # (The image has no `hostname` binary; $HOSTNAME is bash's own.)
+    #
+    # cluster.initial_master_nodes: needed only to form the cluster the very first time, when
+    # every node is empty and must agree on who votes. Elasticsearch decides that by quorum, so
+    # a node rebuilt from an empty volume cannot form a cluster on its own. Once a node has
+    # joined a cluster, Elasticsearch warns on every start that the setting should go ("remove
+    # this setting to avoid possible data loss caused by subsequent cluster bootstrap
+    # attempts"), so a background check records that in the data directory the first time this
+    # node sees an elected master, and later starts leave the setting out. A node that lost its
+    # data loses the record with it, and is an empty node again, which is what it is.
+    #
+    # $$ is the compose escape for a literal $.
+    command:
+      - bash
+      - -c
+      - |-
+        set -eu
+        SELF_ADDR="$$(awk -v h="$$HOSTNAME" '$$1 !~ /^127\./ { for (i = 2; i <= NF; i++) if ($$i == h) { print $$1; exit } }' /etc/hosts)"
+        if [ -z "$$SELF_ADDR" ]; then
+          echo 'elasticsearch: cannot determine this node own address from /etc/hosts' >&2
+          exit 1
+        fi
+        echo "elasticsearch: node {{ $n }} of {{ $nodes }} starting at $$SELF_ADDR"
+        set -- -E "network.publish_host=$$SELF_ADDR"
+        JOINED=/usr/share/elasticsearch/data/.swarmcli-joined
+        if [ ! -e "$$JOINED" ]; then
+          echo 'elasticsearch: this node has not joined a cluster yet, so it may help form one'
+          set -- "$$@" -E "cluster.initial_master_nodes={{ join "," $names }}"
+          (
+            auth="Authorization: Basic $$(printf 'elastic:%s' "$$(< /run/secrets/{{ $.Values.auth.elasticPasswordSecretName }})" | base64 -w0)"
+            until [ "$$(curl -sk -o /dev/null -w '%{http_code}' -H @- '{{ $scheme }}://127.0.0.1:9200/_cluster/state/master_node?local=true' <<<"$$auth")" = 200 ]; do
+              sleep 10
+            done
+            : > "$$JOINED"
+            echo 'elasticsearch: joined a cluster; later starts leave cluster.initial_master_nodes out'
+          ) &
+        fi
+        exec /usr/local/bin/docker-entrypoint.sh eswrapper "$$@"
+{{- end }}
+
+{{- if $.Values.healthcheck.enabled }}
+    # Healthy == the REST API answers at all. curl without -f exits 0 on any HTTP status, a 401
+    # included, and non-zero when nothing listens. No credentials, and -k because this dials
+    # 127.0.0.1, a name the node certificate need not carry.
+    healthcheck:
+      test: ["CMD", "curl", "-s", "-k", "-o", "/dev/null", "{{ $scheme }}://127.0.0.1:9200/"]
+      interval: {{ $.Values.healthcheck.interval }}
+      timeout: {{ $.Values.healthcheck.timeout }}
+      retries: {{ $.Values.healthcheck.retries }}
+      start_period: {{ $.Values.healthcheck.startPeriod }}
+{{- end }}
+
+    deploy:
+      replicas: 1
+      # vip, not dnsrr: dnsrr drops network aliases (network.clientAlias would silently not
+      # exist), and the nodes need tasks.<service> for each other's real address anyway.
+      endpoint_mode: vip
+{{- if $.Values.healthcheck.enabled }}
+      {{- /* Swarm watches a task for `monitor` after CREATING it, and only counts a failure
+             inside that window against the rollout. Shorter than the healthcheck needs to fail
+             and a broken deploy reports success. */}}
+      update_config:
+        monitor: {{ $.Values.healthcheck.monitor }}
+{{- end }}
+{{- /* The data-volume pin travels with persistence: it exists only while a volume needs
+       pinning, so persistence.enabled:false never leaves a task Pending on a missing label. */}}
+{{- $constraints := list }}
+{{- if and $.Values.persistence.enabled $.Values.persistence.nodeLabelPrefix }}
+{{-   $constraints = append $constraints (printf "node.labels.%s-%d == true" $.Values.persistence.nodeLabelPrefix $n) }}
+{{- end }}
+{{- range $.Values.placement.constraints }}
+{{-   $constraints = append $constraints . }}
+{{- end }}
+{{- if $constraints }}
+      placement:
+        constraints:
+{{- range $constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- with $.Values.resources.limits.memory }}
+      resources:
+        limits:
+          memory: {{ . | quote }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- if or $multi $.Values.labels }}
+      labels:
+{{- if $multi }}
+        # swarmcli >= 2.2.2 updates services carrying this label one at a time, each converged
+        # before the next, so an upgrade never stops every node together.
+        - "com.swarmcli.rollout=sequential"
+{{- end }}
+{{- range $key, $val := $.Values.labels }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- if $kib.enabled }}
+{{- $mode := $kib.exposure.mode }}
+{{- $proxied := or (eq $mode "traefik") (eq $mode "none") }}
+{{- $publicTLS := and $proxied $kib.ingress.tls }}
+{{- $publicURL := printf "%s://%s" (ternary "https" "http" $publicTLS) $kib.ingress.host }}
+{{- if eq $mode "published" }}
+{{-   $publicURL = printf "http://%s:%v" $kib.ingress.host $kib.publish.port }}
+{{- end }}
+{{- $kibNets := list .Values.network.name }}
+{{- if $proxied }}{{ $kibNets = append $kibNets $kib.exposure.network | uniq }}{{ end }}
+
+  # Sets the password of the built-in kibana_system user from its secret, then exits. It logs in
+  # as `elastic` over the overlay rather than running inside Elasticsearch, so turning Kibana on
+  # never restarts a node. Swarm runs it again only when its spec changes, which is what a
+  # rotation does: a new kibana.passwordSecretName.
+  #
+  # It runs in Kibana's image, with Kibana's own Node.js, so it checks the server certificate the
+  # way Kibana does (tls.verificationMode), and JSON.stringify builds the request body — no
+  # quoting of the password by hand. The passwords never appear in an argv or the environment.
+  # Trailing newlines are stripped, as Elasticsearch does for ELASTIC_PASSWORD_FILE and Kibana's
+  # keystore does for the password it reads.
+  kibana-setup:
+    image: {{ $kibImage }}
+
+    networks:
+      - {{ .Values.network.name }}
+
+    secrets:
+      - {{ .Values.auth.elasticPasswordSecretName }}
+      - {{ $kib.passwordSecretName }}
+{{- if $tlsHttp }}
+      - {{ .Values.tls.caSecretName }}
+{{- end }}
+
+    environment:
+      ES_HOSTS: {{ join " " $hosts | quote }}
+      ES_VERIFICATION_MODE: {{ .Values.tls.verificationMode }}
+
+    entrypoint:
+      - /usr/share/kibana/node/default/bin/node
+      - -e
+    command:
+      - |-
+        const fs = require("fs"), http = require("http"), https = require("https");
+        const read = (n) => fs.readFileSync("/run/secrets/" + n, "utf8").replace(/\n+$$/, "");
+        const auth = "Basic " + Buffer.from("elastic:" + read({{ .Values.auth.elasticPasswordSecretName | toJson }})).toString("base64");
+        const body = JSON.stringify({ password: read({{ $kib.passwordSecretName | toJson }}) });
+        const mode = process.env.ES_VERIFICATION_MODE;
+{{- if $tlsHttp }}
+        const tls = { ca: fs.readFileSync("/run/secrets/" + {{ .Values.tls.caSecretName | toJson }}), rejectUnauthorized: mode !== "none" };
+        if (mode !== "full") tls.checkServerIdentity = () => undefined;
+{{- else }}
+        const tls = {};
+{{- end }}
+        const hosts = process.env.ES_HOSTS.split(" ");
+        const post = (host) => new Promise((resolve) => {
+          const u = new URL("/_security/user/kibana_system/_password", host);
+          const req = (u.protocol === "https:" ? https : http).request(u, { method: "POST", timeout: 10000, ...tls,
+            headers: { authorization: auth, "content-type": "application/json", "content-length": Buffer.byteLength(body) } }, (res) => {
+            let out = ""; res.on("data", (c) => out += c);
+            res.on("end", () => resolve(res.statusCode === 200 ? null : host + ": HTTP " + res.statusCode + " " + out));
+          });
+          req.on("timeout", () => req.destroy(new Error("timed out")));
+          req.on("error", (e) => resolve(host + ": " + e.message));
+          req.end(body);
+        });
+        (async () => {
+          let err = "";
+          for (let attempt = 0; attempt < 120; attempt++) {
+            for (const host of hosts) {
+              err = await post(host);
+              if (err === null) { console.log("elasticsearch: kibana_system password set through " + host); process.exit(0); }
+            }
+            await new Promise((r) => setTimeout(r, 5000));
+          }
+          console.error("elasticsearch: could not set the kibana_system password; last error: " + err);
+          process.exit(1);
+        })();
+
+    deploy:
+      replicas: 1
+{{- if $kib.placement.constraints }}
+      placement:
+        constraints:
+{{- range $kib.placement.constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+      # on-failure, not none: on a first install Elasticsearch can take longer than the loop
+      # above to accept the request, and Swarm then simply runs it again.
+      restart_policy:
+        condition: on-failure
+
+  kibana:
+    image: {{ $kibImage }}
+
+    networks:
+{{- range $kibNets }}
+      - {{ . }}
+{{- end }}
+
+{{- if eq $mode "published" }}
+    ports:
+      - target: 5601
+        published: {{ $kib.publish.port }}
+        protocol: tcp
+        mode: {{ $kib.publish.mode }}
+{{- end }}
+
+    secrets:
+      - {{ $kib.passwordSecretName }}
+{{- if $kib.encryptionKey.enabled }}
+      - {{ $kib.encryptionKey.secretName }}
+{{- end }}
+{{- if $tlsHttp }}
+      - {{ .Values.tls.caSecretName }}
+{{- end }}
+
+    # Only what is not secret. The image's kibana-docker turns these variables into command-line
+    # flags, so a password here would be readable in the process list.
+    environment:
+      SERVER_NAME: {{ printf "%s-kibana" .Release.Name | quote }}
+      SERVER_PUBLICBASEURL: {{ $publicURL | quote }}
+      ELASTICSEARCH_HOSTS: {{ $hosts | toJson | quote }}
+      ELASTICSEARCH_USERNAME: kibana_system
+{{- if $tlsHttp }}
+      ELASTICSEARCH_SSL_CERTIFICATEAUTHORITIES: /run/secrets/{{ .Values.tls.caSecretName }}
+      ELASTICSEARCH_SSL_VERIFICATIONMODE: {{ .Values.tls.verificationMode }}
+{{- end }}
+{{- if $publicTLS }}
+      # The public URL is HTTPS, so mark the session cookie Secure.
+      XPACK_SECURITY_SECURECOOKIES: "true"
+{{- end }}
+
+    # The secrets go into Kibana's keystore, which the image keeps in its config directory (the
+    # container's own filesystem, so it is rebuilt from the secrets on every start) and which
+    # Kibana reads at start — so they are in neither an argv nor the environment. --stdin
+    # strips the trailing newline. Runs under the image's tini; extra flags from
+    # kibana.settings are passed through to Kibana.
+    command:
+      - bash
+      - -c
+      - |-
+        set -eu
+        ks=/usr/share/kibana/bin/kibana-keystore
+        [ -f /usr/share/kibana/config/kibana.keystore ] || "$$ks" create --silent
+        "$$ks" add --stdin --force --silent elasticsearch.password < /run/secrets/{{ $kib.passwordSecretName }}
+{{- if $kib.encryptionKey.enabled }}
+        for k in xpack.security.encryptionKey xpack.encryptedSavedObjects.encryptionKey xpack.reporting.encryptionKey; do
+          "$$ks" add --stdin --force --silent "$$k" < /run/secrets/{{ $kib.encryptionKey.secretName }}
+        done
+{{- end }}
+        exec /usr/local/bin/kibana-docker "$$@"
+      - kibana
+{{- range $key, $val := $kib.settings }}
+      - {{ printf "--%s=%v" $key $val | quote }}
+{{- end }}
+
+{{- if $kib.healthcheck.enabled }}
+    # Healthy == Kibana's HTTP server answers at all, a 503 "Kibana server is not ready yet"
+    # included: see kibana.healthcheck in values.yaml for why not "available".
+    healthcheck:
+      test: ["CMD", "curl", "-s", "-o", "/dev/null", "http://127.0.0.1:5601/api/status"]
+      interval: {{ $kib.healthcheck.interval }}
+      timeout: {{ $kib.healthcheck.timeout }}
+      retries: {{ $kib.healthcheck.retries }}
+      start_period: {{ $kib.healthcheck.startPeriod }}
+{{- end }}
+
+    deploy:
+      replicas: {{ $kib.replicas }}
+{{- if $kib.healthcheck.enabled }}
+      update_config:
+        monitor: {{ $kib.healthcheck.monitor }}
+{{- end }}
+{{- if $kib.placement.constraints }}
+      placement:
+        constraints:
+{{- range $kib.placement.constraints }}
+          - {{ . }}
+{{- end }}
+{{- end }}
+{{- with $kib.resources.limits.memory }}
+      resources:
+        limits:
+          memory: {{ . | quote }}
+{{- end }}
+      restart_policy:
+        condition: any
+{{- if or (eq $mode "traefik") $kib.labels }}
+      labels:
+{{- if eq $mode "traefik" }}
+        - "traefik.enable=true"
+        - "traefik.swarm.network={{ $kib.exposure.network }}"
+        - "traefik.constraint-label={{ $kib.traefik.constraintLabel }}"
+        # HTTP router
+        - "traefik.http.routers.{{ .Release.Name }}-kibana-http.rule=Host(`{{ $kib.ingress.host }}`)"
+        - "traefik.http.routers.{{ .Release.Name }}-kibana-http.entrypoints={{ $kib.traefik.entrypoints.http }}"
+{{- if $kib.ingress.tls }}
+        # Redirect plain HTTP to HTTPS, then terminate TLS on the HTTPS router.
+        - "traefik.http.routers.{{ .Release.Name }}-kibana-http.middlewares={{ $kib.traefik.redirectMiddleware }}"
+        - "traefik.http.routers.{{ .Release.Name }}-kibana-https.rule=Host(`{{ $kib.ingress.host }}`)"
+        - "traefik.http.routers.{{ .Release.Name }}-kibana-https.entrypoints={{ $kib.traefik.entrypoints.https }}"
+        - "traefik.http.routers.{{ .Release.Name }}-kibana-https.tls=true"
+        - "traefik.http.routers.{{ .Release.Name }}-kibana-https.tls.certresolver={{ $kib.traefik.certResolver }}"
+{{- end }}
+        - "traefik.http.services.{{ .Release.Name }}-kibana.loadbalancer.server.port=5601"
+{{- end }}
+{{- range $key, $val := $kib.labels }}
+        - "{{ $key }}={{ $val }}"
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- if and .Values.persistence.enabled (not .Values.persistence.volumePaths) }}
+
+volumes:
+{{- range $i := until $nodes }}
+  {{ $.Values.persistence.volumePrefix }}-{{ add1 $i }}: {}
+{{- end }}
+{{- end }}
+
+secrets:
+  {{ .Values.auth.elasticPasswordSecretName }}:
+    external: true
+{{- if .Values.tls.enabled }}
+  {{ .Values.tls.caSecretName }}:
+    external: true
+  {{ .Values.tls.certSecretName }}:
+    external: true
+  {{ .Values.tls.keySecretName }}:
+    external: true
+{{- end }}
+{{- if $kib.enabled }}
+  {{ $kib.passwordSecretName }}:
+    external: true
+{{- if $kib.encryptionKey.enabled }}
+  {{ $kib.encryptionKey.secretName }}:
+    external: true
+{{- end }}
+{{- end }}
+
+networks:
+  {{ .Values.network.name }}:
+{{- if .Values.network.external }}
+    external: true
+{{- else }}
+    driver: overlay
+    attachable: true
+{{- end }}
+{{- if and $kib.enabled (or (eq $kib.exposure.mode "traefik") (eq $kib.exposure.mode "none")) (ne $kib.exposure.network .Values.network.name) }}
+  {{ $kib.exposure.network }}:
+    external: true
+{{- end }}
