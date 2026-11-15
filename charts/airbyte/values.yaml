@@ -91,7 +91,7 @@ database:
 # host name containing '_', so the render refuses one: reach a service in another
 # stack by an alias without it, such as the rustfs chart's http://<release>-rustfs:9000.
 storage:
-  endpoint: https://minio.example.com
+  endpoint: https://s3.example.com
   accessKeySecretName: airbyte_s3_access_key
   secretKeySecretName: airbyte_s3_secret_key
   bucket: airbyte-storage

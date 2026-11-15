@@ -67,8 +67,9 @@ head -c 32 /dev/urandom | base64 | docker secret create airbyte_jwt_signature_se
 
 The database must already contain an empty `airbyte` database which the secret
 user can migrate.
-`storage.endpoint` must reach an S3-compatible endpoint and `storage.bucket` must
-exist (or be provisioned according to your storage policy).
+`storage.endpoint` must reach an S3-compatible endpoint, such as the
+[rustfs chart](../rustfs) (see [Object storage](#object-storage)), and
+`storage.bucket` must exist (or be provisioned according to your storage policy).
 Set `database.host` to the database's stack-qualified Swarm service name when it
 lives in another stack, for example `postgres_postgres`.
 
@@ -88,7 +89,8 @@ hostname. Secret values always stay in Swarm secrets, never in this file.
 database:
   host: postgres_postgres
 storage:
-  endpoint: https://minio.example.com
+  endpoint: http://s3-rustfs:9000
+  network: airbyte-s3
 exposure:
   host: airbyte.example.com
 oauth2:
@@ -98,6 +100,9 @@ oauth2:
 ```bash
 swarmcli charts install airbyte swarmcli-charts/airbyte -f airbyte-values.yaml
 ```
+
+The `storage` block assumes a rustfs release named `s3` on the `airbyte-s3` overlay,
+installed first as described in [Object storage](#object-storage).
 
 ## Object storage
 
@@ -112,7 +117,9 @@ overlay only Airbyte joins rather than one every S3 client shares; the chart ref
 `exposure.network`. With the [rustfs chart](../rustfs):
 
 ```bash
-swarmcli charts install s3 swarmcli-charts/rustfs --set network.name=airbyte-s3
+swarmcli charts install s3 swarmcli-charts/rustfs \
+  --set network.name=airbyte-s3 \
+  --set 'buckets={airbyte-storage}'
 ```
 
 ```yaml
@@ -125,6 +132,17 @@ Airbyte's S3 client parses the endpoint with `java.net.URI`, which rejects a hos
 containing `_`. A stack's service name, `<stack>_<service>`, always has one, so the
 chart refuses to render it. Use the `<release>-rustfs` alias the rustfs chart adds on its
 network (`<release>-seaweedfs` for the seaweedfs chart), or a DNS name.
+
+Airbyte signs its S3 requests with the keys in `storage.accessKeySecretName` and
+`storage.secretKeySecretName`, so they must be keys the store accepts. With the rustfs
+chart, either create the `airbyte_s3_*` secrets with the same values as its
+`rustfs-access-key` and `rustfs-secret-key`, or point Airbyte at those secrets directly:
+
+```yaml
+storage:
+  accessKeySecretName: rustfs-access-key
+  secretKeySecretName: rustfs-secret-key
+```
 
 ## Exposure
 
@@ -254,7 +272,7 @@ after 30 minutes, and a pod whose image is still missing then fails. Kubernetes
 | `database.host` / `.port` / `.name` | `postgres` / `5432` / `airbyte` | External PostgreSQL endpoint and database |
 | `database.userSecretName` / `.passwordSecretName` | `airbyte_db_user` / `airbyte_db_password` | External secrets for PostgreSQL credentials |
 | `database.network` | `airbyte-db-net` | External overlay PostgreSQL is reachable on |
-| `storage.endpoint` / `.bucket` | `https://minio.example.com` / `airbyte-storage` | S3-compatible endpoint and bucket |
+| `storage.endpoint` / `.bucket` | `https://s3.example.com` / `airbyte-storage` | S3-compatible endpoint and bucket |
 | `storage.accessKeySecretName` / `.secretKeySecretName` | `airbyte_s3_access_key` / `airbyte_s3_secret_key` | External S3 credential secrets |
 | `storage.network` | `""` | External overlay the S3 endpoint is reachable on (see [Object storage](#object-storage)) |
 | `connectorRegistry.enterpriseSourceStubsUrl` | see `values.yaml` | Connector-registry Enterprise source stubs URL |
