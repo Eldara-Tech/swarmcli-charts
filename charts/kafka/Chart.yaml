@@ -1,0 +1,34 @@
+name: kafka
+description: Apache Kafka KRaft cluster for Docker Swarm — one pinned broker+controller peer per node, a dynamic quorum that re-admits a wiped peer by itself, SASL/SCRAM with ACLs, Traefik TLS-SNI or published per-broker endpoints
+version: 0.1.0
+# renovate: image=apache/kafka
+appVersion: "4.4.0"
+# Oldest swarmcli whose chart engine renders this chart; verified by
+# scripts/floor-check.sh against a real binary of that version. 2.2.0 is the first
+# to roll the peers one at a time (com.swarmcli.rollout on each peer), and 2.2.2 the
+# first to hold back a peer still starting rather than restart it with the next one.
+swarmcliVersion: ">= 2.2.2"
+# host-mount is acknowledged because persistence.volumePaths can bind-mount each
+# peer's log dir from an operator-chosen host path. The default (named volumes)
+# render mounts no host path — no docker.sock, unprivileged — so the annotation is
+# exercised by the security scan only when host paths are configured.
+annotations:
+  swarmcli-charts/allow: "host-mount"
+maintainers:
+  - name: Eldara
+    url: https://github.com/Eldara-Tech
+keywords:
+  - kafka
+  - kraft
+  - streaming
+  - messaging
+  - event-streaming
+  - cluster
+  - replication
+  - high-availability
+  - stateful
+  - swarm
+home: https://github.com/Eldara-Tech/swarmcli-charts
+sources:
+  - https://github.com/Eldara-Tech/swarmcli-charts
+  - https://github.com/apache/kafka

@@ -1,0 +1,4 @@
+# Persistence off: no volumes and no node pins, so the peers schedule anywhere and a
+# rescheduled peer comes back on an empty disk and rejoins. Must render no placement block.
+persistence:
+  enabled: false

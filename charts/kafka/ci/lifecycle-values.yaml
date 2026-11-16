@@ -1,0 +1,8 @@
+# Lifecycle: the default cluster, put through a wiped peer volume, a full stop, a rolling
+# upgrade and growing to five peers by ci/e2e-check.sh. Its own e2e job, for the wall time.
+# Shorter health windows so each upgrade waits less per peer; monitor still covers
+# start_period + interval x retries (30s + 10s x 3).
+heap: 512m
+healthcheck:
+  startPeriod: 30s
+  monitor: 60s

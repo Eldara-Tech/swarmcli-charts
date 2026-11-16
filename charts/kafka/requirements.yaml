@@ -1,0 +1,33 @@
+# yamllint disable-file
+# External resources this chart needs. Authoritative: every external
+# network/secret/config the rendered stack references must be listed here
+# (swarmcli pre-flights it; scripts/requirements-check.sh enforces it at PR time).
+#
+# Control flow is used for exactly one reason: auth.users is a user-supplied list, which
+# substitution cannot express (CONTRIBUTING.md § It is a template, not static YAML).
+networks:
+  - name: "{{ .Values.network.name }}"
+    driver: overlay
+    attachable: true
+    autoCreate: true
+    description: "Shared overlay carrying replication and controller traffic between peers, and the one app stacks attach to in order to reach the cluster"
+  - name: "{{ .Values.exposure.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: false
+    description: "The traefik edge's overlay (exposure.mode: traefik). Provisioned by the traefik chart; this chart never creates it"
+  - name: "{{ .Values.metrics.network }}"
+    driver: overlay
+    attachable: true
+    autoCreate: true
+    description: "Overlay the exporter shares with Prometheus (when metrics.enabled); the prometheus-stack chart scrapes on it by default"
+secrets:
+  - name: "{{ .Values.auth.internal.secretName }}"
+    description: "Password of the identity the peers use with each other (when auth.enabled). Pre-create: openssl rand -base64 32 | docker secret create kafka_internal_password -"
+{{- range .Values.auth.users }}
+  - name: "{{ .secretName }}"
+    description: "Password of client user {{ .name }} (when auth.enabled). Pre-create: printf 'S3cr3t' | docker secret create {{ .secretName }} -"
+{{- end }}
+  - name: "{{ .Values.metrics.secretName }}"
+    description: "Password of the exporter's Kafka user (when metrics.enabled and auth.enabled). Pre-create: openssl rand -base64 32 | docker secret create kafka_exporter_password -"
+configs: []

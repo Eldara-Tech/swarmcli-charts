@@ -1,0 +1,5 @@
+# Five peers: a quorum that survives the loss of two. A smaller heap so five JVMs fit
+# on one CI runner.
+cluster:
+  peers: 5
+heap: 512m

@@ -1,0 +1,3 @@
+# Persistence on, node pins off: the single-node-swarm shape.
+persistence:
+  nodeLabelPrefix: ""

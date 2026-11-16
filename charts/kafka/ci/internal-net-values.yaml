@@ -1,0 +1,9 @@
+# A chart-managed, IPsec-encrypted overlay instead of the shared external one, and
+# extra broker settings, which must land in every peer's server.properties.
+network:
+  external: false
+  encrypted: true
+config:
+  log.retention.hours: 72
+  num.partitions: 3
+  log.retention.bytes: "1073741824"

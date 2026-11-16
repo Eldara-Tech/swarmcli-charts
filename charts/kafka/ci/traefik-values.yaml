@@ -1,0 +1,11 @@
+# Behind the in-repo traefik edge: TLS terminated by Traefik, each broker routed by
+# its SNI host name. certResolver "" serves Traefik's default certificate, since CI
+# cannot get a real one.
+exposure:
+  mode: traefik
+traefik:
+  hosts:
+    - kafka-1.e2e.test
+    - kafka-2.e2e.test
+    - kafka-3.e2e.test
+  certResolver: ""

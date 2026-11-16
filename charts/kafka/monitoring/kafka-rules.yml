@@ -1,0 +1,170 @@
+# Kafka alerts for the kafka_exporter that metrics.enabled adds (one per release, job
+# <release>_kafka-exporter), which sees the cluster as a client does: brokers, partitions
+# and consumer groups, from the metadata and offsets the brokers serve. The chart does not
+# deploy them: hand the file to your Prometheus, e.g. the prometheus-stack chart's
+# prometheus.extraRules (README § Alerts and a dashboard).
+#
+# Sources and ratings: KafkaPartitionsUnderReplicated is derived from UnderReplicatedPartition
+# in Strimzi's kafka-exporter rules (strimzi/strimzi-kafka-operator packaging/examples/metrics,
+# Apache-2.0), and KafkaConsumerGroupLagGrowing replaces their TooLargeConsumerGroupLag: it
+# judges the lag's trend, not a fixed 1000 messages, which means nothing without the topic's
+# rate. Both keep Strimzi's `warning`, with a `for` of minutes rather than 10 seconds.
+# NoMessageForTooLong is left out: a quiet topic is no fault. kafka_exporter
+# (danielqsj/kafka_exporter, Apache-2.0) ships no rules. The rest are this chart's, all of
+# them written against what the exporter was measured to serve from a 3-node Kafka 4.x
+# KRaft cluster with brokers stopped, killed and all gone.
+#
+# Severity: critical while reads or writes fail now — a partition no leader serves, one
+# below min.insync.replicas, no scrape completing, which is what a whole-cluster outage
+# looks like — and warning otherwise. Every alert groups by the `stack` and `job` labels
+# prometheus-stack's discovery adds, never by `instance`, which changes with each exporter
+# task.
+#
+# Validate (from the repo root):
+#   docker run --rm --entrypoint promtool -v "$PWD/charts/kafka:/chart:ro" \
+#     "prom/prometheus:$(sed -n 's/^appVersion: *"\(.*\)"$/\1/p' charts/prometheus-stack/Chart.yaml)" \
+#     test rules /chart/ci/kafka-rules-test.yml
+groups:
+  - name: kafka
+    rules:
+      # The exporter outlives Kafka: it exits only when no broker answers at its start (Swarm
+      # restarts it), and while it runs with no broker answering, its /metrics takes from 24
+      # seconds to over a minute. Prometheus's 10s scrape timeout records up 0, and every
+      # kafka_* series goes stale, so a whole-cluster outage silences every other alert here
+      # and shows only as this one. Leaderless partitions slow the scrape too: one added
+      # almost 4 seconds, seven brought it to the timeout, and up then alternated between 0
+      # and 1. Hence the share of failed scrapes, which one success in between does not
+      # reset as it would `up == 0` held for a while.
+      - alert: KafkaUnreachable
+        expr: max by (stack, job) (avg_over_time(up{job=~".+_kafka-exporter"}[2m])) < 0.5
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Prometheus cannot get Kafka metrics from {{ $labels.job }}'
+          description: 'Most scrapes of {{ $labels.job }} have failed for 2 minutes or more. The exporter answers too late when no broker answers it, or when many partitions have no leader, so Kafka is likely down; it may also be the exporter itself. Every other Kafka alert of {{ $labels.stack }} is blind meanwhile. Its log says which: `docker service logs {{ $labels.job }}` shows `Cannot get` lines for an unreachable Kafka.'
+      # Measured in two forms. A partition left without a leader keeps its replicas and
+      # in-sync replicas series (0 in sync in Kafka 4.x, the last member moved to the ELR) and
+      # loses its leader and offset series. With a majority of the brokers lost, the
+      # controllers can record nothing, so the metadata still names the dead brokers as
+      # leaders and in sync, and only the offsets, which the exporter asks the leader for, go
+      # missing. So a partition whose replicas are reported without an offset is offline.
+      # Over 2 minutes rather than at an instant, because these partitions make scrapes fail
+      # now and then (KafkaUnreachable): it counts once no scrape in the window brought its
+      # offset, and at least one brought its replicas.
+      - alert: KafkaPartitionsOffline
+        expr: |
+          count by (stack, job, topic) (
+            last_over_time(kafka_topic_partition_replicas[2m])
+              unless
+            last_over_time(kafka_topic_partition_current_offset[2m])
+          )
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $value }} partition(s) of topic {{ $labels.topic }} in {{ $labels.stack }} are offline'
+          description: 'For 3 minutes no broker has served {{ $value }} partition(s) of {{ $labels.topic }}: every read and write to them fails. Every broker holding a replica is down, or a majority of the brokers is, which stops leader election. `kafka-topics.sh --describe --unavailable-partitions` lists those without a leader.'
+      # A leader below min.insync.replicas refuses acks=all writes (NotEnoughReplicasException),
+      # and Kafka 4.x also holds back its high watermark, so acks=1 writes are taken but no
+      # consumer sees them until the ISR recovers; both measured. Kafka holds a topic to
+      # min.insync.replicas or its replication factor, whichever is less: acks=all writes to a
+      # topic of RF 1 succeed, so clamp_max keeps such topics out, and they can only go
+      # offline. The 2 is min.insync.replicas as the chart sets it: change it here with
+      # yours. A topic's own min.insync.replicas is invisible to the exporter. A partition
+      # without an offset is left to KafkaPartitionsOffline. 2 minutes, not 1: an RF 2 topic
+      # passes through this while one of its brokers restarts, which took under a minute here.
+      - alert: KafkaPartitionsUnderMinISR
+        expr: |
+          count by (stack, job, topic) (
+            kafka_topic_partition_in_sync_replica < clamp_max(kafka_topic_partition_replicas, 2)
+              and
+            kafka_topic_partition_current_offset
+          )
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $value }} partition(s) of topic {{ $labels.topic }} in {{ $labels.stack }} are below min.insync.replicas'
+          description: '{{ $value }} partition(s) of {{ $labels.topic }} have had fewer than 2 in-sync replicas for 2 minutes: acks=all writes to them are refused, and acks=1 writes stay invisible to consumers until a replica catches up. `kafka-topics.sh --describe --under-min-isr-partitions` lists them.'
+      # Fewer in sync than replicas, but enough to take writes; one more broker lost can stop
+      # them. With RF 3 on 3 brokers every partition has a replica on every broker, so one
+      # broker down or restarting under-replicates every such topic at once; a restarted
+      # broker was back in every ISR within a minute in testing.
+      - alert: KafkaPartitionsUnderReplicated
+        expr: |
+          count by (stack, job, topic) (
+            kafka_topic_partition_in_sync_replica < kafka_topic_partition_replicas
+              and
+            kafka_topic_partition_in_sync_replica >= clamp_max(kafka_topic_partition_replicas, 2)
+              and
+            kafka_topic_partition_current_offset
+          )
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $value }} partition(s) of topic {{ $labels.topic }} in {{ $labels.stack }} are under-replicated'
+          description: '{{ $value }} partition(s) of {{ $labels.topic }} have had fewer in-sync replicas than replicas for 10 minutes: a broker is down, or a follower cannot keep up. They still take writes, but the next broker lost can stop them. `kafka-topics.sh --describe --under-replicated-partitions` lists them.'
+      # kafka_brokers counts the brokers in the metadata, which a stopped or killed broker
+      # left within seconds. The rules cannot know how many a release runs, so this compares
+      # with the most seen in the last day: it also fires for up to a day after a deliberate
+      # shrink, and stops on its own a day after an unrepaired loss, while the partitions the
+      # broker held stay under-replicated. The whole cluster coming back made it read 0 for one
+      # scrape.
+      # With a majority gone the metadata freezes and counts the last brokers lost as alive
+      # (KafkaPartitionsOffline still fires), and with all gone no scrape completes
+      # (KafkaUnreachable).
+      - alert: KafkaBrokersMissing
+        expr: |
+          max by (stack, job) (kafka_brokers)
+            < max by (stack, job) (max_over_time(kafka_brokers[1d]))
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Kafka cluster {{ $labels.stack }} has {{ $value }} broker(s), fewer than in the last day'
+          description: 'Cluster {{ $labels.stack }} has had {{ $value }} broker(s) in its metadata for 5 minutes, fewer than it had in the last day: a broker is down or cannot reach the controllers. Its partitions run on the others; one more loss in a 3-node cluster also loses the controller majority.'
+      # Every peer of this chart is a controller as well as a broker, so the brokers left are
+      # the controllers left. Once they are down to a bare majority of the most seen in the
+      # last day (2 of 3, 3 of 5), the next loss takes the metadata quorum and with it every
+      # write that needs the controllers: critical, as quorum at risk is by CONTRIBUTING, next
+      # to KafkaBrokersMissing's warning. Below the peak only, so a cluster never seen larger
+      # does not fire. With a majority gone the frozen metadata still counts a bare majority,
+      # so it keeps firing then too.
+      - alert: KafkaQuorumAtRisk
+        expr: |
+          (
+            max by (stack, job) (kafka_brokers)
+              <= floor(max by (stack, job) (max_over_time(kafka_brokers[1d])) / 2) + 1
+          )
+          and
+          (
+            max by (stack, job) (kafka_brokers)
+              < max by (stack, job) (max_over_time(kafka_brokers[1d]))
+          )
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Kafka cluster {{ $labels.stack }} is one broker away from losing its controller quorum'
+          description: 'Cluster {{ $labels.stack }} has had only {{ $value }} broker(s) for 5 minutes, a bare majority of the most it had in the last day. Every broker of the kafka chart is also a controller, so losing one more loses the metadata quorum: topics, leaders and new writes stop. Bring the missing peers back.'
+      # Falling further behind, whatever the lag, as LinkedIn's Burrow judges a consumer: by
+      # the trend of its lag over a window, not by a threshold. The least lag of the last 10
+      # minutes must exceed the most of the 10 minutes that ended 20 minutes ago, which a
+      # healthy consumer's sawtooth between commits never does. A one-off step up (a burst, a
+      # partition back from offline) satisfies it for at most 10 minutes, and the 15-minute
+      # `for` outlasts that. kafka_consumergroup_lag_sum leaves out the partitions a group
+      # never committed to, whose kafka_consumergroup_lag is -1. A group nobody uses any more
+      # grows until its offsets expire, offsets.retention.minutes (7 days) after it empties.
+      - alert: KafkaConsumerGroupLagGrowing
+        expr: |
+          max by (stack, job, consumergroup, topic) (min_over_time(kafka_consumergroup_lag_sum[10m]))
+            >
+          max by (stack, job, consumergroup, topic) (max_over_time(kafka_consumergroup_lag_sum[10m] offset 20m))
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Consumer group {{ $labels.consumergroup }} in {{ $labels.stack }} is falling behind on {{ $labels.topic }}'
+          description: 'The lag of {{ $labels.consumergroup }} on {{ $labels.topic }} has kept growing for 25 minutes or more and is at least {{ $value }} messages: its consumers are stopped or slower than the producers. kafka_consumergroup_members says whether any is connected; a group no longer used can be removed with `kafka-consumer-groups.sh --delete --group {{ $labels.consumergroup }}`.'
