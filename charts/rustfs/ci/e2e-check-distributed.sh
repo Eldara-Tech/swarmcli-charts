@@ -99,6 +99,10 @@ diagnose() {
     docker service ps "$(svc "$n")" --no-trunc 2>/dev/null | sed -n '1,4p' | sed 's/^/    /' || true
     docker service logs --tail 15 "$(svc "$n")" 2>&1 | sed 's/^/    /' || true
   done
+  # nodeProxy logs only the connections that failed, and its peers going down and up.
+  if docker service inspect "$(svc node-proxy)" >/dev/null 2>&1; then
+    docker service logs --timestamps --tail 40 "$(svc node-proxy)" 2>&1 | sed 's/^/    /' || true
+  fi
 }
 die() { echo "  FAIL: $*"; diagnose; exit 1; }
 
@@ -432,12 +436,13 @@ if [ "$case" = "lifecycle" ]; then
       -X PUT --data-binary @- 'http://${alias}:9000/$bucket/w/'\$i; sleep 1; done" >/dev/null
   # A writer through nodeProxy, with one retry where the client above has five, and every
   # write timed: the proxy itself must take new connections off a restarting peer within
-  # seconds, not leave them to the client's retries. Each line is "<n> <HTTP code> <seconds>".
+  # seconds, not leave them to the client's retries. Each line is "<n> <HTTP code> <seconds>
+  # <UTC start>", the start to match against the peers' and nodeProxy's logs.
   docker rm -f "$nwriter" >/dev/null 2>&1 || true
   docker run -d --name "$nwriter" --network host --entrypoint sh "$CURL_IMAGE" -c \
-    "i=0; while :; do i=\$((i+1)); s=\$(date +%s); c=\$(printf x | curl -s -o /dev/null -w '%{http_code}' --max-time 4 \
+    "i=0; while :; do i=\$((i+1)); s=\$(date +%s); t=\$(date -u +%T); c=\$(printf x | curl -s -o /dev/null -w '%{http_code}' --max-time 4 \
       --retry 1 --retry-all-errors --retry-delay 1 --aws-sigv4 '$SIG' --user '$KEY:$SECRET' \
-      -X PUT --data-binary @- 'http://127.0.0.1:9002/$bucket/n/'\$i); echo \"\$i \$c \$((\$(date +%s) - s))\"; sleep 1; done" >/dev/null
+      -X PUT --data-binary @- 'http://127.0.0.1:9002/$bucket/n/'\$i); echo \"\$i \$c \$((\$(date +%s) - s)) \$t\"; sleep 1; done" >/dev/null
   # Whether any peer reports the cluster writable, every 2 seconds: "-" when none does.
   (
     while :; do
@@ -472,13 +477,13 @@ if [ "$case" = "lifecycle" ]; then
   [ "$total" -ge 30 ] || die "the writer finished only $total writes during the upgrade: $(tail -3 <<<"$writes" | tr '\n' ';')"
   [ "$failed" = "0" ] || die "$failed of $total writes failed during the upgrade, even with retries: $(grep -vE ' 200$' <<<"$writes" | sed -n 1,5p | tr '\n' ';')"
   echo "  ok: the upgrade gave every peer a new task while the cluster stayed writable at every sample, and all $total writes succeeded"
-  writes="$(grep -E '^[0-9]+ [0-9]+ [0-9]+$' <<<"$(docker logs "$nwriter" 2>&1 || true)" || true)"
+  writes="$(grep -E '^[0-9]+ [0-9]+ [0-9]+ [0-9:]+$' <<<"$(docker logs "$nwriter" 2>&1 || true)" || true)"
   total="$(grep -c . <<<"$writes" || true)"
   failed="$(awk '$2 != 200' <<<"$writes")"
   slow="$(awk '$3 > 4' <<<"$writes")"
   [ "$total" -ge 30 ] || die "the writer through nodeProxy finished only $total writes during the upgrade: $(tail -3 <<<"$writes" | tr '\n' ';')"
   [ -z "$failed" ] && [ -z "$slow" ] \
-    || die "writes through nodeProxy failed or took over 4s while the peers rolled (<n> <code> <s>): $(printf '%s\n' "$failed" "$slow" | sed '/^$/d' | sort -un | sed -n 1,8p | tr '\n' ';')"
+    || die "writes through nodeProxy failed or took over 4s while the peers rolled (<n> <code> <s> <UTC start>): $(printf '%s\n' "$failed" "$slow" | sed '/^$/d' | sort -un | sed -n 1,8p | tr '\n' ';')"
   echo "  ok: all $total writes through nodeProxy's port on the node succeeded within 4s while every peer rolled"
   # Quorum alone does not tell one at a time from all at once on a cluster this small. The
   # order does: one at a time, each new task starts only after the one before has outlived
