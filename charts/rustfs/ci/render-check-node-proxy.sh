@@ -60,9 +60,14 @@ for l in 'mode tcp' 'bind :9000' 'option httpchk GET /health/ready' 'http-check 
   grep -Ex " *$l" <<<"$cfg" >/dev/null || bad "HAPROXY_CFG lacks '$l'"
 done
 d="$(grep -E '^ *default-server ' <<<"$cfg" || true)"
-for w in 'observe layer4 error-limit 1 on-error mark-down' 'on-marked-down shutdown-sessions' 'resolvers docker' 'init-addr none'; do
+for w in 'observe layer4 error-limit 1 on-error mark-down' 'resolvers docker' 'init-addr none'; do
   grep -F " $w" <<<"$d" >/dev/null || bad "default-server lacks '$w'"
 done
+# Marking a peer down at a failed connection must not cut that connection, which haproxy is
+# about to pass to another peer.
+if grep -vE '^ *#' <<<"$cfg" | grep -F 'on-marked-down' >/dev/null; then
+  bad "HAPROXY_CFG sets on-marked-down: a peer marked down at a failed connection would cut that connection instead of passing it on"
+fi
 [ "$(q "$s.healthcheck.test | join(\" \")")" = "CMD bash -c exec 3<>/dev/tcp/127.0.0.1/8405" ] \
   || bad "the container healthcheck does not ask the health frontend on 8405"
 
