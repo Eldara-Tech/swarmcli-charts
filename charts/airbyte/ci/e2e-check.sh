@@ -8,7 +8,8 @@
 # credentials. So this drives the one path that crosses every part of the chart — a
 # connection check for source-faker. The server hands it to a worker through Temporal, the
 # launcher claims it with the credentials FakeK8s stored in Postgres, and FakeK8s turns the
-# pod into Docker containers whose output lands in S3 (SeaweedFS). On the way it also asserts that
+# pod into Docker containers whose output lands in S3: the chart's bundled RustFS (mock) or the
+# external SeaweedFS (noauth, login). On the way it also asserts that
 # the server serves the UI and what guards it: oauth2-proxy (mock), Traefik's basic auth with
 # auth.mode none (noauth), or Airbyte's own login with auth.mode airbyte (login).
 #
@@ -214,6 +215,18 @@ for _ in $(seq 1 40); do
 done
 [ "$code" = 200 ] || { echo "  FAIL: manifest-server /health returned ${code:-<none>}, not 200"; exit 1; }
 echo "  manifest-server: healthy"
+
+# mock runs on the bundled store: it created storage.bucket, and the check above wrote to it.
+if [ "$case" = "mock" ]; then
+  docker service logs --raw "${release}_airbyte-rustfs" 2>&1 | grep -F 'bucket airbyte-storage: ready' >/dev/null \
+    || { echo "  FAIL: the bundled store did not create airbyte-storage"; exit 1; }
+  # == ci/e2e-setup.sh S3_KEY / S3_SECRET, the airbyte_s3_* secrets the store keys itself with.
+  keys="$(docker run --rm --network "${release}_airbyte" curlimages/curl:latest -s --max-time 15 \
+    --aws-sigv4 'aws:amz:us-east-1:s3' --user 'airbyte-e2e:airbyte-e2e-secret' \
+    'http://airbyte-rustfs:9000/airbyte-storage?list-type=2' 2>/dev/null | grep -o '<Key>' | wc -l || true)"
+  [ "${keys:-0}" -gt 0 ] || { echo "  FAIL: Airbyte wrote nothing to the bundled store's airbyte-storage bucket"; exit 1; }
+  echo "  bundled store: airbyte-storage created, $keys object(s) written by Airbyte"
+fi
 
 # The check can only succeed through FakeK8s; show it from the launcher's own log as well.
 # Captured to a file and matched with -F rather than piped: `docker service logs` can lag the

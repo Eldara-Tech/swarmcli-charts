@@ -1,11 +1,11 @@
 # airbyte
 
 Airbyte Community Platform for Docker Swarm. This chart runs the Airbyte control
-plane, worker, cron, Temporal, and by default an OAuth2 proxy with its session
-Redis. PostgreSQL and
-S3-compatible storage are external, so the operator controls their durability and
-backups: Airbyte's metadata and the dataplane credentials live in PostgreSQL.
-Temporal's workflow state and the session Redis keep node-local volumes.
+plane, worker, cron, Temporal, by default an OAuth2 proxy with its session Redis, and,
+unless you point it at an external store, a single-drive RustFS as its S3-compatible
+storage. PostgreSQL is external, so the operator controls its durability and backups:
+Airbyte's metadata and the dataplane credentials live there. Temporal's workflow state,
+the session Redis and the bundled store keep node-local volumes.
 
 The chart-managed `airbyte` overlay is attachable so the workload launcher can
 start connector containers through Docker and join them to the Airbyte services.
@@ -67,13 +67,15 @@ head -c 32 /dev/urandom | base64 | docker secret create airbyte_jwt_signature_se
 
 The database must already contain an empty `airbyte` database which the secret
 user can migrate.
-`storage.endpoint` must reach an S3-compatible endpoint, such as the
-[rustfs chart](../rustfs) (see [Object storage](#object-storage)), and
-`storage.bucket` must exist (or be provisioned according to your storage policy).
+The two `airbyte_s3_*` secrets are the keys Airbyte signs its S3 requests with. With the
+bundled store they are also its root keys, so each must be one word and not the public
+default `rustfsadmin`; generate the secret key with `openssl rand -base64 30`, for example.
+With an external store they must be keys it accepts (see [Object storage](#object-storage)).
 Set `database.host` to the database's stack-qualified Swarm service name when it
 lives in another stack, for example `postgres_postgres`.
 
-Label the one node that carries the session Redis and Temporal volumes before installing:
+Label the one node that carries the session Redis, Temporal and bundled-store volumes before
+installing:
 
 ```bash
 docker node update --label-add airbyte-data=true <node>
@@ -81,16 +83,13 @@ docker node update --label-add airbyte-data=true <node>
 
 ## Installing
 
-Create an override for your database, object storage, OIDC issuer, and public
-hostname. Secret values always stay in Swarm secrets, never in this file.
+Create an override for your database, OIDC issuer, and public hostname. Secret values
+always stay in Swarm secrets, never in this file.
 
 ```yaml
 # airbyte-values.yaml
 database:
   host: postgres_postgres
-storage:
-  endpoint: http://s3-rustfs:9000
-  network: airbyte-s3
 exposure:
   host: airbyte.example.com
 oauth2:
@@ -101,12 +100,32 @@ oauth2:
 swarmcli charts install airbyte swarmcli-charts/airbyte -f airbyte-values.yaml
 ```
 
-The `storage` block assumes a rustfs release named `s3` on the `airbyte-s3` overlay,
-installed first as described in [Object storage](#object-storage).
+With no `storage.endpoint`, this deploys the bundled S3 store as well; see
+[Object storage](#object-storage) to use an external one.
 
 ## Object storage
 
-The server, worker and workload launcher read and write `storage.endpoint`, and so do the
+### Bundled store
+
+By default, `storage.endpoint` is empty and the chart runs its own S3 store: a RustFS
+service, `airbyte-rustfs`, with one drive on the `airbyte_s3_data` volume
+(`persistence.storageVolume`), pinned to the `airbyte-data` node beside Temporal. Its root
+keys are the `airbyte_s3_*` secrets, so Airbyte and its store share one key pair, and it
+creates `storage.bucket` when it starts. It joins only the chart's internal overlay and
+publishes no port. The image is `rustfs.image`.
+
+One drive means no redundancy: losing that node's disk loses the job logs, state and
+workload payloads Airbyte keeps in S3, though not the connections and their settings, which
+live in PostgreSQL. It suits a small or single-node install. For data that must survive a
+node, back up the volume or use an external store, such as the rustfs chart in distributed
+mode. Switching an existing release to an external store does not move the bucket: copy it
+across with an S3 client first.
+
+### External store
+
+Set `storage.endpoint` to use an external S3-compatible store instead; the bundled one is
+then not deployed. The server, worker and workload launcher read and write
+`storage.endpoint`, and so do the
 replication orchestrator and connector sidecar the launcher starts. When the store runs in
 another stack, name its attachable overlay in `storage.network`: those three services and
 every container the launcher starts, connector images included, join it.
@@ -266,15 +285,15 @@ after 30 minutes, and a pod whose image is still missing then fails. Kubernetes
 | `workloadApiServer.image.*`, `workloadLauncher.image.*` | `airbyte/*` / `""` | Workload API and launcher images; an empty tag follows `image.tag` |
 | `cron.image.*` | `airbyte/cron` / `""` | Cron image; an empty tag follows `image.tag` |
 | `oauth2Proxy.image.*` | `quay.io/oauth2-proxy/oauth2-proxy` | OIDC reverse-proxy image and tag |
-| `redis.image.*` / `temporal.image.*` | see `values.yaml` | In-stack session Redis and Temporal images |
+| `redis.image.*` / `temporal.image.*` / `rustfs.image.*` | see `values.yaml` | In-stack session Redis, Temporal and bundled S3 store images |
 | `fakeK8sConfigVersion` | `""` | Optional local-testing rotation key for the immutable FakeK8s config |
-| `persistence.*` | see `values.yaml` | Session Redis and Temporal volumes and the node label that pins them |
+| `persistence.*` | see `values.yaml` | Session Redis, Temporal and bundled-store volumes and the node label that pins them |
 | `database.host` / `.port` / `.name` | `postgres` / `5432` / `airbyte` | External PostgreSQL endpoint and database |
 | `database.userSecretName` / `.passwordSecretName` | `airbyte_db_user` / `airbyte_db_password` | External secrets for PostgreSQL credentials |
 | `database.network` | `airbyte-db-net` | External overlay PostgreSQL is reachable on |
-| `storage.endpoint` / `.bucket` | `https://s3.example.com` / `airbyte-storage` | S3-compatible endpoint and bucket |
-| `storage.accessKeySecretName` / `.secretKeySecretName` | `airbyte_s3_access_key` / `airbyte_s3_secret_key` | External S3 credential secrets |
-| `storage.network` | `""` | External overlay the S3 endpoint is reachable on (see [Object storage](#object-storage)) |
+| `storage.endpoint` / `.bucket` | `""` / `airbyte-storage` | External S3-compatible endpoint (empty: the bundled store, see [Object storage](#object-storage)) and bucket |
+| `storage.accessKeySecretName` / `.secretKeySecretName` | `airbyte_s3_access_key` / `airbyte_s3_secret_key` | S3 credential secrets, also the bundled store's root keys |
+| `storage.network` | `""` | External overlay an external S3 endpoint is reachable on (see [Object storage](#object-storage)); refused with the bundled store |
 | `connectorRegistry.enterpriseSourceStubsUrl` | see `values.yaml` | Connector-registry Enterprise source stubs URL |
 | `flyway.configsMinimumMigrationVersion` / `.jobsMinimumMigrationVersion` | `0.35.15.001` / `0.29.15.001` | Minimum required Flyway migration for the configs and jobs databases |
 | `auth.mode` | `oauth2` | `oauth2` (oauth2-proxy in front), `airbyte` (see [Airbyte's own login](#airbytes-own-login)) or `none` (see [Without OAuth](#without-oauth)) |
