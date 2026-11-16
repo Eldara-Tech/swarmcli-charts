@@ -246,8 +246,9 @@ It is a global HAProxy service, `<release>_rustfs-node-proxy`. One task per node
 the port in host mode there and passes each connection over `network.name` to a peer whose
 `/health/ready` answers 200, addressing each peer's task directly. A connection that cannot
 reach a peer, one restarting during a rolling upgrade for example, goes to another peer
-within a second, and that peer is marked down. A peer that fails two checks also loses the
-connections open to it, so clients reconnect to a ready one. RustFS sees the proxy's address
+within a second, and that peer is marked down. A peer that fails two checks is marked down
+too. Connections already open to a peer stay open until the client or the peer closes
+them, as a stopping peer does. RustFS sees the proxy's address
 as the client's, in its log and in `aws:SourceIp` policy conditions. An update of the proxy
 itself (a `nodeProxy.*` value, a new image) stops each node's task before it starts the new
 one, so the port is closed on that node for a few seconds. On a node,

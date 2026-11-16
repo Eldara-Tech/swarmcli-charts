@@ -40,7 +40,8 @@
 # the bootstrap passes again over the buckets that now exist. `lifecycle` drives
 # `swarmcli charts upgrade` itself: an upgrade rolling every peer one at a time while two
 # clients keep writing, one through the shared alias and one through nodeProxy's port on the
-# node, then every peer stopped together and started again.
+# node, with nodeProxy cutting none of its connections, then every peer stopped together and
+# started again.
 set -euo pipefail
 
 release="$1"
@@ -485,6 +486,11 @@ if [ "$case" = "lifecycle" ]; then
   [ -z "$failed" ] && [ -z "$slow" ] \
     || die "writes through nodeProxy failed or took over 4s while the peers rolled (<n> <code> <s> <UTC start>): $(printf '%s\n' "$failed" "$slow" | sed '/^$/d' | sort -un | sed -n 1,8p | tr '\n' ';')"
   echo "  ok: all $total writes through nodeProxy's port on the node succeeded within 4s while every peer rolled"
+  # The writer above retries once, which hides a proxy that cuts one connection at every
+  # stop of a peer. Its log names each one: termination state D, cut because a peer went down.
+  cut_off="$(docker service logs --raw "$(svc node-proxy)" 2>&1 | awk '$3 == "s3" && $7 ~ /^D/' || true)"
+  [ -z "$cut_off" ] || die "nodeProxy cut connections as it marked rolling peers down, instead of passing them to another peer: $(sed -n 1,4p <<<"$cut_off" | tr '\n' ';')"
+  echo "  ok: nodeProxy cut no connection while the peers rolled"
   # Quorum alone does not tell one at a time from all at once on a cluster this small. The
   # order does: one at a time, each new task starts only after the one before has outlived
   # its 20s monitor window; all at once, they start within seconds of each other.

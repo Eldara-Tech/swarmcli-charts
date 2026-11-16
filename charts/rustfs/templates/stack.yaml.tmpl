@@ -665,7 +665,8 @@ services:
   #
   # Each peer is addressed by tasks.<release>_<service>, the task itself, as postgres-patroni's
   # proxy does: a stopping peer's VIP loses its backend before the process stops, and
-  # connections to it hang, while the task's own address still answers, or refuses at once.
+  # connections to it hang, while the task's own address answers until the peer stops
+  # listening, and then fails the connection within timeout connect.
   rustfs-node-proxy:
     image: {{ .Values.nodeProxy.image.repository }}:{{ .Values.nodeProxy.image.tag }}
     networks:
@@ -710,10 +711,10 @@ services:
           timeout client 10m
           timeout server 10m
           # observe layer4: a failed connection marks the peer down without waiting for its
-          # checks. shutdown-sessions: a peer marked down loses its open connections too, so
-          # clients holding them reconnect to a ready peer rather than keep failing on one
-          # that is alive but not ready.
-          default-server inter 2s fall 2 rise 2 observe layer4 error-limit 1 on-error mark-down on-marked-down shutdown-sessions resolvers docker resolve-prefer ipv4 init-addr none
+          # checks, and goes to another peer. No on-marked-down shutdown-sessions: that
+          # connection is still the peer's when it is marked down, so it would be cut rather
+          # than passed on, at every stop of a peer. A stopping peer closes its own.
+          default-server inter 2s fall 2 rise 2 observe layer4 error-limit 1 on-error mark-down resolvers docker resolve-prefer ipv4 init-addr none
         # What the container healthcheck connects to.
         frontend health
           mode http
