@@ -1,0 +1,8 @@
+# Sentinel mode with metrics: one exporter per peer, each logging in as the exporter ACL
+# user defined on its own peer. ci/e2e-check.sh scrapes all three from the monitoring
+# overlay: exactly one reports a master, the others a replica whose link is up.
+mode: sentinel
+persistence:
+  enabled: false
+metrics:
+  enabled: true

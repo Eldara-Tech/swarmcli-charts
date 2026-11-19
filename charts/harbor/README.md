@@ -13,7 +13,7 @@ and a start-up wrapper:
 | `portal` | The web UI |
 | `jobservice` | Replication, garbage collection, retention, scans and webhooks |
 | `registry`, `registryctl` | The distribution registry and the controller Harbor deletes blobs through |
-| `valkey` | Sessions, caches and the job queue, on the stack's own overlay only |
+| `valkey` | Sessions, caches and the job queue, on the stack's own overlay only (`redis.type: internal`, the default) |
 | `trivy` | The vulnerability scanner (`trivy.enabled`, on by default) |
 | `exporter` | Project, quota and job-queue metrics (`metrics.enabled` only) |
 
@@ -99,8 +99,9 @@ A default install needs:
 
 Add `monitoring` with `metrics.enabled`, `harbor-oidc-client-secret` with `oidc.enabled`,
 `harbor-s3-access-key`, `harbor-s3-secret-key` and `storage.s3.network` with
-`storage.type: s3`, and the paths to `hostPaths` when you set `persistence.registryPath` or
-`persistence.valkeyPath`. Each entry is the name itself, so an override in values needs the
+`storage.type: s3`, `redis.external.passwordSecret` (`harbor-redis-password`) and
+`redis.external.network` (`redis-net`) with `redis.type: external`, and the paths to
+`hostPaths` when you set `persistence.registryPath` or `persistence.valkeyPath`. Each entry is the name itself, so an override in values needs the
 same change here.
 
 ## Exposure
@@ -241,6 +242,76 @@ With `persistence.enabled: false` nothing is kept: every image is lost when the 
 task is replaced, and registryctl, which then has storage of its own, cannot delete blobs
 during garbage collection. It is for trying the chart out.
 
+## High availability
+
+Harbor's own services keep no state, so each runs as several replicas once nothing beneath
+them is a single point of failure:
+
+- **the database**: the [postgres-patroni chart](../postgres-patroni), which fails over behind
+  its proxy;
+- **the layers**: `storage.type: s3` on an object store that survives a node, e.g. the
+  [rustfs chart](../rustfs) in distributed mode. A filesystem volume belongs to one node, so
+  with `storage.type: filesystem` the registry and registryctl stay at one replica and the
+  render refuses more;
+- **sessions, caches and the job queue**: `redis.type: external` on the
+  [redis chart](../redis) in sentinel mode, instead of the `valkey` service and its node;
+- **job logs** already go to the database, so jobservice needs no shared volume.
+
+With all three, nothing is pinned or keeps a volume, and every replica can run anywhere. With
+the postgres-patroni, rustfs (as `s3`) and redis (as `redis`, sentinel mode) charts on their
+default overlays:
+
+```yaml
+database:
+  host: postgres                # postgres-patroni's client alias: the primary on 5432
+  network: postgres-patroni-net
+storage:
+  type: s3
+  s3:
+    endpoint: http://s3-rustfs:9000
+    bucket: harbor
+    network: rustfs-net
+redis:
+  type: external
+  external:
+    addr: redis-sentinel-1:26379,redis-sentinel-2:26379,redis-sentinel-3:26379
+    sentinelMasterSet: mymaster
+    passwordSecret: redis_password   # the redis chart's own secret
+nginx: { replicas: 2 }
+core: { replicas: 2 }
+portal: { replicas: 2 }
+jobservice: { replicas: 2 }
+registry: { replicas: 2 }
+registryctl: { replicas: 2 }
+```
+
+- **Spreading.** A service with more than one replica carries the placement preference
+  `spread: node.id`, so Swarm puts its replicas on different nodes where it can. It is a
+  preference, not a rule: on fewer nodes than replicas they share one, and with a node down
+  its replicas start on the others. The exception is nginx with `publish.mode: host`: each
+  replica binds `publish.port` on its node, so a replica without a node of its own stays
+  Pending.
+- **Trivy and the exporter stay at one replica.** Each Trivy replica would download its own
+  vulnerability database; while the one task is replaced, scans wait and pushes and pulls do
+  not. The exporter only serves metrics.
+- **The Redis password goes into URLs unencoded**, so it may hold only letters, digits, `.`,
+  `_`, `~` and `-`; every component refuses to start on anything else
+  (`openssl rand -hex 32` makes one). `redis.external.passwordSecret: ""` connects without one.
+- **Harbor cannot authenticate to Sentinels.** None of its components sends a Sentinel a
+  password, so they must answer without one, and anything on `redis.external.network` can ask
+  them which master to use. The redis chart's sentinel mode limits what they answer to such
+  clients; with Sentinels of your own, keep that overlay to Redis and its clients.
+- **Garbage-collection schedules keep the Redis address they were saved with**, password
+  included, in Harbor's database, in Harbor releases without goharbor/harbor#24037
+  (goharbor/harbor#22905). After changing `redis.*`, save the schedule again under
+  *Administration → Clean Up*.
+- **Switching `redis.type` on an installed release** starts with empty sessions and job queue,
+  so everyone logs in again and queued jobs are dropped, and leaves the `valkey` service
+  running, because swarmcli deploys without `--prune`: remove it with
+  `docker service rm <release>_valkey`.
+- CI proves a rolling update of core, killed core and registry tasks and a Redis failover on
+  one node; it cannot drain a node, so that is untested.
+
 ## Metrics
 
 `metrics.enabled: true` turns on Harbor's own Prometheus metrics and adds one service:
@@ -374,6 +445,7 @@ values, so every key it adds renders `<no value>` (Eldara-Tech/swarmcli#687).
 | `image.tag` | `""` | Image tag — defaults to `appVersion` in Chart.yaml |
 | `portal.image`, `jobservice.image`, `registry.image`, `registryctl.image`, `nginx.image`, `valkey.image`, `trivy.image`, `metrics.exporter.image` | `goharbor/…`, tag `""` | The other components; an empty tag follows `image.tag` |
 | `jobservice.workers` | `10` | Concurrent job workers |
+| `nginx.replicas`, `core.replicas`, `portal.replicas`, `jobservice.replicas`, `registry.replicas`, `registryctl.replicas` | `1` | Replicas, spread over the nodes when more than one; the registry and registryctl need `storage.type: s3` for more |
 | `trivy.enabled` | `true` | Run the vulnerability scanner |
 | `trivy.offlineScan` | `false` | No network lookups during a scan |
 | `trivy.ignoreUnfixed` | `false` | Report only vulnerabilities with a fix |
@@ -398,6 +470,11 @@ values, so every key it adds renders `<no value>` (Eldara-Tech/swarmcli#687).
 | `storage.s3.accessKeySecret` / `secretKeySecret` | `harbor-s3-access-key` / `harbor-s3-secret-key` | Swarm secrets with the key pair |
 | `storage.s3.disableRedirect` | `true` | Serve layers through Harbor rather than presigned URLs |
 | `storage.s3.network` | `""` | Overlay to join to reach the endpoint |
+| `redis.type` | `internal` | `internal` (the `valkey` service) or `external` |
+| `redis.external.addr` | `""` | `host:port` of Redis, or the Sentinels as `host:port,host:port` |
+| `redis.external.sentinelMasterSet` | `""` | Master set the Sentinels monitor; `""` = `addr` is Redis itself |
+| `redis.external.passwordSecret` | `harbor-redis-password` | Swarm secret with Redis's password (letters, digits, `._~-`); `""` = none |
+| `redis.external.network` | `redis-net` | Overlay Redis and its Sentinels are reachable on; `""` joins none |
 | `persistence.enabled` | `true` | Volumes for the registry and Valkey, pinned to the data node |
 | `persistence.registryVolume` / `valkeyVolume` | `harbor-registry` / `harbor-valkey` | Named volumes |
 | `persistence.registryPath` / `valkeyPath` | `""` | Host directories instead (host-mount) |

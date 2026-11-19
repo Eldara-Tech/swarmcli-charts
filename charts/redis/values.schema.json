@@ -11,6 +11,20 @@
       "required": ["repository"]
     },
     "replicas": { "type": "integer", "minimum": 1, "maximum": 1 },
+    "mode": { "type": "string", "enum": ["standalone", "sentinel"] },
+    "cluster": {
+      "type": "object",
+      "properties": {
+        "peers": { "description": "Sentinel mode: Redis peers, one master and its replicas.", "type": "integer", "minimum": 2, "maximum": 5 }
+      }
+    },
+    "sentinel": {
+      "type": "object",
+      "properties": {
+        "members": { "description": "Sentinel mode: Sentinels; a failover needs a majority.", "type": "integer", "enum": [3, 5] },
+        "masterName": { "description": "The name clients ask the Sentinels for.", "type": "string", "pattern": "^[A-Za-z0-9._-]+$" }
+      }
+    },
     "auth": {
       "type": "object",
       "properties": {

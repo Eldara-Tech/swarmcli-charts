@@ -1,0 +1,5 @@
+# The smallest Sentinel shape: two peers and three Sentinels, so node label 3 carries only a
+# Sentinel. Render-checked; it converges in a local `make e2e` like the others.
+mode: sentinel
+cluster:
+  peers: 2

@@ -1,0 +1,45 @@
+# High availability: two replicas of every stateless component, layers in S3, and sessions,
+# caches and the job queue on the redis chart in sentinel mode. Nothing is pinned or keeps a
+# volume. The e2e case: ci/e2e-setup.sh stands up the PostgreSQL, a SeaweedFS S3 store and
+# the redis chart (release harbor-e2e-redis), and ci/e2e-check.sh pushes and pulls through a
+# forced update of core, two killed tasks and a Redis failover.
+exposure:
+  mode: published
+publish:
+  port: 18080
+externalURL: http://127.0.0.1:18080
+persistence:
+  nodeLabel: ""
+# The throwaway PostgreSQL ci/e2e-setup.sh stands up, on an overlay of its own.
+database:
+  host: harbor-e2e-db
+  network: harbor-e2e-db-net
+storage:
+  type: s3
+  s3:
+    endpoint: http://harbor-e2e-s3:8333
+    bucket: harbor
+    network: harbor-e2e-s3-net
+redis:
+  type: external
+  external:
+    addr: harbor-e2e-redis-sentinel-1:26379,harbor-e2e-redis-sentinel-2:26379,harbor-e2e-redis-sentinel-3:26379
+    sentinelMasterSet: mymaster
+    # The redis chart's own secret, so Harbor and Redis cannot hold different passwords.
+    passwordSecret: redis_password
+nginx:
+  replicas: 2
+core:
+  replicas: 2
+portal:
+  replicas: 2
+jobservice:
+  replicas: 2
+registry:
+  replicas: 2
+registryctl:
+  replicas: 2
+# Swarm watches each updated task for this long; the e2e check forces updates, which would
+# otherwise wait out the default 8m each.
+healthcheck:
+  monitor: 60s
