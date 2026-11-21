@@ -125,13 +125,15 @@ if [ "$case" = "default" ]; then
   refused "rejects a host name containing '_'" --set storage.endpoint=http://s3_rustfs:9000
   # The edge overlay would put the server's API, unauthenticated in oauth2 mode, next to everything routed.
   refused 'is exposure.network' --set storage.network=traefik-public
+  # The bundled store sits on the chart's own overlay; an external overlay without an endpoint is a mistake.
+  refused 'is set but storage.endpoint is empty' --set storage.network=airbyte-s3
 fi
 
 # storage.network reaches every process that talks to S3 — the server, worker and workload
 # launcher, and through FAKEK8S_POD_EXTRA_NETWORKS the orchestrator and sidecar it starts — and
 # nothing else. Without it, none of them joins an extra overlay.
 s3net=""
-case "$case" in mock|noauth|login) s3net=airbyte-e2e-s3-net ;; esac
+case "$case" in noauth|login) s3net=airbyte-e2e-s3-net ;; esac
 if [ -n "$s3net" ]; then
   [ "$(yq -o=json -I=0 "[.services | to_entries[] | select(.value.networks[] == \"$s3net\") | .key] | sort" "$out")" = '["server","worker","workload-launcher"]' ] \
     || { echo "  FAIL($case): storage.network is not joined by exactly the server, worker and workload launcher"; fail=1; }
@@ -144,6 +146,36 @@ else
     [ "$(yq -o=json -I=0 ".services[\"$svc\"].networks" "$out")" = '["airbyte","airbyte-db-net"]' ] \
       || { echo "  FAIL($case): $svc joins an overlay without storage.network"; fail=1; }
   done
+fi
+
+# An empty storage.endpoint (every fixture but noauth and login) deploys the bundled RustFS:
+# every S3 client dials it on the internal overlay, it keys itself with the same two secrets
+# Airbyte signs with, publishes nothing and keeps its drive on a declared volume. With an
+# endpoint, none of it renders.
+endpoints="$(sed -n 's/^ *MINIO_ENDPOINT: *"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$out" | sort | uniq -c | awk '{print $1, $2}')"
+if [ -z "$s3net" ]; then
+  bundled=1
+  r='.services["airbyte-rustfs"]'
+  [ "$endpoints" = "4 http://airbyte-rustfs:9000" ] \
+    || { echo "  FAIL($case): the S3 clients do not all dial the bundled store (got: $endpoints)"; fail=1; }
+  [ "$(yq -o=json -I=0 "$r.networks" "$out")" = '["airbyte"]' ] \
+    || { echo "  FAIL($case): the bundled store is not on the internal overlay alone"; fail=1; }
+  yq -e "$r | has(\"ports\")" "$out" >/dev/null 2>&1 \
+    && { echo "  FAIL($case): the bundled store publishes a port"; fail=1; }
+  [ "$(yq -o=json -I=0 "$r.secrets" "$out")" = '["airbyte_s3_access_key","airbyte_s3_secret_key"]' ] \
+    && [ "$(yq -r "$r.environment.RUSTFS_ACCESS_KEY_FILE" "$out")" = /run/secrets/airbyte_s3_access_key ] \
+    && [ "$(yq -r "$r.environment.RUSTFS_SECRET_KEY_FILE" "$out")" = /run/secrets/airbyte_s3_secret_key ] \
+    || { echo "  FAIL($case): the bundled store does not key itself with Airbyte's S3 secrets"; fail=1; }
+  [ "$(yq -r "$r.volumes[0]" "$out")" = airbyte_s3_data:/data ] && yq -e '.volumes | has("airbyte_s3_data")' "$out" >/dev/null 2>&1 \
+    || { echo "  FAIL($case): the bundled store's drive is not the declared airbyte_s3_data volume"; fail=1; }
+  yq -r "$r.command[0]" "$out" | grep -F 'b="airbyte-storage";' >/dev/null \
+    || { echo "  FAIL($case): the bundled store does not create storage.bucket"; fail=1; }
+else
+  bundled=0
+  [ "$endpoints" = "4 http://airbyte-e2e-s3:8333" ] \
+    || { echo "  FAIL($case): the S3 clients do not all dial storage.endpoint (got: $endpoints)"; fail=1; }
+  yq -e '.services | has("airbyte-rustfs")' "$out" >/dev/null 2>&1 || yq -e '.volumes | has("airbyte_s3_data")' "$out" >/dev/null 2>&1 \
+    && { echo "  FAIL($case): the bundled store renders beside an external storage.endpoint"; fail=1; }
 fi
 
 # placement.constraints reaches every service that runs an Airbyte platform image: since 2.3.0 they
@@ -177,15 +209,15 @@ elif grep -q 'FAKEK8S_REGISTRY_AUTH_FILE' "$out"; then
   echo "  FAIL($case): FAKEK8S_REGISTRY_AUTH_FILE set without workloadLauncher.registryAuthSecretName"; fail=1
 fi
 
-# The data pin follows the named volumes (session Redis and Temporal; Temporal alone with
-# auth.mode none) and nothing else, and goes away with nodeLabel: "".
+# The data pin follows the named volumes (session Redis, Temporal and the bundled store; no
+# Redis without auth.mode oauth2) and nothing else, and goes away with nodeLabel: "".
 case "$case" in
   published|login-published) pins=0 ;;
-  noauth*|login*) pins=1 ;;
-  *) pins=2 ;;
+  noauth*|login*) pins=$((1 + bundled)) ;;
+  *) pins=$((2 + bundled)) ;;
 esac
 [ "$(grep -c 'node.labels.airbyte-data == true' "$out")" -eq "$pins" ] \
   || { echo "  FAIL($case): expected $pins data-node pin(s), one per named volume"; fail=1; }
 
 [ "$fail" -eq 0 ] || exit 1
-echo "  $case: public URLs use $scheme://, auth.mode wiring checked, one Airbyte version, one socket mount, $pins data pin, storage overlay ${s3net:-none}"
+echo "  $case: public URLs use $scheme://, auth.mode wiring checked, one Airbyte version, one socket mount, $pins data pin, storage ${s3net:-bundled}"

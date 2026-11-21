@@ -9,8 +9,10 @@
 #     overlays;
 #   * the airbyte-data node label the session Redis and Temporal are pinned to;
 #   * PostgreSQL (airbyte-e2e-postgres) on airbyte-db-net;
-#   * SeaweedFS (airbyte-e2e-s3) as the S3 endpoint, alone on airbyte-e2e-s3-net, so only
-#     storage.network reaches it. Airbyte creates its bucket itself;
+#   * SeaweedFS (airbyte-e2e-s3) as the external S3 endpoint of noauth and login, alone on
+#     airbyte-e2e-s3-net, so only storage.network reaches it. Airbyte creates its bucket
+#     itself. mock leaves storage.endpoint empty and runs on the chart's bundled RustFS,
+#     which keys itself with the same airbyte_s3_* secrets;
 #   * an OIDC discovery mock (airbyte-e2e-oidc, ci/mock-oidc.js) on traefik-public, without
 #     which oauth2-proxy exits at startup;
 #   * for noauth and login, the in-repo traefik chart as a real edge (scripts/e2e-edge);

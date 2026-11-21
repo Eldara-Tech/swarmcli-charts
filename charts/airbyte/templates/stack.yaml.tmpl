@@ -14,6 +14,10 @@
 {{- $storageNetworks := list "airbyte" .Values.database.network }}
 {{- with .Values.storage.network }}{{ $storageNetworks = append $storageNetworks . }}{{- end }}
 {{- $storageNetworks = $storageNetworks | uniq }}
+{{- /* An empty storage.endpoint deploys the bundled store, reached by its service name on the
+       chart's own overlay, where the launcher's connector containers sit too. */}}
+{{- $bundled := not .Values.storage.endpoint }}
+{{- $endpoint := ternary "http://airbyte-rustfs:9000" .Values.storage.endpoint $bundled }}
 {{- $router := .Release.Name }}
 {{- $scheme := ternary "https" "http" .Values.exposure.tls }}
 {{- $oauth := eq .Values.auth.mode "oauth2" }}
@@ -23,6 +27,9 @@
 {{- end }}
 {{- if and .Values.storage.network (eq .Values.storage.network .Values.exposure.network) }}
 {{- fail (printf "storage.network %s is exposure.network: everything the edge proxy routes shares that overlay and would reach the Airbyte server's API and the connector containers. Give the store an overlay only Airbyte joins." .Values.storage.network) -}}
+{{- end }}
+{{- if and $bundled .Values.storage.network }}
+{{- fail (printf "storage.network %s is set but storage.endpoint is empty: the bundled store sits on the chart's own overlay. Set storage.endpoint to the external store reachable on that network, or clear storage.network." .Values.storage.network) -}}
 {{- end }}
 {{- if contains "_" (urlParse .Values.storage.endpoint).hostname }}
 {{- fail (printf "storage.endpoint %s: Airbyte's S3 client parses it with java.net.URI, which rejects a host name containing '_', so every storage call would fail. A stack's service name <stack>_<service> always has one: use an alias without it, such as the rustfs chart's http://<release>-rustfs:9000 or the seaweedfs chart's http://<release>-seaweedfs:8333, or a DNS name." .Values.storage.endpoint) -}}
@@ -247,7 +254,7 @@ services:
       DATABASE_PORT: {{ .Values.database.port | quote }}
       DATABASE_DB: {{ .Values.database.name | quote }}
       STORAGE_TYPE: minio
-      MINIO_ENDPOINT: {{ .Values.storage.endpoint | quote }}
+      MINIO_ENDPOINT: {{ $endpoint | quote }}
       STORAGE_BUCKET_LOG: {{ .Values.storage.bucket | quote }}
       STORAGE_BUCKET_STATE: {{ .Values.storage.bucket | quote }}
       STORAGE_BUCKET_WORKLOAD_OUTPUT: {{ .Values.storage.bucket | quote }}
@@ -328,7 +335,7 @@ services:
       DATABASE_PORT: {{ .Values.database.port | quote }}
       DATABASE_DB: {{ .Values.database.name | quote }}
       STORAGE_TYPE: minio
-      MINIO_ENDPOINT: {{ .Values.storage.endpoint | quote }}
+      MINIO_ENDPOINT: {{ $endpoint | quote }}
       STORAGE_BUCKET_LOG: {{ .Values.storage.bucket | quote }}
       STORAGE_BUCKET_STATE: {{ .Values.storage.bucket | quote }}
       STORAGE_BUCKET_WORKLOAD_OUTPUT: {{ .Values.storage.bucket | quote }}
@@ -374,7 +381,7 @@ services:
       ENTERPRISE_SOURCE_STUBS_URL: {{ .Values.connectorRegistry.enterpriseSourceStubsUrl | quote }}
       AIRBYTE_CONNECTOR_REGISTRY_ENTERPRISE_ENTERPRISE_SOURCE_STUBS_URL: {{ .Values.connectorRegistry.enterpriseSourceStubsUrl | quote }}
       STORAGE_TYPE: minio
-      MINIO_ENDPOINT: {{ .Values.storage.endpoint | quote }}
+      MINIO_ENDPOINT: {{ $endpoint | quote }}
       STORAGE_BUCKET_LOG: {{ .Values.storage.bucket | quote }}
       STORAGE_BUCKET_STATE: {{ .Values.storage.bucket | quote }}
       STORAGE_BUCKET_WORKLOAD_OUTPUT: {{ .Values.storage.bucket | quote }}
@@ -442,7 +449,7 @@ services:
       DATABASE_DB: {{ .Values.database.name | quote }}
       ENTERPRISE_SOURCE_STUBS_URL: {{ .Values.connectorRegistry.enterpriseSourceStubsUrl | quote }}
       STORAGE_TYPE: minio
-      MINIO_ENDPOINT: {{ .Values.storage.endpoint | quote }}
+      MINIO_ENDPOINT: {{ $endpoint | quote }}
       STORAGE_BUCKET_LOG: {{ .Values.storage.bucket | quote }}
       STORAGE_BUCKET_STATE: {{ .Values.storage.bucket | quote }}
       STORAGE_BUCKET_WORKLOAD_OUTPUT: {{ .Values.storage.bucket | quote }}
@@ -475,6 +482,82 @@ services:
       placement:
         constraints:
 {{ toYaml $dataConstraints | indent 10 }}
+{{- if $bundled }}
+
+  # The bundled S3 store, deployed while storage.endpoint is empty: one RustFS drive on
+  # persistence.storageVolume, pinned to the data node beside Temporal, with no redundancy.
+  # It takes its root keys from the same two secrets Airbyte signs with, reads them through
+  # RUSTFS_*_FILE so neither reaches the manifest, and publishes no port.
+  #  * The wrapper refuses a key file that is empty, holds more than one word, or is the
+  #    public default `rustfsadmin`, which RustFS itself only warns about.
+  #  * A background loop creates storage.bucket over the signed S3 API once the store
+  #    accepts writes; 200 and 409 both mean it exists, so a restart is a no-op. curl reads
+  #    the keys from a config on stdin, never from argv.
+  airbyte-rustfs:
+    image: {{ .Values.rustfs.image.repository }}:{{ .Values.rustfs.image.tag }}
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - >-
+        set -eu;
+        for f in "$$RUSTFS_ACCESS_KEY_FILE" "$$RUSTFS_SECRET_KEY_FILE"; do
+        w="$$(wc -w 2>/dev/null < "$$f" | tr -d ' ' || true)";
+        if [ "$${w:-0}" != 1 ]; then echo "$$f is missing or empty, or the key has whitespace inside it - refusing to start" >&2; exit 1; fi;
+        if [ "$$(LC_ALL=C tr -cd '[:alnum:]' < "$$f")" = rustfsadmin ]; then echo "$$f holds the public default rustfsadmin - refusing to start" >&2; exit 1; fi;
+        done;
+        (
+        key="$$(tr -d '[:space:]' < "$$RUSTFS_ACCESS_KEY_FILE" | sed 's/[\\"]/\\&/g')";
+        sec="$$(tr -d '[:space:]' < "$$RUSTFS_SECRET_KEY_FILE" | sed 's/[\\"]/\\&/g')";
+        b={{ .Values.storage.bucket | quote }};
+        n=0; code=000;
+        until [ "$$code" = 200 ] || [ "$$code" = 409 ]; do
+        n=$$((n + 1));
+        if [ "$$n" -gt 150 ]; then echo "bucket $$b: not created after 150 attempts (last HTTP $$code)" >&2; exit 1; fi;
+        sleep 2;
+        code="$$(printf 'user = "%s:%s"\n' "$$key" "$$sec" | curl -K - -s -o /dev/null -w '%{http_code}' --max-time 10 --aws-sigv4 "aws:amz:us-east-1:s3" -X PUT "http://127.0.0.1:9000/$$b" || true)";
+        done;
+        echo "bucket $$b: ready (HTTP $$code)"
+        ) &
+        exec /entrypoint.sh rustfs
+    environment:
+      RUSTFS_ACCESS_KEY_FILE: /run/secrets/{{ .Values.storage.accessKeySecretName }}
+      RUSTFS_SECRET_KEY_FILE: /run/secrets/{{ .Values.storage.secretKeySecretName }}
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ENABLE: "false"
+      # The server log goes to stdout (docker service logs), not a file in the container.
+      RUSTFS_OBS_LOG_DIRECTORY: ""
+      # The image is pinned and Renovate moves the pin; no call home for updates.
+      RUSTFS_CHECK_UPDATE: "false"
+    # 503 until storage and IAM are up, 200 after.
+    healthcheck:
+      test: [CMD, curl, -fsS, -o, /dev/null, "http://127.0.0.1:9000/health/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+    stop_grace_period: 30s
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    secrets:
+      - {{ .Values.storage.accessKeySecretName }}
+      - {{ .Values.storage.secretKeySecretName }}
+    networks: [airbyte]
+    volumes:
+      - {{ .Values.persistence.storageVolume }}:/data
+    deploy:
+      replicas: 1
+      update_config:
+        order: stop-first
+        monitor: 2m
+      restart_policy:
+        condition: any
+      placement:
+        constraints:
+{{ toYaml $dataConstraints | indent 10 }}
+{{- end }}
 
   cron:
     image: {{ .Values.cron.image.repository }}:{{ .Values.cron.image.tag | default $airbyteVersion }}
@@ -508,6 +591,9 @@ volumes:
   {{ .Values.persistence.oauthRedisVolume }}: {}
 {{- end }}
   {{ .Values.persistence.temporalVolume }}: {}
+{{- if $bundled }}
+  {{ .Values.persistence.storageVolume }}: {}
+{{- end }}
 
 configs:
   fakek8s:
