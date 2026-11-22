@@ -14,5 +14,5 @@ healthcheck:
   monitor: 20s
 nodeProxy:
   enabled: true
-  # So a slow write's line names the peer that held it (#368).
+  # So a failed write's line names the peer that held it (#368).
   logAllConnections: true

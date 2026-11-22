@@ -104,11 +104,11 @@ diagnose() {
   if docker service inspect "$(svc node-proxy)" >/dev/null 2>&1; then
     docker service logs --timestamps --tail 40 "$(svc node-proxy)" 2>&1 | sed 's/^/    /' || true
   fi
-  # Around each slow write through nodeProxy, every peer's and the proxy's whole log, which
+  # Around each failed write through nodeProxy, every peer's and the proxy's whole log, which
   # the tails above miss: the proxy's line names the peer that held the write (the lifecycle
   # fixture logs every connection), and the peers' say what they waited on meanwhile.
-  for t in $slow_at; do
-    echo "    --- every log line from $(iso $((t - 5))) to $(iso $((t + 10))), around a slow write ---"
+  for t in $failed_at; do
+    echo "    --- every log line from $(iso $((t - 5))) to $(iso $((t + 10))), around a failed write ---"
     for unit in $PEERS node-proxy; do
       docker service logs --timestamps --since "$(iso $((t - 5)))Z" "$(svc "$unit")" 2>&1 \
         | awk -v until="$(iso $((t + 10)))" '$1 < until' | LC_ALL=C sort | sed 's/^/    /' || true
@@ -117,8 +117,8 @@ diagnose() {
 }
 # Seconds since the epoch as UTC "YYYY-MM-DDTHH:MM:SS", with GNU date or BSD date.
 iso() { date -u -d "@$1" +%FT%T 2>/dev/null || date -u -r "$1" +%FT%T; }
-# The epoch second each slow nodeProxy write started at, set by `lifecycle` before it fails.
-slow_at=""
+# The epoch second each failed nodeProxy write started at, set by `lifecycle` before it fails.
+failed_at=""
 die() { echo "  FAIL: $*"; diagnose; exit 1; }
 
 # ── the store answers at all (the edge may still be discovering it) ────────────────────
@@ -450,8 +450,9 @@ if [ "$case" = "lifecycle" ]; then
       --retry 5 --retry-all-errors --retry-delay 1 --aws-sigv4 '$SIG' --user '$KEY:$SECRET' \
       -X PUT --data-binary @- 'http://${alias}:9000/$bucket/w/'\$i; sleep 1; done" >/dev/null
   # A writer through nodeProxy, with one retry where the client above has five, and every
-  # write timed: the proxy itself must take new connections off a restarting peer within
-  # seconds, not leave them to the client's retries. Each line is "<n> <HTTP code> <seconds>
+  # write timed. A write may take seconds without the proxy at fault: for about 5 s after a
+  # peer starts stopping, a PUT on a live peer waits for RustFS to give up on the one leaving
+  # (#368), so only a write that fails counts. Each line is "<n> <HTTP code> <seconds>
   # <UTC start>", the start to match against the peers' and nodeProxy's logs.
   docker rm -f "$nwriter" >/dev/null 2>&1 || true
   docker run -d --name "$nwriter" --network host --entrypoint sh "$CURL_IMAGE" -c \
@@ -495,15 +496,14 @@ if [ "$case" = "lifecycle" ]; then
   writes="$(grep -E '^[0-9]+ [0-9]+ [0-9]+ [0-9:]+$' <<<"$(docker logs "$nwriter" 2>&1 || true)" || true)"
   total="$(grep -c . <<<"$writes" || true)"
   failed="$(awk '$2 != 200' <<<"$writes")"
-  slow="$(awk '$3 > 4' <<<"$writes")"
   [ "$total" -ge 30 ] || die "the writer through nodeProxy finished only $total writes during the upgrade: $(tail -3 <<<"$writes" | tr '\n' ';')"
   # Each such write's UTC start as an epoch second, for diagnose; at most 4 windows.
-  slow_at="$(printf '%s\n' "$failed" "$slow" | awk -v now="$(date -u +%s)" \
+  failed_at="$(printf '%s\n' "$failed" | awk -v now="$(date -u +%s)" \
     'NF == 4 { split($4, h, ":"); t = int(now / 86400) * 86400 + h[1] * 3600 + h[2] * 60 + h[3]; if (t > now) t -= 86400; print t }' \
     | sort -un | sed -n 1,4p | tr '\n' ' ')"
-  [ -z "$failed" ] && [ -z "$slow" ] \
-    || die "writes through nodeProxy failed or took over 4s while the peers rolled (<n> <code> <s> <UTC start>): $(printf '%s\n' "$failed" "$slow" | sed '/^$/d' | sort -un | sed -n 1,8p | tr '\n' ';')"
-  echo "  ok: all $total writes through nodeProxy's port on the node succeeded within 4s while every peer rolled"
+  [ -z "$failed" ] \
+    || die "writes through nodeProxy failed while the peers rolled (<n> <code> <s> <UTC start>): $(sed -n 1,8p <<<"$failed" | tr '\n' ';')"
+  echo "  ok: all $total writes through nodeProxy's port on the node succeeded while every peer rolled, the slowest in $(awk 'm < $3 { m = $3 } END { print m + 0 }' <<<"$writes")s"
   # The writer above retries once, which hides a proxy that cuts one connection at every
   # stop of a peer. Its log names each one: termination state D, cut because a peer went down.
   cut_off="$(docker service logs --raw "$(svc node-proxy)" 2>&1 | awk '$3 == "s3" && $7 ~ /^D/' || true)"
