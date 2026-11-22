@@ -246,7 +246,9 @@ It is a global HAProxy service, `<release>_rustfs-node-proxy`. One task per node
 the port in host mode there and passes each connection over `network.name` to a peer whose
 `/health/ready` answers 200, addressing each peer's task directly. A connection that cannot
 reach a peer, one restarting during a rolling upgrade for example, goes to another peer
-within a second, and that peer is marked down. A peer that fails two checks is marked down
+within a second, and that peer is marked down. That peer can still hold a write for a few
+seconds while the cluster gives up on the one stopping ([Upgrading](#upgrading)), well
+inside geesefs's 30 s `--http-timeout`. A peer that fails two checks is marked down
 too. Connections already open to a peer stay open until the client or the peer closes
 them, as a stopping peer does. RustFS sees the proxy's address
 as the client's, in its log and in `aws:SourceIp` policy conditions. An update of the proxy
@@ -625,7 +627,10 @@ swarmcli updates the peers one at a time, in lexical name order (`rustfs-10` bef
 `rustfs-2`): it stops a peer, starts its new task, waits until that task runs and has
 outlived `healthcheck.monitor` (2 minutes), and only then moves to the next; `rollback` and
 `apply` roll the same way. With the default 4 peers the cluster keeps serving reads and
-writes throughout, one peer short. An upgrade whose peer fails to start stops there, with
+writes throughout, one peer short. Each peer's stop still holds writes on the others for a
+few seconds while their requests to it time out: the slowest write in CI took 8 s with one
+retry ([#368](https://github.com/Eldara-Tech/swarmcli-charts/issues/368)). S3 clients'
+default timeouts wait through that. An upgrade whose peer fails to start stops there, with
 the rest untouched. Pass the values you installed with (`-f`), not `--reuse-values`
 ([swarmcli#687](https://github.com/Eldara-Tech/swarmcli/issues/687)).
 
