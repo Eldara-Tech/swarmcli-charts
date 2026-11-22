@@ -861,6 +861,7 @@ ignores it, except where its description says it is refused.
 | `nodeProxy.image.tag` | pinned in `values.yaml` | Proxy image tag (a concrete pin; Renovate maintains it) |
 | `nodeProxy.placement.constraints` | `[]` | The nodes it runs on, and so opens the port on; empty = every node |
 | `nodeProxy.resources.limits.memory` | `""` | Memory limit of each proxy task; empty = none |
+| `nodeProxy.logAllConnections` | `false` | Log every connection with the peer it went to and its timers, not only the ones that fail; one line per connection |
 | `nofile` | `65536` | Open-file limit; `0` = daemon default |
 | `extraEnv` | `{}` | Extra `RUSTFS_*` environment (for every peer). Credentials, the listener addresses, every OIDC setting but the tuning ones ([Single sign-on](#single-sign-on)), while `metrics.enabled` the OTLP endpoints and export settings ([Metrics](#metrics)), and in distributed mode the cluster wiring, the erasure set width, the internode secret and the disk-check bypass ([Security](#security)) are refused; `RUSTFS_OBS_LOG_DIRECTORY`, `RUSTFS_CHECK_UPDATE`, `RUSTFS_HTTP1_HEADER_READ_TIMEOUT` and `RUSTFS_OUTBOUND_ALLOW_ORIGINS` override the chart's defaults |
 | `metrics.enabled` | `false` | An OpenTelemetry Collector RustFS (every peer) pushes its metrics to, labelled for Prometheus service discovery. See *Metrics*. |

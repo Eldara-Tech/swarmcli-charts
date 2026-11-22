@@ -4,6 +4,7 @@
 # ci/render-check-distributed.sh for every case that turns it on:
 #   $1 = the rendered stack file   $2 = the number of peers (1 = standalone)
 #   $3 = "shaped" for the fixtures that set nodeProxy.placement and .resources
+#   $4 = "log-all" for the fixtures that set nodeProxy.logAllConnections
 # Exit 0 = OK.
 #
 # What a deploy cannot see: a proxy that converges but sends connections to one peer only,
@@ -16,6 +17,7 @@ set -euo pipefail
 rendered="${1:?rendered stack file}"
 peers="${2:?number of peers}"
 shaped="${3:-}"
+log_all="${4:-}"
 
 fail=0
 bad() { echo "    FAIL(nodeProxy): $*" >&2; fail=1; }
@@ -59,6 +61,12 @@ for l in 'mode tcp' 'bind :9000' 'option httpchk GET /health/ready' 'http-check 
          'timeout connect 1s' 'retries 3' 'option redispatch 1'; do
   grep -Ex " *$l" <<<"$cfg" >/dev/null || bad "HAPROXY_CFG lacks '$l'"
 done
+if [ "$log_all" = log-all ]; then
+  grep -Ex ' *option dontlog-normal' <<<"$cfg" >/dev/null \
+    && bad "nodeProxy.logAllConnections still renders 'option dontlog-normal', so haproxy logs only the connections that fail"
+else
+  grep -Ex ' *option dontlog-normal' <<<"$cfg" >/dev/null || bad "HAPROXY_CFG lacks 'option dontlog-normal'"
+fi
 d="$(grep -E '^ *default-server ' <<<"$cfg" || true)"
 for w in 'observe layer4 error-limit 1 on-error mark-down' 'resolvers docker' 'init-addr none'; do
   grep -F " $w" <<<"$d" >/dev/null || bad "default-server lacks '$w'"

@@ -269,6 +269,9 @@ nodeProxy:
   resources:
     limits:
       memory: ""
+  # Log every connection, with the peer it went to and its timers, not only the ones that
+  # fail. One line per connection, so for finding where a slow request went.
+  logAllConnections: false
 
 # Open-file limit for the RustFS process. Below 16384 RustFS disables its per-disk
 # file-descriptor cache, which costs performance. 0 leaves the daemon's default.
