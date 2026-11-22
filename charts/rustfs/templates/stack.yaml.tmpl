@@ -698,8 +698,8 @@ services:
           log global
           # Only connections that fail: a FUSE mount opens many, and each would be a line, and
           # the container healthcheck's probe of the health frontend would be an error each time.
-          # nodeProxy.logAllConnections logs every one, with the peer it went to.
           option tcplog
+{{- /* nodeProxy.logAllConnections logs every connection, with the peer it went to. */}}
 {{- if not .Values.nodeProxy.logAllConnections }}
           option dontlog-normal
 {{- end }}
