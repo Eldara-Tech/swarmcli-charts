@@ -185,7 +185,8 @@
               }
             }
           }
-        }
+        },
+        "logAllConnections": { "type": "boolean" }
       }
     },
     "nofile": { "type": "integer", "minimum": 0 },

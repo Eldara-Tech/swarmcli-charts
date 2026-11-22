@@ -699,7 +699,10 @@ services:
           # Only connections that fail: a FUSE mount opens many, and each would be a line, and
           # the container healthcheck's probe of the health frontend would be an error each time.
           option tcplog
+{{- /* nodeProxy.logAllConnections logs every connection, with the peer it went to. */}}
+{{- if not .Values.nodeProxy.logAllConnections }}
           option dontlog-normal
+{{- end }}
           option dontlognull
           # Overlay connects are local: a peer that does not answer within a second is gone,
           # and every retry goes to another peer.

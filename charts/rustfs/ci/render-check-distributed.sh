@@ -56,7 +56,8 @@ want_services="$(for n in $PEERS; do printf 'rustfs-%s ' "$n"; done)"
   || bad "services are '$services', expected $want_services"
 
 if [ -n "$proxy" ]; then
-  "$(dirname "$0")/render-check-node-proxy.sh" "$rendered" "$peers" "$([ "$case" = lifecycle ] || echo shaped)" || fail=1
+  "$(dirname "$0")/render-check-node-proxy.sh" "$rendered" "$peers" "$([ "$case" = lifecycle ] || echo shaped)" \
+    "$([ "$case" = lifecycle ] && echo log-all)" || fail=1
 fi
 
 # ── one cluster: the same volume list everywhere, each peer naming itself in it ───────
