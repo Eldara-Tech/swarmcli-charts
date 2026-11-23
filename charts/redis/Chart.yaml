@@ -1,11 +1,14 @@
 name: redis
-description: Redis in-memory data store for Docker Swarm — persistent, secret-authenticated, single-node pinned
+description: Redis in-memory data store for Docker Swarm — persistent, secret-authenticated, single-node pinned, or a Sentinel-managed master and replicas rolled one at a time
 version: 0.2.0
 # renovate: image=redis
 appVersion: "8.10.1"
 # Oldest swarmcli whose chart engine renders this chart; verified by
-# scripts/floor-check.sh against a real binary of that version.
-swarmcliVersion: ">= 1.11.0"
+# scripts/floor-check.sh against a real binary of that version. 2.2.0 is the first to roll
+# sentinel mode's peers and Sentinels one at a time (com.swarmcli.rollout on each); without
+# it an upgrade restarts them all at once. The chart has one floor for both modes, because a
+# template cannot see which swarmcli renders it.
+swarmcliVersion: ">= 2.2.0"
 # host-mount is acknowledged because persistence.volumePath can bind-mount the data
 # dir from an operator-chosen host path. The default (named volume) render mounts no
 # host path — no docker.sock, unprivileged — so the annotation is exercised by the

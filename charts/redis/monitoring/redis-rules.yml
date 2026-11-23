@@ -6,8 +6,10 @@
 # Redis's own maxclients instead of the mixin's fixed 100. The mixin's RedisOutOfMemory
 # needs --include-system-metrics, which the chart does not pass, and its cluster alerts
 # need cluster mode, which it does not run. The memory and persistence alerts are this
-# chart's. Critical only while clients lose Redis or their writes (RedisDown,
-# RedisRejectingWrites, RedisPersistenceFailed); the two near-limit alerts warn.
+# chart's, as are the replication alerts for mode: sentinel (or any Redis with replicas).
+# Critical only while clients lose Redis or their writes (RedisDown, RedisRejectingWrites,
+# RedisPersistenceFailed, RedisNoMaster, RedisMultipleMasters); the two near-limit alerts
+# and RedisReplicaLinkDown warn.
 #
 # Validate (from the repo root):
 #   docker run --rm --entrypoint promtool -v "$PWD/charts/redis:/chart:ro" \
@@ -68,3 +70,36 @@ groups:
         annotations:
           summary: '{{ $labels.job }} reports a failed Redis save'
           description: 'The last RDB save or AOF write of the Redis behind {{ $labels.job }} failed, and none has succeeded for 5 minutes. By default Redis refuses writes until one does; its log says why.'
+      # Replication. A release's peers share its `stack` label, and the master is the one
+      # whose INFO reports role:master. None means every write is refused; two mean writes
+      # to the one the Sentinels did not choose are lost when it is turned back into a
+      # replica. No master is read from the replicas, every one cut off from its master, so a
+      # master whose own exporter is down does not count as missing. `for` outlasts a normal
+      # failover (the Sentinels wait 30s by default).
+      - alert: RedisNoMaster
+        expr: |
+          max by (stack) (redis_master_link_up) == 0
+          unless on (stack)
+            count by (stack) (redis_instance_info{role="master"})
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Redis release {{ $labels.stack }} has no master'
+          description: 'Every replica of Redis release {{ $labels.stack }} has been cut off from its master for 2 minutes, and no peer reports being one, so the release refuses every write. The Sentinels have not promoted a replica: check that a majority of them run and can reach the peers.'
+      - alert: RedisMultipleMasters
+        expr: count by (stack) (redis_instance_info{role="master"}) > 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Redis release {{ $labels.stack }} has {{ $value }} masters'
+          description: '{{ $value }} Redis peers of release {{ $labels.stack }} have reported being a master for 2 minutes. Writes to any the Sentinels did not choose are lost when it is turned back into a replica.'
+      - alert: RedisReplicaLinkDown
+        expr: redis_master_link_up == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $labels.job }} reports a Redis replica cut off from its master'
+          description: 'The Redis replica behind {{ $labels.job }} has not been connected to its master {{ $labels.master_host }} for 5 minutes. It serves stale reads, and a failover has one candidate fewer.'

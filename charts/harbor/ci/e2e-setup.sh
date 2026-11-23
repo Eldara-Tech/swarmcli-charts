@@ -11,7 +11,12 @@
 #   * for `metrics`, the exporter's read-only role, with the README's grants, created before
 #     Harbor's first start so the default privileges are what let it read core's tables;
 #   * for `oidc`, a stub OpenID provider on that overlay, the one network core shares with it:
-#     a discovery document is all Harbor fetches before redirecting a login.
+#     a discovery document is all Harbor fetches before redirecting a login;
+#   * for `ha`, a SeaweedFS S3 store, harbor-e2e-s3, alone on harbor-e2e-s3-net, with the
+#     bucket created (the registry does not create one), and the in-repo redis chart in
+#     sentinel mode as release harbor-e2e-redis on redis-net, waiting until a Sentinel names
+#     the master. Harbor reads the password from the redis chart's own secret, redis_password,
+#     so the two cannot differ.
 # ci/e2e-teardown.sh removes everything created here except the overlay.
 #
 # Idempotent: safe to re-run after a crashed run.
@@ -21,6 +26,9 @@ case="$3"
 DBPW='e2e-db-password'
 REGPW='e2e-registry-password'
 dbnet=harbor-e2e-db-net
+S3KEY=harbor-e2e
+S3SECRET=harbor-e2e-s3-secret
+REDISPW=e2e-redis-Passw0rd
 
 secret() {  # $1 name, content on stdin
   if docker secret inspect "$1" >/dev/null 2>&1; then cat >/dev/null; else docker secret create "$1" - >/dev/null; fi
@@ -50,6 +58,11 @@ if [ "$case" = "oidc" ]; then
 fi
 if [ "$case" = "metrics" ]; then
   printf '%s' 'e2e-exporter-password' | secret harbor-exporter-db-password
+fi
+if [ "$case" = "ha" ]; then
+  printf '%s' "$S3KEY" | secret harbor-s3-access-key
+  printf '%s' "$S3SECRET" | secret harbor-s3-secret-key
+  printf '%s' "$REDISPW" | secret redis_password
 fi
 
 docker network create --driver overlay --attachable "$dbnet" >/dev/null 2>&1 || true
@@ -96,4 +109,40 @@ if [ "$case" = "oidc" ]; then
     sleep 3
   done
   [ "$got" = "200" ] || { echo "  FAIL: the stub OpenID provider never served its discovery document (last: '$got')"; exit 1; }
+fi
+
+if [ "$case" = "ha" ]; then
+  root="$(cd "$2/../.." && pwd)"
+  sc="${SWARMCLI:-$root/.swarmcli-bin/swarmcli}"
+  s3net=harbor-e2e-s3-net
+  docker network create --driver overlay --attachable "$s3net" >/dev/null 2>&1 || true
+  docker service rm harbor-e2e-s3 >/dev/null 2>&1 || true
+  # SeaweedFS turns AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY into its only identity.
+  docker service create --detach --name harbor-e2e-s3 --network "$s3net" \
+    --env AWS_ACCESS_KEY_ID="$S3KEY" --env AWS_SECRET_ACCESS_KEY="$S3SECRET" \
+    chrislusf/seaweedfs:4.47 server -s3 >/dev/null
+  got=""
+  for _ in $(seq 1 60); do
+    got="$(docker run --rm --network "$s3net" curlimages/curl:latest -s -o /dev/null -w '%{http_code}' --max-time 5 \
+      --aws-sigv4 'aws:amz:us-east-1:s3' --user "$S3KEY:$S3SECRET" -X PUT http://harbor-e2e-s3:8333/harbor 2>/dev/null || true)"
+    case "$got" in 200|409) break ;; esac
+    sleep 3
+  done
+  case "$got" in 200|409) ;; *) echo "  FAIL: could not create bucket harbor on harbor-e2e-s3 (last: '$got')"; exit 1 ;; esac
+
+  "$sc" charts uninstall harbor-e2e-redis --purge-volumes >/dev/null 2>&1 || true
+  if ! out="$("$sc" charts install harbor-e2e-redis "$root/charts/redis" --set mode=sentinel \
+      --set persistence.enabled=false --wait --timeout 5m 2>&1)"; then
+    echo "  FAIL: the redis chart in sentinel mode did not install"
+    printf '%s\n' "$out" | sed 's/^/    /'
+    exit 1
+  fi
+  master=""
+  for _ in $(seq 1 40); do
+    cid="$(docker ps -q -f label=com.docker.swarm.service.name=harbor-e2e-redis_sentinel-1 | sed -n 1p)"
+    [ -n "$cid" ] && master="$(docker exec "$cid" redis-cli -p 26379 SENTINEL get-master-addr-by-name mymaster 2>/dev/null | sed -n 1p || true)"
+    case "$master" in harbor-e2e-redis-redis-*) break ;; esac
+    sleep 3
+  done
+  case "$master" in harbor-e2e-redis-redis-*) ;; *) echo "  FAIL: no Sentinel names the master of mymaster (last: '$master')"; exit 1 ;; esac
 fi

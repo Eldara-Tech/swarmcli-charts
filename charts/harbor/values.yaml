@@ -13,35 +13,68 @@ image:
   repository: goharbor/harbor-core
   tag: ""  # defaults to appVersion from Chart.yaml
 
+# Replicas of each stateless component (README, High availability). More than one is spread
+# over the nodes where it can be. The registry and registryctl need storage.type=s3 for more
+# than one; Trivy and the exporter always run one.
+core:
+  replicas: 1
+
 # The other components. An empty tag follows image.tag (and so appVersion); set one only to
 # run a component at a different patch than core.
 portal:
   image:
     repository: goharbor/harbor-portal
     tag: ""
+  replicas: 1
 jobservice:
   image:
     repository: goharbor/harbor-jobservice
     tag: ""
   # Concurrent job workers: replication, garbage collection, retention, scans.
   workers: 10
+  replicas: 1
 registry:
   image:
     repository: goharbor/registry-photon
     tag: ""
+  replicas: 1
 registryctl:
   image:
     repository: goharbor/harbor-registryctl
     tag: ""
+  replicas: 1
 nginx:
   image:
     repository: goharbor/nginx-photon
     tag: ""
-# Sessions, caches and the job queue. No password: it joins only the stack's own overlay.
+  replicas: 1
+# Sessions, caches and the job queue, with redis.type=internal. No password: it joins only
+# the stack's own overlay.
 valkey:
   image:
     repository: goharbor/valkey-photon
     tag: ""
+
+# Where sessions, caches and the job queue live.
+#   internal - the valkey service above, on the data node
+#   external - a Redis or Valkey of your own, e.g. the redis chart in sentinel mode, which
+#              removes the last single point of failure (README, High availability)
+redis:
+  type: internal
+  external:
+    # host:port of Redis; with sentinelMasterSet, the Sentinels as host:port,host:port
+    # without spaces, e.g. redis-sentinel-1:26379,redis-sentinel-2:26379,redis-sentinel-3:26379
+    addr: ""
+    # The master set the Sentinels monitor; "" means addr is Redis itself.
+    sentinelMasterSet: ""
+    # EXTERNAL Swarm secret holding Redis's password, letters, digits, '.', '_', '~' and '-'
+    # only (it goes into URLs); "" for none:
+    #   openssl rand -hex 32 | tr -d '\n' | docker secret create harbor-redis-password -
+    passwordSecret: harbor-redis-password
+    # The overlay Redis (and its Sentinels) are reachable on, joined by core, jobservice, the
+    # registry, Trivy and the exporter; "" joins none. Harbor cannot authenticate to
+    # Sentinels, so keep this overlay to Redis and its clients (README).
+    network: redis-net
 
 # Vulnerability scanning. It downloads the Trivy database from mirror.gcr.io / ghcr.io on
 # first scan, so it needs outbound access; without it, turn it off.
