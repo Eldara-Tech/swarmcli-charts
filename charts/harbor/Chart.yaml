@@ -5,7 +5,7 @@ version: 0.1.0
 # appVersion is the default image tag for goharbor/harbor-core, and every other Harbor
 # component image follows it: Harbor releases them together under one tag.
 # renovate: image=goharbor/harbor-core
-appVersion: "v2.15.4"
+appVersion: "v2.16.0"
 # Oldest swarmcli whose chart engine renders this chart; verified by
 # scripts/floor-check.sh against a real binary of that version. v1.13.0 brought files/,
 # which carries Harbor's nginx, portal, core, registryctl and jobservice configs.
