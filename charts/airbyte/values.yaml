@@ -61,7 +61,7 @@ redis:
 temporal:
   image:
     repository: temporalio/temporal
-    tag: "1.9.1"
+    tag: "1.10.1"
 
 # Leave empty for released charts: Chart.Version rotates the immutable config.
 # For a local upgrade after changing files/FakeK8s.java, set a new value such as
