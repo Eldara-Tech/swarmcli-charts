@@ -262,6 +262,18 @@ Charts shipping these hooks today — `scripts/lint.sh` requires every chart wit
     `cluster.forceBootstrap` through the README's `--wsrep-recover` runbook, then
     clearing it;
   - a crash of every peer, recovered by an election.
+- **kafka** — the three dummy secrets (the internal one holding `"`, `\`, `$` and a space,
+  which the start script must escape twice) + a node label for EVERY peer (`kafka-1` … `-5`)
+  on the single CI node, and for the `traefik` fixture the traefik edge. `ci/e2e-check.sh`
+  asserts a quorum with a leader and one voter per peer under distinct directory ids, an
+  acks=all write through the shared alias read back from the last peer, and a wrong password
+  refused. `metrics` scrapes the exporter on `monitoring`, proves its user may Describe and
+  nothing else, and runs `promtool test rules`; `published` and `traefik` write and read
+  through the routing-mesh ports and over TLS through the edge. `lifecycle` wipes one
+  peer's volume and asserts it rejoins as a NEW voter with its replicas back, then survives
+  a full stop; wipes peer 1, the only peer that may create a cluster, while every other
+  peer is down and asserts it waits rather than format, then rejoins once they are back;
+  survives a rolling upgrade, and grows to five peers whose new voters join by themselves.
 - **postgres-patroni** — the four dummy secrets (superuser, replication, REST API, exporter) + a node
   label for EVERY peer (`postgres-patroni-1` … `-5`) on the single CI node, so the pinned
   fixtures schedule every peer and etcd member there, and for `bind-mount` the host dirs,

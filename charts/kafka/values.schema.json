@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "kafka chart values",
+  "type": "object",
+  "properties": {
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string" }
+      }
+    },
+    "cluster": {
+      "type": "object",
+      "properties": {
+        "peers": {
+          "description": "The controller quorum needs a majority, so only odd counts of 3 or more make sense.",
+          "enum": [3, 5]
+        }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "internal": {
+          "type": "object",
+          "properties": {
+            "username": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$" },
+            "secretName": { "type": "string", "minLength": 1 }
+          }
+        },
+        "users": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "secretName"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$" },
+              "secretName": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "persistence": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "volumePrefix": { "type": "string", "minLength": 1 },
+        "volumePaths": {
+          "description": "One absolute host path per peer, in peer order, or [] for named volumes.",
+          "type": "array",
+          "items": { "type": "string", "pattern": "^/" }
+        },
+        "nodeLabelPrefix": { "type": "string" }
+      }
+    },
+    "placement": {
+      "type": "object",
+      "properties": {
+        "constraints": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "network": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "external": { "type": "boolean" },
+        "encrypted": { "type": "boolean" },
+        "clientAlias": { "type": "string" }
+      }
+    },
+    "exposure": {
+      "type": "object",
+      "properties": {
+        "mode": { "enum": ["none", "traefik", "published"] },
+        "network": { "type": "string", "minLength": 1 }
+      }
+    },
+    "traefik": {
+      "type": "object",
+      "properties": {
+        "hosts": {
+          "description": "One DNS name per peer, in peer order.",
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Za-z0-9.-]+$" }
+        },
+        "entrypoint": { "type": "string", "minLength": 1 },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "certResolver": { "type": "string" },
+        "constraintLabel": { "type": "string", "minLength": 1 }
+      }
+    },
+    "publish": {
+      "type": "object",
+      "properties": {
+        "host": { "type": "string", "pattern": "^[A-Za-z0-9.:-]*$" },
+        "basePort": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "config": {
+      "description": "Extra server.properties entries (key: value).",
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-z0-9][a-z0-9._-]*$" },
+      "additionalProperties": { "type": ["string", "number", "boolean"] }
+    },
+    "heap": { "type": "string", "pattern": "^[0-9]+[kKmMgG]$" },
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string", "minLength": 1 }
+          }
+        },
+        "username": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$" },
+        "secretName": { "type": "string", "minLength": 1 },
+        "network": { "type": "string", "minLength": 1 }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "limits": {
+          "type": "object",
+          "properties": {
+            "memory": { "type": "string" }
+          }
+        }
+      }
+    },
+    "healthcheck": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "interval": { "type": "string", "minLength": 1 },
+        "timeout": { "type": "string", "minLength": 1 },
+        "retries": { "type": "integer", "minimum": 1 },
+        "startPeriod": { "type": "string", "minLength": 1 },
+        "monitor": { "type": "string", "minLength": 1 }
+      }
+    },
+    "stopGracePeriod": { "type": "string", "minLength": 1 },
+    "labels": { "type": "object" }
+  }
+}
