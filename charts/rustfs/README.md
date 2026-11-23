@@ -416,13 +416,26 @@ which names no policy, and a user in any group that is not a policy is refused.
   needs no flag. If the discovery document names endpoints on another private origin,
   set `RUSTFS_OUTBOUND_ALLOW_ORIGINS` in `extraEnv` to the full comma-separated list;
   it replaces the chart's.
-- **The provider must be up when RustFS starts.** RustFS reads the discovery
-  document once, at start, and does not retry. If the provider is unreachable then,
-  the console has no single sign-on and STS refuses the provider's tokens until RustFS
-  restarts (`docker service update --force <release>_rustfs`); the key-pair login
-  keeps working. In distributed mode each peer reads it at its own start, and a peer that
-  could not reach it has no single sign-on until it restarts
-  (`docker service update --force <release>_rustfs-<n>`).
+- **A provider RustFS could not read at start.** RustFS reads the discovery document
+  once, at start (each peer at its own, in distributed mode). It retries in the
+  background only after no connection, a timeout, a 5xx, 408 or 429. Any other answer
+  leaves that server without the provider until it restarts, notably the 404 an edge
+  proxy such as Traefik gives for the provider's host while the provider has no running
+  task, e.g. Keycloak still starting after a node restart. The login then fails with
+  `authorize failed: provider not discovered: default` and STS refuses the provider's
+  tokens; the key-pair login keeps working. The cause is in that server's log from its
+  start: `docker service logs <release>_rustfs 2>&1 | grep provider_discovery_failed`
+  (`<release>_rustfs-<n>` for peer n).
+  `console.oidc.selfHeal` (on by default) restarts such a server once the provider
+  answers again. Every 30 seconds it checks the server's login endpoint, and while the
+  provider is undiscovered it has RustFS validate it, which runs RustFS's own discovery,
+  outbound policy and CAs included. After 3 minutes of successful validations it stops the
+  server, and Swarm starts a new task, which discovers the provider. A provider that
+  stays down, or a configuration RustFS refuses, fails the validation and restarts
+  nothing. In distributed mode a peer restarts only while every other peer is ready and no
+  lower-numbered peer is itself without the provider, so peers come back one at a time.
+  With `selfHeal: false`, restart it yourself: `docker service update --force
+  <release>_rustfs`, or `<release>_rustfs-<n>` for the peer whose log has the failure.
 - **The client secret** goes from the Swarm secret into the server's environment at
   start, by the start-up wrapper; it is never in the manifest or `docker inspect`.
   `extraEnv` refuses it in every spelling.
@@ -839,6 +852,7 @@ ignores it, except where its description says it is refused.
 | `console.oidc.rolesClaim` | `roles` | A second claim whose values name RustFS policies; `""` = none |
 | `console.oidc.emailClaim` | `email` | ID token claim holding the user's email |
 | `console.oidc.usernameClaim` | `preferred_username` | ID token claim holding the username |
+| `console.oidc.selfHeal` | `true` | Restart a server whose discovery at start failed for good, once RustFS validates the provider again; peers one at a time ([Single sign-on](#single-sign-on)) |
 | `buckets` | `[]` | Buckets created at start if missing (by peer 1, distributed) |
 | `persistence.enabled` | `true` | Persist `/data` (each peer's drives) |
 | `persistence.volumeName` | `rustfs-data` | (standalone) Named volume |

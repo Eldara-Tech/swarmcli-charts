@@ -1,6 +1,7 @@
 # Console single sign-on against a stub OpenID provider on rustfs-net: ci/e2e-setup.sh
-# serves its discovery document and key set before install, since RustFS reads them
-# once, at start. The console is traefik-routed with TLS, so the callback base is
+# starts it with a 404 for its discovery document, which RustFS never retries, and
+# ci/e2e-check.sh serves the document later, so console.oidc.selfHeal (on by default) must
+# restart the server. The console is traefik-routed with TLS, so the callback base is
 # derived as https://<console.ingress.host>; labels only, nothing routes through an edge.
 console:
   enabled: true

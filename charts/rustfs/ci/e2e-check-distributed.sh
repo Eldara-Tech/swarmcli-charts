@@ -25,10 +25,13 @@
 #     over all four, and the signed round trip works through it;
 #   * `console-edge`: the console is routed through the traefik chart, its sticky cookie
 #     keeps a browser on one peer, and the S3 host is not routed;
-#   * `oidc`: every peer discovered the stub provider under the chart's default label, the
-#     login redirects to its authorization endpoint with the chart's client id and callback
-#     (a spoofed Host cannot move it), and the client secret reached the server's
-#     environment but not `docker inspect`;
+#   * `oidc`: a 404 for the discovery document at start leaves every peer without the
+#     provider, nothing restarts while the 404 lasts, and console.oidc.selfHeal restarts
+#     each peer exactly once after the document appears, one at a time from peer 1, past
+#     its 3-minute hold. Then every peer discovered the stub provider under the chart's
+#     default label, the login redirects to its authorization endpoint with the chart's
+#     client id and callback (a spoofed Host cannot move it), and the client secret reached
+#     the server's environment but not `docker inspect`;
 #   * the raised open-file limit reached each peer, and its log reaches `docker service logs`;
 #   * `metrics`: the collector serves, on the monitoring overlay, every RustFS metric the
 #     alert rules and the dashboard read, from all four peers; no peer is on that overlay
@@ -339,8 +342,54 @@ if [ "$case" = "console-edge" ]; then
   edge_assert_unrouted s3.example.com || die "ingress.host is routed although exposure.mode is none"
 fi
 
-# ── oidc: every peer loaded the stub provider, and the login goes to it ──────────────
+# ── oidc: a 404 at start, then console.oidc.selfHeal, one peer at a time ─────────────
+# ci/e2e-setup.sh starts the stub with a 404 for its discovery document, which RustFS never
+# retries. Every peer must run without the provider, none restart while the 404 lasts, and
+# once the document appears each must restart exactly once: peer 1 no sooner than the
+# loop's 3-minute hold, and each next peer only after the previous one's new task was
+# running. Timestamps are the daemon's clock throughout.
+task_epoch() { docker inspect --format '{{json .Status.Timestamp}}' "$1" | jq -r 'sub("\\.[0-9]+";"") | fromdateiso8601'; }
+tasks_of() { docker service ps -q "$(svc "$1")" | wc -l | tr -d ' '; }
 if [ "$case" = "oidc" ]; then
+  for n in $PEERS; do
+    got="$(cr "http://${alias}-$n:9001/rustfs/admin/v3/oidc/authorize/default" 2>/dev/null || true)"
+    grep -F 'provider not discovered: default' <<<"$got" >/dev/null \
+      || die "with a 404 for the discovery document at start, peer $n's login answered '${got:-<empty>}', not 'provider not discovered: default'"
+  done
+  echo "  ok: a 404 at start left every peer without the provider"
+  # 3.5 minutes: past the hold, so a restart the failed validation does not stop would show.
+  sleep 210
+  for n in $PEERS; do
+    [ "$(tasks_of "$n")" = 1 ] || die "peer $n was restarted while its provider still answered 404"
+  done
+  echo "  ok: no peer restarted in 3.5 minutes while the provider answered 404"
+  idp="$(docker ps -q -f label=com.docker.swarm.service.name=rustfs-e2e-idp | sed -n 1p)"
+  served="$(docker exec "$idp" sh -c 'printf "%s" "$DISCOVERY" > /www/realms/e2e/.well-known/openid-configuration && date +%s')" \
+    || die "could not write the stub's discovery document"
+  healed=""
+  for _ in $(seq 1 150); do
+    healed=1
+    for n in $PEERS; do
+      [ "$(tasks_of "$n")" = 2 ] && [ "$(cr_code "http://${alias}-$n:9001/rustfs/admin/v3/oidc/authorize/default")" = 302 ] \
+        || { healed=""; break; }
+    done
+    [ -n "$healed" ] && break
+    sleep 5
+  done
+  [ -n "$healed" ] || die "after the provider came up, not every peer restarted once and answers the login with a 302 (tasks: $(for n in $PEERS; do printf '%s ' "$(tasks_of "$n")"; done))"
+  prev_up=""
+  for n in $PEERS; do
+    stopped="$(task_epoch "$(docker service ps -q --filter desired-state=shutdown "$(svc "$n")" | sed -n 1p)")"
+    up="$(task_epoch "$(docker service ps -q --filter desired-state=running "$(svc "$n")" | sed -n 1p)")"
+    if [ -z "$prev_up" ]; then
+      [ $((stopped - served)) -ge 180 ] || die "peer 1 stopped $((stopped - served))s after its provider came up, inside the 3-minute hold"
+    else
+      [ "$stopped" -ge "$prev_up" ] || die "peer $n stopped $((prev_up - stopped))s before peer $((n - 1))'s new task was running: two peers were down at once"
+    fi
+    echo "  ok: peer $n stopped $((stopped - served))s after the provider came up, its new task running $((up - served))s after"
+    prev_up="$up"
+  done
+  echo "  ok: every peer restarted once, one at a time from peer 1, and discovered the provider"
   for n in $PEERS; do
     got="$(cr "http://${alias}-$n:9001/rustfs/admin/v3/oidc/providers" 2>/dev/null || true)"
     grep -F '"provider_id":"default"' <<<"$got" >/dev/null \
@@ -372,6 +421,9 @@ if [ "$case" = "oidc" ]; then
     fi
   done
   echo "  ok: the client secret is in every peer's environment and not in docker inspect of any service or task"
+  for n in $PEERS; do
+    [ "$(tasks_of "$n")" = 2 ] || die "peer $n restarted again although it has the provider"
+  done
 fi
 
 # ── bind-mount: each drive is its peer's host directory ───────────────────────────────

@@ -125,6 +125,11 @@ console:
     rolesClaim: roles
     emailClaim: email
     usernameClaim: preferred_username
+    # Restart a server (in distributed mode, a peer) whose discovery at start failed in a
+    # way RustFS never retries, such as a 404 while the provider was still starting, once
+    # RustFS validates the provider again; peers restart one at a time (README "Single
+    # sign-on"). false leaves that restart to you.
+    selfHeal: true
 
 # Buckets created once the store accepts writes, if they do not exist yet (an existing
 # bucket is left alone, so restarts are safe). Clients such as the GitLab Runner cache

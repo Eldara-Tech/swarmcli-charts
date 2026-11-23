@@ -18,10 +18,13 @@
 #   * the console listener exists exactly when console.enabled;
 #   * `console-edge`: the console is routed through the traefik chart (its UI, the browser
 #     redirect to it, and the signed S3 API it also serves) while the S3 host is not;
-#   * `oidc`: the stub provider was discovered under the chart's default label, the login
-#     redirects to its authorization endpoint with the chart's client id and callback (a
-#     spoofed Host cannot move it), and the client secret reached the server's environment
-#     but not `docker inspect`;
+#   * `oidc`: a 404 for the discovery document at start leaves the server without the
+#     provider, nothing restarts while the 404 lasts, and console.oidc.selfHeal restarts it
+#     exactly once, past its 3-minute hold, after the document appears. Then the stub
+#     provider was discovered under the chart's default label, the login redirects to its
+#     authorization endpoint with the chart's client id and callback (a spoofed Host cannot
+#     move it), and the client secret reached the server's environment but not `docker
+#     inspect`;
 #   * the raised open-file limit reached the process, and its log reaches `docker service
 #     logs` (both are chart settings a render cannot prove the daemon applied);
 #   * `metrics`: the collector serves, on the monitoring overlay, every RustFS metric the
@@ -229,9 +232,38 @@ if [ "$case" = "console-edge" ]; then
   edge_assert_unrouted s3.example.com || die "ingress.host is routed although exposure.mode is none"
 fi
 
-# ── oidc: the stub provider is loaded and the login goes to it ───────────────────────
+# ── oidc: a 404 at start, then console.oidc.selfHeal ─────────────────────────────────
+# ci/e2e-setup.sh starts the stub with a 404 for its discovery document, which RustFS never
+# retries. The server must run without the provider, stay up while the 404 lasts (RustFS's
+# validation of the provider fails), and restart exactly once after the document appears,
+# no sooner than the loop's 3-minute hold. Timestamps are the daemon's clock throughout.
+task_epoch() { docker inspect --format '{{json .Status.Timestamp}}' "$1" | jq -r 'sub("\\.[0-9]+";"") | fromdateiso8601'; }
 if [ "$case" = "oidc" ]; then
   api="http://${svc}:9001/rustfs/admin/v3/oidc"
+  got="$(c "$api/authorize/default" 2>/dev/null || true)"
+  grep -F 'provider not discovered: default' <<<"$got" >/dev/null \
+    || die "with a 404 for the discovery document at start, the login answered '${got:-<empty>}', not 'provider not discovered: default'"
+  echo "  ok: a 404 at start left the server without the provider"
+  # 3.5 minutes: past the hold, so a restart the failed validation does not stop would show.
+  sleep 210
+  tasks="$(docker service ps -q "$svc" | wc -l | tr -d ' ')"
+  [ "$tasks" = 1 ] || die "the server was restarted ($tasks tasks) while its provider still answered 404"
+  echo "  ok: no restart in 3.5 minutes while the provider answered 404"
+  idp="$(docker ps -q -f label=com.docker.swarm.service.name=rustfs-e2e-idp | sed -n 1p)"
+  served="$(docker exec "$idp" sh -c 'printf "%s" "$DISCOVERY" > /www/realms/e2e/.well-known/openid-configuration && date +%s')" \
+    || die "could not write the stub's discovery document"
+  for _ in $(seq 1 120); do
+    tasks="$(docker service ps -q "$svc" | wc -l | tr -d ' ')"
+    got="$(code "$api/authorize/default")"
+    [ "$tasks" = 2 ] && [ "$got" = 302 ] && break
+    sleep 5
+  done
+  [ "$tasks" = 2 ] && [ "$got" = 302 ] \
+    || die "after the provider came up the service has $tasks tasks and the login answers '$got'; expected one restart and a 302"
+  stopped="$(task_epoch "$(docker service ps -q --filter desired-state=shutdown "$svc" | sed -n 1p)")"
+  [ $((stopped - served)) -ge 180 ] || die "the server stopped $((stopped - served))s after its provider came up, inside the 3-minute hold"
+  echo "  ok: the server restarted once, $((stopped - served))s after its provider came up, and discovered it"
+  cid="$(docker ps -q -f "label=com.docker.swarm.service.name=$svc" | sed -n 1p)"
   got="$(c "$api/providers" 2>/dev/null || true)"
   grep -F '"provider_id":"default"' <<<"$got" >/dev/null \
     || die "the stub provider was not loaded (providers: ${got:-<empty>}); was it reachable at start?"
@@ -257,6 +289,8 @@ if [ "$case" = "oidc" ]; then
     die "the OIDC client secret is visible in docker inspect"
   fi
   echo "  ok: the client secret is in the server's environment and not in docker inspect of the service or task"
+  tasks="$(docker service ps -q "$svc" | wc -l | tr -d ' ')"
+  [ "$tasks" = 2 ] || die "the server restarted again ($tasks tasks) although it has the provider"
 fi
 
 # ── restart: data persists, bootstrap is idempotent ───────────────────────────────────
