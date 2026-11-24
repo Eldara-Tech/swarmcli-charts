@@ -58,7 +58,7 @@ want="$(if [ "$peers" = 1 ]; then echo 'server rustfs tasks.ci_rustfs:9000 check
   || bad "its servers are not exactly every peer's task on 9000 with a check: $(grep -E '^ *server ' <<<"$cfg" | sed 's/^ *//' | tr '\n' ';')"
 for l in 'mode tcp' 'bind :9000' 'option httpchk GET /health/ready' 'http-check expect status 200' \
          'nameserver dns 127.0.0.11:53' 'bind :8405' 'monitor-uri /healthz' 'option dontlognull' \
-         'timeout connect 1s' 'retries 3' 'option redispatch 1'; do
+         'timeout connect 1s' 'retries 3' 'option redispatch 1' 'hold nx 1s' 'hold other 1s'; do
   grep -Ex " *$l" <<<"$cfg" >/dev/null || bad "HAPROXY_CFG lacks '$l'"
 done
 if [ "$log_all" = log-all ]; then
@@ -68,7 +68,7 @@ else
   grep -Ex ' *option dontlog-normal' <<<"$cfg" >/dev/null || bad "HAPROXY_CFG lacks 'option dontlog-normal'"
 fi
 d="$(grep -E '^ *default-server ' <<<"$cfg" || true)"
-for w in 'observe layer4 error-limit 1 on-error mark-down' 'resolvers docker' 'init-addr none'; do
+for w in 'observe layer4 error-limit 1 on-error mark-down' 'resolvers docker' 'init-addr none' 'init-state down'; do
   grep -F " $w" <<<"$d" >/dev/null || bad "default-server lacks '$w'"
 done
 # Marking a peer down at a failed connection must not cut that connection, which haproxy is

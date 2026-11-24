@@ -249,8 +249,9 @@ reach a peer, one restarting during a rolling upgrade for example, goes to anoth
 within a second, and that peer is marked down. That peer can still hold a write for a few
 seconds while the cluster gives up on the one stopping ([Upgrading](#upgrading)), well
 inside geesefs's 30 s `--http-timeout`. A peer that fails two checks is marked down
-too. Connections already open to a peer stay open until the client or the peer closes
-them, as a stopping peer does. RustFS sees the proxy's address
+too, and one whose task leaves DNS is taken out within two seconds: its replacement gets
+connections only once it passes a check. Connections already open to a peer stay open until
+the client or the peer closes them, as a stopping peer does. RustFS sees the proxy's address
 as the client's, in its log and in `aws:SourceIp` policy conditions. An update of the proxy
 itself (a `nodeProxy.*` value, a new image) stops each node's task before it starts the new
 one, so the port is closed on that node for a few seconds. On a node,
