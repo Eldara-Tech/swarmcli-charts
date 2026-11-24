@@ -472,6 +472,7 @@ if [ "$case" = "lifecycle" ]; then
   ) &
   sampler=$!
 
+  rolled_at="$(date -u +%FT%TZ)"
   before_tasks="$(for n in $PEERS; do task_of "$n"; done)"
   extra="$tmp/roll.yaml"
   printf 'extraEnv:\n  E2E_ROLL: "%s"\n' "$(date +%s)" >"$extra"
@@ -509,6 +510,18 @@ if [ "$case" = "lifecycle" ]; then
   cut_off="$(docker service logs --raw "$(svc node-proxy)" 2>&1 | awk '$3 == "s3" && $7 ~ /^D/' || true)"
   [ -z "$cut_off" ] || die "nodeProxy cut connections as it marked rolling peers down, instead of passing them to another peer: $(sed -n 1,4p <<<"$cut_off" | tr '\n' ';')"
   echo "  ok: nodeProxy cut no connection while the peers rolled"
+  # haproxy keeps a server's state across an address change, so a replacement whose address
+  # arrives while its server counts up takes connections before its first check, answered
+  # 503. Each peer's new address must therefore arrive after its old one was dropped, in
+  # DNS maintenance: as "IP changed from '(none)'", never from the old address.
+  plog="$(docker service logs --raw --since "$rolled_at" "$(svc node-proxy)" 2>&1 || true)"
+  swapped="$(grep -E "^s3/rustfs-[0-9]+: IP changed from '[0-9]" <<<"$plog" || true)"
+  [ -z "$swapped" ] || die "nodeProxy swapped a rolled peer's address while it counted the peer up, so its replacement got connections unchecked: $(sed -n 1,4p <<<"$swapped" | tr '\n' ';')"
+  for n in $PEERS; do
+    grep -E "^s3/rustfs-$n: IP changed from '\(none\)'" <<<"$plog" >/dev/null \
+      || die "nodeProxy did not take peer $n into DNS maintenance and back while it rolled: $(grep -E "^(Server )?s3/rustfs-${n}[: ]" <<<"$plog" | tr '\n' ';')"
+  done
+  echo "  ok: nodeProxy dropped every rolling peer when it left DNS and checked its replacement before passing it connections"
   # Quorum alone does not tell one at a time from all at once on a cluster this small. The
   # order does: one at a time, each new task starts only after the one before has outlived
   # its 20s monitor window; all at once, they start within seconds of each other.

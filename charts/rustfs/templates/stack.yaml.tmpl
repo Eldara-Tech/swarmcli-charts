@@ -693,6 +693,12 @@ services:
         # reschedules, and init-addr none lets it start before any peer is in DNS.
         resolvers docker
           nameserver dns 127.0.0.11:53
+          # A peer whose task leaves DNS goes into maintenance within two seconds, long before
+          # its replacement passes the healthcheck that puts it back in DNS. With the default
+          # 30s it never does, and HAProxy keeps a server's state across an address change, so
+          # the replacement would take connections as up before its first check, answered 503.
+          hold nx 1s
+          hold other 1s
         defaults
           mode tcp
           log global
@@ -717,7 +723,9 @@ services:
           # checks, and goes to another peer. No on-marked-down shutdown-sessions: that
           # connection is still the peer's when it is marked down, so it would be cut rather
           # than passed on, at every stop of a peer. A stopping peer closes its own.
-          default-server inter 2s fall 2 rise 2 observe layer4 error-limit 1 on-error mark-down resolvers docker resolve-prefer ipv4 init-addr none
+          # init-state down: a peer leaving maintenance, as its replacement or at the proxy's
+          # start, gets connections only once its /health/ready check passes.
+          default-server inter 2s fall 2 rise 2 observe layer4 error-limit 1 on-error mark-down resolvers docker resolve-prefer ipv4 init-addr none init-state down
         # What the container healthcheck connects to.
         frontend health
           mode http
