@@ -37,7 +37,7 @@ etcd:
     repository: gcr.io/etcd-development/etcd
     # A concrete tag, not appVersion: this is a second image, and Renovate's
     # helm-values manager maintains pins written here.
-    tag: "v3.6.16"
+    tag: "v3.7.4"
   # DISASTER RECOVERY ONLY — bump it by one when rebuilding etcd from empty volumes
   # (README.md § etcd lost its majority for good), and only then. It gives the rebuilt
   # etcd cluster a new ID: Patroni remembers the old cluster's raft term and refuses a
