@@ -55,7 +55,7 @@ oauth2Proxy:
 redis:
   image:
     repository: redis
-    tag: "7.4.7-alpine"
+    tag: "7.4.12-alpine"
 # Temporal runs its development server and keeps its SQLite state on
 # persistence.temporalVolume.
 temporal:
