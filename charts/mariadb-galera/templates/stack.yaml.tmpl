@@ -954,6 +954,13 @@ services:
         # so started routed nothing for minutes while every peer was Synced (#229).
         resolvers docker
           nameserver dns 127.0.0.11:53
+          # A peer whose task leaves DNS goes into maintenance within two seconds, so
+          # the init-state down below applies to its replacement as well. With the
+          # default 30s, a replacement back in DNS sooner inherits the old task's state,
+          # which HAProxy keeps across an address change: if that was up, it takes
+          # connections before its first check, though it may not be Synced yet.
+          hold nx 1s
+          hold other 1s
         defaults
           mode tcp
           log global

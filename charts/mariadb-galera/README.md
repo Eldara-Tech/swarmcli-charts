@@ -151,7 +151,9 @@ a single point of failure.
 
 The proxy reaches each peer at its task address (`tasks.<release>_<peer>`, see
 below), and looks it up through Docker's DNS while it runs rather than once at
-start. So it starts before any peer is up, and follows a peer Swarm reschedules.
+start. So it starts before any peer is up, and follows a peer Swarm reschedules: a peer
+whose task leaves DNS is taken out within two seconds, and its replacement gets
+connections only once it passes a check.
 
 Connections are spread across all `Synced` peers by default. Galera is multi-primary,
 so that is correct. But writing the same rows from several peers at once fails

@@ -534,8 +534,32 @@ if [ -n "$proxy" ]; then
   fi
 
   # Take a peer away and keep asking. The endpoint must keep answering.
-  victim="$(printf '%s\n' $peers | sed -n 2p)"
-  docker service scale "${victim}=0" >/dev/null 2>&1
+  victim="$(printf '%s\n' $peers | sed -n 2p)"; vh="${victim##*_}"
+  # Each proxy replica's log length now, so the wait below reads only what follows.
+  marks="$(for c in $(docker ps -q -f "label=com.docker.swarm.service.name=$proxy"); do echo "$c $(docker logs "$c" 2>&1 | wc -l | tr -d ' ')"; done)"
+  # The replicas that have not yet logged putting the victim in maintenance.
+  not_in_maint() {
+    local c m n
+    while read -r c m; do
+      n="$(docker logs "$c" 2>&1 | tail -n +"$((m + 1))" | grep -cE "galera/$vh .*maintenance" || true)"
+      [ "${n:-0}" -gt 0 ] || echo "$c"
+    done <<<"$marks"
+  }
+  start=$SECONDS
+  docker service scale --detach "${victim}=0" >/dev/null 2>&1
+  # Each replica puts the victim in maintenance within about two seconds of its task
+  # leaving DNS (hold nx 1s). With HAProxy's default 30s, a replacement back in DNS
+  # sooner would inherit the old task's state rather than wait for a passed check
+  # (init-state down; slow-sst proves the return from maintenance). 15s tells the two
+  # apart with room to spare.
+  while [ -n "$(not_in_maint)" ] && [ $((SECONDS - start)) -lt 15 ]; do sleep 1; done
+  late="$(not_in_maint)"
+  if [ -n "$late" ]; then
+    echo "  proxy container(s) $(echo $late) did not put $vh in maintenance within 15s of its task leaving DNS"
+    proxy_seen
+    exit 1
+  fi
+  took=$((SECONDS - start))
   ok=0; fail=0; last_err=""
   for _ in $(seq 1 20); do
     out="$(via_proxy || true)"
@@ -548,7 +572,7 @@ if [ -n "$proxy" ]; then
     proxy_seen
     exit 1
   fi
-  echo "  ${release}: $want peers, all Synced, cross-peer write replicated, endpoint survived losing $victim ($ok/$((ok+fail)) queries OK)$metrics_ok"
+  echo "  ${release}: $want peers, all Synced, cross-peer write replicated, endpoint survived losing $victim ($ok/$((ok+fail)) queries OK), which every proxy replica put in maintenance within ${took}s$metrics_ok"
   exit 0
 fi
 
