@@ -172,6 +172,12 @@ if [ -n "$proxy_svc" ]; then
     || err "proxy has no resolver on Docker's DNS (127.0.0.11:53)"
   grep -E '^ *default-server ' <<<"$cfg" | grep -E ' resolvers docker( |$)' >/dev/null \
     || err "proxy servers are not re-resolved at runtime (default-server lacks 'resolvers docker')"
+  # A peer gone from DNS is in maintenance within seconds, so a quick replacement leaves
+  # it through init-state down rather than inheriting the old task's up state.
+  for h in nx other; do
+    grep -Eq "^ *hold $h 1s$" <<<"$cfg" \
+      || err "proxy lacks 'hold $h 1s': a peer replaced within 30s keeps the old task's state"
+  done
   for s in $svcs; do
     grep -Eq "server $s tasks\.[^ ]+_$s:[0-9]+ check port $port" <<<"$cfg" \
       || err "peer $s is not a proxy backend at its task address, checked on the responder port $port"
