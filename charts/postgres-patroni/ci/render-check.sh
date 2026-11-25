@@ -238,6 +238,10 @@ ds="$(printf '%s\n' "$cfg" | { grep -E '^  default-server ' || true; })"
 grep -Eq '(^| )on-marked-down shutdown-sessions( |$)' <<<"$ds" || err "proxy: connections to a demoted primary would survive a failover"
 grep -Eq '(^| )init-addr none( |$)' <<<"$ds" || err "proxy: refuses to start while a peer is not in DNS"
 grep -Eq '(^| )resolvers docker( |$)' <<<"$ds" || err "proxy: resolves each peer once at start and never follows a reschedule"
+grep -Eq '(^| )init-state down( |$)' <<<"$ds" || err "proxy: counts a peer up before its first check"
+for h in nx other; do
+  grep -xF "  hold $h 1s" <<<"$cfg" >/dev/null || err "proxy: lacks 'hold $h 1s', so a peer replaced within 30s keeps the old task's state"
+done
 grep -xF '  bind :8405' <<<"$(printf '%s\n' "$cfg" | awk '/^[a-z]/ { inside = ($0 == "frontend health") } inside')" >/dev/null \
   || err "proxy: no health frontend on :8405"
 [ "$(yq -r '.services."postgres-patroni-proxy".healthcheck.test | join(" ")' "$f")" = 'CMD bash -c exec 3<>/dev/tcp/127.0.0.1/8405' ] \

@@ -358,6 +358,7 @@ if [ "$case" = lifecycle ]; then
   stop="$(mktemp -u)"; acked="$(mktemp)"
   writer 1000 "$stop" >"$acked" &
   wpid=$!
+  rolled_at="$(date -u +%FT%TZ)"
   before="$(for s in $peers $members; do task_of "$s"; done | sort)"
   # Memory limits, not labels: a deploy label is service metadata, and changing one
   # replaces no task. Resources are part of the task template, as an image is.
@@ -392,6 +393,20 @@ if [ "$case" = lifecycle ]; then
   wait_cluster "after the rolling upgrade"
   acked_present "$acked" "rolling upgrade"
   upgrade_acked="$(grep -c . "$acked")"
+  # Each rolled peer went into maintenance when its task left DNS and came back from
+  # there, so the proxy checked its replacement before routing to it. At HAProxy's 30s
+  # default the proxy swaps the address of a peer it still counts up, and the replacement
+  # takes connections unchecked, on the primary port even as a replica.
+  plog="$(docker service logs --raw --since "$rolled_at" "${release}_postgres-patroni-proxy" 2>&1 || true)"
+  swapped="$(grep -E "^(primary|replicas)/postgres-patroni-[0-9]+: IP changed from '[0-9]" <<<"$plog" || true)"
+  [ -z "$swapped" ] \
+    || { echo "  rolling upgrade: the proxy swapped a rolled peer's address without taking it out first: $(sed -n 1,4p <<<"$swapped" | tr '\n' ';')"; exit 1; }
+  for p in $peers; do
+    for l in primary replicas; do
+      grep -E "^$l/${p##*_}: IP changed from '\(none\)'" <<<"$plog" >/dev/null \
+        || { echo "  rolling upgrade: the proxy did not take $l/${p##*_} into DNS maintenance and back: $(grep -E "^(Server )?$l/${p##*_}[: ]" <<<"$plog" | tr '\n' ';')"; exit 1; }
+    done
+  done
 
   # 2. The leader's container killed, as a crash would: Swarm restarts it, and the cluster
   #    has a writable primary again once the leader key expires.
@@ -486,7 +501,7 @@ if [ "$case" = lifecycle ]; then
   got="$(rows)"
   [ "$got" = "$((want_rows + 1))" ] || { echo "  rows after rebuilding etcd: $got, want $((want_rows + 1))"; exit 1; }
 
-  lifecycle_ok=", rolled every service one at a time with $upgrade_acked acknowledged writes all kept, recovered from a leader crash, stayed writable without etcd quorum, rebuilt a replica from an empty volume, came back from a full stop, replaced an etcd member, and rebuilt etcd from empty under a running primary"
+  lifecycle_ok=", rolled every service one at a time with $upgrade_acked acknowledged writes all kept and each rolled peer checked by the proxy before it routed there again, recovered from a leader crash, stayed writable without etcd quorum, rebuilt a replica from an empty volume, came back from a full stop, replaced an etcd member, and rebuilt etcd from empty under a running primary"
 fi
 
 echo "  cluster: leader + $((want - 1)) streaming replicas over $want_members etcd members; primary/replica ports route by role; nothing behind the proxy reachable from $net; failed over $failed_over and rejoined$metrics_ok$lifecycle_ok"
