@@ -96,7 +96,9 @@ postgresql://postgres:<password>@postgres:5433/postgres   # a replica: reads onl
 
 Port 5432 routes to whichever peer is the primary, and port 5433 spreads connections over
 the running replicas. The proxy decides by asking each peer's Patroni REST API
-(`/primary`, `/replica`) every 3 seconds. After a failover it closes the connections it
+(`/primary`, `/replica`) every 3 seconds. A peer whose task leaves DNS is taken out within
+two seconds, and a peer gets connections only once it passes a check, also when Swarm
+brings it back at a new address. After a failover it closes the connections it
 still holds to the old primary, so clients see an error and reconnect, landing on the new
 one. Use a pool that retries.
 

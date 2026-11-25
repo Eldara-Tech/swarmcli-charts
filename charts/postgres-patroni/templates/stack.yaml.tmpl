@@ -478,6 +478,12 @@ services:
         # Swarm reschedules, and init-addr none lets it start before any peer is in DNS.
         resolvers docker
           nameserver dns 127.0.0.11:53
+          # A peer whose task leaves DNS goes into maintenance within two seconds. With the
+          # default 30s, a replacement back in DNS sooner inherits the old task's state,
+          # which HAProxy keeps across an address change: if that was up, it takes
+          # connections before its first check, on the primary port even as a replica.
+          hold nx 1s
+          hold other 1s
         defaults
           mode tcp
           log global
@@ -489,8 +495,10 @@ services:
           timeout server 1h
           # on-marked-down shutdown-sessions: after a failover, connections still open to
           # the old primary are cut rather than left talking to a server that is now a
-          # replica, or is gone.
-          default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions resolvers docker resolve-prefer ipv4 init-addr none
+          # replica, or is gone. init-state down: a peer leaving maintenance, as a
+          # replacement or at the proxy's start, gets connections only once its check
+          # passes, rather than until its first one fails.
+          default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions resolvers docker resolve-prefer ipv4 init-addr none init-state down
         # What the container healthcheck connects to. A probe of 5432 itself would be
         # forwarded to the primary, which logs every one as an incomplete startup packet.
         frontend health
