@@ -108,9 +108,9 @@ diagnose() {
   # the tails above miss: the proxy's line names the peer that held the write (the lifecycle
   # fixture logs every connection), and the peers' say what they waited on meanwhile.
   for t in $failed_at; do
-    echo "    --- every log line from $(iso $((t - 5))) to $(iso $((t + 10))), around a failed write ---"
+    echo "    --- every log line from $(iso $((t - 10))) to $(iso $((t + 10))), around a failed write ---"
     for unit in $PEERS node-proxy; do
-      docker service logs --timestamps --since "$(iso $((t - 5)))Z" "$(svc "$unit")" 2>&1 \
+      docker service logs --timestamps --since "$(iso $((t - 10)))Z" "$(svc "$unit")" 2>&1 \
         | awk -v until="$(iso $((t + 10)))" '$1 < until' | LC_ALL=C sort | sed 's/^/    /' || true
     done
   done
@@ -496,7 +496,7 @@ if [ "$case" = "lifecycle" ]; then
   echo "  ok: the upgrade gave every peer a new task while the cluster stayed writable at every sample, and all $total writes succeeded"
   writes="$(grep -E '^[0-9]+ [0-9]+ [0-9]+ [0-9:]+$' <<<"$(docker logs "$nwriter" 2>&1 || true)" || true)"
   total="$(grep -c . <<<"$writes" || true)"
-  failed="$(awk '$2 != 200' <<<"$writes")"
+  failed="$(awk '$2 != 200 || $3 >= 5' <<<"$writes")"
   [ "$total" -ge 30 ] || die "the writer through nodeProxy finished only $total writes during the upgrade: $(tail -3 <<<"$writes" | tr '\n' ';')"
   # Each such write's UTC start as an epoch second, for diagnose; at most 4 windows.
   failed_at="$(printf '%s\n' "$failed" | awk -v now="$(date -u +%s)" \
